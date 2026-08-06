@@ -37,15 +37,14 @@ import sqlite3
 
 import numpy as np
 
-from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
+from tomo.objects import TiltSeries, Coordinate3D
 
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
-from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
+from app.backend.utils.volume_utils import readVolumeArray3d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
 )
@@ -57,9 +56,7 @@ from app.backend.api.services.protocol_suggestions_service import ProtocolSugges
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
-from pwem.viewers.mdviewer.readers import ScipionImageReader
-from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
-from pwem.viewers.mdviewer.star_dao import StarFile
+from pwem.viewers.mdviewer.sqlite_dao import OBJECT_TABLE
 from pyworkflow.protocol.params import (
     MultiPointerParam,
     PointerParam,
@@ -136,6 +133,7 @@ from app.backend.api.services.project.core import (
     external_viewers as _externalViewers,
     fsc_preview as _fscPreview,
     generated_set_helpers as _generatedSetHelpers,
+    metadata_preview as _metadataPreview,
     object_manager_factory as _objectManagerFactory,
     output_registration as _outputRegistration,
     postgresql_viewer_errors as _postgresqlViewerErrors,
@@ -144,11 +142,9 @@ from app.backend.api.services.project.core import (
     slice_rendering as _sliceRendering,
     tags as _tags,
     tiltseries_preview as _tiltseriesPreview,
+    volume_downsampling as _volumeDownsampling,
+    volume_preview as _volumePreview,
 )
-
-_VOLUME_SLICE_CACHE_LOCK = threading.Lock()
-_VOLUME_SLICE_CACHE = collections.OrderedDict()
-_VOLUME_SLICE_CACHE_MAX_ITEMS = 128
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
@@ -8440,51 +8436,13 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        try:
-            from app.backend.viewers.postgresql_coords3d_tomogram_volume_reader import \
-                PostgresqlCoords3dTomogramVolumeReader
-
-            reader = PostgresqlCoords3dTomogramVolumeReader(
-                db=mapper.db,
-                projectId=projectId,
-                protocolId=readerProtocolId,
-                outputName=outputName,
-            )
-
-            if reader.hasOutput():
-                return reader
-
-        except Exception:
-            logger.debug(
-                "PostgreSQL Coords3D-derived tomogram volume reader is not available. projectId=%s protocolId=%s outputName=%s",
-                projectId,
-                protocolId,
-                outputName,
-                exc_info=True,
-            )
-
-        try:
-            from app.backend.viewers.postgresql_volume_reader import PostgresqlVolumeReader
-
-            reader = PostgresqlVolumeReader(
-                db=mapper.db,
-                projectId=projectId,
-                protocolId=readerProtocolId,
-                outputName=outputName,
-            )
-
-            if reader.hasOutput():
-                return reader
-
-        except Exception:
-            logger.exception(
-                "Failed to initialize PostgreSQL volume reader. projectId=%s protocolId=%s outputName=%s",
-                projectId,
-                protocolId,
-                outputName,
-            )
-
-        return None
+        return _volumePreview.buildPostgresqlVolumeReader(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=readerProtocolId,
+            outputName=outputName,
+            logger=logger,
+        )
 
     def listOutputVolumesService(
             self,
@@ -8670,87 +8628,28 @@ class ProjectService:
             fast: bool,
             quality: int,
     ):
-        try:
-            stat = os.stat(volumePath)
-            mtimeNs = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
-            sizeBytes = int(stat.st_size)
-        except Exception:
-            mtimeNs = None
-            sizeBytes = None
-
-        return (
-            os.path.abspath(str(volumePath)),
-            mtimeNs,
-            sizeBytes,
-            str(tomogramId),
-            int(sliceIndex),
-            str(axis or "z").lower(),
-            str(colormap or ""),
-            str(normalize or "minmax").lower(),
-            float(scale or 1.0),
-            str(fmt or "webp").lower(),
-            int(thumb or 0),
-            bool(fast),
-            int(quality or 75),
+        return _volumePreview.buildVolumeSliceCacheKey(
+            volumePath=volumePath,
+            tomogramId=tomogramId,
+            sliceIndex=sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize,
+            scale=scale,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
         )
 
     def _getCachedVolumeSliceResponse(self, cacheKey) -> Optional[Response]:
-        with _VOLUME_SLICE_CACHE_LOCK:
-            cached = _VOLUME_SLICE_CACHE.get(cacheKey)
-            if cached is None:
-                return None
-
-            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
-
-        headers = dict(cached.get("headers") or {})
-        headers.pop("content-length", None)
-        headers.pop("Content-Length", None)
-
-        headers["X-Preview-Cache"] = "hit"
-        self._exposeHeader(headers, "X-Preview-Cache")
-
-        return Response(
-            content=cached["body"],
-            media_type=cached.get("mediaType") or "image/webp",
-            headers=headers,
-        )
+        return _volumePreview.getCachedVolumeSliceResponse(cacheKey)
 
     def _storeCachedVolumeSliceResponse(self, cacheKey, response: Response) -> Response:
-        body = getattr(response, "body", None)
-        if body is None:
-            return response
-
-        headers = dict(response.headers)
-        headers.pop("content-length", None)
-        headers.pop("Content-Length", None)
-
-        mediaType = getattr(response, "media_type", None) or headers.get("content-type")
-
-        with _VOLUME_SLICE_CACHE_LOCK:
-            _VOLUME_SLICE_CACHE[cacheKey] = {
-                "body": bytes(body),
-                "headers": headers,
-                "mediaType": mediaType,
-            }
-            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
-
-            while len(_VOLUME_SLICE_CACHE) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
-                _VOLUME_SLICE_CACHE.popitem(last=False)
-
-        response.headers["X-Preview-Cache"] = "miss"
-        self._exposeHeader(response.headers, "X-Preview-Cache")
-
-        return response
+        return _volumePreview.storeCachedVolumeSliceResponse(cacheKey, response)
 
     def _exposeHeader(self, headers, headerName: str) -> None:
-        exposeKey = "Access-Control-Expose-Headers"
-        current = headers.get(exposeKey, "")
-        parts = [h.strip() for h in str(current).split(",") if h.strip()]
-
-        if headerName not in parts:
-            parts.append(headerName)
-
-        headers[exposeKey] = ", ".join(parts)
+        _volumePreview.exposeHeader(headers, headerName)
 
     def renderVolumeSliceService(
             self,
@@ -8942,78 +8841,10 @@ class ProjectService:
         }
 
     def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
-        """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
-        if isinstance(output, SetOfVolumes):
-            try:
-                vid = int(volumeId)
-            except Exception:
-                raise HTTPException(status_code=400, detail="volumeId must be an integer")
-
-            item = output.getItem('_objId', vid + 1)
-            if item is None:
-                raise HTTPException(status_code=404, detail="Volume not found in SetOfVolumes")
-            volumePath = item.getFileName()
-        else:
-            getFileNameFn = getattr(output, "getFileName", None)
-            if not callable(getFileNameFn):
-                raise HTTPException(status_code=404, detail="Output has no getFileName()")
-            volumePath = getFileNameFn()
-
-        if not volumePath or not os.path.exists(volumePath):
-            raise HTTPException(status_code=404, detail="Volume file not found on disk")
-
-        return volumePath
+        return _volumePreview.getVolumePathFromOutput(output, volumeId, SetOfVolumes)
 
     def _readVolumeAsNumpy(self, volumePath: str) -> np.ndarray:
-        """
-        Read a volume file into a numpy array (Z,Y,X).
-        Tries Scipion/pwem readers first, falls back to mrcfile/numpy when possible.
-        """
-        ext = os.path.splitext(volumePath)[1].lower()
-
-        # Numpy formats
-        if ext in (".npy",):
-            arr = np.load(volumePath)
-            return np.asarray(arr, dtype=np.float32)
-
-        if ext in (".npz",):
-            zf = np.load(volumePath)
-            for k in ("data", "volume", "arr_0"):
-                if k in zf:
-                    return np.asarray(zf[k], dtype=np.float32)
-            firstKey = list(zf.keys())[0]
-            return np.asarray(zf[firstKey], dtype=np.float32)
-
-        # Try Scipion image readers registry
-        try:
-            reader = ImageReadersRegistry.getReader(volumePath)
-            if reader is not None:
-                data = reader.read(volumePath)
-                return np.asarray(data, dtype=np.float32)
-        except Exception:
-            pass
-
-        # Try pwem ImageHandler
-        try:
-            from pwem.emlib.image import ImageHandler
-            ih = ImageHandler()
-            ih.read(volumePath)
-            data = ih.getData()
-            return np.asarray(data, dtype=np.float32)
-        except Exception:
-            pass
-
-        # Last resort: mrcfile if available
-        try:
-            import mrcfile
-            with mrcfile.open(volumePath, permissive=True) as m:
-                data = m.data
-            return np.asarray(data, dtype=np.float32)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Cannot read volume file '{volumePath}': {e}",
-            )
+        return _volumePreview.readVolumeAsNumpy(volumePath)
 
     def _downsampleVolumePreview(
             self,
@@ -9021,89 +8852,10 @@ class ProjectService:
             maxDim: int,
             method: str = "binning",
     ) -> np.ndarray:
-        """
-        Downsample a volume to a preview size suitable for web 3D rendering.
-        - binning: real-space average pooling with integer factor
-        - linear: scipy.ndimage.zoom (if available), else binning
-        - fourier: Fourier crop + inverse FFT
-        """
-        if vol is None or vol.ndim != 3:
-            raise HTTPException(status_code=500, detail="Invalid volume data")
-
-        z, y, x = vol.shape
-        m = max(z, y, x)
-
-        if m <= maxDim:
-            return vol.astype(np.float32)
-
-        methodLower = (method or "binning").lower()
-
-        if methodLower == "fourier":
-            return self._resizeVolumeFourier(vol, maxDim)
-
-        if methodLower == "linear":
-            try:
-                from scipy.ndimage import zoom
-                scale = maxDim / float(m)
-                small = zoom(vol, zoom=scale, order=1, prefilter=False)
-                return np.asarray(small, dtype=np.float32)
-            except Exception:
-                pass
-
-        factor = int(np.ceil(m / float(maxDim)))
-        return self._binVolume(vol, factor)
+        return _volumeDownsampling.downsampleVolumePreview(vol, maxDim, method=method)
 
     def _binVolume(self, vol: np.ndarray, factor: int) -> np.ndarray:
-        """Real-space average binning by an integer factor."""
-        if factor <= 1:
-            return vol.astype(np.float32)
-
-        z, y, x = vol.shape
-        z2 = (z // factor) * factor
-        y2 = (y // factor) * factor
-        x2 = (x // factor) * factor
-
-        volC = vol[:z2, :y2, :x2]
-
-        binned = volC.reshape(
-            z2 // factor, factor,
-            y2 // factor, factor,
-            x2 // factor, factor
-        ).mean(axis=(1, 3, 5))
-
-        return np.asarray(binned, dtype=np.float32)
-
-    def _resizeVolumeFourier(self, vol: np.ndarray, maxDim: int) -> np.ndarray:
-        """Fourier crop downsample (low-pass) preserving global structure."""
-        z, y, x = vol.shape
-        m = max(z, y, x)
-        if m <= maxDim:
-            return vol.astype(np.float32)
-
-        scale = maxDim / float(m)
-        tz = max(8, int(z * scale))
-        ty = max(8, int(y * scale))
-        tx = max(8, int(x * scale))
-
-        f = np.fft.fftn(vol)
-        fshift = np.fft.fftshift(f)
-
-        cropped = self._centerCrop3d(fshift, (tz, ty, tx))
-
-        out = np.fft.ifftn(np.fft.ifftshift(cropped)).real
-        out *= (z * y * x) / float(tz * ty * tx)
-
-        return np.asarray(out, dtype=np.float32)
-
-    def _strideDownsampleVolume(self, volume: np.ndarray,
-                                maxDim: int) -> np.ndarray:
-        z, y, x = volume.shape
-        largestDim = max(z, y, x)
-        if largestDim <= maxDim:
-            return volume.astype(np.float32, copy=False)
-
-        step = max(1, int(np.ceil(largestDim / float(maxDim))))
-        return volume[::step, ::step, ::step].astype(np.float32, copy=False)
+        return _volumeDownsampling.binVolume(vol, factor)
 
     def _downsampleVolumeForSurface(
             self,
@@ -9112,18 +8864,7 @@ class ProjectService:
             maxDim: int,
             method: str,
     ) -> np.ndarray:
-        methodLower = (method or "stride").lower()
-
-        if methodLower == "none":
-            return volume.astype(np.float32, copy=False)
-
-        if methodLower == "stride":
-            return self._strideDownsampleVolume(volume,
-                                                maxDim=maxDim)
-
-        return self._downsampleVolumePreview(volume,
-                                             maxDim=maxDim,
-                                             method=methodLower)
+        return _volumeDownsampling.downsampleVolumeForSurface(volume, maxDim=maxDim, method=method)
 
     def getVolumeSurfaceMesh(
             self,
@@ -9224,17 +8965,6 @@ class ProjectService:
         response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
         response.headers["Vary"] = "Authorization"
         return response
-
-    def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
-        """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""
-        tz, ty, tx = targetShape
-        z, y, x = fshift.shape
-
-        z0 = max(0, (z - tz) // 2)
-        y0 = max(0, (y - ty) // 2)
-        x0 = max(0, (x - tx) // 2)
-
-        return fshift[z0:z0 + tz, y0:y0 + ty, x0:x0 + tx]
 
     def listOutputTiltSeriesService(
             self,
@@ -10956,177 +10686,20 @@ class ProjectService:
             fast: bool = True,
             quality: int = 75,
     ) -> Response:
-
-        from PIL import Image as PILImage
-
-        axis = (axis or "z").lower()
-        if axis not in ("x", "y", "z"):
-            axis = "z"
-
-        fmtLower = (fmt or "png").lower()
-        if fmtLower in ("jpg", "jpeg"):
-            pilFormat = "JPEG"
-            mediaType = "image/jpeg"
-            saveKw = {"quality": int(quality or 75)}
-        elif fmtLower == "webp":
-            pilFormat = "WEBP"
-            mediaType = "image/webp"
-            saveKw = {"quality": int(quality or 75)}
-        else:
-            pilFormat = "PNG"
-            mediaType = "image/png"
-            saveKw = {}
-
-        usedColormap = colormap
-        gray: Optional[np.ndarray] = None
-        depth = 1
-
-        try:
-            requestedIndex = int(sliceIndex or 0)
-        except Exception:
-            requestedIndex = 0
-        requestedIndex = max(0, requestedIndex)
-
-        sliceUsed = requestedIndex
-        if axis == "z" and fast:
-            try:
-                reader = ImageReadersRegistry.open(volumePath)
-
-                try:
-                    images = reader.getImages()
-                    if hasattr(images, "ndim") and images.ndim == 3:
-                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
-                    elif hasattr(images, "ndim") and images.ndim == 2:
-                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
-                    else:
-                        zdim, ydim, xdim = 1, 0, 0
-                except Exception:
-                    zdim, ydim, xdim = 1, 0, 0
-
-                depth = max(zdim, 1)
-
-                k = requestedIndex
-                if zdim > 0:
-                    k = max(0, min(k, zdim - 1))
-
-                try:
-                    pilImg = reader.getImage(index=k, pilImage=True)
-                except Exception:
-                    try:
-                        pilImg = reader.getCentralImage(pilImage=True)
-                        if zdim > 0:
-                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
-                        else:
-                            k = 0
-                    except Exception:
-                        pilImg = reader.getImage(index=0, pilImage=True)
-                        k = 0
-
-                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
-                if arr2d is None:
-                    arrRaw = np.asarray(pilImg)
-                    if arrRaw.ndim == 3:
-                        arr2d = arrRaw.mean(axis=-1)
-                    else:
-                        arr2d = arrRaw.astype(np.float32, copy=False)
-
-                gray = self._normalize2dSlice(arr2d, mode=normalize)
-                sliceUsed = k
-            except Exception:
-                gray = None
-
-        if gray is None:
-            try:
-                slice2d, _props, sliceMeta = readVolumeSlice2d(
-                    str(volumePath),
-                    sliceIndex=requestedIndex,
-                    axis=axis,
-                    maxSide=thumb,
-                )
-            except HTTPException:
-                raise
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Tomogram file not found on disk",
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to read tomogram slice: {e}",
-                )
-
-            zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
-            depth = max(int(zdim), 1)
-
-            gray = self._normalize2dSlice(slice2d, mode=normalize)
-            sliceUsed = int(sliceMeta.get("index", requestedIndex))
-
-        if thumb is not None and thumb > 0:
-            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
-            pilTmp.thumbnail((thumb, thumb))
-            gray = np.asarray(pilTmp)
-
-            if gray.dtype != np.uint8:
-                gray = gray.astype(np.uint8, copy=False)
-
-        imgArray = gray.astype(np.uint8, copy=False)
-        pilMode = "L"
-
-        if usedColormap:
-            try:
-                import matplotlib.cm as cm
-                sliceNorm = imgArray.astype(np.float32) / 255.0
-                cmapObj = cm.get_cmap(usedColormap)
-                rgba = cmapObj(sliceNorm)
-                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
-                imgArray = rgb
-                pilMode = "RGB"
-            except Exception:
-                usedColormap = None
-                imgArray = gray.astype(np.uint8, copy=False)
-                pilMode = "L"
-
-        if scale is not None and scale != 1.0:
-            try:
-                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
-                newW = max(1, int(round(pilScale.width * float(scale))))
-                newH = max(1, int(round(pilScale.height * float(scale))))
-                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
-                imgArray = np.asarray(pilScale, copy=False)
-            except Exception:
-                pass
-
-        img = PILImage.fromarray(imgArray, mode=pilMode)
-
-        buf = io.BytesIO()
-        img.save(buf, format=pilFormat, **saveKw)
-
-        disp = "inline" if inline else "attachment"
-        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
-
-        headers = {
-            "Content-Disposition": f'{disp}; filename="{filename}"',
-            "Access-Control-Expose-Headers": (
-                "Content-Disposition, "
-                "X-Preview-Mime, "
-                "X-Preview-Width, "
-                "X-Preview-Height, "
-                "X-Preview-Depth, "
-                "X-Preview-Colormap, "
-                "X-Preview-Format, "
-                "X-Preview-TomogramId"
-            ),
-            "X-Preview-Mime": mediaType,
-            "X-Preview-Width": str(img.width),
-            "X-Preview-Height": str(img.height),
-            "X-Preview-Depth": str(depth),
-            "X-Preview-Colormap": usedColormap or "",
-            "X-Preview-Format": pilFormat,
-            "X-Preview-TomogramId": str(tomogramId),
-        }
-
-        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+        return _sliceRendering.renderTomogramSliceFromPath(
+            volumePath,
+            tomogramId,
+            sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize,
+            scale=scale,
+            inline=inline,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
+        )
 
     def createCoords3dOutputFromPointsService(
             self,
@@ -11582,8 +11155,6 @@ class ProjectService:
             outputName: str,
             mapper=None,
     ):
-        from app.backend.viewers.postgresql_dao import PostgresqlDAO
-
         if mapper is None:
             return None
 
@@ -11593,17 +11164,12 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        dao = PostgresqlDAO(
-            db=mapper.db,
+        return _metadataPreview.buildPostgresqlDAO(
+            mapper=mapper,
             projectId=projectId,
             protocolId=readerProtocolId,
             outputName=outputName,
         )
-
-        if dao.hasOutput():
-            return dao
-
-        return None
 
     def _getMetadataObjectManagerForOutput(
             self,
@@ -11679,99 +11245,16 @@ class ProjectService:
         return objMgr, table
 
     def _isPropertiesMetadataTable(self, table) -> bool:
-        try:
-            tableName = str(table.getName() or "").strip()
-        except Exception:
-            tableName = ""
-
-        try:
-            tableAlias = str(table.getAlias() or "").strip()
-        except Exception:
-            tableAlias = ""
-
-        return tableName == "Properties" or tableAlias == "Properties"
+        return _metadataPreview.isPropertiesMetadataTable(table)
 
     def _getMetadataTableActionNames(self, table) -> List[str]:
-        if self._isPropertiesMetadataTable(table):
-            return []
-
-        try:
-            tableActions = table.getActions() or []
-        except Exception:
-            return []
-
-        actionNames: List[str] = []
-        seen = set()
-
-        for action in tableActions:
-            try:
-                actionName = str(action.getName() or "").strip()
-            except Exception:
-                actionName = ""
-
-            if not actionName or actionName in seen:
-                continue
-
-            seen.add(actionName)
-            actionNames.append(actionName)
-
-        return actionNames
+        return _metadataPreview.getMetadataTableActionNames(table)
 
     def _rendererTypeFromInstance(self, renderer) -> str:
-        """
-        Map renderer class name to a simple type label for the API.
-        """
-        name = renderer.__class__.__name__
-        mapping = {
-            "IntRenderer": "int",
-            "FloatRenderer": "float",
-            "BoolRenderer": "bool",
-            "MatrixRender": "matrix",
-            "ImageRenderer": "image",
-            "StrRenderer": "str",
-        }
-        return mapping.get(name, "str")
+        return _metadataPreview.rendererTypeFromInstance(renderer)
 
     def _convertCellForPage(self, renderer, rawValue, rowValues):
-        """
-        Convert a raw cell value + renderer into something JSON friendly for page API.
-        - image  -> { kind: "image", path: "..." }
-        - matrix -> { kind: "matrix", value: [[...], ...] }
-        - others -> primitive (int/float/bool/str) when possible
-        """
-        clsName = renderer.__class__.__name__
-
-        if clsName == "ImageRenderer":
-            return {
-                "kind": "image",
-                "path": "" if rawValue is None else str(rawValue),
-            }
-
-        if clsName == "MatrixRender":
-            try:
-                rendered = renderer.render(rawValue, rowValues)
-            except Exception:
-                rendered = rawValue
-            if isinstance(rendered, np.ndarray):
-                renderedVal = rendered.tolist()
-            else:
-                renderedVal = rendered
-            return {
-                "kind": "matrix",
-                "value": renderedVal,
-            }
-
-        try:
-            rendered = renderer.render(rawValue, rowValues)
-        except Exception:
-            rendered = rawValue
-
-        if isinstance(rendered, np.ndarray):
-            rendered = rendered.tolist()
-        if isinstance(rendered, np.generic):
-            rendered = rendered.item()
-
-        return rendered
+        return _metadataPreview.convertCellForPage(renderer, rawValue, rowValues)
 
     # ======================================================================
     # ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
@@ -11936,21 +11419,7 @@ class ProjectService:
             return schema
 
     def _normalizeMetadataSelectionIds(self, ids: List[int]) -> List[int]:
-        normalizedIds: List[int] = []
-
-        for rowId in ids or []:
-            try:
-                normalizedIds.append(int(rowId))
-            except Exception:
-                continue
-
-        if not normalizedIds:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Missing ids",
-            )
-
-        return normalizedIds
+        return _metadataPreview.normalizeMetadataSelectionIds(ids)
 
     def _writeMetadataSelectionFile(self, ids: List[int]) -> str:
         timeFormat = "%Y%m%d%H%M%S"
@@ -11988,68 +11457,13 @@ class ProjectService:
         return relativePath
 
     def _buildMetadataSelectionArgument(self, selectionPath: str, tableName: str) -> str:
-        selectionArg = selectionPath + ","
-
-        if tableName != OBJECT_TABLE:
-            selectionArg += tableName.split("_Objects")[0]
-
-        return selectionArg
+        return _metadataPreview.buildMetadataSelectionArgument(selectionPath, tableName, OBJECT_TABLE)
 
     def _getMetadataActionAliasForTable(self, dao, table) -> str:
-        getActionAliasFn = getattr(dao, "_getActionAliasForTableName", None)
-        if callable(getActionAliasFn):
-            try:
-                actionAlias = str(getActionAliasFn(table.getName()) or "").strip()
-                if actionAlias:
-                    return actionAlias
-            except Exception:
-                pass
-
-        try:
-            return str(table.getAlias() or "").strip()
-        except Exception:
-            return ""
+        return _metadataPreview.getMetadataActionAliasForTable(dao, table)
 
     def _resolveMetadataActionOutputClassName(self, dao, table, action: str) -> str:
-        actionName = str(action or "").strip()
-        if not actionName:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Missing action",
-            )
-
-        validActions = self._getMetadataTableActionNames(table)
-        if actionName not in validActions:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Unsupported action '{actionName}' for table '{table.getName()}'",
-            )
-
-        actionAlias = self._getMetadataActionAliasForTable(dao, table)
-
-        if actionAlias == "Class2D" and actionName == "Averages":
-            return "SetOfAverages"
-
-        if actionAlias == "Class3D" and actionName == "Volumes":
-            return "SetOfVolumes"
-
-        objectsType = getattr(dao, "_objectsType", {}) or {}
-
-        if actionAlias == "Class2D":
-            objectsType.setdefault("Averages", "SetOfAverages")
-
-        if actionAlias == "Class3D":
-            objectsType.setdefault("Volumes", "SetOfVolumes")
-
-        outputClassName = objectsType.get(actionName)
-
-        if outputClassName:
-            return str(outputClassName)
-
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Could not resolve output class for action '{actionName}'",
-        )
+        return _metadataPreview.resolveMetadataActionOutputClassName(dao, table, action)
 
     def _resolveMetadataActionInputContext(self, mapper, projectId: int, protocolId: int, outputName: str):
         protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId,
@@ -12500,52 +11914,12 @@ class ProjectService:
             rowId: Optional[Union[int, str]],
             rowIndex: Optional[int],
     ) -> Response:
-        """Return a small neutral placeholder image for broken metadata cells."""
-        from PIL import Image as PILImage
-
-        try:
-            sizeInt = int(size)
-        except Exception:
-            sizeInt = 64
-        sizeInt = max(8, sizeInt)
-
-        img = PILImage.new("L", (sizeInt, sizeInt), 0)
-        buf = io.BytesIO()
-
-        fmtLower = (fmt or "png").lower()
-        if fmtLower in ("jpg", "jpeg"):
-            pilFormat = "JPEG"
-            mediaType = "image/jpeg"
-        elif fmtLower == "webp":
-            pilFormat = "WEBP"
-            mediaType = "image/webp"
-        else:
-            pilFormat = "PNG"
-            mediaType = "image/png"
-
-        img.save(buf, format=pilFormat)
-
-        disp = "inline" if inline else "attachment"
-        ident = rowId if rowId is not None else (rowIndex if rowIndex is not None else "placeholder")
-
-        headers = {
-            "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{ident}.{fmtLower}"',
-            "Access-Control-Expose-Headers": "Content-Disposition",
-            "X-Image-Placeholder": "1",
-        }
-        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+        return _metadataPreview.renderMetadataPlaceholderImage(
+            size, inline, fmt, tableName, columnName, rowId, rowIndex,
+        )
 
     def _isVolumeLikeImageFile(self, filePath: Union[str, Path]) -> bool:
-        try:
-            reader = ImageReadersRegistry.open(str(filePath))
-            data = reader.getImages()
-
-            if isinstance(data, list):
-                data = data[0]
-
-            return getattr(data, "ndim", 0) == 3 and data.shape[0] > 1
-        except Exception:
-            return False
+        return _volumePreview.isVolumeLikeImageFile(filePath)
 
 
     def renderMetadataImageCellService(
