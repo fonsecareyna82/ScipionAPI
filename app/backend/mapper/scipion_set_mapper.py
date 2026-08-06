@@ -4372,9 +4372,16 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if attrPath == SELF_LABEL:
                 continue
 
-            properties[attrPath] = self._toJsonValue(
-                value
-            )
+            properties[attrPath] = self._toJsonValue(value)
+
+        getSamplingRate = getattr(scipionSet, "getSamplingRate", None)
+
+        if "_samplingRate" not in properties and callable(getSamplingRate):
+            firstItem = self._callOptionalGetter(scipionSet, "getFirstItem")
+            firstItemSamplingRate = self._callOptionalGetter(firstItem, "getSamplingRate")
+
+            if firstItemSamplingRate is not None:
+                properties["_samplingRate"] = self._toJsonValue(firstItemSamplingRate)
 
         if isPostgresqlRuntimeSet:
             self._removePostgresqlRuntimeStorageProperties(

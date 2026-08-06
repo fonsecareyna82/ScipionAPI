@@ -197,6 +197,44 @@ def test_GetSetPropertiesIncludesNestedAttributes():
     assert "_acquisition" not in properties
 
 
+def test_GetSetPropertiesUsesFirstItemSamplingWhenSetSamplingIsMissing():
+    class SamplingItem(Object):
+        def __init__(self):
+            super().__init__()
+            self._samplingRate = Float(7.08)
+
+        def getSamplingRate(self):
+            return self._samplingRate.get()
+
+    class SamplingSet(ScipionSet):
+        ITEM_TYPE = SamplingItem
+
+        def __init__(self):
+            super().__init__()
+            self._samplingRate = Float()
+            self.firstItem = SamplingItem()
+
+        def getSamplingRate(self):
+            return self._samplingRate.get()
+
+        def getFirstItem(self):
+            return self.firstItem
+
+    scipionSet = SamplingSet()
+    scipionSet.setObjId(41)
+
+    mapper = ScipionSetPostgresqlMapper(
+        db=None,
+    )
+
+    properties = mapper._getSetProperties(
+        scipionSet
+    )
+
+    assert scipionSet.getSamplingRate() is None
+    assert properties["_samplingRate"] == 7.08
+
+
 def test_GetSetPropertiesSkipsPostgresqlRuntimeStorageAccessors():
     scipionSet = ExamplePostgresqlRuntimeSet()
     scipionSet.setObjId(41)

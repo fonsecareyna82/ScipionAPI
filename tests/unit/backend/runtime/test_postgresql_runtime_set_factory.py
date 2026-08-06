@@ -2764,6 +2764,68 @@ def test_RuntimeSetLoadHydratesPersistedSetProperties():
     assert runtimeSet._samplingRate.get() == 2.25
 
 
+def test_RuntimeSetLoadUsesFirstItemSamplingWhenSetPropertyIsMissing():
+    class RuntimeItemStub(Object):
+        def __init__(self):
+            super().__init__()
+            self._samplingRate = Float(7.08)
+
+        def getSamplingRate(self):
+            return self._samplingRate.get()
+
+    class RuntimeSetStub(
+            PostgresqlRuntimeSetMixin,
+            Set,
+    ):
+        ITEM_TYPE = RuntimeItemStub
+
+        def __init__(self):
+            super().__init__()
+            self._samplingRate = Float()
+
+        def getSamplingRate(self):
+            return self._samplingRate.get()
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.firstItem = RuntimeItemStub()
+
+        def count(self):
+            return 2000
+
+        def maxId(self):
+            return 2000
+
+        def getPropertyKeys(self):
+            return []
+
+        def getProperty(
+                self,
+                propertyName,
+                defaultValue=None,
+        ):
+            return defaultValue
+
+        def selectFirst(self):
+            return self.firstItem
+
+        def close(self):
+            pass
+
+    mapper = RuntimeMapperStub()
+    runtimeSet = RuntimeSetStub()
+
+    runtimeSet._postgresqlRuntimeProperties = {}
+    runtimeSet._postgresqlMapperFactory = lambda: mapper
+    runtimeSet._postgresqlWritable = False
+
+    runtimeSet.load()
+
+    assert runtimeSet.getSize() == 2000
+    assert runtimeSet._idCount == 2000
+    assert runtimeSet.getSamplingRate() == 7.08
+
+
 
 
 

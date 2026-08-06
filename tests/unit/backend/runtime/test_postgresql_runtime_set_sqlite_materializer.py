@@ -704,17 +704,34 @@ def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
     )
 
     try:
-        itemsById = {
-            item.getObjId(): item
-            for item in compatibilitySet
+        itemsById = {}
+
+        for item in compatibilitySet:
+            metadata = getattr(
+                item,
+                "_metadata",
+                None,
+            )
+
+            itemsById[item.getObjId()] = {
+                "name": item._name.get(),
+                "metadata": (
+                    metadata._value.get()
+                    if metadata is not None
+                    else None
+                ),
+            }
+
+        assert itemsById == {
+            1: {
+                "name": "first",
+                "metadata": "present",
+            },
+            2: {
+                "name": "second",
+                "metadata": None,
+            },
         }
-
-        assert itemsById[1]._name.get() == "first"
-        assert itemsById[1]._metadata._value.get() == "present"
-
-        assert itemsById[2]._name.get() == "second"
-        assert itemsById[2]._metadata is not None
-        assert itemsById[2]._metadata._value.get() is None
 
     finally:
         compatibilitySet.close()

@@ -174,6 +174,27 @@ class PostgresqlRuntimeSetMixin:
                     )
                 )
 
+        if "_samplingRate" not in runtimeProperties:
+            getSamplingRate = getattr(self, "getSamplingRate", None)
+            selectFirst = getattr(mapper, "selectFirst", None)
+
+            if callable(getSamplingRate) and callable(selectFirst):
+                try:
+                    firstItem = selectFirst()
+                except Exception:
+                    firstItem = None
+
+                getFirstItemSamplingRate = getattr(firstItem, "getSamplingRate", None)
+
+                if callable(getFirstItemSamplingRate):
+                    try:
+                        firstItemSamplingRate = getFirstItemSamplingRate()
+                    except Exception:
+                        firstItemSamplingRate = None
+
+                    if firstItemSamplingRate is not None:
+                        runtimeProperties["_samplingRate"] = firstItemSamplingRate
+
         for propertyName, propertyValue in runtimeProperties.items():
             propertyName = str(
                 propertyName
