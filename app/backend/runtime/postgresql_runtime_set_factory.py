@@ -174,7 +174,7 @@ class PostgresqlRuntimeSetMixin:
                     )
                 )
 
-        if "_samplingRate" not in runtimeProperties:
+        if runtimeProperties.get("_samplingRate") is None:
             getSamplingRate = getattr(self, "getSamplingRate", None)
             selectFirst = getattr(mapper, "selectFirst", None)
 

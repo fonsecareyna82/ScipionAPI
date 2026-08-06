@@ -4376,7 +4376,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         getSamplingRate = getattr(scipionSet, "getSamplingRate", None)
 
-        if "_samplingRate" not in properties and callable(getSamplingRate):
+        if properties.get("_samplingRate") is None and callable(getSamplingRate):
             firstItem = self._callOptionalGetter(scipionSet, "getFirstItem")
             firstItemSamplingRate = self._callOptionalGetter(firstItem, "getSamplingRate")
 

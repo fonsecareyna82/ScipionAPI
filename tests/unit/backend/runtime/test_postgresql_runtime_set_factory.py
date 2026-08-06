@@ -2797,13 +2797,18 @@ def test_RuntimeSetLoadUsesFirstItemSamplingWhenSetPropertyIsMissing():
             return 2000
 
         def getPropertyKeys(self):
-            return []
+            return [
+                "_samplingRate",
+            ]
 
         def getProperty(
                 self,
                 propertyName,
                 defaultValue=None,
         ):
+            if propertyName == "_samplingRate":
+                return None
+
             return defaultValue
 
         def selectFirst(self):
@@ -2815,7 +2820,9 @@ def test_RuntimeSetLoadUsesFirstItemSamplingWhenSetPropertyIsMissing():
     mapper = RuntimeMapperStub()
     runtimeSet = RuntimeSetStub()
 
-    runtimeSet._postgresqlRuntimeProperties = {}
+    runtimeSet._postgresqlRuntimeProperties = {
+        "_samplingRate": None,
+    }
     runtimeSet._postgresqlMapperFactory = lambda: mapper
     runtimeSet._postgresqlWritable = False
 
