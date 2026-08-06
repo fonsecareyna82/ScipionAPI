@@ -55,12 +55,44 @@ class ExampleParentSet(Set):
         return CLASSES
 
 
+class ExampleLoadingNestedParentSet(
+        ExampleParentSet
+):
+    """
+    Reproduce the SetOfTiltSeries contract: inserting a nested Set
+    assigns its table prefix and calls load() immediately.
+    """
+
+    def _insertItem(
+            self,
+            item,
+    ):
+        item._mapperPath.set(
+            "%s,Nested%s"
+            % (
+                self.getFileName(),
+                item.getObjId(),
+            )
+        )
+
+        item.load()
+
+        super()._insertItem(
+            item
+        )
+
+        item.write(
+            properties=False
+        )
+
+
 CLASSES = {
     "ExampleItem": ExampleItem,
     "ExampleSet": ExampleSet,
     "ExampleChildItem": ExampleChildItem,
     "ExampleNestedSet": ExampleNestedSet,
     "ExampleParentSet": ExampleParentSet,
+    "ExampleLoadingNestedParentSet": ExampleLoadingNestedParentSet,
 }
 
 
@@ -1032,6 +1064,126 @@ class RevisionAwareMapper:
             self.delegate,
             name,
         )
+
+
+def test_MaterializeRefreshesNestedSetsWithoutRecursiveManagedPathRefresh(
+        tmp_path,
+        monkeypatch,
+):
+    sourcePath = (
+        tmp_path
+        / "nested-refresh-source.sqlite"
+    )
+
+    owner = FakePathOwner(
+        tmp_path
+        / "extra"
+    )
+
+    sourceSet = _createNestedSource(
+        sourcePath
+    )
+
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        owner=owner,
+        nativeSetClass=ExampleLoadingNestedParentSet,
+        runtimeInfo={
+            "setId": 4250,
+            "className": "ExampleLoadingNestedParentSet",
+            "itemClassName": "ExampleNestedSet",
+        },
+    )
+
+    sourceSet.isPostgresqlRuntimeOutput = (
+        lambda: True
+    )
+
+    originalMapper = sourceSet._getMapper()
+
+    revisionMapper = RevisionAwareMapper(
+        originalMapper,
+        (
+            "root",
+            4250,
+            1,
+            7,
+            "revision-1",
+        ),
+    )
+
+    sourceSet._mapper = revisionMapper
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    originalLoad = Set.load
+
+    def load(runtimeSet):
+        compatibilityBuild = bool(
+            getattr(
+                runtimeSet,
+                PostgresqlRuntimeSetSqliteMaterializer.COMPATIBILITY_BUILD_ATTRIBUTE,
+                False,
+            )
+        )
+
+        if compatibilityBuild:
+            return originalLoad(runtimeSet)
+
+        mapperPath = getattr(
+            runtimeSet,
+            "_mapperPath",
+            None,
+        )
+
+        storagePath = (
+            str(mapperPath[0]).strip()
+            if mapperPath is not None and len(mapperPath)
+            else ""
+        )
+
+        if (
+                storagePath
+                and PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    storagePath
+                )
+        ):
+            return originalLoad(runtimeSet)
+
+        return originalLoad(runtimeSet)
+
+    monkeypatch.setattr(
+        Set,
+        "load",
+        load,
+    )
+
+    try:
+        targetPath = materializer.materialize(
+            sourceSet
+        )
+
+        revisionMapper.revision = (
+            "root",
+            4250,
+            2,
+            7,
+            "revision-2",
+        )
+
+        # Rebuilding an already registered nested-set snapshot must not
+        # recursively refresh itself when the native parent append()
+        # calls load() on its nested item.
+        assert materializer.materialize(
+            sourceSet
+        ) == targetPath
+
+        assert Path(
+            targetPath
+        ).is_file()
+
+    finally:
+        sourceSet.close()
 
 
 def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(

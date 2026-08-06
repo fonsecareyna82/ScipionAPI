@@ -508,32 +508,40 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 sourceClasses,
             )
 
-            if not isinstance(sourceItem, ScipionSet):
-                if itemSchema is None:
-                    itemSchema = targetItem
-                else:
-                    self._completeMissingItemAttributes(
-                        targetItem,
-                        itemSchema,
-                    )
-
-            targetSet.append(targetItem)
-
-            self._setStableStreamingCreation(
-                targetItem=targetItem,
-                targetSet=targetSet,
+            nestedSetItem = isinstance(
+                sourceItem,
+                ScipionSet,
             )
 
-            if not isinstance(sourceItem, ScipionSet):
-                continue
-
-            self._ensureNestedMapper(
-                targetParentSet=targetSet,
-                targetNestedSet=targetItem,
-                classes=sourceClasses,
-            )
+            if nestedSetItem:
+                setattr(targetItem, self.COMPATIBILITY_BUILD_ATTRIBUTE, True)
 
             try:
+                if not nestedSetItem:
+                    if itemSchema is None:
+                        itemSchema = targetItem
+                    else:
+                        self._completeMissingItemAttributes(
+                            targetItem,
+                            itemSchema,
+                        )
+
+                targetSet.append(targetItem)
+
+                self._setStableStreamingCreation(
+                    targetItem=targetItem,
+                    targetSet=targetSet,
+                )
+
+                if not nestedSetItem:
+                    continue
+
+                self._ensureNestedMapper(
+                    targetParentSet=targetSet,
+                    targetNestedSet=targetItem,
+                    classes=sourceClasses,
+                )
+
                 self._copySetItems(
                     sourceSet=sourceItem,
                     targetSet=targetItem,
@@ -544,9 +552,15 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 targetSet.update(targetItem)
 
             finally:
-                # The nested mapper shares the root SQLite connection.
-                # Detach it without closing the shared connection.
-                targetItem._mapper = None
+                if nestedSetItem:
+                    # Native tomography Sets may call load() from append().
+                    # Keep that internal load outside the managed-path
+                    # refresh mechanism while this snapshot is constructed.
+                    targetItem._mapper = None
+                    targetItem.__dict__.pop(
+                        self.COMPATIBILITY_BUILD_ATTRIBUTE,
+                        None,
+                    )
 
         self._ensureSetSchema(
             sourceSet=sourceSet,

@@ -180,6 +180,10 @@ The legacy consumer must not open the SQLite file until the writer has closed it
 
 Recursive materialization of the same runtime Set must fail immediately instead of deadlocking.
 
+Native nested Set implementations may call `load()` internally from `append()`, `_insertItem()`, or equivalent item-mapper setup methods. Every destination Set created while constructing a compatibility snapshot must carry the compatibility-build marker until its nested data has been copied and its mapper detached.
+
+This marker applies only to native destination objects being written into the temporary SQLite snapshot. It must never be used to suppress recursive materialization of the PostgreSQL source runtime Set.
+
 ## Managed-path registration
 
 A materialized path must be registered only in the memory of its worker process.
@@ -230,6 +234,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 13. Materialization does not mutate or persist parent protocols or parent outputs.
 14. Heterogeneous item schemas remain readable after materialization.
 15. Set-level properties required by native Scipion code are available in the detached runtime Set.
+16. Native nested Set loads triggered by snapshot construction bypass managed-path refresh without disabling real recursive-materialization detection.
 
 ## Historical failure mode
 
