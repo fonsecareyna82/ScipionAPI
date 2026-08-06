@@ -39,4 +39,3 @@ ARCHIVE_EXTENSIONS = {".zip", ".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".
 PDF_EXTENSIONS = {".pdf"}
 SQLITE_EXTENSIONS = {".sqlite", ".db"}
 maxThumbSize = 400
-SQLITE_OBJECT_TABLE = 'objects'

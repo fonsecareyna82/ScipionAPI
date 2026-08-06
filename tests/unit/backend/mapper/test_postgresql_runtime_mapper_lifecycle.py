@@ -57,10 +57,6 @@ def test_CloseReleasesRuntimeMapperCaches():
         200: object(),
     }
 
-    mapper._sqliteProtocolMirrorIds = {
-        100,
-    }
-
     mapper.close()
 
     assert runtimeSetFactory.clearCalls == 1

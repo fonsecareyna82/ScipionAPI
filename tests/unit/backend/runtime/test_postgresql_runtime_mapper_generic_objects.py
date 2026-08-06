@@ -234,7 +234,6 @@ def buildRuntimeMapper(
     mapper.runtimeSetFactory._getCachedRuntimeSet.return_value = None
 
     mapper._runtimeProtocolsById = {}
-    mapper._sqliteProtocolMirrorIds = set()
     mapper.dictClasses = {
         "FakeComposite": FakeComposite,
         "FakeDerivedComposite": FakeDerivedComposite,

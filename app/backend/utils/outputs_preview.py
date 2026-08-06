@@ -226,8 +226,6 @@ class OutputsPreview(FileHandlers):
     # -------------------------
     # SQLite (read-only)
     # -------------------------
-    _SAFE_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
     def _previewSqlite(self, filePath: FsPath, objectManager) -> Any:
         objectManager._fileName = filePath
         objectManager._dao = None
