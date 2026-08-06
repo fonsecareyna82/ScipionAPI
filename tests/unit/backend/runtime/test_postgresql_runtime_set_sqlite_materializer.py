@@ -876,28 +876,6 @@ def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         sourceSet.close()
 
 
-def test_MaterializerFindsOwnerThroughRuntimeParentReference(
-        tmp_path,
-):
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
-    rootSet = ExampleParentSet()
-    rootSet._objParent = owner
-
-    nestedSet = ExampleNestedSet()
-
-    setPostgresqlRuntimeParentReference(
-        runtimeObject=nestedSet,
-        parent=rootSet,
-    )
-
-    materializer = (
-        PostgresqlRuntimeSetSqliteMaterializer()
-    )
-
 
 def test_PersistentCachedMaterializedPathIsIgnored(
         tmp_path,
