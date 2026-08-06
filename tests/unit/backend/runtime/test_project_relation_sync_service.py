@@ -779,6 +779,49 @@ def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
     assert result["errors"] == []
 
 
+def test_CollectRuntimeProtocolRelationsDoesNotProbeRemovedFallbackMappers(
+        tmp_path,
+):
+    class FakeProject:
+        def getPath(self):
+            return str(tmp_path)
+
+        def getPostgresqlRuntimeMapper(self):
+            raise AssertionError(
+                "Removed SQLite fallback mappers must not be inspected"
+            )
+
+    runtimeRelation = buildRelation()
+    runtimeProtocol = FakeProtocol([
+        runtimeRelation,
+    ])
+
+    result = (
+        RuntimeProjectRelationSyncService()
+        .collectRuntimeProtocolRelations(
+            currentProject=FakeProject(),
+            protocolId=20,
+            runtimeProtocol=runtimeProtocol,
+        )
+    )
+
+    assert [
+        stripCollectedRelationEndpoints(relation)
+        for relation in result["relations"]
+    ] == [
+        runtimeRelation,
+    ]
+
+    assert result["sources"] == [
+        {
+            "source": "runtime_db",
+            "relations": 1,
+        },
+    ]
+
+    assert result["errors"] == []
+
+
 def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
         monkeypatch,
 ):
