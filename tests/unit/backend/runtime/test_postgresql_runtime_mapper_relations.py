@@ -65,7 +65,6 @@ def buildRuntimeMapper(rows=None):
     mapper.db = FakeDatabase(rows=rows)
     mapper.writeFallbackMapper = None
     mapper._runtimeProtocolsById = {}
-    mapper._sqliteProtocolMirrorIds = set()
 
     return mapper
 
@@ -380,10 +379,6 @@ def test_SelectRelationObjectKeepsCachedProtocolUnchanged():
     mapper._runtimeProtocolsById[
         401
     ] = cachedProtocol
-
-    mapper._sqliteProtocolMirrorIds.add(
-        401
-    )
 
     mapper.flatMapper = FakeFlatMapper({
         "protocolId": "401",
