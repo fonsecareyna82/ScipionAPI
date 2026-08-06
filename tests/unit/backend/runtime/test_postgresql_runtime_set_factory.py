@@ -2075,6 +2075,22 @@ def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
         "materializedFileName"
     ] = "/tmp/stale-compatibility.sqlite"
 
+    exposedProperties = (
+        runtimeSet.getPostgresqlRuntimeProperties()
+    )
+
+    assert (
+        "materializedFileName"
+        not in exposedProperties
+    )
+
+    assert (
+        runtimeSet._postgresqlRuntimeProperties[
+            "materializedFileName"
+        ]
+        == "/tmp/stale-compatibility.sqlite"
+    )
+
     runtimeClone = runtimeSet.clone()
 
     assert (
