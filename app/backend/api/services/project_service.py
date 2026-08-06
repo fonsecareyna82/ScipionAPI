@@ -43,7 +43,6 @@ from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
-from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
@@ -132,6 +131,8 @@ from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.project.core import (
+    coords3d_preview as _coords3dPreview,
+    ctftomo_preview as _ctftomoPreview,
     external_viewers as _externalViewers,
     fsc_preview as _fscPreview,
     generated_set_helpers as _generatedSetHelpers,
@@ -140,7 +141,9 @@ from app.backend.api.services.project.core import (
     postgresql_viewer_errors as _postgresqlViewerErrors,
     protocol_resolution as _protocolResolution,
     scipion_object_helpers as _scipionObjectHelpers,
+    slice_rendering as _sliceRendering,
     tags as _tags,
+    tiltseries_preview as _tiltseriesPreview,
 )
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
@@ -153,12 +156,6 @@ _metadataLock = threading.Lock()
 # Global lock for Scipion project thumbnail operations.
 # Loading several Scipion projects concurrently can mix project state in Pyworkflow internals.
 _thumbnailProjectLock = threading.Lock()
-
-# In-memory cache for rendered tilt-series previews.
-# The key includes file path, mtime and render options, so changed stacks invalidate naturally.
-_tiltSeriesPreviewCacheLock = threading.Lock()
-_tiltSeriesPreviewCache = collections.OrderedDict()
-_TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
 
 
 class ProjectService:
@@ -7919,23 +7916,18 @@ class ProjectService:
             return None
 
         try:
-            from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
-
             readerProtocolId = self._resolvePostgresqlReaderProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
 
-            reader = PostgresqlTiltSeriesReader(
-                db=mapper.db,
+            return _tiltseriesPreview.buildPostgresqlTiltSeriesReader(
+                mapper=mapper,
                 projectId=projectId,
                 protocolId=readerProtocolId,
                 outputName=outputName,
             )
-
-            if reader.hasOutput():
-                return reader
 
         except Exception:
             logger.exception(
@@ -7952,28 +7944,7 @@ class ProjectService:
             framePath: Any,
             fallbackIndex: int,
     ) -> Tuple[str, int]:
-        pathText = str(framePath or "").strip()
-        if not pathText:
-            raise HTTPException(
-                status_code=404,
-                detail="Tilt image path not found in PostgreSQL metadata",
-            )
-
-        imageIndex = int(fallbackIndex)
-        imagePath = pathText
-
-        if "@" in pathText:
-            indexText, imagePath = pathText.split("@", 1)
-            try:
-                imageIndex = int(float(indexText))
-            except Exception:
-                imageIndex = int(fallbackIndex)
-
-        # Do not os.path.abspath() here.
-        # PostgreSQL paths can be project-relative:
-        # Runs/000084_Prot.../extra/...
-        # They must be resolved against the project path, not against cwd/scipion_home.
-        return str(Path(str(imagePath)).expanduser()), imageIndex
+        return _tiltseriesPreview.parseTiltSeriesFramePath(framePath, fallbackIndex)
 
     # ======================================================================
     # Analyze Results: Resolve viewer
@@ -8071,90 +8042,10 @@ class ProjectService:
         return protocol, output
 
     def _buildCtftomoSeriesSummary(self, ctfSeries) -> Dict[str, Any]:
-        """
-        Build a JSON-friendly summary for one CTFTomoSeries object.
-        """
-
-        tsId = ctfSeries.getTsId()
-        label = ctfSeries.getObjLabel()
-        tiltSeries = ctfSeries.getTiltSeries()
-        dims = list(tiltSeries.getDim())
-        pixelSize = tiltSeries.getSamplingRate()
-        nViews = tiltSeries.getSize()
-
-        item: Dict[str, Any] = {
-            "tiltSeriesId": tsId,
-            "label": str(label) if label is not None else "",
-        }
-        if nViews is not None:
-            item["nViews"] = nViews
-        if dims is not None:
-            item["dims"] = dims
-        if pixelSize is not None:
-            item["pixelSize"] = pixelSize
-        return item
+        return _ctftomoPreview.buildCtftomoSeriesSummary(ctfSeries)
 
     def _buildCtftomoMeasurementRow(self, ctfObj, tiltSeries=None) -> Dict[str, Any]:
-        """
-        Build a JSON-friendly row with CTF parameters for a single tilt image.
-        """
-
-        defocusU = ctfObj.getDefocusU()
-        defocusV = ctfObj.getDefocusV()
-        defocusAngle = ctfObj.getDefocusAngle()
-        resolution = ctfObj.getResolution()
-        phaseShift = ctfObj.getPhaseShift()
-        acqOrder = ctfObj.getAcquisitionOrder()
-        psdFile = ctfObj.getPsdFile()
-        astigmatism = defocusU - defocusV
-        tiltAngle = None
-        enabled = ctfObj.isEnabled()
-        dose = None
-
-        if tiltSeries is not None:
-            try:
-                view = tiltSeries.getItem('_acqOrder', acqOrder)
-            except Exception:
-                view = None
-
-            if view is not None:
-                try:
-                    tiltAngle = view.getTiltAngle()
-                except Exception:
-                    tiltAngle = None
-
-                try:
-                    acq = view.getAcquisition()
-                    dose = acq.getAccumDose()
-                except Exception:
-                    dose = None
-
-        row: Dict[str, Any] = {}
-        row["index"] = ctfObj.getObjId()
-        row["viewIndex"] = ctfObj.getObjId()
-        if tiltAngle is not None:
-            row["tiltAngle"] = tiltAngle
-        if dose is not None:
-            row["dose"] = dose
-        if defocusU is not None:
-            row["defocusU"] = defocusU
-        if defocusV is not None:
-            row["defocusV"] = defocusV
-        row['astigmatism'] = astigmatism
-        if defocusAngle is not None:
-            row["defocusAngle"] = defocusAngle
-        if resolution is not None:
-            row["resolution"] = resolution
-        if phaseShift is not None:
-            row["phaseShift"] = phaseShift
-        if acqOrder is not None:
-            row["order"] = acqOrder
-        if psdFile:
-            row['psdFile'] = psdFile
-
-        row['excluded'] = not enabled
-
-        return row
+        return _ctftomoPreview.buildCtftomoMeasurementRow(ctfObj, tiltSeries=tiltSeries)
 
     def listOutputCtftomoSeriesService(
             self,
@@ -8457,29 +8348,7 @@ class ProjectService:
         )
 
     def _buildTiltSeriesSummary(self, ts) -> Dict[str, Any]:
-        """
-        Build a JSON-friendly summary for one tilt series.
-        """
-        tsId = ts.getTsId()
-        label = f"TiltSeries {tsId}"
-        nViews = ts.getSize()
-        dims = ts.getDim()
-        pixelSize = ts.getSamplingRate()
-        tiltAxisAngle = ts.getAcquisition().getTiltAxisAngle()
-        item: Dict[str, Any] = {
-            "tiltSeriesId": tsId,
-            "label": str(label),
-        }
-        if nViews is not None:
-            item["nViews"] = nViews
-        if dims is not None:
-            item["dims"] = dims
-        if pixelSize is not None:
-            item["pixelSize"] = pixelSize
-        if tiltAxisAngle is not None:
-            item["tiltAxisAngle"] = tiltAxisAngle
-
-        return item
+        return _tiltseriesPreview.buildTiltSeriesSummary(ts)
 
     def _getPostgresqlCtftomoReaderIfAvailable(
             self,
@@ -8492,23 +8361,18 @@ class ProjectService:
             return None
 
         try:
-            from app.backend.viewers.postgresql_ctftomo_reader import PostgresqlCtftomoReader
-
             readerProtocolId = self._resolvePostgresqlReaderProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
 
-            reader = PostgresqlCtftomoReader(
-                db=mapper.db,
+            return _ctftomoPreview.buildPostgresqlCtftomoReader(
+                mapper=mapper,
                 projectId=projectId,
                 protocolId=readerProtocolId,
                 outputName=outputName,
             )
-
-            if reader.hasOutput():
-                return reader
 
         except Exception:
             logger.exception(
@@ -9776,30 +9640,17 @@ class ProjectService:
             inline: bool,
             imagePath: str,
     ) -> Tuple[Any, ...]:
-        # buildTiltSeriesPreviewCacheKey
-        absPath = os.path.abspath(str(imagePath))
-
-        try:
-            stat = os.stat(absPath)
-            fileMtimeNs = int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)))
-            fileSize = int(stat.st_size)
-        except Exception:
-            fileMtimeNs = 0
-            fileSize = 0
-
-        return (
-            int(projectId),
-            int(protocolId),
-            str(outputName),
-            str(tiltSeriesId),
-            int(index),
-            int(size),
-            str(fmt or "png").lower(),
-            bool(applyTransform),
-            bool(inline),
-            absPath,
-            fileMtimeNs,
-            fileSize,
+        return _tiltseriesPreview.buildTiltSeriesPreviewCacheKey(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            index=index,
+            size=size,
+            fmt=fmt,
+            applyTransform=applyTransform,
+            inline=inline,
+            imagePath=imagePath,
         )
 
     def _ensureTiltSeriesPreviewCacheHeader(
@@ -9807,84 +9658,17 @@ class ProjectService:
             headers: Dict[str, str],
             cacheState: str,
     ) -> Dict[str, str]:
-        # ensureTiltSeriesPreviewCacheHeader
-        nextHeaders = dict(headers or {})
-        nextHeaders["X-Preview-Cache"] = cacheState
-
-        exposeRaw = nextHeaders.get("Access-Control-Expose-Headers", "")
-        exposeItems = [h.strip() for h in exposeRaw.split(",") if h.strip()]
-        if "X-Preview-Cache" not in exposeItems:
-            exposeItems.append("X-Preview-Cache")
-        nextHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeItems)
-
-        return nextHeaders
+        return _tiltseriesPreview.ensureTiltSeriesPreviewCacheHeader(headers, cacheState)
 
     def _getTiltSeriesPreviewFromCache(self, cacheKey: Tuple[Any, ...]) -> Optional[Response]:
-        # getTiltSeriesPreviewFromCache
-        with _tiltSeriesPreviewCacheLock:
-            cached = _tiltSeriesPreviewCache.get(cacheKey)
-            if not cached:
-                return None
-
-            _tiltSeriesPreviewCache.move_to_end(cacheKey)
-
-            headers = self._ensureTiltSeriesPreviewCacheHeader(
-                cached.get("headers") or {},
-                "HIT",
-            )
-
-            return Response(
-                content=cached.get("body") or b"",
-                media_type=cached.get("mediaType") or "image/png",
-                headers=headers,
-            )
+        return _tiltseriesPreview.getTiltSeriesPreviewFromCache(cacheKey)
 
     def _storeTiltSeriesPreviewInCache(
             self,
             cacheKey: Tuple[Any, ...],
             response: Any,
     ) -> Any:
-        # storeTiltSeriesPreviewInCache
-        headersObj = getattr(response, "headers", None)
-        if headersObj is None or not hasattr(headersObj, "update"):
-            return response
-
-        body = getattr(response, "body", None)
-
-        if body is None:
-            response.headers.update(
-                self._ensureTiltSeriesPreviewCacheHeader(
-                    dict(response.headers),
-                    "SKIP",
-                )
-            )
-            return response
-
-        headers = dict(response.headers)
-        headers.pop("content-length", None)
-        headers.pop("Content-Length", None)
-
-        mediaType = getattr(response, "media_type", None) or headers.get("content-type") or "image/png"
-
-        with _tiltSeriesPreviewCacheLock:
-            _tiltSeriesPreviewCache[cacheKey] = {
-                "body": bytes(body),
-                "headers": headers,
-                "mediaType": mediaType,
-            }
-            _tiltSeriesPreviewCache.move_to_end(cacheKey)
-
-            while len(_tiltSeriesPreviewCache) > _TILT_SERIES_PREVIEW_CACHE_LIMIT:
-                _tiltSeriesPreviewCache.popitem(last=False)
-
-        response.headers.update(
-            self._ensureTiltSeriesPreviewCacheHeader(
-                dict(response.headers),
-                "MISS",
-            )
-        )
-
-        return response
+        return _tiltseriesPreview.storeTiltSeriesPreviewInCache(cacheKey, response)
 
     def renderTiltSeriesImageService(
             self,
@@ -10469,12 +10253,7 @@ class ProjectService:
         }
 
     def _cloneTiltImage(self, ti, included):
-        newTi = ti.clone()
-        newTi.copyInfo(ti, copyId=False)
-        newTi.setObjId(None)
-        newTi.setAcquisition(ti.getAcquisition())
-        newTi.setEnabled(included)
-        return newTi
+        return _tiltseriesPreview.cloneTiltImage(ti, included)
 
     # ----------------------------------------------------------------------
     # Analyze Results: Coordinates3D
@@ -10490,23 +10269,18 @@ class ProjectService:
             return None
 
         try:
-            from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
-
             readerProtocolId = self._resolvePostgresqlReaderProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
             )
 
-            reader = PostgresqlCoords3dReader(
-                db=mapper.db,
+            return _coords3dPreview.buildPostgresqlCoords3dReader(
+                mapper=mapper,
                 projectId=projectId,
                 protocolId=readerProtocolId,
                 outputName=outputName,
             )
-
-            if reader.hasOutput():
-                return reader
 
         except Exception:
             logger.exception(
@@ -10584,43 +10358,7 @@ class ProjectService:
 
     @staticmethod
     def _iterCoordinates3dTomograms(setOfCoordinates3D):
-        def asIterator(value):
-            iterItems = getattr(value, "iterItems", None)
-
-            if callable(iterItems):
-                try:
-                    return iterItems(iterate=False)
-                except TypeError:
-                    return iterItems()
-
-            return iter(value)
-
-        for methodName in ("iterTomograms", "iterVolumes"):
-            method = getattr(setOfCoordinates3D, methodName, None)
-
-            if not callable(method):
-                continue
-
-            try:
-                return asIterator(method())
-            except Exception:
-                continue
-
-        getTomograms = getattr(setOfCoordinates3D, "getTomograms", None)
-
-        if callable(getTomograms):
-            try:
-                return asIterator(getTomograms())
-            except Exception as error:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to iterate Coordinates3D tomograms: {error}",
-                )
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="SetOfCoordinates3D does not expose tomograms iterator",
-        )
+        return _coords3dPreview.iterCoordinates3dTomograms(setOfCoordinates3D)
 
     def listCoordinates3dTomogramsService(
             self,
@@ -10897,96 +10635,10 @@ class ProjectService:
         return points
 
     def _coords3dPilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
-        """
-        Convert a PIL tomogram slice into a small 2D float array.
-
-        - Downsamples to <= maxThumbSize without upscaling.
-        - Converts to grayscale if needed.
-        - Applies highlightSlice/normalizeSlice at most once.
-        - Returns float32 2D array; caller can decide final uint8/colormap.
-        """
-        try:
-            width, height = pilImg.size
-            scale = min(
-                maxThumbSize / float(width),
-                maxThumbSize / float(height),
-                1.0,
-            )
-            thumbWidth = max(1, int(round(width * scale)))
-            thumbHeight = max(1, int(round(height * scale)))
-
-            if pilImg.mode not in ("L", "I;16", "F"):
-                pilGray = pilImg.convert("L")
-            else:
-                pilGray = pilImg
-
-            if thumbWidth < width or thumbHeight < height:
-                pilGray = pilGray.copy()
-                pilGray.thumbnail((thumbWidth, thumbHeight))
-
-            arr = np.asarray(pilGray, dtype=np.float32)
-
-            arr = np.squeeze(arr)
-            if arr.ndim != 2 or arr.size == 0:
-                return None
-
-            try:
-                arr = imgStk.highlightSlice(arr)
-                arr = imgStk.normalizeSlice(arr)
-            except Exception:
-                pass
-
-            return arr.astype(np.float32, copy=False)
-        except Exception:
-            return None
+        return _sliceRendering.coords3dPilTo2dTile(imgStk, pilImg)
 
     def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        """
-        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
-
-        Safeguards:
-        - Accepts any numeric dtype.
-        - If already uint8 and mode in ('minmax', 'none'), returns a copy directly.
-        - Handles NaNs and constant arrays without blowing up.
-        """
-        if a.ndim != 2:
-            raise ValueError("Expected 2D slice")
-
-        arr = np.asarray(a)
-
-        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
-            return arr.copy()
-
-        arr = arr.astype(np.float32, copy=False)
-        mode = (mode or "minmax").lower()
-
-        finiteMask = np.isfinite(arr)
-        if not finiteMask.all():
-            if finiteMask.any():
-                fillVal = float(np.nanmedian(arr[finiteMask]))
-            else:
-                fillVal = 0.0
-            arr = np.where(finiteMask, arr, fillVal)
-
-        if mode == "zscore":
-            mu = float(np.mean(arr))
-            sd = float(np.std(arr))
-            if sd == 0.0 or not np.isfinite(sd):
-                return np.zeros_like(arr, dtype=np.uint8)
-            arr = (arr - mu) / sd
-            arr = np.clip(arr, -3.0, 3.0)
-            amin, amax = float(arr.min()), float(arr.max())
-            if amax <= amin:
-                return np.zeros_like(arr, dtype=np.uint8)
-            arr = (arr - amin) / (amax - amin + 1e-12)
-            return (255.0 * arr).astype(np.uint8)
-
-        amin, amax = float(arr.min()), float(arr.max())
-        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
-            return np.zeros_like(arr, dtype=np.uint8)
-
-        arr = (arr - amin) / (amax - amin + 1e-12)
-        return (255.0 * arr).astype(np.uint8)
+        return _sliceRendering.normalize2dSlice(a, mode=mode)
 
     def renderCoords3dTomogramSliceService(
             self,
