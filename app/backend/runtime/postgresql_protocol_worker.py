@@ -2989,8 +2989,6 @@ class RuntimePostgresqlProtocolWorker:
         except Exception as error:
             self.markFailed(error)
             return 1
-
-
         finally:
             try:
                 self.close()

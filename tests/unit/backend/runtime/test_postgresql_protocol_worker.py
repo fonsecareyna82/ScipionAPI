@@ -1246,3 +1246,5 @@ def test_CompatibilitySqliteCleanupFailureIsBestEffort(
     assert report["deletedCount"] == 0
     assert report["registryEntriesRemoved"] == 0
     assert report["error"] == "cleanup failure"
+
+

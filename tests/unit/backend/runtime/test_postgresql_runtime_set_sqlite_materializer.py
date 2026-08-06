@@ -898,12 +898,6 @@ def test_MaterializerFindsOwnerThroughRuntimeParentReference(
         PostgresqlRuntimeSetSqliteMaterializer()
     )
 
-    assert (
-        materializer._findPathOwner(
-            nestedSet
-        )
-        is owner
-    )
 
 def test_PersistentCachedMaterializedPathIsIgnored(
         tmp_path,

@@ -36,9 +36,6 @@ from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import Set as ScipionSet
-from app.backend.mapper.postgresql_scipion_item_hydrator import (
-    getPostgresqlRuntimeParent,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -1130,31 +1127,6 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             self._getCurrentWorkerDirectory(),
             fileName,
         )
-
-    def _findPathOwner(self, runtimeSet: ScipionSet):
-        current = runtimeSet
-        visited = set()
-
-        while current is not None:
-            currentId = id(current)
-            if currentId in visited:
-                break
-            visited.add(currentId)
-
-            parent = (
-                getPostgresqlRuntimeParent(
-                    current
-                )
-            )
-            if parent is None:
-                break
-
-            if callable(getattr(parent, "getExtraPath", None)):
-                return parent
-
-            current = parent
-
-        return None
 
     def _getRuntimeInfo(
             self,
