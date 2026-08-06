@@ -31,7 +31,6 @@ import re
 import copy
 import json
 import threading
-import shutil
 import sqlite3
 
 import numpy as np
@@ -136,6 +135,11 @@ from app.backend.api.services.project.core import (
     object_manager_factory as _objectManagerFactory,
     output_registration as _outputRegistration,
     postgresql_viewer_errors as _postgresqlViewerErrors,
+    project_crud as _projectCrud,
+    project_display as _projectDisplay,
+    project_import_validation as _projectImportValidation,
+    project_path as _projectPath,
+    project_sharing as _projectSharing,
     protocol_delete_cleanup as _protocolDeleteCleanup,
     protocol_graph_builder as _protocolGraphBuilder,
     protocol_graph_load as _protocolGraphLoad,
@@ -325,35 +329,7 @@ class ProjectService:
 
     @staticmethod
     def sanitizeProjectName(rawName: str) -> str:
-        """
-        Return a filesystem-safe project name.
-
-        Rules:
-          - Replace any char not in [A-Za-z0-9_-] with '_'
-          - Collapse consecutive underscores
-          - Strip leading/trailing underscores and dots
-          - Ensure non-empty (fallback to 'project')
-        """
-        if rawName is None:
-            rawName = ""
-
-        # Trim whitespace
-        name = rawName.strip()
-
-        # Replace invalid chars with underscore
-        name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
-
-        # Collapse multiple underscores
-        name = re.sub(r"_+", "_", name)
-
-        # Strip leading/trailing underscores and dots
-        name = name.strip("._")
-
-        # Fallback if empty
-        if not name:
-            name = "project"
-
-        return name
+        return _projectPath.sanitizeProjectName(rawName)
 
     def createProject(
             self,
@@ -361,324 +337,27 @@ class ProjectService:
             projectData: ProjectCreate,
             currentUser,
     ) -> dict:
-        sanitizedName = self.sanitizeProjectName(projectData.name)
-        description = projectData.description or ""
-        statusValue = projectData.status or "active"
-
-        projectPath = self._normalizeProjectPath(
-            self.manager.getProjectPath(sanitizedName)
+        return _projectCrud.createProject(
+            mapper, projectData, currentUser, self.manager, self.getProjectSize,
         )
 
-        existingProjects = mapper.listProjects(
-            ownerId=currentUser["id"]
-        ) or []
-
-        existingNames = {
-            self._getProjectDisplayNameFromPostgresqlPath(
-                project.get("name")
-            )
-            for project in existingProjects
-            if project.get("name")
-        }
-
-        existingPaths = {
-            self._normalizeProjectPath(project.get("name"))
-            for project in existingProjects
-            if project.get("name")
-        }
-
-        if sanitizedName in existingNames or projectPath in existingPaths:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                        "A project with this name already exists for the current user "
-                        "(sanitized name: '%s')" % sanitizedName
-                ),
-            )
-
-        if os.path.lexists(projectPath):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                        "A project with this name already exists in the file system "
-                        "(sanitized name: '%s')" % sanitizedName
-                ),
-            )
-
-        project = None
-        dbProjectId = None
-        createAttempted = False
-        projectMapperClosed = False
-
-        try:
-            createAttempted = True
-
-            project = self.manager.createProject(
-                sanitizedName
-            )
-
-            projectDbPath = project.getDbPath()
-
-            closeMapper = getattr(
-                project,
-                "closeMapper",
-                None,
-            )
-
-            if not callable(closeMapper):
-                raise RuntimeError(
-                    "Created Scipion project does not expose "
-                    "closeMapper()"
-                )
-
-            closeMapper()
-            projectMapperClosed = True
-
-            lifecycleService = (
-                RuntimeProjectLifecycleService()
-            )
-
-            cleanupReport = (
-                lifecycleService
-                .removeLegacyProjectDatabase(
-                    projectPath=projectPath,
-                    projectDbPath=projectDbPath,
-                )
-            )
-
-            dbProjectId = mapper.insertProject(
-                ownerId=currentUser["id"],
-                name=projectPath,
-                description=description,
-                status=statusValue,
-            )
-
-            dbProject = mapper.getProject(
-                projectId=dbProjectId,
-                userId=currentUser["id"],
-            )
-
-            if not dbProject:
-                raise RuntimeError(
-                    "Project was inserted but could not "
-                    "be read from PostgreSQL"
-                )
-
-            return self._buildProjectOutFromPostgresqlRow(
-                mapper=mapper,
-                dbProj=dbProject,
-                currentUser=currentUser,
-                includeDiskUsage=False,
-            )
-
-        except Exception as error:
-            rollbackErrors = []
-
-            if dbProjectId is not None:
-                try:
-                    mapper.deleteProject(
-                        dbProjectId,
-                        currentUser["id"],
-                    )
-                except Exception as rollbackError:
-                    rollbackErrors.append(
-                        "PostgreSQL rollback failed: %s"
-                        % rollbackError
-                    )
-
-            if (
-                    project is not None
-                    and not projectMapperClosed
-            ):
-                try:
-                    project.closeMapper()
-                except Exception:
-                    logger.debug(
-                        "Could not close project mapper "
-                        "during creation rollback. path=%s",
-                        projectPath,
-                        exc_info=True,
-                    )
-
-            if createAttempted:
-                try:
-                    self._removeCreatedProjectPath(
-                        projectPath
-                    )
-                except Exception as rollbackError:
-                    rollbackErrors.append(
-                        "Filesystem rollback failed: %s"
-                        % rollbackError
-                    )
-
-            logger.exception(
-                "Failed to create project. "
-                "name=%s path=%s rollbackErrors=%s",
-                sanitizedName,
-                projectPath,
-                rollbackErrors,
-            )
-
-            detail = (
-                    "Failed to create project: %s"
-                    % error
-            )
-
-            if rollbackErrors:
-                detail += ". " + "; ".join(
-                    rollbackErrors
-                )
-
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                detail=detail,
-            )
-
     def _normalizeProjectPath(self, projectPath: str) -> str:
-        """
-        Normalize a stored project path to an absolute filesystem path.
-
-        Important:
-        - Do NOT resolve symlinks here.
-        - We want the project entry path, not the real target path.
-        """
-        if not projectPath:
-            return ""
-
-        normalized = os.path.expanduser(str(projectPath).strip())
-
-        if not os.path.isabs(normalized):
-            normalized = self.manager.getProjectPath(normalized)
-
-        return os.path.abspath(normalized)
+        return _projectPath.normalizeProjectPath(projectPath, self.manager)
 
     def _isManagedProjectPath(self, projectPath: str) -> bool:
-        """
-        Return True when the project entry iºtself lives under the managed projects root.
-
-        Important:
-        - This checks the lexical path of the entry.
-        - It must not resolve symlinks, otherwise linked external projects would
-          look "outside" even if their symlink entry is inside the workspace.
-        """
-        try:
-            managedRoot = self._normalizeProjectPath(self.manager.PROJECTS)
-            normalizedPath = self._normalizeProjectPath(projectPath)
-
-            common = os.path.commonpath([managedRoot, normalizedPath])
-            return common == managedRoot
-        except Exception:
-            return False
+        return _projectPath.isManagedProjectPath(projectPath, self.manager)
 
     def _isLinkedProjectPath(self, projectPath: str) -> bool:
-        """
-        Return True if the stored project entry is a symbolic link.
-        """
-        normalizedPath = self._normalizeProjectPath(projectPath)
-        return os.path.islink(normalizedPath)
+        return _projectPath.isLinkedProjectPath(projectPath, self.manager)
 
     def _removeCreatedProjectPath(
             self,
             projectPath: str,
     ) -> None:
-        normalizedPath = self._normalizeProjectPath(projectPath)
-
-        if not self._isManagedProjectPath(normalizedPath):
-            raise RuntimeError(
-                "Refusing to remove project path outside the managed projects root: %s"
-                % normalizedPath
-            )
-
-        if not os.path.lexists(normalizedPath):
-            return
-
-        try:
-            os.chdir(self.manager.PROJECTS)
-        except Exception:
-            logger.warning(
-                "Could not restore managed projects working directory before cleanup. path=%s",
-                normalizedPath,
-                exc_info=True,
-            )
-
-        if os.path.islink(normalizedPath) or not os.path.isdir(normalizedPath):
-            os.unlink(normalizedPath)
-        else:
-            shutil.rmtree(normalizedPath)
+        _projectPath.removeCreatedProjectPath(projectPath, self.manager)
 
     def _validateImportableScipionProject(self, sourcePath: Path) -> Dict[str, Any]:
-        """
-        Validate that a folder is a real Scipion project by trying to load it.
-
-        Returns a small metadata dict that can be reused by importProject.
-        """
-        if sourcePath is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid source project path",
-            )
-
-        if not sourcePath.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source project path does not exist",
-            )
-
-        if not sourcePath.is_dir():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Source project path must be a directory",
-            )
-
-        importedProject = None
-
-        try:
-            importedProject = ScipionProject(
-                pyworkflow.Config.getDomain(),
-                str(sourcePath),
-            )
-            importedProject.load(
-                dbPath=importedProject.getDbPath()
-            )
-
-            try:
-                description = importedProject.getComment() or ""
-            except Exception:
-                description = ""
-
-            try:
-                importedStatus = importedProject.getStatus()
-                statusValue = str(importedStatus) if importedStatus else "active"
-            except Exception:
-                statusValue = "active"
-
-            return {
-                "description": description,
-                "status": statusValue or "active",
-            }
-
-        except HTTPException:
-            raise
-
-        except Exception as error:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Source path is not a valid Scipion project: {error}",
-            ) from error
-
-        finally:
-            if importedProject is not None:
-                try:
-                    importedProject.closeMapper()
-                except Exception:
-                    logger.debug(
-                        "Could not close source project mapper after validation. "
-                        "path=%s",
-                        sourcePath,
-                        exc_info=True,
-                    )
+        return _projectImportValidation.validateImportableScipionProject(sourcePath)
 
     def _loadLegacyProjectForImport(self, projectPath: str) -> ScipionProject:
         """
@@ -1944,162 +1623,27 @@ class ProjectService:
         return project
 
     def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        currentPath = self._normalizeProjectPath(dbProj["name"])
-
-        if not os.path.lexists(currentPath):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project path not found on disk",
-            )
-
-        if not self._isManagedProjectPath(currentPath):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Renaming external imported projects is not supported",
-            )
-
-        newName = self.sanitizeProjectName(projectData.name)
-        newPath = self._normalizeProjectPath(self.manager.getProjectPath(newName))
-
-        if currentPath != newPath and os.path.lexists(newPath):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"A project with this name already exists: '{newName}'",
-            )
-
-        try:
-            if self._isLinkedProjectPath(currentPath):
-                os.rename(currentPath, newPath)
-            else:
-                self.manager.renameProject(currentPath, newName)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to rename project: {e}",
-            )
-
-        description = projectData.description
-        if description is None:
-            description = dbProj.get("description")
-
-        project = mapper.updateProject(
-            projectId,
-            currentUser["id"],
-            newPath,
-            description,
-        )
-
-        return project
+        return _projectCrud.updateProject(mapper, projectId, currentUser, projectData, self.manager)
 
     def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        projectPath = self._normalizeProjectPath(dbProj["name"])
-        isManagedEntry = self._isManagedProjectPath(projectPath)
-        isLinkedEntry = self._isLinkedProjectPath(projectPath)
-
-        deleted = mapper.deleteProject(projectId, currentUser["id"])
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found",
-            )
-
-        if isLinkedEntry:
-            try:
-                if os.path.lexists(projectPath):
-                    os.unlink(projectPath)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Project was unregistered but the symbolic link could not be removed: {e}",
-                )
-
-            return {"message": "Linked project unregistered successfully"}
-
-        if not isManagedEntry:
-            return {"message": "Project unregistered successfully"}
-
-        if not os.path.exists(projectPath):
-            return {"message": "Project deleted successfully"}
-
-        try:
-            cwd = self.manager.PROJECTS
-            self.manager.deleteProject(projectPath)
-            os.chdir(cwd)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Project was unregistered but the managed project folder could not be removed: {e}",
-            )
-
-        return {"message": "Project deleted successfully"}
+        return _projectCrud.deleteProject(mapper, currentUser, projectId, self.manager)
 
     def _getProjectDisplayNameFromPostgresqlPath(self, storedProjectPath: Any) -> str:
-        pathText = str(storedProjectPath or "").strip()
-        if not pathText:
-            return ""
-
-        return Path(pathText).expanduser().name or pathText
+        return _projectDisplay.getProjectDisplayNameFromPostgresqlPath(storedProjectPath)
 
     def _countProjectProtocolsFromPostgresql(
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
     ) -> int:
-        countProjectProtocols = getattr(mapper, "countProjectProtocols", None)
-        if not callable(countProjectProtocols):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="PostgreSQL mapper does not expose countProjectProtocols",
-            )
-
-        try:
-            return int(countProjectProtocols(projectId) or 0)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(
-                "Failed to count project protocols from PostgreSQL. projectId=%s",
-                projectId,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to count project protocols from PostgreSQL: {e}",
-            )
+        return _projectDisplay.countProjectProtocolsFromPostgresql(mapper, projectId)
 
     def _getProjectDiskUsageFromFilesystem(self, storedProjectPath: Any) -> str:
-        pathText = str(storedProjectPath or "").strip()
-        if not pathText:
-            return "0.00 GB"
-
-        projectPath = Path(pathText).expanduser()
-        if not projectPath.is_absolute():
-            projectPath = Path(self.manager.getProjectPath(str(projectPath)))
-
-        try:
-            realProjectPath = projectPath.resolve(strict=True)
-        except Exception:
-            realProjectPath = projectPath
-
-        try:
-            sizeGB = self.getProjectSize(str(realProjectPath)) / (1024 ** 3)
-        except Exception:
-            sizeGB = 0.0
-
-        return f"{sizeGB:.2f} GB"
+        return _projectDisplay.getProjectDiskUsageFromFilesystem(
+            storedProjectPath,
+            self.manager,
+            self.getProjectSize,
+        )
 
     def _buildProjectOutFromPostgresqlRow(
             self,
@@ -2108,52 +1652,14 @@ class ProjectService:
             currentUser: dict,
             includeDiskUsage: bool = True,
     ) -> Dict[str, Any]:
-        projectId = int(dbProj["id"])
-        storedProjectPath = dbProj.get("name")
-        displayName = self._getProjectDisplayNameFromPostgresqlPath(storedProjectPath)
-
-        protocolsCount = self._countProjectProtocolsFromPostgresql(
-            mapper=mapper,
-            projectId=projectId,
+        return _projectDisplay.buildProjectOutFromPostgresqlRow(
+            mapper,
+            dbProj,
+            currentUser,
+            self.manager,
+            self.getProjectSize,
+            includeDiskUsage=includeDiskUsage,
         )
-
-        currentUserId = currentUser["id"]
-        isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUserId)
-        isShared = dbProj.get("isShared", False)
-        permission = dbProj.get("permission", "owner" if isOwner else "full")
-        projectOwnerId = dbProj.get("ownerId")
-        updatedAt = dbProj.get("updatedAt")
-
-        thumbnailVersion = "%s:%s:%s:postgresql" % (
-            projectId,
-            updatedAt or "",
-            protocolsCount,
-        )
-
-        diskUsage = (
-            self._getProjectDiskUsageFromFilesystem(storedProjectPath)
-            if includeDiskUsage
-            else "0.00 GB"
-        )
-
-        return {
-            "id": projectId,
-            "name": displayName,
-            "description": dbProj.get("description", ""),
-            "createdAt": dbProj.get("createdAt"),
-            "status": dbProj.get("status", "active"),
-            "protocolsCount": protocolsCount,
-            "diskUsage": diskUsage,
-            "isOwner": bool(isOwner),
-            "isShared": bool(isShared),
-            "permission": permission,
-            "projectOwnerId": projectOwnerId,
-            "updatedAt": updatedAt,
-            "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
-            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
-            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
-            "thumbnailVersion": thumbnailVersion,
-        }
 
     def getProjectSummaryFromPostgresql(
             self,
@@ -2218,40 +1724,9 @@ class ProjectService:
             targetUserIds: list,
             permission: str = "full",
     ) -> dict:
-        """
-        Share a project owned by currentUser with another user.
-
-        Only the project owner is allowed to call this method.
-        """
-        # Ensure project exists and is owned by currentUser
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found or you are not the owner",
-            )
-
-        if targetUserIds == currentUser["id"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You cannot share a project with yourself",
-            )
-
-        for userId in targetUserIds:
-            shareRow = mapper.shareProjectWithUser(
-                projectId=projectId,
-                targetUserId=int(userId),
-                permission=permission or "full",
-            )
-
-        return {
-            "id": shareRow["id"],
-            "projectId": shareRow["projectId"],
-            "userId": shareRow["userId"],
-            "permission": shareRow["permission"],
-            "createdAt": shareRow.get("createdAt"),
-            "updatedAt": shareRow.get("updatedAt"),
-        }
+        return _projectSharing.shareProjectWithUser(
+            mapper, projectId, currentUser, targetUserIds, permission=permission,
+        )
 
     def listProjectShares(
             self,
@@ -2259,19 +1734,7 @@ class ProjectService:
             projectId: int,
             currentUser: dict,
     ) -> List[dict]:
-        """
-        List users that have access to a project.
-
-        Only the project owner is allowed to call this method.
-        """
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found or you are not the owner",
-            )
-
-        return mapper.listProjectShares(projectId)
+        return _projectSharing.listProjectShares(mapper, projectId, currentUser)
 
     def revokeProjectShareForUser(
             self,
@@ -2280,28 +1743,7 @@ class ProjectService:
             targetUserId: int,
             currentUser: dict,
     ) -> dict:
-        """
-        Revoke project access for targetUserId.
-        Only the project owner is allowed to perform this action.
-        """
-        # Ensure currentUser has access and get full project row
-        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
-        if not dbProj:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        # Ensure current user is the owner
-        if int(dbProj["ownerId"]) != int(currentUser["id"]):
-            raise HTTPException(status_code=403, detail="Only project owner can revoke shares")
-
-        # Prevent removing owner from a project
-        if int(targetUserId) == int(currentUser["id"]):
-            raise HTTPException(status_code=400, detail="Owner cannot be removed from the project")
-
-        deleted = mapper.revokeProjectShare(projectId=projectId, userId=targetUserId)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Share entry not found")
-
-        return {"success": True}
+        return _projectSharing.revokeProjectShareForUser(mapper, projectId, targetUserId, currentUser)
 
     def getProjectById(
             self,
