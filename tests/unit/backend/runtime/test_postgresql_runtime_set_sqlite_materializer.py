@@ -1361,3 +1361,163 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         sourceSet.close()
 
 
+def test_CleanupCurrentWorkerDirectoryRemovesOnlyCurrentWorkerSnapshots(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    workerDirectory = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getCurrentWorkerDirectory()
+    )
+
+    siblingDirectory = (
+        workerDirectory.parent
+        / "worker-999999999"
+    )
+
+    workerDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    siblingDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    snapshotPath = (
+        workerDirectory
+        / "input.sqlite"
+    )
+
+    snapshotPath.write_bytes(
+        b"snapshot"
+    )
+
+    Path(
+        "%s-wal"
+        % snapshotPath
+    ).write_bytes(
+        b"wal"
+    )
+
+    Path(
+        "%s-shm"
+        % snapshotPath
+    ).write_bytes(
+        b"shm"
+    )
+
+    Path(
+        "%s-journal"
+        % snapshotPath
+    ).write_bytes(
+        b"journal"
+    )
+
+    siblingSnapshotPath = (
+        siblingDirectory
+        / "input.sqlite"
+    )
+
+    siblingSnapshotPath.write_bytes(
+        b"sibling"
+    )
+
+    runtimeSet = ExampleSet()
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    materializer._registerManagedPath(
+        runtimeSet=runtimeSet,
+        materializedPath=str(snapshotPath),
+    )
+
+    managedPath = str(
+        snapshotPath.resolve()
+    )
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(managedPath)
+        is runtimeSet
+    )
+
+    report = PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
+
+    assert report["workerDirectory"] == str(
+        workerDirectory
+    )
+
+    assert report["removed"] is True
+    assert report["deletedCount"] == 4
+    assert report["registryEntriesRemoved"] == 1
+
+    assert not workerDirectory.exists()
+
+    assert siblingSnapshotPath.read_bytes() == b"sibling"
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(managedPath)
+        is None
+    )
+
+
+def test_CleanupCurrentWorkerDirectoryRefusesSymbolicLink(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    workerDirectory = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getCurrentWorkerDirectory()
+    )
+
+    outsideDirectory = (
+        tmp_path
+        / "outside"
+    )
+
+    outsideDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sentinelPath = (
+        outsideDirectory
+        / "sentinel.sqlite"
+    )
+
+    sentinelPath.write_bytes(
+        b"do-not-delete"
+    )
+
+    workerDirectory.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    workerDirectory.symlink_to(
+        outsideDirectory,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="symbolic PostgreSQL SQLite worker directory",
+    ):
+        PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
+
+    assert sentinelPath.read_bytes() == b"do-not-delete"
+    assert workerDirectory.is_symlink()

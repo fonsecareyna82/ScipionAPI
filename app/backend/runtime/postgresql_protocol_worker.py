@@ -89,6 +89,9 @@ from app.backend.runtime.protocol_step_persistence_service import (
 from app.backend.runtime.postgresql_output_set_adapter import (
     RuntimePostgresqlOutputSetAdapter,
 )
+from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
+    PostgresqlRuntimeSetSqliteMaterializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -837,6 +840,45 @@ class RuntimePostgresqlProtocolWorker:
                     "Could not close PostgreSQL connection.",
                     exc_info=True,
                 )
+
+    def cleanupCompatibilitySqliteSnapshots(self) -> Dict[str, Any]:
+        try:
+            report = PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
+        except Exception as error:
+            logger.warning(
+                "Could not clean PostgreSQL SQLite compatibility snapshots. "
+                "projectId=%s protocolId=%s error=%s",
+                self.projectId,
+                self.protocolId,
+                error,
+                exc_info=True,
+            )
+
+            return {
+                "workerDirectory": None,
+                "removed": False,
+                "deleted": [],
+                "deletedCount": 0,
+                "registryEntriesRemoved": 0,
+                "error": str(error),
+            }
+
+        if (
+                report.get("removed")
+                or report.get("registryEntriesRemoved")
+        ):
+            logger.debug(
+                "Cleaned PostgreSQL SQLite compatibility snapshots. "
+                "projectId=%s protocolId=%s workerDirectory=%s "
+                "deletedCount=%s registryEntriesRemoved=%s",
+                self.projectId,
+                self.protocolId,
+                report.get("workerDirectory"),
+                report.get("deletedCount"),
+                report.get("registryEntriesRemoved"),
+            )
+
+        return report
 
     def getProtocolDbId(self) -> int:
         resolver = ProtocolIdentityResolver(
@@ -2948,8 +2990,12 @@ class RuntimePostgresqlProtocolWorker:
             self.markFailed(error)
             return 1
 
+
         finally:
-            self.close()
+            try:
+                self.close()
+            finally:
+                self.cleanupCompatibilitySqliteSnapshots()
 
 
 def main() -> int:

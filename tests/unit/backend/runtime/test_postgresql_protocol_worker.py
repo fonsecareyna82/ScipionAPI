@@ -1150,3 +1150,99 @@ def test_MarkFailedRollsBackBeforeStoringProtocol():
     ]
 
 
+def test_RunClosesWorkerBeforeCleaningCompatibilitySqliteSnapshots():
+    events = []
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.load = lambda: events.append("load")
+    worker.waitUntilReady = lambda: events.append("wait")
+    worker.execute = lambda: events.append("execute") or 0
+    worker.close = lambda: events.append("close")
+    worker.cleanupCompatibilitySqliteSnapshots = lambda: events.append("cleanup")
+
+    assert worker.run(
+        execute=True
+    ) == 0
+
+    assert events == [
+        "load",
+        "wait",
+        "execute",
+        "close",
+        "cleanup",
+    ]
+
+
+def test_RunCleansCompatibilitySqliteSnapshotsAfterFailure():
+    events = []
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.load = lambda: events.append("load")
+    worker.waitUntilReady = lambda: events.append("wait")
+
+    def failExecution():
+        events.append("execute")
+        raise RuntimeError("protocol failure")
+
+    worker.execute = failExecution
+
+    worker.markFailed = lambda error: events.append(
+        (
+            "failed",
+            str(error),
+        )
+    )
+
+    worker.close = lambda: events.append("close")
+    worker.cleanupCompatibilitySqliteSnapshots = lambda: events.append("cleanup")
+
+    assert worker.run(
+        execute=True
+    ) == 1
+
+    assert events == [
+        "load",
+        "wait",
+        "execute",
+        (
+            "failed",
+            "protocol failure",
+        ),
+        "close",
+        "cleanup",
+    ]
+
+
+def test_CompatibilitySqliteCleanupFailureIsBestEffort(
+        monkeypatch,
+):
+    def failCleanup(cls):
+        raise RuntimeError(
+            "cleanup failure"
+        )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.PostgresqlRuntimeSetSqliteMaterializer,
+        "cleanupCurrentWorkerDirectory",
+        classmethod(failCleanup),
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    report = worker.cleanupCompatibilitySqliteSnapshots()
+
+    assert report["removed"] is False
+    assert report["deletedCount"] == 0
+    assert report["registryEntriesRemoved"] == 0
+    assert report["error"] == "cleanup failure"

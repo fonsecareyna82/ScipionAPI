@@ -215,6 +215,12 @@ No persistent code may rely on one of these files existing after the worker fini
 
 The persistent PostgreSQL data must always be sufficient to reconstruct the snapshot again.
 
+Each protocol worker must attempt to remove only its own `worker-<PID>` compatibility directory after closing its project and runtime mappers. This cleanup must run after successful execution, failed execution, and normal exception handling.
+
+Cleanup must never remove another worker's directory. A cleanup failure must be logged but must not replace the protocol's actual execution result.
+
+Abrupt process termination such as `SIGKILL`, host failure, or power loss cannot execute Python finalizers and may leave stale worker directories. Those stale directories remain disposable and may be removed later by operating-system temporary-directory cleanup or a dedicated stale-worker scavenger.
+
 ## Required regression tests
 
 Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName()`, streaming, or output restoration must preserve tests for all of the following:
@@ -235,6 +241,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 14. Heterogeneous item schemas remain readable after materialization.
 15. Set-level properties required by native Scipion code are available in the detached runtime Set.
 16. Native nested Set loads triggered by snapshot construction bypass managed-path refresh without disabling real recursive-materialization detection.
+17. Worker finalization removes only the current worker's SQLite snapshots after closing mappers, on both successful and failed protocol execution.
 
 ## Historical failure mode
 

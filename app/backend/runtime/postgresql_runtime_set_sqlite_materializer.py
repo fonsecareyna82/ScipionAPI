@@ -26,6 +26,7 @@
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import uuid
@@ -128,6 +129,114 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
         with self._managedPathsLock:
             self._managedRuntimeSets[managedPath] = runtimeSet
+
+    @classmethod
+    def _getManagedRootDirectory(cls) -> str:
+        return os.path.realpath(os.path.join(tempfile.gettempdir(), cls.DIRECTORY_NAME))
+
+    @classmethod
+    def _getCurrentWorkerDirectory(cls) -> str:
+        return os.path.abspath(
+            os.path.join(
+                cls._getManagedRootDirectory(),
+                "worker-%s" % os.getpid(),
+            )
+        )
+
+    @classmethod
+    def cleanupCurrentWorkerDirectory(cls) -> Dict[str, Any]:
+        managedRoot = cls._getManagedRootDirectory()
+        workerDirectory = cls._getCurrentWorkerDirectory()
+        expectedDirectoryName = "worker-%s" % os.getpid()
+
+        try:
+            commonPath = os.path.commonpath(
+                (
+                    managedRoot,
+                    workerDirectory,
+                )
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "Could not validate PostgreSQL SQLite worker directory: %s"
+                % workerDirectory
+            ) from error
+
+        if (
+                commonPath != managedRoot
+                or os.path.basename(workerDirectory) != expectedDirectoryName
+        ):
+            raise RuntimeError(
+                "Refusing to clean an unexpected PostgreSQL SQLite "
+                "worker directory: %s"
+                % workerDirectory
+            )
+
+        with cls._managedPathsLock:
+            managedPaths = []
+
+            for managedPath in list(cls._managedRuntimeSets.keys()):
+                try:
+                    belongsToWorker = (
+                        os.path.commonpath(
+                            (
+                                workerDirectory,
+                                os.path.realpath(managedPath),
+                            )
+                        )
+                        == workerDirectory
+                    )
+                except ValueError:
+                    belongsToWorker = False
+
+                if belongsToWorker:
+                    managedPaths.append(managedPath)
+
+        if not os.path.lexists(workerDirectory):
+            with cls._managedPathsLock:
+                for managedPath in managedPaths:
+                    cls._managedRuntimeSets.pop(managedPath, None)
+
+            return {
+                "workerDirectory": workerDirectory,
+                "removed": False,
+                "deleted": [],
+                "deletedCount": 0,
+                "registryEntriesRemoved": len(managedPaths),
+            }
+
+        if os.path.islink(workerDirectory):
+            raise RuntimeError(
+                "Refusing to clean a symbolic PostgreSQL SQLite "
+                "worker directory: %s"
+                % workerDirectory
+            )
+
+        if not os.path.isdir(workerDirectory):
+            raise RuntimeError(
+                "PostgreSQL SQLite worker path is not a directory: %s"
+                % workerDirectory
+            )
+
+        deletedPaths = sorted(
+            os.path.join(rootPath, fileName)
+            for rootPath, _, fileNames in os.walk(workerDirectory)
+            for fileName in fileNames
+        )
+
+        shutil.rmtree(workerDirectory)
+
+        with cls._managedPathsLock:
+            for managedPath in managedPaths:
+                cls._managedRuntimeSets.pop(managedPath, None)
+
+        return {
+            "workerDirectory": workerDirectory,
+            "removed": True,
+            "deleted": deletedPaths,
+            "deletedCount": len(deletedPaths),
+            "registryEntriesRemoved": len(managedPaths),
+        }
 
     def materialize(
             self,
@@ -374,12 +483,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         if not path:
             return False
 
-        managedRoot = os.path.realpath(
-            os.path.join(
-                tempfile.gettempdir(),
-                self.DIRECTORY_NAME,
-            )
-        )
+        managedRoot = self._getManagedRootDirectory()
 
         candidatePath = os.path.realpath(
             str(path)
@@ -1023,9 +1127,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         )
 
         return os.path.join(
-            tempfile.gettempdir(),
-            self.DIRECTORY_NAME,
-            "worker-%s" % os.getpid(),
+            self._getCurrentWorkerDirectory(),
             fileName,
         )
 
