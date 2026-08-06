@@ -2071,9 +2071,33 @@ def test_NestedSetWithoutLogicalTableFailsExplicitly():
 
 def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
     parent, runtimeSet = buildRuntimeSet()
+    runtimeSet._postgresqlRuntimeProperties[
+        "materializedFileName"
+    ] = "/tmp/stale-compatibility.sqlite"
 
     runtimeClone = runtimeSet.clone()
 
+    assert (
+        runtimeSet._postgresqlRuntimeProperties[
+            "materializedFileName"
+        ]
+        == "/tmp/stale-compatibility.sqlite"
+    )
+
+    assert (
+        "materializedFileName"
+        not in runtimeClone._postgresqlRuntimeProperties
+    )
+
+    assert (
+        runtimeClone._postgresqlMaterializedFileName
+        is None
+    )
+
+    assert (
+        runtimeClone._postgresqlMaterializedRevision
+        is None
+    )
     assert runtimeClone is not runtimeSet
     assert isinstance(runtimeClone, PostgresqlRuntimeSetMixin)
     assert runtimeClone.getClass() is ExampleSet

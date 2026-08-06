@@ -783,6 +783,11 @@ class PostgresqlRuntimeSetMixin:
                 ),
             )
 
+        runtimeClone._postgresqlRuntimeProperties.pop(
+            "materializedFileName",
+            None,
+        )
+
         classesDict = getattr(
             self,
             "_classesDict",
