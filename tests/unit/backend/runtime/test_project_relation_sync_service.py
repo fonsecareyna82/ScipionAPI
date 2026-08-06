@@ -822,6 +822,136 @@ def test_CollectRuntimeProtocolRelationsDoesNotProbeRemovedFallbackMappers(
     assert result["errors"] == []
 
 
+def test_CollectRuntimeProtocolRelationsReadsAndClosesIsolatedProjectSqlite(
+        monkeypatch,
+        tmp_path,
+):
+    projectSqlite = tmp_path / "project.sqlite"
+    projectSqlite.touch()
+
+    runtimeRelation = buildRelation()
+
+    sqliteRelation = {
+        **buildRelation(),
+        "id": 8,
+        "name": "transform",
+        "object_child_id": 303,
+        "object_child_extended": "outputAverage",
+    }
+
+    runtimeProtocol = FakeProtocol([
+        runtimeRelation,
+    ])
+
+    class FakeSqliteProtocol(FakeProtocol):
+        def __init__(self, relations):
+            super().__init__(relations)
+            self.mapper = None
+
+        def setMapper(self, mapper):
+            self.mapper = mapper
+
+    sqliteProtocol = FakeSqliteProtocol([
+        sqliteRelation,
+    ])
+
+    class FakeIsolatedMapper:
+        def __init__(self):
+            self.selectedIds = []
+            self.closeCalls = 0
+
+        def selectById(self, objectId):
+            objectId = int(objectId)
+
+            self.selectedIds.append(
+                objectId
+            )
+
+            if objectId == 20:
+                return sqliteProtocol
+
+            return None
+
+        def close(self):
+            self.closeCalls += 1
+
+    isolatedMapper = FakeIsolatedMapper()
+    createMapperCalls = []
+
+    class FakeProject:
+        def getPath(self):
+            return str(tmp_path)
+
+    currentProject = FakeProject()
+
+    def createMapper(project, sqlitePath):
+        createMapperCalls.append(
+            (
+                project,
+                sqlitePath,
+            )
+        )
+
+        return isolatedMapper
+
+    monkeypatch.setattr(
+        relationSyncModule,
+        "Protocol",
+        FakeSqliteProtocol,
+    )
+
+    monkeypatch.setattr(
+        relationSyncModule.ScipionProject,
+        "createMapper",
+        createMapper,
+    )
+
+    result = (
+        RuntimeProjectRelationSyncService()
+        .collectRuntimeProtocolRelations(
+            currentProject=currentProject,
+            protocolId=20,
+            runtimeProtocol=runtimeProtocol,
+        )
+    )
+
+    assert createMapperCalls == [
+        (
+            currentProject,
+            str(projectSqlite),
+        ),
+    ]
+
+    assert isolatedMapper.selectedIds == [
+        20,
+        101,
+        303,
+    ]
+
+    assert sqliteProtocol.mapper is isolatedMapper
+    assert isolatedMapper.closeCalls == 1
+
+    assert [
+        stripCollectedRelationEndpoints(relation)
+        for relation in result["relations"]
+    ] == [
+        runtimeRelation,
+        sqliteRelation,
+    ]
+
+    assert result["sources"] == [
+        {
+            "source": "runtime_db",
+            "relations": 1,
+        },
+        {
+            "source": "project_sqlite_isolated",
+            "relations": 1,
+        },
+    ]
+
+    assert result["errors"] == []
+
 def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
         monkeypatch,
 ):
