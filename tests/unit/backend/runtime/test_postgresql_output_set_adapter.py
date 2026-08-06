@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import pytest
+from pathlib import Path
 from pyworkflow.object import (
     Object,
     Set,
@@ -37,6 +38,9 @@ from app.backend.mapper.postgresql_runtime_mapper import (
 )
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
+)
+from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
+    PostgresqlRuntimeSetSqliteMaterializer,
 )
 
 
@@ -1360,6 +1364,129 @@ def test_DirectFilenameSetReusesPostgresqlStorageWithoutCreatingSqlite(
 
     finally:
         adapter.uninstall()
+
+
+
+def test_ManagedCompatibilitySqliteRefreshesBeforeNativeLoad(
+        tmp_path,
+        monkeypatch,
+):
+    class CompatibilityInputProtocolStub(
+            ProtocolStub
+    ):
+        def getWorkingDir(self):
+            return str(
+                tmp_path
+                / "Runs"
+                / "protocol"
+            )
+
+    protocol = CompatibilityInputProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    compatibilityPath = (
+        tmp_path
+        / "postgresql-runtime-sets"
+        / "input.sqlite"
+    )
+
+    compatibilityPath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    refreshCalls = []
+
+    def refreshManagedPath(
+            cls,
+            path,
+    ):
+        refreshCalls.append(
+            str(
+                compatibilityPath.resolve()
+            )
+        )
+
+        assert (
+            str(
+                compatibilityPath.resolve()
+            )
+            == str(
+                Path(path).resolve()
+            )
+        )
+
+        return True
+
+    monkeypatch.setattr(
+        PostgresqlRuntimeSetSqliteMaterializer,
+        "refreshManagedPath",
+        classmethod(refreshManagedPath),
+    )
+
+    adapter.install()
+
+    inputSet = None
+
+    try:
+        inputSet = OutputSetStub(
+            filename=str(
+                compatibilityPath
+            )
+        )
+
+        assert refreshCalls == [
+            str(
+                compatibilityPath.resolve()
+            ),
+        ]
+
+        assert runtimeMapper.created == []
+        assert runtimeMapper.bound == []
+        assert runtimeMapper.finalized == []
+
+        internalSet = OutputSetStub()
+
+        internalSet._mapperPath.set(
+            "%s, "
+            % compatibilityPath
+        )
+
+        setattr(
+            internalSet,
+            PostgresqlRuntimeSetSqliteMaterializer.COMPATIBILITY_BUILD_ATTRIBUTE,
+            True,
+        )
+
+        result = adapter._loadDirectPostgresqlSet(
+            originalLoad=lambda runtimeSet: runtimeSet,
+            runtimeSet=internalSet,
+        )
+
+        assert result is internalSet
+
+        # Internal materialization must not trigger another refresh.
+        assert refreshCalls == [
+            str(
+                compatibilityPath.resolve()
+            ),
+        ]
+
+    finally:
+        if inputSet is not None:
+            inputSet.close()
+
+        adapter.uninstall()
+
+
+
+
 
 
 

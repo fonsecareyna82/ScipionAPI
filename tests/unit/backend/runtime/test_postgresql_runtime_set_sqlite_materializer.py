@@ -1127,10 +1127,10 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
 
         # Unchanged revision keeps the cached snapshot.
         assert (
-            materializer.materialize(
-                sourceSet
-            )
-            == targetPath
+                PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    targetPath
+                )
+                is True
         )
 
         assert copyCalls == [
@@ -1161,11 +1161,14 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
             "revision-2",
         )
 
-        refreshedPath = (
-            materializer.materialize(
-                sourceSet
-            )
+        assert (
+                PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+                    targetPath
+                )
+                is True
         )
+
+        refreshedPath = targetPath
 
         # Keep a stable compatibility filename.
         assert (

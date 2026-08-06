@@ -1,9 +1,35 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
 import logging
 import os
 import re
 import tempfile
 import threading
 import uuid
+import weakref
 from datetime import datetime, timedelta
 from collections.abc import Mapping
 from typing import Any, Dict, Optional, Type
@@ -21,6 +47,10 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
     DIRECTORY_NAME = "postgresql-runtime-sets"
     MATERIALIZED_PATH_PROPERTY = "materializedFileName"
+    COMPATIBILITY_BUILD_ATTRIBUTE = "_postgresqlCompatibilityBuild"
+
+    _managedPathsLock = threading.RLock()
+    _managedRuntimeSets = weakref.WeakValueDictionary()
     STREAMING_CURSOR_EPOCH = datetime(
         2000,
         1,
@@ -34,6 +64,61 @@ class PostgresqlRuntimeSetSqliteMaterializer:
         self._lock = threading.RLock()
 
         self._materializingSetIdentities = set()
+
+    @classmethod
+    def refreshManagedPath(
+            cls,
+            path: str,
+    ) -> bool:
+        if not path:
+            return False
+
+        managedPath = os.path.realpath(str(path))
+
+        with cls._managedPathsLock:
+            runtimeSet = cls._managedRuntimeSets.get(managedPath)
+
+        if runtimeSet is None:
+            return False
+
+        materializer = getattr(
+            runtimeSet,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        if materializer is None:
+            with cls._managedPathsLock:
+                cls._managedRuntimeSets.pop(managedPath, None)
+
+            return False
+
+        refreshedPath = materializer.materialize(runtimeSet)
+        refreshedPath = os.path.realpath(str(refreshedPath))
+
+        if refreshedPath != managedPath:
+            raise RuntimeError(
+                "PostgreSQL SQLite compatibility refresh "
+                "changed its managed path. expected=%s actual=%s"
+                % (
+                    managedPath,
+                    refreshedPath,
+                )
+            )
+
+        return True
+
+    def _registerManagedPath(
+            self,
+            runtimeSet: ScipionSet,
+            materializedPath: str,
+    ) -> None:
+        managedPath = os.path.realpath(str(materializedPath))
+
+        runtimeSet._postgresqlSqliteMaterializer = self
+
+        with self._managedPathsLock:
+            self._managedRuntimeSets[managedPath] = runtimeSet
 
     def materialize(
             self,
@@ -336,6 +421,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             properties
         )
 
+        self._registerManagedPath(
+            runtimeSet=runtimeSet,
+            materializedPath=materializedPath,
+        )
+
     def _openSet(
             self,
             setClass: Type,
@@ -354,7 +444,21 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             )
 
         mapperPath.set("%s, %s" % (fileName, prefix))
-        targetSet.load()
+
+        setattr(
+            targetSet,
+            self.COMPATIBILITY_BUILD_ATTRIBUTE,
+            True,
+        )
+
+        try:
+            targetSet.load()
+        finally:
+            targetSet.__dict__.pop(
+                self.COMPATIBILITY_BUILD_ATTRIBUTE,
+                None,
+            )
+
         return targetSet
 
     def _copySetMetadata(

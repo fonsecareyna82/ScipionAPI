@@ -35,6 +35,9 @@ import pyworkflow.utils as pwutils
 from pyworkflow.object import (
     Set as ScipionSet,
 )
+from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import (
+    PostgresqlRuntimeSetSqliteMaterializer,
+)
 
 logger = logging.getLogger(
     __name__
@@ -695,6 +698,37 @@ class RuntimePostgresqlOutputSetAdapter:
             originalLoad,
             runtimeSet,
     ):
+        compatibilityBuild = bool(
+            getattr(
+                runtimeSet,
+                PostgresqlRuntimeSetSqliteMaterializer.COMPATIBILITY_BUILD_ATTRIBUTE,
+                False,
+            )
+        )
+
+        if compatibilityBuild:
+            return originalLoad(runtimeSet)
+
+        mapperPath = getattr(
+            runtimeSet,
+            "_mapperPath",
+            None,
+        )
+
+        storagePath = (
+            str(mapperPath[0]).strip()
+            if mapperPath is not None and len(mapperPath)
+            else ""
+        )
+
+        if (
+                storagePath
+                and PostgresqlRuntimeSetSqliteMaterializer.refreshManagedPath(
+            storagePath
+        )
+        ):
+            return originalLoad(runtimeSet)
+
         storageKey = self._getDirectSetStorageKey(
             runtimeSet
         )
