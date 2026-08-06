@@ -2,11 +2,15 @@
 
 Findings from a real audit of this repo (2026-08-04), not a wishlist. Cited so they're checkable, not just asserted.
 
-## The single largest "god file" across all 5 repos
+## `project_service.py` — largest file in the ecosystem, now substantially decomposed (2026-08-06)
 
-`app/backend/api/services/project_service.py` — **15176 lines**. By a wide margin the most severe size/complexity outlier in the whole ecosystem (the next largest files anywhere are ~2800-3000 lines). Contains at least one unresolved `# TODO: Find viewers...` (line 5738). Any change here should be treated as high-risk regardless of how small it looks — a file this size almost certainly has non-obvious internal coupling. Splitting it is a real, standalone project, not a drive-by refactor.
+`app/backend/api/services/project_service.py` was **15176 lines** as a single undifferentiated `ProjectService` class - by far the most severe size/complexity outlier in the whole ecosystem. Split across 8 phases (branch `refactor/split-project-service`) into ~30 focused, independently-testable modules under `app/backend/api/services/project/core/` (~5900 lines total, none over ~610 lines), each targeting a single responsibility (preview-by-output-type, protocol graph, workflow import/export, project CRUD/sharing/paths, etc.) and verified against the full unit suite after every extraction (1077/1077 passing throughout, zero behavior changes).
 
-Other large files for context: `utils/thumbnail_service.py` (7685 lines), `mapper/postgresql_runtime_mapper.py` (5676 lines), `mapper/scipion_set_mapper.py` (4548 lines), `api/routers/project_router.py` (4290 lines).
+`project_service.py` itself is now **9974 lines** - still the largest file in the ecosystem, but what remains is genuine composition-root orchestration (methods that wire together the extracted `core/` modules, mutate the few real instance-state fields like `currentProject`/`manager`, or are directly monkeypatched by name in tests and so need to stay as named seams) rather than undifferentiated bulk. Splitting it further is possible but has diminishing returns - the remaining large methods (`_migrateImportedProjectToPostgresql`, `applyWorkflowToProject`, `exportWorkflowProtocolsService`, the big preview-orchestration methods) are inherently imperative glue with real side effects, not pure computation.
+
+Contains at least one unresolved `# TODO: Find viewers...` (line 3177) - not addressed by this refactor, out of scope.
+
+Other large files for context: `utils/thumbnail_service.py` (7685 lines), `mapper/postgresql_runtime_mapper.py` (6027 lines), `mapper/scipion_set_mapper.py` (4676 lines), `api/routers/project_router.py` (4250 lines).
 
 ## Dependency management split across two files
 

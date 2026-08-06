@@ -60,8 +60,8 @@ RETIRED_RUNTIME_ENVIRONMENT_VARIABLES = {
 
 ALLOWED_PROJECT_DB_LOADS = {
     (
-        "app/backend/api/services/project_service.py",
-        "_validateImportableScipionProject",
+        "app/backend/api/services/project/core/project_import_validation.py",
+        "validateImportableScipionProject",
     ),
     (
         "app/backend/api/services/project_service.py",
@@ -306,11 +306,17 @@ def refreshRuntime(getProjectByIdCallback):
 
 
 def test_ProjectRuntimeLoadingGuardAllowsApprovedLegacyProjectDbLoads():
-    projectServiceSource = """
-def _validateImportableScipionProject(project):
+    projectImportValidationSource = """
+def validateImportableScipionProject(project):
     project.load(dbPath=project.getDbPath())
+"""
 
+    assert _findUnsafeProjectLoads(
+        source=projectImportValidationSource,
+        relativePath="app/backend/api/services/project/core/project_import_validation.py",
+    ) == []
 
+    projectServiceSource = """
 def _loadLegacyProjectForImport(project):
     project.load(dbPath=project.getDbPath())
 """
