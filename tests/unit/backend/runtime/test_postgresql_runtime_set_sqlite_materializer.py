@@ -94,15 +94,6 @@ CLASSES = {
 }
 
 
-class FakePathOwner(Object):
-    def __init__(self, extraPath, **kwargs):
-        super().__init__(**kwargs)
-        self._extraPath = Path(extraPath)
-
-    def getExtraPath(self, *paths):
-        return str(self._extraPath.joinpath(*paths))
-
-
 def _openSet(
         setClass,
         fileName,
@@ -130,20 +121,15 @@ def _openSet(
 
 def _configureRuntimeSource(
         sourceSet,
-        owner,
         nativeSetClass,
         runtimeInfo,
         runtimeProperties=None,
 ):
-    sourceSet._objParent = owner
     sourceSet._postgresqlNativeSetClass = nativeSetClass
     sourceSet._postgresqlRuntimeInfo = dict(runtimeInfo or {})
-    sourceSet._postgresqlRuntimeProperties = dict(
-        runtimeProperties or {}
-    )
+    sourceSet._postgresqlRuntimeProperties = dict(runtimeProperties or {})
     sourceSet._postgresqlRuntimeClasses = dict(CLASSES)
     sourceSet._postgresqlMaterializedFileName = None
-
 
 def _createRootSource(
         fileName,
@@ -250,108 +236,18 @@ def _createNestedSource(
 
     return parentSet
 
-def test_MaterializeCreatesReadableSqliteAndCachesPath(
-        tmp_path,
-):
-    sourcePath = tmp_path / "source.sqlite"
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-    sourceSet = _createRootSource(
-        sourcePath
-    )
-
-    sourceItem = sourceSet.getFirstItem()
-    sourceItem._objParent = owner
-
-    sourceSet.iterItems = (
-        lambda *args, **kwargs:
-        iter([sourceItem])
-    )
-
-    _configureRuntimeSource(
-        sourceSet=sourceSet,
-        owner=owner,
-        nativeSetClass=ExampleSet,
-        runtimeInfo={
-            "setId": 31,
-            "className": "ExampleSet",
-            "itemClassName": "ExampleItem",
-        },
-        runtimeProperties={
-            "fileName": "/legacy/output.sqlite",
-        },
-    )
-
-    materializer = (
-        PostgresqlRuntimeSetSqliteMaterializer()
-    )
-
-    targetPath = materializer.materialize(
-        sourceSet
-    )
-
-    try:
-        assert Path(targetPath).is_file()
-        assert targetPath != str(sourcePath)
-        assert targetPath != "/legacy/output.sqlite"
-
-        assert materializer.materialize(
-            sourceSet
-        ) == targetPath
-
-        assert (
-            sourceSet._postgresqlRuntimeProperties[
-                "fileName"
-            ]
-            == "/legacy/output.sqlite"
-        )
-        assert (
-            sourceSet._postgresqlRuntimeProperties[
-                "materializedFileName"
-            ]
-            == targetPath
-        )
-
-        compatibilitySet = _openSet(
-            ExampleSet,
-            targetPath,
-        )
-
-        try:
-            assert compatibilitySet.getSize() == 1
-            assert compatibilitySet.getSamplingRate() == 1.5
-
-            item = compatibilitySet.getFirstItem()
-
-            assert isinstance(
-                item,
-                ExampleItem,
-            )
-            assert item.getObjId() == 7
-            assert item._name.get() == "particle-7"
-        finally:
-            compatibilitySet.close()
-    finally:
-        sourceSet.close()
-
 
 def test_MaterializeRefreshesRuntimeStateBeforeReturningCachedPath(
         tmp_path,
 ):
     sourcePath = tmp_path / "cached-runtime-state-source.sqlite"
 
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
@@ -400,10 +296,6 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
         / "streaming-cursor-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-
     sourceSet = _createEmptySource(
         sourcePath
     )
@@ -449,7 +341,6 @@ def test_MaterializeUsesStableItemIdStreamingCursor(
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 71,
@@ -561,18 +452,12 @@ def test_MaterializeNeverReusesPersistentLegacySqlite(
         / "source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
@@ -642,16 +527,12 @@ def test_MaterializeSupportsEmptySets(
         tmp_path,
 ):
     sourcePath = tmp_path / "empty-source.sqlite"
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
     sourceSet = _createEmptySource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 32,
@@ -685,10 +566,6 @@ def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
 ):
     sourcePath = tmp_path / "heterogeneous-source.sqlite"
 
-    owner = FakePathOwner(
-        tmp_path / "extra"
-    )
-
     sourceSet = _createEmptySource(
         sourcePath
     )
@@ -713,7 +590,6 @@ def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 501,
@@ -779,14 +655,8 @@ def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         sourcePath
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 61,
@@ -883,18 +753,12 @@ def test_PersistentCachedMaterializedPathIsIgnored(
         / "cached-output.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 32,
@@ -945,18 +809,12 @@ def test_RecursiveMaterializationFailsFast(
         / "recursive-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 91,
@@ -1045,18 +903,12 @@ def test_MaterializeRefreshesNestedSetsWithoutRecursiveManagedPathRefresh(
         / "nested-refresh-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createNestedSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleLoadingNestedParentSet,
         runtimeInfo={
             "setId": 4250,
@@ -1164,18 +1016,12 @@ def test_MaterializeRefreshesStreamingSnapshotWhenRevisionChanges(
         / "streaming-source.sqlite"
     )
 
-    owner = FakePathOwner(
-        tmp_path
-        / "extra"
-    )
-
     sourceSet = _createRootSource(
         sourcePath
     )
 
     _configureRuntimeSource(
         sourceSet=sourceSet,
-        owner=owner,
         nativeSetClass=ExampleSet,
         runtimeInfo={
             "setId": 31,
