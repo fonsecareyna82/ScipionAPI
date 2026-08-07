@@ -2224,30 +2224,15 @@ class PostgresqlRuntimeMapper(Mapper):
         if not isinstance(reference, dict) or not callable(runtimeObjectResolver):
             return None, []
 
-        targetObjectId = self._toOptionalInt(
-            reference.get("targetObjectId")
-        )
+        targetObjectId = self._toOptionalInt(reference.get("targetObjectId"))
 
         if targetObjectId is None:
             return None, []
 
-        targetObjectName = str(
-            reference.get("targetObjectName")
-            or ""
-        ).strip()
-
-        targetParentObjectId = self._toOptionalInt(
-            reference.get("targetParentObjectId")
-        )
-
-        targetParentObjectName = str(
-            reference.get("targetParentObjectName")
-            or ""
-        ).strip()
-
-        targetParentParentObjectId = self._toOptionalInt(
-            reference.get("targetParentParentObjectId")
-        )
+        targetObjectName = str(reference.get("targetObjectName") or "").strip()
+        targetParentObjectId = self._toOptionalInt(reference.get("targetParentObjectId"))
+        targetParentObjectName = str(reference.get("targetParentObjectName") or "").strip()
+        targetParentParentObjectId = self._toOptionalInt(reference.get("targetParentParentObjectId"))
 
         extendedParts = [
             part
@@ -2275,23 +2260,23 @@ class PostgresqlRuntimeMapper(Mapper):
             if target is not None:
                 return target, extendedParts
 
-        if targetParentObjectId is not None:
-            parentTarget = runtimeObjectResolver(targetParentObjectId)
-
-            target = self._selectGenericPointerSetItem(
-                parentTarget=parentTarget,
-                targetObjectId=targetObjectId,
-            )
-
-            if target is not None:
-                return target, extendedParts
-
         if targetParentParentObjectId is not None and targetParentObjectName:
             parentTarget = self._resolveGenericPointerProtocolOutputTarget(
                 protocolId=targetParentParentObjectId,
                 outputName=targetParentObjectName,
                 runtimeObjectResolver=runtimeObjectResolver,
             )
+
+            if parentTarget is not None:
+                target = self._selectGenericPointerSetItem(
+                    parentTarget=parentTarget,
+                    targetObjectId=targetObjectId,
+                )
+
+                return target, extendedParts
+
+        if targetParentObjectId is not None:
+            parentTarget = runtimeObjectResolver(targetParentObjectId)
 
             target = self._selectGenericPointerSetItem(
                 parentTarget=parentTarget,

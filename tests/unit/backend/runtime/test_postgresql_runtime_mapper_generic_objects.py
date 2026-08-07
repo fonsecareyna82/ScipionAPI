@@ -1081,7 +1081,7 @@ def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
     )
 
 
-def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
+def test_GenericPointerPrefersSemanticSetOwnerOverCollidingLegacyRuntimeId():
     mapper = buildRuntimeMapper(
         buildRows()
     )
@@ -1089,24 +1089,46 @@ def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
     targetItem = Object()
     targetItem.setObjId(7)
 
+    wrongItem = Object()
+    wrongItem.setObjId(7)
+
     itemReads = []
 
     class SetMapperStub:
-        def selectById(self, objId):
-            itemReads.append(int(objId))
+        def __init__(self, label, item):
+            self.label = label
+            self.item = item
 
-            if int(objId) == 7:
-                return targetItem
+        def selectById(self, objId):
+            objId = int(objId)
+            itemReads.append((self.label, objId))
+
+            if objId == 7:
+                return self.item
 
             return None
 
     class RuntimeSetStub:
+        def __init__(self, label, item):
+            self.mapper = SetMapperStub(label, item)
+
         def _getMapper(self):
-            return SetMapperStub()
+            return self.mapper
 
-    canonicalSet = RuntimeSetStub()
+    canonicalSet = RuntimeSetStub(
+        "canonical",
+        targetItem,
+    )
 
-    mapper._isSetLike = lambda obj: obj is canonicalSet
+    collidingSet = RuntimeSetStub(
+        "legacy-collision",
+        wrongItem,
+    )
+
+    mapper._isSetLike = lambda obj: obj in (
+        canonicalSet,
+        collidingSet,
+    )
 
     def getProjectProtocolByProtocolId(
             projectId,
@@ -1122,9 +1144,7 @@ def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
 
         return None
 
-    mapper.flatMapper.getProjectProtocolByProtocolId.side_effect = (
-        getProjectProtocolByProtocolId
-    )
+    mapper.flatMapper.getProjectProtocolByProtocolId.side_effect = getProjectProtocolByProtocolId
 
     mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
         "exists": True,
@@ -1139,6 +1159,9 @@ def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
     def runtimeObjectResolver(runtimeObjectId):
         runtimeObjectId = int(runtimeObjectId)
         resolverCalls.append(runtimeObjectId)
+
+        if runtimeObjectId == 3_000_900:
+            return collidingSet
 
         if runtimeObjectId == 900:
             return canonicalSet
@@ -1165,15 +1188,18 @@ def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
     )
 
     assert target is targetItem
+    assert target is not wrongItem
     assert extendedParts == []
 
     assert resolverCalls == [
-        3_000_900,
         900,
     ]
 
     assert itemReads == [
-        7,
+        (
+            "canonical",
+            7,
+        ),
     ]
 
     mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_once_with(

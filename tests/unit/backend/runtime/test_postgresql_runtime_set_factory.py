@@ -1584,9 +1584,7 @@ def test_PointerResolverUsesSemanticIdentityForLegacyExternalSetItem():
 
     assert resolver(reference) is targetItem
 
-    assert repository.runtimeIdCalls == [
-        3_000_999,
-    ]
+    assert repository.runtimeIdCalls == []
 
     assert repository.protocolOutputCalls == [
         {
@@ -1619,9 +1617,7 @@ def test_PointerResolverUsesSemanticIdentityForLegacyExternalSetItem():
 
     assert resolver(semanticOnlyReference) is targetItem
 
-    assert repository.runtimeIdCalls == [
-        3_000_999,
-    ]
+    assert repository.runtimeIdCalls == []
 
     assert repository.protocolOutputCalls == [
         {
@@ -2122,9 +2118,7 @@ def test_BuildHydratesRootSetPointerUsingProtocolOutputIdentity():
         is targetSet
     )
 
-    assert repository.runtimeIdCalls == [
-        3_000_000_050,
-    ]
+    assert repository.runtimeIdCalls == []
 
     assert repository.protocolOutputCalls == [{
         "projectId": 4,

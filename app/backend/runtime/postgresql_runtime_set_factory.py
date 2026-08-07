@@ -2884,59 +2884,26 @@ class PostgresqlRuntimeSetFactory:
 
         targetOutputInfo = None
 
-        if isinstance(
-                targetObjectId,
-                int,
-        ):
-            targetOutputInfo = (
-                self.protocolGraphRepository
-                .getPersistedSetOutputRowByRuntimeObjectId(
-                    mapper=repositoryMapper,
-                    projectId=projectId,
-                    runtimeObjectId=(
-                        targetObjectId
-                    ),
-                )
+        if isinstance(targetParentObjectId, int) and targetObjectName:
+            outputName = targetObjectName
+            protocolPrefix = "%s." % targetParentObjectId
+
+            if outputName.startswith(protocolPrefix):
+                outputName = outputName[len(protocolPrefix):]
+
+            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByProtocolOutput(
+                mapper=repositoryMapper,
+                projectId=projectId,
+                protocolId=targetParentObjectId,
+                outputName=outputName,
             )
 
-        if (
-                targetOutputInfo is None
-                and isinstance(
-            targetParentObjectId,
-            int,
-        )
-                and targetObjectName
-        ):
-            outputName = (
-                targetObjectName
+        if targetOutputInfo is None and isinstance(targetObjectId, int):
+            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
+                mapper=repositoryMapper,
+                projectId=projectId,
+                runtimeObjectId=targetObjectId,
             )
-
-            protocolPrefix = (
-                "%s."
-                % targetParentObjectId
-            )
-
-            if outputName.startswith(
-                    protocolPrefix
-            ):
-                outputName = outputName[
-                    len(protocolPrefix):
-                ]
-
-            targetOutputInfo = (
-                self.protocolGraphRepository
-                .getPersistedSetOutputRowByProtocolOutput(
-                    mapper=repositoryMapper,
-                    projectId=projectId,
-                    protocolId=(
-                        targetParentObjectId
-                    ),
-                    outputName=outputName,
-                )
-            )
-
-        if targetOutputInfo is None:
-            return None
 
         canonicalRuntimeObjectId = (
             self._toOptionalInt(
@@ -3078,26 +3045,15 @@ class PostgresqlRuntimeSetFactory:
             targetParentParentObjectId: Optional[int] = None,
     ):
         targetObjectId = self._toOptionalInt(targetObjectId)
+        targetParentObjectId = self._toOptionalInt(targetParentObjectId)
+        targetParentParentObjectId = self._toOptionalInt(targetParentParentObjectId)
+        targetParentObjectName = str(targetParentObjectName or "").strip()
         projectId = self._getRuntimeProjectId(runtimeSet)
 
-        if not isinstance(targetObjectId, int):
+        if not isinstance(targetObjectId, int) or not isinstance(projectId, int):
             return None
 
-        if not isinstance(projectId, int):
-            return None
-
-        if isinstance(targetParentObjectId, int):
-            rawTargetKey = (
-                projectId,
-                int(targetParentObjectId),
-                targetObjectId,
-            )
-
-            if rawTargetKey in self._resolvedPointerTargets:
-                return self._resolvedPointerTargets[rawTargetKey]
-
-            if rawTargetKey in self._resolvingPointerTargets:
-                return None
+        hasSemanticParentIdentity = isinstance(targetParentParentObjectId, int) and bool(targetParentObjectName)
 
         sourceProtocol = self._findProtocolParent(runtimeSet)
         runtimeMapper = self._getProtocolMapper(sourceProtocol)
@@ -3108,19 +3064,8 @@ class PostgresqlRuntimeSetFactory:
 
         targetOutputInfo = None
 
-        if isinstance(targetParentObjectId, int):
-            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
-                mapper=repositoryMapper,
-                projectId=projectId,
-                runtimeObjectId=targetParentObjectId,
-            )
-
-        if (
-                targetOutputInfo is None
-                and isinstance(targetParentParentObjectId, int)
-                and targetParentObjectName
-        ):
-            outputName = str(targetParentObjectName).strip()
+        if hasSemanticParentIdentity:
+            outputName = targetParentObjectName
             protocolPrefix = "%s." % targetParentParentObjectId
 
             if outputName.startswith(protocolPrefix):
@@ -3131,6 +3076,25 @@ class PostgresqlRuntimeSetFactory:
                 projectId=projectId,
                 protocolId=targetParentParentObjectId,
                 outputName=outputName,
+            )
+
+        if targetOutputInfo is None and isinstance(targetParentObjectId, int):
+            rawTargetKey = (
+                projectId,
+                targetParentObjectId,
+                targetObjectId,
+            )
+
+            if rawTargetKey in self._resolvedPointerTargets:
+                return self._resolvedPointerTargets[rawTargetKey]
+
+            if rawTargetKey in self._resolvingPointerTargets:
+                return None
+
+            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
+                mapper=repositoryMapper,
+                projectId=projectId,
+                runtimeObjectId=targetParentObjectId,
             )
 
         if targetOutputInfo is None:
