@@ -658,6 +658,120 @@ def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
     )
 
 
+def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
+    rows = buildRows()
+
+    pointerReference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 101,
+        "targetClassName": "Object",
+        "targetObjectName": "protocol",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "outputParticles",
+        "uniqueId": "101.outputParticles",
+    }
+
+    rows.extend([
+        {
+            "id": 13,
+            "scipionObjId": 703,
+            "parentObjectId": 10,
+            "name": "target",
+            "path": "outputObject.target",
+            "className": "Pointer",
+            "value": "900",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": True,
+                "pointerReference": pointerReference,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 14,
+            "scipionObjId": 704,
+            "parentObjectId": 13,
+            "name": "_extended",
+            "path": "outputObject.target._extended",
+            "className": "String",
+            "value": "outputParticles",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+    ])
+
+    mapper = buildRuntimeMapper(rows)
+
+    mapper._selectSetByIdFromPostgresql = lambda *args, **kwargs: None
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.return_value = {
+        "id": 55,
+        "protocolId": "101",
+    }
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
+        "exists": True,
+        "kind": "set",
+        "runtimeObjectId": 900,
+        "outputName": "outputParticles",
+        "className": "SetOfParticles",
+    }
+
+    detachedOutput = Object()
+    detachedOutput.setObjId(900)
+
+    resolverCalls = []
+
+    def runtimeObjectResolver(runtimeObjectId):
+        resolverCalls.append(int(runtimeObjectId))
+
+        if int(runtimeObjectId) == 900:
+            return detachedOutput
+
+        return None
+
+    result = mapper.selectRuntimeInputObjectById(
+        700,
+        runtimeObjectResolver=runtimeObjectResolver,
+    )
+
+    assert isinstance(result, FakeComposite)
+    assert isinstance(result.target, Pointer)
+
+    assert result.target.getObjValue() is detachedOutput
+    assert result.target.get() is detachedOutput
+    assert result.target.getExtended() == ""
+
+    assert result.target._postgresqlRuntimeReference == pointerReference
+
+    assert resolverCalls == [
+        900,
+    ]
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.assert_called_once_with(
+        projectId=7,
+        protocolId="101",
+    )
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_once_with(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=55,
+        outputName="outputParticles",
+    )
+
+
 def test_SelectByIdUsesGenericPostgresqlObject():
     mapper = buildRuntimeMapper(buildRows())
 

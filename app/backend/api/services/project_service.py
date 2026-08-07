@@ -170,6 +170,8 @@ class ProjectService:
         self.tomoList: Dict[Any, Any] = {}
         self._thumbnailService: Optional[ThumbnailService] = None
         self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
 
     @staticmethod
     def _resolveProjectsPath() -> Path:
@@ -5231,10 +5233,7 @@ class ProjectService:
                 "is not loaded"
             )
 
-        runtimeMapper = (
-            currentProject
-            .getPostgresqlRuntimeMapper()
-        )
+        runtimeMapper = currentProject.getPostgresqlRuntimeMapper()
 
         if runtimeMapper is None:
             raise RuntimeError(
@@ -5255,13 +5254,10 @@ class ProjectService:
             )
 
         try:
-            runtimeObjectId = int(
-                runtimeObjectId
-            )
+            runtimeObjectId = int(runtimeObjectId)
         except (TypeError, ValueError) as error:
             raise ValueError(
-                "Invalid PostgreSQL runtime "
-                "object id: %s"
+                "Invalid PostgreSQL runtime object id: %s"
                 % runtimeObjectId
             ) from error
 
@@ -5275,71 +5271,102 @@ class ProjectService:
             runtimeInputSets = {}
             self._postgresqlLaunchInputSetsByRuntimeObjectId = runtimeInputSets
 
-        cachedInputSet = runtimeInputSets.get(
-            runtimeObjectId
-        )
-
-        if cachedInputSet is not None:
-            return cachedInputSet
-
-        sourceOutputObject = resolver(
-            runtimeObjectId
-        )
-
-        if sourceOutputObject is None:
-            return None
-
-        if not isinstance(
-                sourceOutputObject,
-                ScipionSet,
-        ):
-            return sourceOutputObject
-
-        cloneRuntimeSet = getattr(
-            sourceOutputObject,
-            "clone",
+        runtimeInputObjects = getattr(
+            self,
+            "_postgresqlLaunchInputObjectsByRuntimeObjectId",
             None,
         )
 
-        if not callable(cloneRuntimeSet):
-            raise RuntimeError(
-                "PostgreSQL launch input Set does not support detached cloning. "
-                "runtimeObjectId=%s className=%s"
-                % (
-                    runtimeObjectId,
-                    sourceOutputObject.__class__.__name__,
-                )
-            )
+        if runtimeInputObjects is None:
+            runtimeInputObjects = {}
+            self._postgresqlLaunchInputObjectsByRuntimeObjectId = runtimeInputObjects
 
-        runtimeInputSet = cloneRuntimeSet(
-            _postgresqlDetachedConsumer=True
+        resolvingObjectIds = getattr(
+            self,
+            "_postgresqlLaunchInputObjectIdsResolving",
+            None,
         )
 
-        if runtimeInputSet is None:
-            raise RuntimeError(
-                "PostgreSQL launch input Set clone returned None. "
-                "runtimeObjectId=%s className=%s"
-                % (
-                    runtimeObjectId,
-                    sourceOutputObject.__class__.__name__,
-                )
-            )
+        if not isinstance(resolvingObjectIds, set):
+            resolvingObjectIds = set()
+            self._postgresqlLaunchInputObjectIdsResolving = resolvingObjectIds
 
-        if runtimeInputSet is sourceOutputObject:
-            raise RuntimeError(
-                "PostgreSQL launch input Set clone reused the parent output object. "
-                "runtimeObjectId=%s className=%s"
-                % (
-                    runtimeObjectId,
-                    sourceOutputObject.__class__.__name__,
-                )
-            )
-
-        runtimeInputSets[
+        cachedInputObject = runtimeInputObjects.get(
             runtimeObjectId
-        ] = runtimeInputSet
+        )
 
-        return runtimeInputSet
+        if cachedInputObject is not None:
+            return cachedInputObject
+
+        if runtimeObjectId in resolvingObjectIds:
+            return None
+
+        resolvingObjectIds.add(
+            runtimeObjectId
+        )
+
+        try:
+            sourceOutputObject = resolver(
+                runtimeObjectId,
+                runtimeObjectResolver=self._resolvePostgresqlRuntimeInputObject,
+            )
+
+            if sourceOutputObject is None:
+                return None
+
+            if not isinstance(sourceOutputObject, ScipionSet):
+                runtimeInputObjects[runtimeObjectId] = sourceOutputObject
+                return sourceOutputObject
+
+            cloneRuntimeSet = getattr(
+                sourceOutputObject,
+                "clone",
+                None,
+            )
+
+            if not callable(cloneRuntimeSet):
+                raise RuntimeError(
+                    "PostgreSQL launch input Set does not support detached cloning. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            runtimeInputSet = cloneRuntimeSet(
+                _postgresqlDetachedConsumer=True
+            )
+
+            if runtimeInputSet is None:
+                raise RuntimeError(
+                    "PostgreSQL launch input Set clone returned None. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            if runtimeInputSet is sourceOutputObject:
+                raise RuntimeError(
+                    "PostgreSQL launch input Set clone reused the parent output object. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            runtimeInputSets[runtimeObjectId] = runtimeInputSet
+            runtimeInputObjects[runtimeObjectId] = runtimeInputSet
+
+            return runtimeInputSet
+
+        finally:
+            resolvingObjectIds.discard(
+                runtimeObjectId
+            )
 
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
             self,
@@ -5534,6 +5561,8 @@ class ProjectService:
         )
 
         self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
 
         releasedInputSetIds = set()
 
@@ -5608,6 +5637,8 @@ class ProjectService:
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
 
         self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
 
         try:
             return runtimeProtocolLaunchService.launchProtocol(

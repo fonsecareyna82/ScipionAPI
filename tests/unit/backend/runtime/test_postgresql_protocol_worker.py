@@ -352,7 +352,12 @@ def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
             self.outputSet = outputSet
             self.selectCalls = []
 
-        def selectRuntimeInputObjectById(self, runtimeObjectId):
+        def selectRuntimeInputObjectById(
+                self,
+                runtimeObjectId,
+                runtimeObjectResolver=None,
+        ):
+            assert callable(runtimeObjectResolver)
             self.selectCalls.append(runtimeObjectId)
             return self.outputSet
 
@@ -445,6 +450,56 @@ def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
     assert runtimeMapper.selectCalls == [
         44,
     ]
+
+
+def test_ExecutionInputGenericObjectUsesDetachedRuntimeResolver():
+    genericInput = Object()
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.calls = []
+
+        def selectRuntimeInputObjectById(
+                self,
+                runtimeObjectId,
+                runtimeObjectResolver=None,
+        ):
+            self.calls.append({
+                "runtimeObjectId": runtimeObjectId,
+                "runtimeObjectResolver": runtimeObjectResolver,
+            })
+
+            return genericInput
+
+    runtimeMapper = RuntimeMapperStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.runtimeMapper = runtimeMapper
+
+    firstResult = worker._getExecutionInputObject(
+        700
+    )
+
+    secondResult = worker._getExecutionInputObject(
+        700
+    )
+
+    assert firstResult is genericInput
+    assert secondResult is genericInput
+
+    assert len(runtimeMapper.calls) == 1
+    assert runtimeMapper.calls[0]["runtimeObjectId"] == 700
+    assert callable(
+        runtimeMapper.calls[0]["runtimeObjectResolver"]
+    )
+
+    assert worker._executionInputObjectsByRuntimeObjectId == {
+        700: genericInput,
+    }
 
 
 def test_CloseClosesDetachedExecutionInputSets():

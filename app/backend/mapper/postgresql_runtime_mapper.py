@@ -1391,6 +1391,7 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             objId,
             allowPartialTree: bool = False,
+            runtimeObjectResolver=None,
     ):
         """
         Reconstruct one detached, generic Scipion object from PostgreSQL.
@@ -1432,6 +1433,7 @@ class PostgresqlRuntimeMapper(Mapper):
         return self._buildGenericObjectFromPostgresqlRows(
             rows,
             allowPartialTree=allowPartialTree,
+            runtimeObjectResolver=runtimeObjectResolver,
         )
 
     @staticmethod
@@ -1449,6 +1451,7 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             rows,
             allowPartialTree: bool = False,
+            runtimeObjectResolver=None,
     ):
         """
         Build an independent PostgreSQL object tree.
@@ -1641,15 +1644,92 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             if isStoredPointer:
-                if rejectOrSkip(
-                        row,
-                        rowId,
-                        depth,
-                        "pointer_node",
+                pointerReference = self._normalizeStoredObjectMetadata(
+                    metadata.get("pointerReference")
+                )
+
+                if not pointerReference or not callable(runtimeObjectResolver):
+                    if rejectOrSkip(
+                            row,
+                            rowId,
+                            depth,
+                            "pointer_node",
+                    ):
+                        continue
+
+                    return None
+
+                if isinstance(existingAttribute, pwobject.Pointer):
+                    scipionPointer = existingAttribute
+                else:
+                    scipionPointer = pwobject.Pointer()
+
+                if not self._restoreGenericPointerFromPostgresqlRow(
+                        pointer=scipionPointer,
+                        row=row,
+                        reference=pointerReference,
+                        runtimeObjectResolver=runtimeObjectResolver,
                 ):
+                    logger.warning(
+                        "Could not restore structured PostgreSQL runtime pointer. "
+                        "projectId=%s runtimeObjectId=%s path=%s reference=%s",
+                        self.projectId,
+                        row.get("scipionObjId"),
+                        row.get("path"),
+                        pointerReference,
+                    )
+                    return None
+
+                objectsByRowId[rowId] = scipionPointer
+
+                # Pointer state is restored atomically from pointerReference.
+                # Do not replay persisted internal fields such as _extended,
+                # because the root output part may already have been consumed
+                # while redirecting the pointer to a detached output.
+                skippedRowIds.add(rowId)
+
+                if parentObject is not None:
+                    setattr(parentObject, attributeName, scipionPointer)
+                    scipionPointer._objParent = parentObject
+
+                    parentRuntimeObjectId = self._getObjId(parentObject)
+
+                    if parentRuntimeObjectId is not None:
+                        self._setObjParentId(
+                            scipionPointer,
+                            parentRuntimeObjectId,
+                        )
+
                     continue
 
-                return None
+                if rootObject is not None:
+                    logger.warning(
+                        "Could not reconstruct PostgreSQL generic object because "
+                        "the stored subtree contains more than one root. "
+                        "projectId=%s runtimeObjectId=%s",
+                        self.projectId,
+                        row.get("scipionObjId"),
+                    )
+                    return None
+
+                rootObject = scipionPointer
+
+                parentRuntimeObjectId = self._toOptionalInt(
+                    row.get("rootParentScipionObjId")
+                )
+
+                if parentRuntimeObjectId is None:
+                    parentRuntimeObjectId = self._toOptionalInt(
+                        row.get("ownerProtocolId")
+                    )
+
+                if parentRuntimeObjectId is not None:
+                    self._setObjParentId(
+                        rootObject,
+                        parentRuntimeObjectId,
+                    )
+
+                continue
 
             objectClass = (
                 self
@@ -2029,6 +2109,189 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return {}
 
+    def _resolveGenericPointerRuntimeTarget(
+            self,
+            reference,
+            runtimeObjectResolver,
+    ):
+        if not isinstance(reference, dict) or not callable(runtimeObjectResolver):
+            return None, []
+
+        targetObjectId = self._toOptionalInt(reference.get("targetObjectId"))
+
+        if targetObjectId is None:
+            return None, []
+
+        targetParentObjectId = self._toOptionalInt(reference.get("targetParentObjectId"))
+        extendedParts = [
+            part
+            for part in str(reference.get("extended") or "").split(".")
+            if part
+        ]
+
+        if extendedParts:
+            protocolReader = getattr(
+                self.flatMapper,
+                "getProjectProtocolByProtocolId",
+                None,
+            )
+
+            protocolRow = None
+
+            if callable(protocolReader):
+                protocolRow = protocolReader(
+                    projectId=self.projectId,
+                    protocolId=str(targetObjectId),
+                )
+
+            protocolDbId = self._toOptionalInt(
+                (protocolRow or {}).get("id")
+            )
+
+            if protocolDbId is not None:
+                rootOutputName = extendedParts[0]
+
+                outputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                    mapper=self,
+                    projectId=self.projectId,
+                    parentProtocolDbId=protocolDbId,
+                    outputName=rootOutputName,
+                )
+
+                runtimeOutputId = self._toOptionalInt(
+                    outputInfo.get("runtimeObjectId")
+                )
+
+                if outputInfo.get("exists") and runtimeOutputId is not None:
+                    target = runtimeObjectResolver(runtimeOutputId)
+
+                    if target is not None:
+                        return target, extendedParts[1:]
+
+        if targetParentObjectId is not None:
+            parentTarget = runtimeObjectResolver(targetParentObjectId)
+
+            if isinstance(parentTarget, ScipionSet):
+                parentMapper = parentTarget._getMapper()
+                selectById = getattr(parentMapper, "selectById", None)
+
+                if callable(selectById):
+                    target = selectById(targetObjectId)
+
+                    if target is not None:
+                        return target, extendedParts
+
+        target = runtimeObjectResolver(targetObjectId)
+
+        return target, extendedParts
+
+    def _restoreGenericPointerFromPostgresqlRow(
+            self,
+            pointer,
+            row,
+            reference,
+            runtimeObjectResolver,
+    ) -> bool:
+        target, extendedParts = self._resolveGenericPointerRuntimeTarget(
+            reference=reference,
+            runtimeObjectResolver=runtimeObjectResolver,
+        )
+
+        if target is None:
+            return False
+
+        try:
+            pointer.set(target)
+
+            if extendedParts:
+                pointer.setExtendedParts(extendedParts)
+            else:
+                pointer.setExtended("")
+
+            if pointer.get() is None:
+                return False
+
+        except Exception:
+            logger.debug(
+                "Could not resolve structured PostgreSQL runtime pointer. "
+                "projectId=%s runtimeObjectId=%s reference=%s",
+                self.projectId,
+                row.get("scipionObjId"),
+                reference,
+                exc_info=True,
+            )
+            return False
+
+        pointer._postgresqlRuntimeReference = dict(reference)
+
+        runtimeObjectId = self._toOptionalInt(
+            row.get("scipionObjId")
+        )
+
+        if runtimeObjectId is not None:
+            self._setObjId(
+                pointer,
+                runtimeObjectId,
+            )
+
+        objectPath = str(
+            row.get("path")
+            or row.get("name")
+            or ""
+        ).strip()
+
+        if objectPath:
+            self._setObjName(
+                pointer,
+                objectPath,
+            )
+
+        label = row.get("label")
+        comment = row.get("comment")
+
+        labelSetter = getattr(
+            pointer,
+            "setObjLabel",
+            None,
+        )
+
+        if callable(labelSetter):
+            labelSetter(label or "")
+        else:
+            pointer._objLabel = label or ""
+
+        commentSetter = getattr(
+            pointer,
+            "setObjComment",
+            None,
+        )
+
+        if callable(commentSetter):
+            commentSetter(comment or "")
+        else:
+            pointer._objComment = comment or ""
+
+        creation = row.get("creation")
+
+        if creation not in (None, ""):
+            creation = self._formatProjectCreationTime(creation)
+
+            if creation is None:
+                return False
+
+        creationSetter = getattr(
+            pointer,
+            "setObjCreation",
+            None,
+        )
+
+        if callable(creationSetter):
+            creationSetter(creation)
+        else:
+            pointer._objCreation = creation
+
+        return True
+
     def exists(self, objId):
         runtimeObjectId = self._toOptionalInt(objId)
 
@@ -2403,6 +2666,7 @@ class PostgresqlRuntimeMapper(Mapper):
     def selectRuntimeInputObjectById(
             self,
             objId,
+            runtimeObjectResolver=None,
     ):
         runtimeObjectId = (
             self._toOptionalInt(
@@ -2424,12 +2688,10 @@ class PostgresqlRuntimeMapper(Mapper):
         if runtimeSet is not None:
             return runtimeSet
 
-        return (
-            self
-            ._selectGenericObjectByIdFromPostgresql(
-                runtimeObjectId,
-                allowPartialTree=True,
-            )
+        return self._selectGenericObjectByIdFromPostgresql(
+            runtimeObjectId,
+            allowPartialTree=True,
+            runtimeObjectResolver=runtimeObjectResolver,
         )
 
     def _selectAllPostgresqlObjectsForSelectBy(self):

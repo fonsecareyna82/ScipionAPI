@@ -696,6 +696,8 @@ class RuntimePostgresqlProtocolWorker:
         self.runtimeMapper = None
         self.dependencyEventListener = None
         self._executionInputSetsByRuntimeObjectId = {}
+        self._executionInputObjectsByRuntimeObjectId = {}
+        self._executionInputObjectIdsResolving = set()
 
     def _applyQueueLaunchOverride(self) -> bool:
         if self._queueLaunchOverride is None or self.protocol is None:
@@ -834,6 +836,8 @@ class RuntimePostgresqlProtocolWorker:
         )
 
         self._executionInputSetsByRuntimeObjectId.clear()
+        self._executionInputObjectsByRuntimeObjectId.clear()
+        self._executionInputObjectIdsResolving.clear()
 
         releasedInputSetIds = set()
 
@@ -2095,48 +2099,82 @@ class RuntimePostgresqlProtocolWorker:
     ):
         runtimeObjectId = int(runtimeObjectId)
 
-        cachedInputSet = self._executionInputSetsByRuntimeObjectId.get(runtimeObjectId)
-
-        if cachedInputSet is not None:
-            return cachedInputSet
-
-        sourceOutputObject = self.runtimeMapper.selectRuntimeInputObjectById(runtimeObjectId)
-
-        if sourceOutputObject is None:
-            return None
-
-        if not isinstance(sourceOutputObject, Set):
-            return sourceOutputObject
-
-        cloneRuntimeSet = getattr(sourceOutputObject, "clone", None)
-
-        if not callable(cloneRuntimeSet):
-            raise RuntimeError(
-                "PostgreSQL input Set does not support detached cloning. "
-                "runtimeObjectId=%s className=%s"
-                % (
-                    runtimeObjectId,
-                    sourceOutputObject.__class__.__name__,
-                )
-            )
-
-        runtimeInputSet = cloneRuntimeSet(
-            _postgresqlDetachedConsumer=True
+        cachedInputObject = self._executionInputObjectsByRuntimeObjectId.get(
+            runtimeObjectId
         )
 
-        if runtimeInputSet is sourceOutputObject:
-            raise RuntimeError(
-                "PostgreSQL input Set clone reused the parent output object. "
-                "runtimeObjectId=%s className=%s"
-                % (
-                    runtimeObjectId,
-                    sourceOutputObject.__class__.__name__,
-                )
+        if cachedInputObject is not None:
+            return cachedInputObject
+
+        if runtimeObjectId in self._executionInputObjectIdsResolving:
+            return None
+
+        self._executionInputObjectIdsResolving.add(
+            runtimeObjectId
+        )
+
+        try:
+            sourceOutputObject = self.runtimeMapper.selectRuntimeInputObjectById(
+                runtimeObjectId,
+                runtimeObjectResolver=self._getExecutionInputObject,
             )
 
-        self._executionInputSetsByRuntimeObjectId[runtimeObjectId] = runtimeInputSet
+            if sourceOutputObject is None:
+                return None
 
-        return runtimeInputSet
+            if not isinstance(sourceOutputObject, Set):
+                self._executionInputObjectsByRuntimeObjectId[runtimeObjectId] = sourceOutputObject
+                return sourceOutputObject
+
+            cloneRuntimeSet = getattr(
+                sourceOutputObject,
+                "clone",
+                None,
+            )
+
+            if not callable(cloneRuntimeSet):
+                raise RuntimeError(
+                    "PostgreSQL input Set does not support detached cloning. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            runtimeInputSet = cloneRuntimeSet(
+                _postgresqlDetachedConsumer=True
+            )
+
+            if runtimeInputSet is None:
+                raise RuntimeError(
+                    "PostgreSQL input Set clone returned None. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            if runtimeInputSet is sourceOutputObject:
+                raise RuntimeError(
+                    "PostgreSQL input Set clone reused the parent output object. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            self._executionInputSetsByRuntimeObjectId[runtimeObjectId] = runtimeInputSet
+            self._executionInputObjectsByRuntimeObjectId[runtimeObjectId] = runtimeInputSet
+
+            return runtimeInputSet
+
+        finally:
+            self._executionInputObjectIdsResolving.discard(
+                runtimeObjectId
+            )
 
     def restoreExecutionInputs(
             self,

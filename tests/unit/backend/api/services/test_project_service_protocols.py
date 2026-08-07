@@ -572,6 +572,62 @@ def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModu
     assert not hasattr(service, "_loadProtocolFromRuntimeDb")
 
 
+def test_ResolvePostgresqlRuntimeInputObjectCachesGenericDetachedInput(
+        projectServiceModule,
+):
+    genericInput = ScipionObject()
+    calls = []
+
+    class RuntimeMapperStub:
+        def selectRuntimeInputObjectById(
+                self,
+                runtimeObjectId,
+                runtimeObjectResolver=None,
+        ):
+            calls.append({
+                "runtimeObjectId": runtimeObjectId,
+                "runtimeObjectResolver": runtimeObjectResolver,
+            })
+
+            return genericInput
+
+    runtimeMapper = RuntimeMapperStub()
+
+    class CurrentProjectStub:
+        def getPostgresqlRuntimeMapper(self):
+            return runtimeMapper
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
+    service.currentProject = CurrentProjectStub()
+    service._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+    service._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+    service._postgresqlLaunchInputObjectIdsResolving = set()
+
+    firstResult = service._resolvePostgresqlRuntimeInputObject(
+        700
+    )
+
+    secondResult = service._resolvePostgresqlRuntimeInputObject(
+        700
+    )
+
+    assert firstResult is genericInput
+    assert secondResult is genericInput
+
+    assert len(calls) == 1
+    assert calls[0]["runtimeObjectId"] == 700
+    assert callable(
+        calls[0]["runtimeObjectResolver"]
+    )
+
+    assert service._postgresqlLaunchInputObjectsByRuntimeObjectId == {
+        700: genericInput,
+    }
+
+
 def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):
     declaredOutputs = [
         {
