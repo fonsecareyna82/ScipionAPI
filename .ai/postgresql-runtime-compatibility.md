@@ -164,6 +164,7 @@ The compatibility layer must not:
 Runtime hydration may modify only the detached in-memory object reconstructed for the consumer worker.
 Consumer isolation is transitive. Any PostgreSQL runtime Set reached through a detached input, including nested Set items and Set-valued Pointer or PointerList targets, must also remain detached and read-only. A consumer must not regain PostgreSQL write capability by traversing or cloning an input object graph.
 The same isolation applies when the root runtime input is not a Set. A structured Pointer nested inside a generic PostgreSQL input object must resolve Set targets through the consumer-owned detached input resolver and must never restore access through the canonical parent protocol.
+Generic PostgreSQL object hydration must preserve nested parent identity through Scipion `_objParentId` values without synthesizing strong `_objParent` links between reconstructed attributes. Native Scipion object mappers do not create those strong links, and doing so introduces cyclic object graphs that break recursive operations such as `Object.copy()` and `Volume.copyInfo()`.
 
 ## Materialization synchronization
 
@@ -246,6 +247,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 17. Worker finalization removes only the current worker's SQLite snapshots after closing mappers, on both successful and failed protocol execution.
 18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
 19. Structured pointers inside generic PostgreSQL runtime inputs resolve through consumer-owned detached targets without restoring canonical parent protocol access.
+20. Generic PostgreSQL runtime object trees preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
 
 ## Historical failure mode
 

@@ -361,12 +361,12 @@ def test_SelectGenericObjectHydratesDetachedTree():
     )
     assert result.title.getObjId() == 701
     assert result.title.getObjParentId() == 700
-    assert result.title._objParent is result
+    assert result.title._objParent is None
 
     assert result.count.get() == 5
     assert result.count.getObjId() == 702
     assert result.count.getObjParentId() == 700
-    assert result.count._objParent is result
+    assert result.count._objParent is None
 
     assert mapper.objectMapper.calls == [
         (
@@ -646,6 +646,20 @@ def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
         "/tmp/half-map-2.mrc",
     ]
 
+    assert result._filename._objParent is None
+    assert result._samplingRate._objParent is None
+    assert result._halfMapFilenames._objParent is None
+
+    copiedVolume = Volume()
+    copiedVolume.copyInfo(result)
+
+    assert copiedVolume.getFileName() == "/tmp/output-volume.mrc"
+    assert copiedVolume.getSamplingRate() == 1.5
+    assert list(copiedVolume.getHalfMaps(asList=True)) == [
+        "/tmp/half-map-1.mrc",
+        "/tmp/half-map-2.mrc",
+    ]
+
     assert result._objParent is None
     assert not hasattr(
         result,
@@ -752,8 +766,17 @@ def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
     assert result.target.getObjValue() is detachedOutput
     assert result.target.get() is detachedOutput
     assert result.target.getExtended() == ""
+    assert result.target._objParent is None
 
     assert result.target._postgresqlRuntimeReference == pointerReference
+
+    copiedResult = FakeComposite()
+    copiedResult.copy(result, copyId=False)
+
+    assert copiedResult.title.get() == result.title.get()
+    assert copiedResult.count.get() == result.count.get()
+    assert copiedResult.target.getObjValue() is detachedOutput
+    assert copiedResult.target.get() is detachedOutput
 
     assert resolverCalls == [
         900,

@@ -1690,7 +1690,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
                 if parentObject is not None:
                     setattr(parentObject, attributeName, scipionPointer)
-                    scipionPointer._objParent = parentObject
 
                     parentRuntimeObjectId = self._getObjId(parentObject)
 
@@ -1866,21 +1865,9 @@ class PostgresqlRuntimeMapper(Mapper):
             ] = scipionObject
 
             if parentObject is not None:
-                setattr(
-                    parentObject,
-                    attributeName,
-                    scipionObject,
-                )
+                setattr(parentObject, attributeName, scipionObject)
 
-                scipionObject._objParent = (
-                    parentObject
-                )
-
-                parentRuntimeObjectId = (
-                    self._getObjId(
-                        parentObject
-                    )
-                )
+                parentRuntimeObjectId = self._getObjId(parentObject)
 
                 if parentRuntimeObjectId is not None:
                     self._setObjParentId(
