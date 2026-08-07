@@ -38,12 +38,13 @@ class FakeRuntimeSetFactory:
         self.clearCalls += 1
 
 
-def test_ConstructorDoesNotExposeReadFallback():
+def test_ConstructorDoesNotExposeSqliteFallbackMappers():
     parameters = inspect.signature(
         PostgresqlRuntimeMapper.__init__
     ).parameters
 
     assert "readFallbackMapper" not in parameters
+    assert "writeFallbackMapper" not in parameters
 
 
 def test_CloseReleasesRuntimeMapperCaches():
