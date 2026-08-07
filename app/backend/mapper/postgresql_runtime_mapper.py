@@ -178,6 +178,11 @@ class PostgresqlRuntimeMapper(Mapper):
     # Lifecycle
     # ---------------------------------------------------------------------
 
+    TRANSIENT_PROTOCOL_PARAM_NAMES = frozenset({
+        "_queueName",
+        "_queueParams",
+    })
+
     def commit(self):
         # PostgresqlDb.execute commits by default. Transactions are handled
         # explicitly with db.transaction() where needed.
@@ -4974,9 +4979,10 @@ class PostgresqlRuntimeMapper(Mapper):
         except Exception:
             values = {}
 
-        runtimeStatusSyncService = (
-            RuntimeProtocolStatusSyncService()
-        )
+        for paramName in self.TRANSIENT_PROTOCOL_PARAM_NAMES:
+            values.pop(paramName, None)
+
+        runtimeStatusSyncService = RuntimeProtocolStatusSyncService()
 
         values[runtimeStatusSyncService.RUNTIME_METADATA_KEY] = runtimeStatusSyncService.buildRuntimeMetadata(protocol)
 
@@ -5777,7 +5783,7 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         for key, storedValue in params.items():
-            if key == runtimeMetadataKey:
+            if key == runtimeMetadataKey or key in self.TRANSIENT_PROTOCOL_PARAM_NAMES:
                 continue
             value = (
                 self

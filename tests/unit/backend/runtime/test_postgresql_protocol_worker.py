@@ -286,6 +286,40 @@ def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
     assert worker.protocol is protocol
 
 
+def test_WorkerAppliesTransientQueueOverrideInMemory():
+    class QueueProtocolStub:
+        def __init__(self):
+            self.queueParams = None
+
+        def useQueue(self):
+            return True
+
+        def setQueueParams(self, queueParams):
+            self.queueParams = queueParams
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+        queueName="gpu",
+        queueParams={
+            "JOB_TIME": "72",
+        },
+    )
+
+    worker.protocol = protocol
+
+    assert worker._applyQueueLaunchOverride() is True
+
+    assert protocol.queueParams == [
+        "gpu",
+        {
+            "JOB_TIME": "72",
+        },
+    ]
+
+
 def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
         monkeypatch,
 ):
@@ -1367,6 +1401,280 @@ def test_EffectiveQueueLaunchParamsFallsBackToFirstConfiguredQueue(monkeypatch):
     assert queueParams == {
         "JOB_TIME": "72",
     }
+
+
+def test_EnsureQueueLaunchParamsUsesEffectiveSettingsWhenOverrideIsMissing():
+    class QueueProtocolStub:
+        def __init__(self):
+            self.queueParams = None
+
+        def hasQueueParams(self):
+            return self.queueParams is not None
+
+        def getQueueParams(self):
+            return self.queueParams
+
+        def setQueueParams(self, queueParams):
+            self.queueParams = queueParams
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = protocol
+
+    worker._getEffectiveQueueLaunchParams = lambda: (
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    queueName, queueParams = (
+        worker._ensureQueueLaunchParams()
+    )
+
+    assert queueName == "gpu"
+
+    assert queueParams == {
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+    }
+
+    assert protocol.queueParams == [
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    ]
+
+
+def test_BuildStepsExecutorUsesEffectiveQueueParams(
+        monkeypatch,
+):
+    calls = {}
+
+    class QueueStepsProtocolStub:
+        def __init__(self):
+            self.queueParams = None
+            self.numberOfThreads = SimpleNamespace(
+                get=lambda: 1
+            )
+
+        def getHostConfig(self):
+            return "host"
+
+        def getGpuList(self):
+            return []
+
+        def useQueue(self):
+            return True
+
+        def useQueueForSteps(self):
+            return True
+
+        def modeParallel(self):
+            return False
+
+        def hasQueueParams(self):
+            return self.queueParams is not None
+
+        def getQueueParams(self):
+            return self.queueParams
+
+        def setQueueParams(self, queueParams):
+            self.queueParams = queueParams
+
+        def getSubmitDict(self):
+            queueName, queueParams = self.queueParams
+
+            submitDict = {
+                "JOB_QUEUE": queueName,
+            }
+
+            submitDict.update(
+                queueParams
+            )
+
+            return submitDict
+
+    def buildQueueStepExecutor(
+            hostConfig,
+            submitDict,
+            numberOfThreads,
+            gpuList=None,
+    ):
+        calls["hostConfig"] = hostConfig
+        calls["submitDict"] = dict(
+            submitDict
+        )
+        calls["numberOfThreads"] = (
+            numberOfThreads
+        )
+        calls["gpuList"] = gpuList
+
+        return "queue-executor"
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "QueueStepExecutor",
+        buildQueueStepExecutor,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "anonimizeGPUs",
+        lambda gpuList: gpuList,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = (
+        QueueStepsProtocolStub()
+    )
+
+    worker._getEffectiveQueueLaunchParams = lambda: (
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    executor = worker.buildStepsExecutor()
+
+    assert executor == "queue-executor"
+
+    assert calls["submitDict"] == {
+        "JOB_QUEUE": "gpu",
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+    }
+
+
+def test_SubmitToQueueForwardsEffectiveParamsToExecuteWorker(
+        monkeypatch,
+):
+    calls = {}
+
+    class QueueProtocolStub:
+        def __init__(self):
+            self.queueParams = None
+            self.jobId = None
+            self.pid = None
+            self.status = None
+
+        def hasQueueParams(self):
+            return self.queueParams is not None
+
+        def getQueueParams(self):
+            return self.queueParams
+
+        def setQueueParams(self, queueParams):
+            self.queueParams = queueParams
+
+        def getHostConfig(self):
+            return "host"
+
+        def getSubmitDict(self):
+            queueName, queueParams = self.queueParams
+
+            submitDict = {
+                "JOB_QUEUE": queueName,
+            }
+
+            submitDict.update(
+                queueParams
+            )
+
+            return submitDict
+
+        def setJobId(self, jobId):
+            self.jobId = jobId
+
+        def setPid(self, pid):
+            self.pid = pid
+
+        def setStatus(self, status):
+            self.status = status
+
+    def buildWorkerCommand(**kwargs):
+        calls["commandArgs"] = kwargs
+        return ["worker-command"]
+
+    def submit(
+            hostConfig,
+            submitDict,
+            cwd,
+            env,
+    ):
+        calls["hostConfig"] = hostConfig
+        calls["submitDict"] = dict(
+            submitDict
+        )
+        calls["cwd"] = cwd
+
+        return "12345", None
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "buildPostgresqlWorkerCommand",
+        buildWorkerCommand,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "_submit",
+        submit,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = QueueProtocolStub()
+
+    worker.project = SimpleNamespace(
+        path="/tmp/project"
+    )
+
+    worker._getEffectiveQueueLaunchParams = lambda: (
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    worker.storeProtocol = lambda: None
+    worker.markProtocolExecutionLaunched = lambda: None
+
+    assert worker.submitToQueue() == 0
+
+    assert calls["commandArgs"] == {
+        "projectId": 1,
+        "protocolId": 30,
+        "execute": True,
+        "runMode": "restart",
+        "queueName": "gpu",
+        "queueParams": {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    }
+
+    assert calls["submitDict"]["JOB_QUEUE"] == "gpu"
+    assert calls["submitDict"]["JOB_TIME"] == "72"
+    assert calls["submitDict"]["JOB_MEMORY"] == "64000"
 
 
 

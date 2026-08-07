@@ -440,7 +440,18 @@ class PostgresqlProject(ScipionProject):
         if moduleRoot not in pythonPathEntries:
             pythonPathEntries.insert(0, moduleRoot)
         workerEnv["PYTHONPATH"] = os.pathsep.join(pythonPathEntries)
-        command = buildPostgresqlWorkerCommand(projectId=self.postgresqlProjectId, protocolId=int(protocolId), runMode=runMode)
+        commandArgs = {
+            "projectId": self.postgresqlProjectId,
+            "protocolId": int(protocolId),
+            "runMode": runMode,
+        }
+
+        if protocol.useQueue() and protocol.hasQueueParams():
+            queueName, queueParams = protocol.getQueueParams()
+            commandArgs["queueName"] = queueName
+            commandArgs["queueParams"] = queueParams
+
+        command = buildPostgresqlWorkerCommand(**commandArgs)
         with open(scheduleLogPath, "a", encoding="utf-8") as scheduleLog:
             process = subprocess.Popen(command, cwd=moduleRoot, env=workerEnv, stdin=subprocess.DEVNULL, stdout=scheduleLog, stderr=scheduleLog, start_new_session=True)
         logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)

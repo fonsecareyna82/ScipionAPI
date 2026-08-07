@@ -270,4 +270,76 @@ def test_PostgresqlProtocolHostConfigIsRestored():
     )
 
 
+def test_ProtocolContextDoesNotPersistTransientQueueParams():
+    mapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 342
+
+    protocol = FakeProtocolWithHost()
+    protocol._useQueue.set(1)
+
+    protocol.setQueueParams([
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    ])
+
+    context = mapper._buildProtocolContext(
+        protocol
+    )
+
+    values = context["values"]
+
+    assert "_useQueue" in values
+    assert "_queueName" not in values
+    assert "_queueParams" not in values
+
+    queueName, queueParams = protocol.getQueueParams()
+
+    assert queueName == "gpu"
+    assert queueParams == {
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+    }
+
+
+def test_StoredTransientQueueParamsAreNotHydrated():
+    mapper = buildMapper()
+    protocol = FakeProtocolWithHost()
+
+    protocol.setQueueParams([
+        "current",
+        {
+            "JOB_TIME": "72",
+        },
+    ])
+
+    mapper._applyStoredProtocolParams(
+        protocol,
+        {
+            "_queueName": "stale",
+            "_queueParams": '["stale", {"JOB_TIME": "24"}]',
+        },
+    )
+
+    queueName, queueParams = protocol.getQueueParams()
+
+    assert queueName == "current"
+    assert queueParams == {
+        "JOB_TIME": "72",
+    }
+
+    assert not hasattr(
+        protocol,
+        "_queueName",
+    )
+
+
+
+
+
 

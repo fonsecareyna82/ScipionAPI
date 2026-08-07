@@ -163,13 +163,14 @@ STREAMING_PARENT_NOT_STARTED_STATUSES = {
     "scheduled",
 }
 
+
 def buildPostgresqlWorkerCommand(
         projectId: int,
         protocolId: int,
         execute: bool = False,
-        runMode: str = (
-            POSTGRESQL_RUN_MODE_RESTART
-        ),
+        runMode: str = POSTGRESQL_RUN_MODE_RESTART,
+        queueName=None,
+        queueParams=None,
 ) -> List[str]:
     normalizedRunMode = (
         normalizePostgresqlRunMode(
@@ -189,19 +190,25 @@ def buildPostgresqlWorkerCommand(
 
     # Keep the existing restart command
     # unchanged for backward compatibility.
-    if (
-            normalizedRunMode
-            != POSTGRESQL_RUN_MODE_RESTART
-    ):
+    if normalizedRunMode != POSTGRESQL_RUN_MODE_RESTART:
         command.extend([
             "--run-mode",
             normalizedRunMode,
         ])
 
+    if queueParams is not None:
+        if not isinstance(queueParams, dict):
+            raise TypeError("PostgreSQL queue launch params must be a dictionary.")
+
+        command.extend([
+            "--queue-name",
+            str(queueName or ""),
+            "--queue-params-json",
+            json.dumps(queueParams, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        ])
+
     if execute:
-        command.append(
-            "--execute"
-        )
+        command.append("--execute")
 
     return command
 
@@ -669,18 +676,19 @@ class RuntimePostgresqlProtocolWorker:
             self,
             projectId: int,
             protocolId: int,
-            runMode: str = (
-                POSTGRESQL_RUN_MODE_RESTART
-            ),
+            runMode: str = POSTGRESQL_RUN_MODE_RESTART,
+            queueName=None,
+            queueParams=None,
     ):
         self.projectId = int(projectId)
         self.protocolId = int(protocolId)
 
-        self.runMode = (
-            normalizePostgresqlRunMode(
-                runMode
-            )
-        )
+        self.runMode = normalizePostgresqlRunMode(runMode)
+
+        if queueParams is not None and not isinstance(queueParams, dict):
+            raise TypeError("PostgreSQL queue launch params must be a dictionary.")
+
+        self._queueLaunchOverride = None if queueParams is None else (str(queueName or ""), dict(queueParams))
 
         self.mapper = None
         self.project = None
@@ -688,6 +696,18 @@ class RuntimePostgresqlProtocolWorker:
         self.runtimeMapper = None
         self.dependencyEventListener = None
         self._executionInputSetsByRuntimeObjectId = {}
+
+    def _applyQueueLaunchOverride(self) -> bool:
+        if self._queueLaunchOverride is None or self.protocol is None:
+            return False
+
+        if not self.protocol.useQueue():
+            return False
+
+        queueName, queueParams = self._queueLaunchOverride
+        self.protocol.setQueueParams([queueName, dict(queueParams)])
+
+        return True
 
     def load(self) -> None:
         from app.backend.database import getMapper
@@ -748,8 +768,8 @@ class RuntimePostgresqlProtocolWorker:
                 % self.protocolId
             )
 
+        self._applyQueueLaunchOverride()
         self.protocol.makeWorkingDir()
-
         self.configureSchedulingLogging()
 
     def configureSchedulingLogging(
@@ -2691,8 +2711,11 @@ class RuntimePostgresqlProtocolWorker:
 
     def buildStepsExecutor(self):
         protocol = self.protocol
-        hostConfig = protocol.getHostConfig()
 
+        if protocol.useQueueForSteps():
+            self._ensureQueueLaunchParams()
+
+        hostConfig = protocol.getHostConfig()
         gpuList = protocol.getGpuList()
 
         if protocol.useQueue():
@@ -2947,29 +2970,41 @@ class RuntimePostgresqlProtocolWorker:
 
         return queueName, queueParams
 
+    def _ensureQueueLaunchParams(self):
+        if self.protocol.hasQueueParams():
+            queueName, queueParams = self.protocol.getQueueParams()
+
+            if not isinstance(queueParams, dict):
+                raise RuntimeError(
+                    "Protocol queue launch params must be a dictionary."
+                )
+
+            return str(queueName or ""), dict(queueParams)
+
+        queueName, queueParams = self._getEffectiveQueueLaunchParams()
+
+        self.protocol.setQueueParams([
+            queueName,
+            queueParams,
+        ])
+
+        return queueName, dict(queueParams)
+
     def submitToQueue(self) -> int:
+        queueName, queueParams = self._ensureQueueLaunchParams()
+
         command = buildPostgresqlWorkerCommand(
             projectId=self.projectId,
             protocolId=self.protocolId,
             execute=True,
             runMode=self.runMode,
+            queueName=queueName,
+            queueParams=queueParams,
         )
 
-        hostConfig = (
-            self.protocol
-            .getHostConfig()
-        )
-
+        hostConfig = self.protocol.getHostConfig()
         submitDict = self.protocol.getSubmitDict()
-
-        if not self.protocol.hasQueueParams():
-            queueName, queueParams = self._getEffectiveQueueLaunchParams()
-            submitDict["JOB_QUEUE"] = queueName
-            submitDict.update(queueParams)
-
-        submitDict["JOB_COMMAND"] = (
-            shlex.join(command)
-        )
+        submitDict["JOB_COMMAND"] = shlex.join(command)
 
         jobId, error = _submit(
             hostConfig,
@@ -2978,28 +3013,17 @@ class RuntimePostgresqlProtocolWorker:
             env=os.environ.copy(),
         )
 
-        if (
-                jobId is None
-                or jobId == UNKNOWN_JOBID
-        ):
+        if jobId is None or jobId == UNKNOWN_JOBID:
             raise RuntimeError(
-                "Could not submit PostgreSQL "
-                "protocol to the queue: %s"
+                "Could not submit PostgreSQL protocol to the queue: %s"
                 % error
             )
 
-        self.protocol.setJobId(
-            jobId
-        )
-
+        self.protocol.setJobId(jobId)
         self.protocol.setPid(0)
-
-        self.protocol.setStatus(
-            STATUS_LAUNCHED
-        )
+        self.protocol.setStatus(STATUS_LAUNCHED)
 
         self.storeProtocol()
-
         self.markProtocolExecutionLaunched()
 
         return 0
@@ -3193,16 +3217,49 @@ def main() -> int:
     )
 
     parser.add_argument(
+        "--queue-name",
+        default=None,
+    )
+
+    parser.add_argument(
+        "--queue-params-json",
+        default=None,
+    )
+
+    parser.add_argument(
         "--execute",
         action="store_true",
     )
 
     args = parser.parse_args()
 
+    queueParams = None
+
+    if args.queue_params_json is not None:
+        try:
+            queueParams = json.loads(args.queue_params_json)
+        except json.JSONDecodeError as error:
+            parser.error(
+                "Invalid PostgreSQL queue params JSON: %s"
+                % error
+            )
+
+        if not isinstance(queueParams, dict):
+            parser.error(
+                "PostgreSQL queue params must decode to a dictionary."
+            )
+
+    if args.queue_name is not None and queueParams is None:
+        parser.error(
+            "--queue-name requires --queue-params-json."
+        )
+
     worker = RuntimePostgresqlProtocolWorker(
         projectId=args.project_id,
         protocolId=args.protocol_id,
         runMode=args.run_mode,
+        queueName=args.queue_name,
+        queueParams=queueParams,
     )
 
     return worker.run(

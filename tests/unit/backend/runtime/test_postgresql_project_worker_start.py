@@ -33,15 +33,34 @@ from app.backend.project.postgresql_project import PostgresqlProject
 
 
 class FakeProtocol:
-    def __init__(self, protocolId, scheduleLog):
+    def __init__(
+            self,
+            protocolId,
+            scheduleLog,
+            queueName=None,
+            queueParams=None,
+    ):
         self.protocolId = protocolId
         self.scheduleLog = scheduleLog
+        self.queueName = queueName
+        self.queueParams = queueParams
 
     def getObjId(self):
         return self.protocolId
 
     def getScheduleLog(self):
         return self.scheduleLog
+
+    def useQueue(self):
+        return self.queueParams is not None
+
+    def hasQueueParams(self):
+        return self.queueParams is not None
+
+    def getQueueParams(self):
+        return self.queueName, dict(
+            self.queueParams or {}
+        )
 
 
 class FakeProcess:
@@ -94,3 +113,77 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
     assert calls["sameLog"] is True
     assert calls["stdoutPath"] == str(projectPath / "Runs/000041_FakeProtocol/logs/schedule.log")
     assert calls["env"]["PYTHONPATH"].split(os.pathsep)[0] == moduleRoot
+
+
+
+def test_StartPostgresqlProtocolWorkerForwardsTransientQueueOverride(
+        tmp_path,
+        monkeypatch,
+):
+    projectPath = tmp_path / "project"
+    projectPath.mkdir()
+
+    protocol = FakeProtocol(
+        41,
+        "Runs/000041_FakeProtocol/logs/schedule.log",
+        queueName="gpu",
+        queueParams={
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    project = PostgresqlProject.__new__(
+        PostgresqlProject
+    )
+
+    project.path = str(
+        projectPath
+    )
+
+    project.postgresqlProjectId = 344
+
+    process = FakeProcess()
+    calls = {}
+
+    def buildCommand(**kwargs):
+        calls["commandArgs"] = kwargs
+
+        return [
+            "python",
+            "-m",
+            "app.backend.runtime.postgresql_protocol_worker",
+        ]
+
+    def popen(command, **kwargs):
+        calls["command"] = command
+        return process
+
+    monkeypatch.setattr(
+        workerModule,
+        "buildPostgresqlWorkerCommand",
+        buildCommand,
+    )
+
+    monkeypatch.setattr(
+        projectModule.subprocess,
+        "Popen",
+        popen,
+    )
+
+    project._startPostgresqlProtocolWorker(
+        protocol=protocol,
+        runMode="resume",
+        wait=False,
+    )
+
+    assert calls["commandArgs"] == {
+        "projectId": 344,
+        "protocolId": 41,
+        "runMode": "resume",
+        "queueName": "gpu",
+        "queueParams": {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    }

@@ -167,6 +167,43 @@ def test_ResumeWorkerCommandIncludesRunMode():
     ]
 
 
+def test_QueueOverrideWorkerCommandIncludesTransientQueueSettings():
+    command = buildPostgresqlWorkerCommand(
+        projectId=7,
+        protocolId=10,
+        execute=True,
+        runMode=POSTGRESQL_RUN_MODE_RESUME,
+        queueName="gpu",
+        queueParams={
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    queueNameIndex = command.index(
+        "--queue-name"
+    )
+
+    queueParamsIndex = command.index(
+        "--queue-params-json"
+    )
+
+    assert command[
+        queueNameIndex + 1
+    ] == "gpu"
+
+    assert json.loads(
+        command[
+            queueParamsIndex + 1
+        ]
+    ) == {
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+    }
+
+    assert command[-1] == "--execute"
+
+
 def test_WorkerDefaultsToRestartMode():
     worker = RuntimePostgresqlProtocolWorker(
         projectId=7,
