@@ -264,27 +264,146 @@ class PostgresqlRuntimeSetMixin:
         return isinstance(current, (Pointer, PointerList))
 
     def _getDetachedPostgresqlPointerSet(self, sourceSet):
-        detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
+        detachedRuntimeSets = getattr(
+            self,
+            "_postgresqlDetachedRuntimeSets",
+            None,
+        )
 
         if not isinstance(detachedRuntimeSets, dict):
             return sourceSet
 
-        checker = getattr(sourceSet, "isPostgresqlRuntimeOutput", None)
+        checker = getattr(
+            sourceSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
 
         if not callable(checker) or not checker():
             return sourceSet
 
         sourceIdentity = id(sourceSet)
 
-        detachedSet = detachedRuntimeSets.get(sourceIdentity)
+        detachedSet = detachedRuntimeSets.get(
+            sourceIdentity
+        )
 
         if detachedSet is not None:
             return detachedSet
 
-        if not isinstance(sourceSet, PostgresqlRuntimeSetMixin):
+        if not isinstance(
+                sourceSet,
+                PostgresqlRuntimeSetMixin,
+        ):
             return sourceSet
 
-        return sourceSet.clone(_postgresqlDetachedRuntimeSets=detachedRuntimeSets)
+        return sourceSet.clone(
+            _postgresqlDetachedConsumer=True,
+            _postgresqlDetachedRuntimeSets=detachedRuntimeSets,
+        )
+
+    def _configurePostgresqlDetachedConsumer(
+            self,
+            detachedRuntimeSets,
+            ownsDetachedRuntimeSets=False,
+    ) -> None:
+        if not isinstance(detachedRuntimeSets, dict):
+            raise TypeError(
+                "Detached PostgreSQL consumer Set registry must be a dictionary."
+            )
+
+        self._postgresqlDetachedConsumer = True
+        self._postgresqlDetachedRuntimeSets = detachedRuntimeSets
+        self._postgresqlOwnsDetachedRuntimeSets = bool(
+            ownsDetachedRuntimeSets
+        )
+        self._postgresqlSupportsNativeWrite = False
+        self._postgresqlWritable = False
+
+        if bool(
+                getattr(
+                    self,
+                    "_postgresqlDetachedMapperFactoryWrapped",
+                    False,
+                )
+        ):
+            self._detachPostgresqlRuntimePointers(self)
+            return
+
+        sourceMapperFactory = getattr(
+            self,
+            "_postgresqlMapperFactory",
+            None,
+        )
+
+        if not callable(sourceMapperFactory):
+            raise RuntimeError(
+                "Detached PostgreSQL consumer Set does not have a mapper factory. "
+                "className=%s objectId=%s"
+                % (
+                    self.getClassName(),
+                    self.getObjId(),
+                )
+            )
+
+        def detachedMapperFactory(writable=False):
+            if writable:
+                raise RuntimeError(
+                    "Detached PostgreSQL consumer Set is read-only."
+                )
+
+            mapper = sourceMapperFactory()
+
+            sourceItemBuilder = getattr(
+                mapper,
+                "itemBuilder",
+                None,
+            )
+
+            if not callable(sourceItemBuilder):
+                return mapper
+
+            def buildDetachedItem(row):
+                item = sourceItemBuilder(row)
+
+                if item is None:
+                    return None
+
+                setPostgresqlRuntimeParentReference(
+                    runtimeObject=item,
+                    parent=self,
+                )
+
+                try:
+                    item._objParentId = self.getObjId()
+                except Exception:
+                    pass
+
+                if isinstance(
+                        item,
+                        PostgresqlRuntimeSetMixin,
+                ):
+                    item._configurePostgresqlDetachedConsumer(
+                        detachedRuntimeSets=detachedRuntimeSets,
+                        ownsDetachedRuntimeSets=False,
+                    )
+
+                self._detachPostgresqlRuntimePointers(
+                    item
+                )
+
+                return item
+
+            mapper.itemBuilder = buildDetachedItem
+
+            return mapper
+
+        self._postgresqlMapperFactory = detachedMapperFactory
+        self._postgresqlDetachedMapperFactoryWrapped = True
+
+        self._detachPostgresqlRuntimePointers(
+            self
+        )
 
     def _detachPostgresqlRuntimePointers(self, runtimeObject) -> None:
         detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
@@ -402,6 +521,41 @@ class PostgresqlRuntimeSetMixin:
             mapper.close()
 
         self._mapper = None
+
+    def releasePostgresqlDetachedConsumer(
+            self,
+    ) -> None:
+        try:
+            self.close()
+        except Exception:
+            logger.debug(
+                "Could not close detached PostgreSQL consumer Set.",
+                exc_info=True,
+            )
+
+        materializer = getattr(
+            self,
+            "_postgresqlSqliteMaterializer",
+            None,
+        )
+
+        releaseRuntimeSet = getattr(
+            materializer,
+            "releaseRuntimeSet",
+            None,
+        )
+
+        if callable(releaseRuntimeSet):
+            try:
+                releaseRuntimeSet(
+                    self
+                )
+            except Exception:
+                logger.debug(
+                    "Could not release detached PostgreSQL consumer Set snapshot.",
+                    exc_info=True,
+                )
+
         self._releaseDetachedPostgresqlRuntimeSets()
 
     def getFileName(self):
@@ -790,10 +944,33 @@ class PostgresqlRuntimeSetMixin:
         implementation. Some Sets accept copyEnable, while others,
         such as TiltSeries, accept ignoreAttrs.
         """
-        detachedRuntimeSets = kwargs.pop("_postgresqlDetachedRuntimeSets", None)
-        ownsDetachedRuntimeSets = detachedRuntimeSets is None
+        detachedConsumer = bool(
+            kwargs.pop(
+                "_postgresqlDetachedConsumer",
+                getattr(self, "_postgresqlDetachedConsumer", False),
+            )
+        )
 
-        if detachedRuntimeSets is None:
+        inheritedDetachedRuntimeSets = (
+            getattr(self, "_postgresqlDetachedRuntimeSets", None)
+            if detachedConsumer
+            else None
+        )
+
+        detachedRuntimeSets = kwargs.pop(
+            "_postgresqlDetachedRuntimeSets",
+            inheritedDetachedRuntimeSets,
+        )
+
+        ownsDetachedRuntimeSets = (
+                detachedConsumer
+                and detachedRuntimeSets is None
+        )
+
+        if (
+                detachedConsumer
+                and detachedRuntimeSets is None
+        ):
             detachedRuntimeSets = {}
         try:
             runtimeClone = super().clone(
@@ -958,7 +1135,11 @@ class PostgresqlRuntimeSetMixin:
 
         # A clone must not become writable implicitly.
         # Resume explicitly enables writing on the canonical output.
-        runtimeClone._postgresqlSupportsNativeWrite = self.supportsPostgresqlNativeWrite()
+        runtimeClone._postgresqlSupportsNativeWrite = (
+            False
+            if detachedConsumer
+            else self.supportsPostgresqlNativeWrite()
+        )
         runtimeClone._postgresqlWritable = False
 
         runtimeClone._mapper = None
@@ -1018,8 +1199,6 @@ class PostgresqlRuntimeSetMixin:
                 except Exception:
                     pass
 
-                runtimeClone._detachPostgresqlRuntimePointers(item)
-
                 return item
 
             mapper.itemBuilder = (
@@ -1029,12 +1208,18 @@ class PostgresqlRuntimeSetMixin:
             return mapper
 
         runtimeClone._postgresqlMapperFactory = cloneMapperFactory
+        runtimeClone._postgresqlDetachedConsumer = detachedConsumer
         runtimeClone._postgresqlDetachedRuntimeSets = detachedRuntimeSets
         runtimeClone._postgresqlOwnsDetachedRuntimeSets = ownsDetachedRuntimeSets
+        runtimeClone._postgresqlDetachedMapperFactoryWrapped = False
 
-        detachedRuntimeSets[id(self)] = runtimeClone
+        if detachedConsumer:
+            detachedRuntimeSets[id(self)] = runtimeClone
 
-        runtimeClone._detachPostgresqlRuntimePointers(runtimeClone)
+            runtimeClone._configurePostgresqlDetachedConsumer(
+                detachedRuntimeSets=detachedRuntimeSets,
+                ownsDetachedRuntimeSets=ownsDetachedRuntimeSets,
+            )
 
         return runtimeClone
 

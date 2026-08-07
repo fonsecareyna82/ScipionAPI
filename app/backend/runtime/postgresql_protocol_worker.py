@@ -809,20 +809,49 @@ class RuntimePostgresqlProtocolWorker:
         )
 
     def _closeExecutionInputSets(self) -> None:
-        runtimeInputSets = list(self._executionInputSetsByRuntimeObjectId.values())
+        runtimeInputSets = list(
+            self._executionInputSetsByRuntimeObjectId.values()
+        )
+
         self._executionInputSetsByRuntimeObjectId.clear()
 
-        closedInputSetIds = set()
+        releasedInputSetIds = set()
 
         for runtimeInputSet in runtimeInputSets:
             runtimeInputSetId = id(runtimeInputSet)
 
-            if runtimeInputSetId in closedInputSetIds:
+            if runtimeInputSetId in releasedInputSetIds:
                 continue
 
-            closedInputSetIds.add(runtimeInputSetId)
+            releasedInputSetIds.add(
+                runtimeInputSetId
+            )
 
-            close = getattr(runtimeInputSet, "close", None)
+            releaseDetachedConsumer = getattr(
+                runtimeInputSet,
+                "releasePostgresqlDetachedConsumer",
+                None,
+            )
+
+            if callable(releaseDetachedConsumer):
+                try:
+                    releaseDetachedConsumer()
+                except Exception:
+                    logger.debug(
+                        "Could not release detached PostgreSQL execution input Set. "
+                        "projectId=%s protocolId=%s",
+                        self.projectId,
+                        self.protocolId,
+                        exc_info=True,
+                    )
+
+                continue
+
+            close = getattr(
+                runtimeInputSet,
+                "close",
+                None,
+            )
 
             if not callable(close):
                 continue
@@ -2071,7 +2100,9 @@ class RuntimePostgresqlProtocolWorker:
                 )
             )
 
-        runtimeInputSet = cloneRuntimeSet()
+        runtimeInputSet = cloneRuntimeSet(
+            _postgresqlDetachedConsumer=True
+        )
 
         if runtimeInputSet is sourceOutputObject:
             raise RuntimeError(
@@ -2082,9 +2113,6 @@ class RuntimePostgresqlProtocolWorker:
                     sourceOutputObject.__class__.__name__,
                 )
             )
-
-        runtimeInputSet._postgresqlSupportsNativeWrite = False
-        runtimeInputSet._postgresqlWritable = False
 
         self._executionInputSetsByRuntimeObjectId[runtimeObjectId] = runtimeInputSet
 

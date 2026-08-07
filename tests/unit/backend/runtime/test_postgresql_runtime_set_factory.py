@@ -2155,7 +2155,7 @@ def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
     )
 
 
-def test_RuntimeSetCloneDetachesLinkedPostgresqlSetPointer():
+def test_RuntimeSetDetachedConsumerCloneDetachesLinkedPostgresqlSetPointer():
     _, targetSet = buildRuntimeSet()
 
     runtimeClass = type(
@@ -2180,7 +2180,13 @@ def test_RuntimeSetCloneDetachesLinkedPostgresqlSetPointer():
 
     runtimeSet.setLinkedSet(targetSet)
 
-    runtimeClone = runtimeSet.clone()
+    ordinaryClone = runtimeSet.clone()
+
+    assert ordinaryClone.getLinkedSet() is targetSet
+
+    runtimeClone = runtimeSet.clone(
+        _postgresqlDetachedConsumer=True
+    )
     detachedTargetSet = runtimeClone.getLinkedSet()
 
     assert runtimeClone is not runtimeSet
@@ -2190,6 +2196,13 @@ def test_RuntimeSetCloneDetachesLinkedPostgresqlSetPointer():
     assert isinstance(detachedTargetSet, PostgresqlRuntimeSetMixin)
     assert detachedTargetSet.getObjId() == targetSet.getObjId()
     assert detachedTargetSet.isPostgresqlWritable() is False
+    assert detachedTargetSet.supportsPostgresqlNativeWrite() is False
+
+    with pytest.raises(
+            RuntimeError,
+            match="read-only",
+    ):
+        detachedTargetSet.enableAppend()
 
 
 def test_RuntimeSetCloneHandlesNativeCloneReturningNone():
@@ -2282,6 +2295,40 @@ def test_NestedRuntimeSetCloneCanEnableAppend():
 
     # Promoting the clone must not change the source object.
     assert nestedSet.isPostgresqlWritable() is False
+
+
+def test_NestedRuntimeSetDetachedConsumerCloneBlocksNestedWrites():
+    _, runtimeSet = buildNestedRuntimeSet()
+
+    runtimeClone = runtimeSet.clone(
+        _postgresqlDetachedConsumer=True
+    )
+
+    nestedSet = runtimeClone.getFirstItem()
+
+    assert runtimeClone.supportsPostgresqlNativeWrite() is False
+    assert nestedSet.supportsPostgresqlNativeWrite() is False
+    assert nestedSet.isPostgresqlWritable() is False
+
+    children = list(
+        nestedSet.iterItems()
+    )
+
+    assert len(children) == 1
+
+    assert (
+        children[0]
+        ._postgresqlRuntimeParentRef()
+        is nestedSet
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="read-only",
+    ):
+        nestedSet.enableAppend()
+
+    runtimeClone.releasePostgresqlDetachedConsumer()
 
 
 def test_RuntimeRootSetCanEnablePostgresqlWrite():

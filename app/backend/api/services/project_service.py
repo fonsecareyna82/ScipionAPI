@@ -5311,7 +5311,9 @@ class ProjectService:
                 )
             )
 
-        runtimeInputSet = cloneRuntimeSet()
+        runtimeInputSet = cloneRuntimeSet(
+            _postgresqlDetachedConsumer=True
+        )
 
         if runtimeInputSet is None:
             raise RuntimeError(
@@ -5332,9 +5334,6 @@ class ProjectService:
                     sourceOutputObject.__class__.__name__,
                 )
             )
-
-        runtimeInputSet._postgresqlSupportsNativeWrite = False
-        runtimeInputSet._postgresqlWritable = False
 
         runtimeInputSets[
             runtimeObjectId
@@ -5549,6 +5548,23 @@ class ProjectService:
             releasedInputSetIds.add(
                 runtimeInputSetId
             )
+
+            releaseDetachedConsumer = getattr(
+                runtimeInputSet,
+                "releasePostgresqlDetachedConsumer",
+                None,
+            )
+
+            if callable(releaseDetachedConsumer):
+                try:
+                    releaseDetachedConsumer()
+                except Exception:
+                    logger.debug(
+                        "Could not release detached PostgreSQL launch input Set.",
+                        exc_info=True,
+                    )
+
+                continue
 
             materializer = getattr(
                 runtimeInputSet,

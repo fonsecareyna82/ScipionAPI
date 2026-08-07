@@ -296,9 +296,11 @@ def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
             self.refreshCalls = 0
             self.cloneCalls = 0
             self.lastClone = None
+            self.cloneKwargs = []
 
-        def clone(self):
+        def clone(self, **kwargs):
             self.cloneCalls += 1
+            self.cloneKwargs.append(dict(kwargs))
 
             runtimeClone = InputSet(self.getSize())
             runtimeClone.setObjId(self.getObjId())
@@ -379,6 +381,11 @@ def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
     assert runtimeInputSet is not None
     assert runtimeInputSet is not parentOutputSet
     assert parentOutputSet.cloneCalls == 1
+    assert parentOutputSet.cloneKwargs == [
+        {
+            "_postgresqlDetachedConsumer": True,
+        }
+    ]
     assert parentOutputSet.refreshCalls == 0
     assert parentOutputSet.getSize() == 2236
 
