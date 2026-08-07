@@ -2750,43 +2750,17 @@ class PostgresqlRuntimeSetFactory:
             runtimeSet: ScipionSet,
             classRegistry: Dict[str, Type],
     ):
-        localResolver = (
-            self._buildLocalPointerResolver(
-                runtimeSet
-            )
-        )
+        localResolver = self._buildLocalPointerResolver(runtimeSet)
 
-        def resolvePointer(
-                reference: Dict[str, Any],
-        ):
-            targetObjectId = self._toOptionalInt(
-                reference.get(
-                    "targetObjectId"
-                )
-            )
+        def resolvePointer(reference: Dict[str, Any]):
+            targetObjectId = self._toOptionalInt(reference.get("targetObjectId"))
+            targetParentObjectId = self._toOptionalInt(reference.get("targetParentObjectId"))
+            targetParentObjectName = str(reference.get("targetParentObjectName") or "").strip()
+            targetParentParentObjectId = self._toOptionalInt(reference.get("targetParentParentObjectId"))
+            runtimeSetObjectId = self._toOptionalInt(runtimeSet.getObjId())
 
-            targetParentObjectId = (
-                self._toOptionalInt(
-                    reference.get(
-                        "targetParentObjectId"
-                    )
-                )
-            )
-
-            targetParentObjectName = str(
-                reference.get("targetParentObjectName")
-                or ""
-            ).strip()
-
-            targetParentParentObjectId = self._toOptionalInt(
-                reference.get("targetParentParentObjectId")
-            )
-
-            runtimeSetObjectId = (
-                self._toOptionalInt(
-                    runtimeSet.getObjId()
-                )
-            )
+            if not isinstance(targetObjectId, int):
+                return None
 
             hasRawParentIdentity = isinstance(targetParentObjectId, int)
             hasSemanticParentIdentity = isinstance(targetParentParentObjectId, int) and bool(targetParentObjectName)
@@ -2794,34 +2768,14 @@ class PostgresqlRuntimeSetFactory:
             if not hasRawParentIdentity and not hasSemanticParentIdentity:
                 return None
 
-            if not isinstance(
-                    targetParentObjectId,
-                    int,
-            ):
-                return None
+            if isinstance(runtimeSetObjectId, int) and targetParentObjectId == runtimeSetObjectId:
+                return localResolver(reference)
 
-            if (
-                    isinstance(
-                        runtimeSetObjectId,
-                        int,
-                    )
-                    and targetParentObjectId
-                    == runtimeSetObjectId
-            ):
-                return localResolver(
-                    reference
-                )
-
-            targetSet = (
-                self
-                ._resolveRuntimeSetPointerTarget(
-                    db=db,
-                    runtimeSet=runtimeSet,
-                    classRegistry=(
-                        classRegistry
-                    ),
-                    reference=reference,
-                )
+            targetSet = self._resolveRuntimeSetPointerTarget(
+                db=db,
+                runtimeSet=runtimeSet,
+                classRegistry=classRegistry,
+                reference=reference,
             )
 
             if targetSet is not None:
@@ -3123,21 +3077,20 @@ class PostgresqlRuntimeSetFactory:
             targetParentObjectName: Optional[str] = None,
             targetParentParentObjectId: Optional[int] = None,
     ):
-        projectId = self._getRuntimeProjectId(
-            runtimeSet
-        )
+        targetObjectId = self._toOptionalInt(targetObjectId)
+        projectId = self._getRuntimeProjectId(runtimeSet)
 
-        if not isinstance(
-                projectId,
-                int,
-        ):
+        if not isinstance(targetObjectId, int):
+            return None
+
+        if not isinstance(projectId, int):
             return None
 
         if isinstance(targetParentObjectId, int):
             rawTargetKey = (
                 projectId,
                 int(targetParentObjectId),
-                int(targetObjectId),
+                targetObjectId,
             )
 
             if rawTargetKey in self._resolvedPointerTargets:
@@ -3146,153 +3099,117 @@ class PostgresqlRuntimeSetFactory:
             if rawTargetKey in self._resolvingPointerTargets:
                 return None
 
+        sourceProtocol = self._findProtocolParent(runtimeSet)
+        runtimeMapper = self._getProtocolMapper(sourceProtocol)
+        repositoryMapper = runtimeMapper
 
-            sourceProtocol = (
-                self._findProtocolParent(
-                    runtimeSet
-                )
+        if repositoryMapper is None or getattr(repositoryMapper, "db", None) is None:
+            repositoryMapper = SimpleNamespace(db=db)
+
+        targetOutputInfo = None
+
+        if isinstance(targetParentObjectId, int):
+            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
+                mapper=repositoryMapper,
+                projectId=projectId,
+                runtimeObjectId=targetParentObjectId,
             )
 
-            runtimeMapper = (
-                self._getProtocolMapper(
-                    sourceProtocol
-                )
+        if (
+                targetOutputInfo is None
+                and isinstance(targetParentParentObjectId, int)
+                and targetParentObjectName
+        ):
+            outputName = str(targetParentObjectName).strip()
+            protocolPrefix = "%s." % targetParentParentObjectId
+
+            if outputName.startswith(protocolPrefix):
+                outputName = outputName[len(protocolPrefix):]
+
+            targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByProtocolOutput(
+                mapper=repositoryMapper,
+                projectId=projectId,
+                protocolId=targetParentParentObjectId,
+                outputName=outputName,
             )
 
-            repositoryMapper = runtimeMapper
+        if targetOutputInfo is None:
+            return None
 
-            if (
-                    repositoryMapper is None
-                    or getattr(
-                repositoryMapper,
-                "db",
-                None,
-            ) is None
-            ):
-                repositoryMapper = SimpleNamespace(
-                    db=db
-                )
+        canonicalTargetParentObjectId = self._toOptionalInt(targetOutputInfo.get("runtimeObjectId"))
 
-            targetOutputInfo = None
+        if not isinstance(canonicalTargetParentObjectId, int):
+            return None
 
-            if isinstance(targetParentObjectId, int):
-                targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId(
-                    mapper=repositoryMapper,
+        targetKey = (
+            projectId,
+            canonicalTargetParentObjectId,
+            targetObjectId,
+        )
+
+        if targetKey in self._resolvedPointerTargets:
+            return self._resolvedPointerTargets[targetKey]
+
+        if targetKey in self._resolvingPointerTargets:
+            return None
+
+        self._resolvingPointerTargets.add(targetKey)
+
+        try:
+            targetSet = self._getCachedRuntimeSet(
+                projectId=projectId,
+                runtimeObjectId=canonicalTargetParentObjectId,
+            )
+
+            if targetSet is None:
+                targetProtocol = self._resolveRuntimeProtocol(
                     projectId=projectId,
-                    runtimeObjectId=targetParentObjectId,
+                    sourceProtocol=sourceProtocol,
+                    runtimeMapper=runtimeMapper,
+                    targetOutputInfo=targetOutputInfo,
                 )
 
-            if (
-                    targetOutputInfo is None
-                    and isinstance(targetParentParentObjectId, int)
-                    and targetParentObjectName
-            ):
-                outputName = str(targetParentObjectName).strip()
+                if targetProtocol is None:
+                    return None
 
-                protocolPrefix = "%s." % targetParentParentObjectId
+                outputName = str(targetOutputInfo.get("outputName") or "").strip()
 
-                if outputName.startswith(protocolPrefix):
-                    outputName = outputName[len(protocolPrefix):]
+                if not outputName:
+                    return None
 
-                targetOutputInfo = self.protocolGraphRepository.getPersistedSetOutputRowByProtocolOutput(
-                    mapper=repositoryMapper,
-                    projectId=projectId,
-                    protocolId=targetParentParentObjectId,
-                    outputName=outputName,
-                )
+                attachedSet = getattr(targetProtocol, outputName, None)
 
-            if targetOutputInfo is None:
-                return None
-
-            canonicalTargetParentObjectId = self._toOptionalInt(
-                targetOutputInfo.get("runtimeObjectId")
-            )
-
-            if not isinstance(canonicalTargetParentObjectId, int):
-                return None
-
-            targetKey = (
-                projectId,
-                canonicalTargetParentObjectId,
-                int(targetObjectId),
-            )
-
-            if targetKey in self._resolvedPointerTargets:
-                return self._resolvedPointerTargets[targetKey]
-
-            if targetKey in self._resolvingPointerTargets:
-                return None
-
-            self._resolvingPointerTargets.add(targetKey)
-
-            try:
-                targetSet = self._getCachedRuntimeSet(
-                    projectId=projectId,
-                    runtimeObjectId=canonicalTargetParentObjectId,
-                )
-
-                if targetSet is None:
-                    targetProtocol = (
-                        self._resolveRuntimeProtocol(
-                            projectId=projectId,
-                            sourceProtocol=sourceProtocol,
-                            runtimeMapper=runtimeMapper,
-                            targetOutputInfo=(
-                                targetOutputInfo
-                            ),
-                        )
+                if self._isMatchingRuntimeSet(
+                        runtimeSet=attachedSet,
+                        runtimeObjectId=canonicalTargetParentObjectId,
+                ):
+                    targetSet = attachedSet
+                else:
+                    targetSet = self.build(
+                        db=db,
+                        parent=targetProtocol,
+                        outputName=outputName,
+                        outputInfo=targetOutputInfo,
+                        classes=classRegistry,
                     )
 
-                    if targetProtocol is None:
-                        return None
+                # The external set can reference its owner protocol, but resolving
+                # an item for another protocol must never replace or attach outputs
+                # on the target parent protocol.
+                self._cacheRuntimeSet(targetSet)
 
-                    outputName = str(
-                        targetOutputInfo.get(
-                            "outputName"
-                        )
-                        or ""
-                    ).strip()
+            target = self._selectRuntimeSetItem(
+                runtimeSet=targetSet,
+                itemId=targetObjectId,
+            )
 
-                    if not outputName:
-                        return None
+            if target is not None:
+                self._resolvedPointerTargets[targetKey] = target
 
-                    attachedSet = getattr(targetProtocol, outputName, None)
+            return target
 
-                    if self._isMatchingRuntimeSet(
-                            runtimeSet=attachedSet,
-                            runtimeObjectId=canonicalTargetParentObjectId,
-                    ):
-                        targetSet = attachedSet
-                    else:
-                        targetSet = self.build(
-                            db=db,
-                            parent=targetProtocol,
-                            outputName=outputName,
-                            outputInfo=targetOutputInfo,
-                            classes=classRegistry,
-                        )
-
-                    # The external set can reference its owner protocol, but resolving
-                    # an item for another protocol must never replace or attach outputs
-                    # on the target parent protocol.
-                    self._cacheRuntimeSet(targetSet)
-
-                target = self._selectRuntimeSetItem(
-                    runtimeSet=targetSet,
-                    itemId=targetObjectId,
-                )
-
-                if target is not None:
-                    self._resolvedPointerTargets[
-                        targetKey
-                    ] = target
-
-                return target
-
-            finally:
-                self._resolvingPointerTargets.discard(
-                    targetKey
-                )
+        finally:
+            self._resolvingPointerTargets.discard(targetKey)
 
     def _resolveRuntimeProtocol(
             self,

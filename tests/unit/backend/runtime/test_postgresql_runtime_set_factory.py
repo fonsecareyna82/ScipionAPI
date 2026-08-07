@@ -1614,6 +1614,37 @@ def test_PointerResolverUsesSemanticIdentityForLegacyExternalSetItem():
         7,
     ) not in factory._resolvedPointerTargets
 
+    semanticOnlyReference = dict(reference)
+    semanticOnlyReference["targetParentObjectId"] = None
+
+    assert resolver(semanticOnlyReference) is targetItem
+
+    assert repository.runtimeIdCalls == [
+        3_000_999,
+    ]
+
+    assert repository.protocolOutputCalls == [
+        {
+            "projectId": 4,
+            "protocolId": 200,
+            "outputName": "outputTargets",
+        },
+        {
+            "projectId": 4,
+            "protocolId": 200,
+            "outputName": "outputTargets",
+        },
+    ]
+
+    assert externalSet.mapper.selectedIds == [
+        7,
+    ]
+
+    invalidReference = dict(reference)
+    invalidReference["targetObjectId"] = None
+
+    assert resolver(invalidReference) is None
+
 
 def test_ClearCachesClosesSetsOnceAndReleasesRuntimeObjects():
     class FakeRuntimeSet:
