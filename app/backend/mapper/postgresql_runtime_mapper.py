@@ -865,9 +865,13 @@ class PostgresqlRuntimeMapper(Mapper):
         if runtimeObjectId is None:
             return False
 
-        storedObject = self._selectGenericObjectByIdFromPostgresql(
-            runtimeObjectId
-        )
+        runtimeObjectResolver = getattr(obj, "_postgresqlRuntimeObjectResolver", None)
+
+        if not callable(runtimeObjectResolver):
+            runtimeObjectResolver = None
+
+        storedObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId,
+                                                                   runtimeObjectResolver=runtimeObjectResolver)
 
         if storedObject is None:
             return False
@@ -2673,11 +2677,13 @@ class PostgresqlRuntimeMapper(Mapper):
         if runtimeSet is not None:
             return runtimeSet
 
-        return self._selectGenericObjectByIdFromPostgresql(
-            runtimeObjectId,
-            allowPartialTree=True,
-            runtimeObjectResolver=runtimeObjectResolver,
-        )
+        runtimeObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId, allowPartialTree=True,
+                                                                    runtimeObjectResolver=runtimeObjectResolver)
+
+        if runtimeObject is not None and callable(runtimeObjectResolver):
+            runtimeObject._postgresqlRuntimeObjectResolver = runtimeObjectResolver
+
+        return runtimeObject
 
     def _selectAllPostgresqlObjectsForSelectBy(self):
         result = []

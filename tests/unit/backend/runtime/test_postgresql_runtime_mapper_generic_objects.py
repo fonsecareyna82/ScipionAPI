@@ -778,16 +778,43 @@ def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
     assert copiedResult.target.getObjValue() is detachedOutput
     assert copiedResult.target.get() is detachedOutput
 
+    assert result._postgresqlRuntimeObjectResolver is runtimeObjectResolver
+
+    pointerBeforeUpdate = result.target
+
+    staleOutput = Object()
+    staleOutput.setObjId(901)
+
+    result.title.set("Stale title")
+    result.target.set(staleOutput)
+
+    assert result.target.getObjValue() is staleOutput
+
+    mapper.updateFrom(result)
+
+    assert result.title.get() == "PostgreSQL object"
+    assert result.target is pointerBeforeUpdate
+    assert result.target.getObjValue() is detachedOutput
+    assert result.target.get() is detachedOutput
+    assert result.target.getExtended() == ""
+    assert result.target._objParent is None
+    assert result._postgresqlRuntimeObjectResolver is runtimeObjectResolver
+
     assert resolverCalls == [
+        900,
         900,
     ]
 
-    mapper.flatMapper.getProjectProtocolByProtocolId.assert_called_once_with(
+    assert mapper.flatMapper.getProjectProtocolByProtocolId.call_count == 2
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.assert_called_with(
         projectId=7,
         protocolId="101",
     )
 
-    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_once_with(
+    assert mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.call_count == 2
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_with(
         mapper=mapper,
         projectId=7,
         parentProtocolDbId=55,
