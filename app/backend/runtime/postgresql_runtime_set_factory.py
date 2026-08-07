@@ -2905,6 +2905,9 @@ class PostgresqlRuntimeSetFactory:
                 runtimeObjectId=targetObjectId,
             )
 
+        if targetOutputInfo is None:
+            return None
+
         canonicalRuntimeObjectId = (
             self._toOptionalInt(
                 targetOutputInfo.get(

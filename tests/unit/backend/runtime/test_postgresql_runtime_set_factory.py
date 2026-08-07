@@ -2129,6 +2129,81 @@ def test_BuildHydratesRootSetPointerUsingProtocolOutputIdentity():
     }]
 
 
+def test_RuntimeSetPointerReturnsNoneWhenTargetOutputDoesNotExist():
+    class FakePointerRepository:
+        def __init__(self):
+            self.protocolOutputCalls = []
+            self.runtimeIdCalls = []
+
+        def getPersistedSetOutputRowByProtocolOutput(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+                outputName,
+        ):
+            self.protocolOutputCalls.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+            })
+
+            return None
+
+        def getPersistedSetOutputRowByRuntimeObjectId(
+                self,
+                mapper,
+                projectId,
+                runtimeObjectId,
+        ):
+            self.runtimeIdCalls.append(runtimeObjectId)
+
+            return None
+
+    runtimeSet = ExampleSet()
+    runtimeSet.setObjId(998)
+    runtimeSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 998,
+    }
+
+    factory = PostgresqlRuntimeSetFactory()
+    repository = FakePointerRepository()
+
+    factory.protocolGraphRepository = repository
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 3_000_000_050,
+        "targetParentObjectId": 5,
+        "targetObjectName": "5.missingOutput",
+        "targetClassName": "ExampleSet",
+        "extended": "",
+    }
+
+    target = factory._resolveRuntimeSetPointerTarget(
+        db=object(),
+        runtimeSet=runtimeSet,
+        classRegistry={
+            "ExampleSet": ExampleSet,
+        },
+        reference=reference,
+    )
+
+    assert target is None
+
+    assert repository.protocolOutputCalls == [{
+        "projectId": 4,
+        "protocolId": 5,
+        "outputName": "missingOutput",
+    }]
+
+    assert repository.runtimeIdCalls == [
+        3_000_000_050,
+    ]
+
+
 def test_NestedRuntimeSetResolvesProtocolThroughRuntimeParent():
     parent, runtimeSet = (
         buildNestedRuntimeSet()
