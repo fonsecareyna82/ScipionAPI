@@ -61,6 +61,7 @@ from pwem.protocols import ProtUserSubSet
 from pwem.viewers.mdviewer.readers import ScipionImageReader
 from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
 from pwem.viewers.mdviewer.star_dao import StarFile
+from pyworkflow.object import Set as ScipionSet
 from pyworkflow.protocol.params import (
     MultiPointerParam,
     PointerParam,
@@ -168,6 +169,7 @@ class ProjectService:
         self.currentProject: Optional[ScipionProject] = None
         self.tomoList: Dict[Any, Any] = {}
         self._thumbnailService: Optional[ThumbnailService] = None
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
 
     @staticmethod
     def _resolveProjectsPath() -> Path:
@@ -5246,9 +5248,7 @@ class ProjectService:
             None,
         )
 
-        if not callable(
-                resolver
-        ):
+        if not callable(resolver):
             raise RuntimeError(
                 "PostgreSQL runtime mapper cannot "
                 "reconstruct input objects"
@@ -5258,20 +5258,89 @@ class ProjectService:
             runtimeObjectId = int(
                 runtimeObjectId
             )
-
-        except (
-                TypeError,
-                ValueError,
-        ) as error:
+        except (TypeError, ValueError) as error:
             raise ValueError(
                 "Invalid PostgreSQL runtime "
                 "object id: %s"
                 % runtimeObjectId
             ) from error
 
-        return resolver(
+        runtimeInputSets = getattr(
+            self,
+            "_postgresqlLaunchInputSetsByRuntimeObjectId",
+            None,
+        )
+
+        if runtimeInputSets is None:
+            runtimeInputSets = {}
+            self._postgresqlLaunchInputSetsByRuntimeObjectId = runtimeInputSets
+
+        cachedInputSet = runtimeInputSets.get(
             runtimeObjectId
         )
+
+        if cachedInputSet is not None:
+            return cachedInputSet
+
+        sourceOutputObject = resolver(
+            runtimeObjectId
+        )
+
+        if sourceOutputObject is None:
+            return None
+
+        if not isinstance(
+                sourceOutputObject,
+                ScipionSet,
+        ):
+            return sourceOutputObject
+
+        cloneRuntimeSet = getattr(
+            sourceOutputObject,
+            "clone",
+            None,
+        )
+
+        if not callable(cloneRuntimeSet):
+            raise RuntimeError(
+                "PostgreSQL launch input Set does not support detached cloning. "
+                "runtimeObjectId=%s className=%s"
+                % (
+                    runtimeObjectId,
+                    sourceOutputObject.__class__.__name__,
+                )
+            )
+
+        runtimeInputSet = cloneRuntimeSet()
+
+        if runtimeInputSet is None:
+            raise RuntimeError(
+                "PostgreSQL launch input Set clone returned None. "
+                "runtimeObjectId=%s className=%s"
+                % (
+                    runtimeObjectId,
+                    sourceOutputObject.__class__.__name__,
+                )
+            )
+
+        if runtimeInputSet is sourceOutputObject:
+            raise RuntimeError(
+                "PostgreSQL launch input Set clone reused the parent output object. "
+                "runtimeObjectId=%s className=%s"
+                % (
+                    runtimeObjectId,
+                    sourceOutputObject.__class__.__name__,
+                )
+            )
+
+        runtimeInputSet._postgresqlSupportsNativeWrite = False
+        runtimeInputSet._postgresqlWritable = False
+
+        runtimeInputSets[
+            runtimeObjectId
+        ] = runtimeInputSet
+
+        return runtimeInputSet
 
     def _preparePostgresqlRuntimePointerOutputsForLaunch(
             self,
@@ -5454,27 +5523,97 @@ class ProjectService:
             )
         )
 
+    def _releasePostgresqlRuntimeLaunchInputs(
+            self,
+    ) -> None:
+        runtimeInputSets = list(
+            getattr(
+                self,
+                "_postgresqlLaunchInputSetsByRuntimeObjectId",
+                {},
+            ).values()
+        )
+
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+
+        releasedInputSetIds = set()
+
+        for runtimeInputSet in runtimeInputSets:
+            runtimeInputSetId = id(
+                runtimeInputSet
+            )
+
+            if runtimeInputSetId in releasedInputSetIds:
+                continue
+
+            releasedInputSetIds.add(
+                runtimeInputSetId
+            )
+
+            materializer = getattr(
+                runtimeInputSet,
+                "_postgresqlSqliteMaterializer",
+                None,
+            )
+
+            releaseRuntimeSet = getattr(
+                materializer,
+                "releaseRuntimeSet",
+                None,
+            )
+
+            if callable(releaseRuntimeSet):
+                try:
+                    releaseRuntimeSet(
+                        runtimeInputSet
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not release PostgreSQL launch validation SQLite snapshot.",
+                        exc_info=True,
+                    )
+
+            close = getattr(
+                runtimeInputSet,
+                "close",
+                None,
+            )
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug(
+                        "Could not close detached PostgreSQL launch input Set.",
+                        exc_info=True,
+                    )
+
     def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
 
-        return runtimeProtocolLaunchService.launchProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            protocolClassName=protocolClassName,
-            params=params,
-            executeMode=executeMode,
-            currentProject=self.currentProject,
-            saveProtocolCallback=self.saveProtocol,
-            stopProtocolCallback=self.stopProtocol,
-            preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
-                self._preparePostgresqlRuntimePointerOutputsForLaunch
-            ),
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
-            ),
-            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-        )
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+
+        try:
+            return runtimeProtocolLaunchService.launchProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocolClassName=protocolClassName,
+                params=params,
+                executeMode=executeMode,
+                currentProject=self.currentProject,
+                saveProtocolCallback=self.saveProtocol,
+                stopProtocolCallback=self.stopProtocol,
+                preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
+                    self._preparePostgresqlRuntimePointerOutputsForLaunch
+                ),
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                    self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+                ),
+                syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            )
+        finally:
+            self._releasePostgresqlRuntimeLaunchInputs()
 
     def findViewersWeb(self, protocol):
         # TODO: Find viewers...

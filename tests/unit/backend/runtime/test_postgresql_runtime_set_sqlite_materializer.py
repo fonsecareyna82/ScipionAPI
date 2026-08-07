@@ -1393,6 +1393,78 @@ def test_CleanupCurrentWorkerDirectoryRemovesOnlyCurrentWorkerSnapshots(
     )
 
 
+def test_ReleaseRuntimeSetRemovesOnlyOwnedSnapshot(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+
+    workerDirectory = Path(
+        materializer._getCurrentWorkerDirectory()
+    )
+
+    workerDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    firstPath = workerDirectory / "first.sqlite"
+    secondPath = workerDirectory / "second.sqlite"
+
+    firstPath.write_bytes(b"first")
+    secondPath.write_bytes(b"second")
+
+    firstSet = ExampleSet()
+    secondSet = ExampleSet()
+
+    firstSet._postgresqlMaterializedFileName = str(firstPath)
+    firstSet._postgresqlMaterializedRevision = "revision-1"
+
+    secondSet._postgresqlMaterializedFileName = str(secondPath)
+    secondSet._postgresqlMaterializedRevision = "revision-2"
+
+    materializer._registerManagedPath(
+        runtimeSet=firstSet,
+        materializedPath=str(firstPath),
+    )
+
+    materializer._registerManagedPath(
+        runtimeSet=secondSet,
+        materializedPath=str(secondPath),
+    )
+
+    report = materializer.releaseRuntimeSet(
+        firstSet
+    )
+
+    assert report["removed"] is True
+    assert not firstPath.exists()
+    assert secondPath.exists()
+
+    assert firstSet._postgresqlMaterializedFileName is None
+    assert firstSet._postgresqlMaterializedRevision is None
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(str(firstPath.resolve()))
+        is None
+    )
+
+    assert (
+        PostgresqlRuntimeSetSqliteMaterializer
+        ._managedRuntimeSets
+        .get(str(secondPath.resolve()))
+        is secondSet
+    )
+
+
 def test_CleanupCurrentWorkerDirectoryRefusesSymbolicLink(
         tmp_path,
         monkeypatch,

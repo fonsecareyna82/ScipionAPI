@@ -234,6 +234,80 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             "registryEntriesRemoved": len(managedPaths),
         }
 
+    def releaseRuntimeSet(
+            self,
+            runtimeSet: ScipionSet,
+    ) -> Dict[str, Any]:
+        materializedPath = getattr(
+            runtimeSet,
+            "_postgresqlMaterializedFileName",
+            None,
+        )
+
+        runtimeSet._postgresqlMaterializedFileName = None
+        runtimeSet._postgresqlMaterializedRevision = None
+
+        if not materializedPath:
+            return {
+                "removed": False,
+                "path": None,
+                "reason": "not_materialized",
+            }
+
+        managedPath = os.path.realpath(
+            str(materializedPath)
+        )
+
+        workerDirectory = self._getCurrentWorkerDirectory()
+
+        try:
+            belongsToCurrentWorker = (
+                os.path.commonpath(
+                    (
+                        workerDirectory,
+                        managedPath,
+                    )
+                )
+                == workerDirectory
+            )
+        except ValueError:
+            belongsToCurrentWorker = False
+
+        if not belongsToCurrentWorker:
+            return {
+                "removed": False,
+                "path": managedPath,
+                "reason": "outside_current_worker",
+            }
+
+        with self._lock:
+            with self._managedPathsLock:
+                registeredRuntimeSet = self._managedRuntimeSets.get(
+                    managedPath
+                )
+
+                if registeredRuntimeSet is not runtimeSet:
+                    return {
+                        "removed": False,
+                        "path": managedPath,
+                        "reason": "not_owned",
+                    }
+
+                self._managedRuntimeSets.pop(
+                    managedPath,
+                    None,
+                )
+
+            self._removeSqliteFiles(
+                managedPath
+            )
+
+        return {
+            "removed": True,
+            "path": managedPath,
+            "reason": None,
+        }
+
     def materialize(
             self,
             runtimeSet: ScipionSet,
