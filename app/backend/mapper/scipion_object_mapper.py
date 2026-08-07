@@ -1224,6 +1224,46 @@ class ScipionObjectPostgresqlMapper:
                 except Exception:
                     targetParentObjectId = None
 
+        targetParentObjectName = None
+        targetParentParent = None
+
+        if targetParent is not None:
+            getObjName = getattr(targetParent, "getObjName", None)
+
+            if callable(getObjName):
+                try:
+                    value = getObjName()
+                    targetParentObjectName = str(value) if value else None
+                except Exception:
+                    targetParentObjectName = None
+
+            if targetParentObjectName is None:
+                value = getattr(targetParent, "_objName", None)
+                targetParentObjectName = str(value) if value else None
+
+            getObjParent = getattr(targetParent, "getObjParent", None)
+
+            if callable(getObjParent):
+                try:
+                    targetParentParent = getObjParent()
+                except Exception:
+                    targetParentParent = None
+
+            if targetParentParent is None:
+                targetParentParent = getattr(targetParent, "_objParent", None)
+
+        targetParentParentObjectId = self._getSourceObjId(targetParentParent)
+
+        if targetParentParentObjectId is None and targetParent is not None:
+            getObjParentId = getattr(targetParent, "getObjParentId", None)
+
+            if callable(getObjParentId):
+                try:
+                    parentObjectId = getObjParentId()
+                    targetParentParentObjectId = int(parentObjectId) if parentObjectId not in (None, "") else None
+                except Exception:
+                    targetParentParentObjectId = None
+
         extended = ""
 
         getExtended = getattr(pointer, "getExtended", None)
@@ -1257,7 +1297,7 @@ class ScipionObjectPostgresqlMapper:
                 except Exception:
                     targetObjectName = None
 
-        return {
+        reference = {
             "version": 1,
             "kind": "pointer",
             "targetObjectId": targetObjectId,
@@ -1268,6 +1308,14 @@ class ScipionObjectPostgresqlMapper:
             "extended": extended,
             "uniqueId": uniqueId,
         }
+
+        if targetParentObjectName:
+            reference["targetParentObjectName"] = targetParentObjectName
+
+        if targetParentParentObjectId is not None:
+            reference["targetParentParentObjectId"] = targetParentParentObjectId
+
+        return reference
 
     def _getObjectValueText(self, scipionObj: Any) -> Optional[str]:
         if self._isPointer(scipionObj):

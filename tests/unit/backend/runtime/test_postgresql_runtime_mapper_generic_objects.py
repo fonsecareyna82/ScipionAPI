@@ -143,6 +143,35 @@ def test_ObjectPointerReferencePreservesDirectTargetParentIdentity():
     assert reference["extended"] == ""
 
 
+def test_ObjectPointerReferencePreservesLegacySetOwnerIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParent = parentProtocol
+    targetSet._objParentId = 101
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParent = targetSet
+    targetObject._objParentId = 3_000_900
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+
 def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
     class CursorStub:
         def __init__(self, objectId):
@@ -959,6 +988,109 @@ def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
     assert mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.call_count == 2
 
     mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_with(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=55,
+        outputName="outputParticles",
+    )
+
+
+def test_GenericPointerResolvesLegacySetItemThroughPostgresqlOutputIdentity():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    targetItem = Object()
+    targetItem.setObjId(7)
+
+    itemReads = []
+
+    class SetMapperStub:
+        def selectById(self, objId):
+            itemReads.append(int(objId))
+
+            if int(objId) == 7:
+                return targetItem
+
+            return None
+
+    class RuntimeSetStub:
+        def _getMapper(self):
+            return SetMapperStub()
+
+    canonicalSet = RuntimeSetStub()
+
+    mapper._isSetLike = lambda obj: obj is canonicalSet
+
+    def getProjectProtocolByProtocolId(
+            projectId,
+            protocolId,
+    ):
+        assert projectId == 7
+
+        if str(protocolId) == "101":
+            return {
+                "id": 55,
+                "protocolId": "101",
+            }
+
+        return None
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.side_effect = (
+        getProjectProtocolByProtocolId
+    )
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
+        "exists": True,
+        "kind": "set",
+        "runtimeObjectId": 900,
+        "outputName": "outputParticles",
+        "className": "SetOfParticles",
+    }
+
+    resolverCalls = []
+
+    def runtimeObjectResolver(runtimeObjectId):
+        runtimeObjectId = int(runtimeObjectId)
+        resolverCalls.append(runtimeObjectId)
+
+        if runtimeObjectId == 900:
+            return canonicalSet
+
+        return None
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 7,
+        "targetClassName": "Object",
+        "targetObjectName": None,
+        "targetParentObjectId": 3_000_900,
+        "targetParentClassName": "SetOfParticles",
+        "targetParentObjectName": "outputParticles",
+        "targetParentParentObjectId": 101,
+        "extended": "",
+        "uniqueId": "7",
+    }
+
+    target, extendedParts = mapper._resolveGenericPointerRuntimeTarget(
+        reference=reference,
+        runtimeObjectResolver=runtimeObjectResolver,
+    )
+
+    assert target is targetItem
+    assert extendedParts == []
+
+    assert resolverCalls == [
+        3_000_900,
+        900,
+    ]
+
+    assert itemReads == [
+        7,
+    ]
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_once_with(
         mapper=mapper,
         projectId=7,
         parentProtocolDbId=55,

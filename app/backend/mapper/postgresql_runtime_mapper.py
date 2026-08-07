@@ -2143,6 +2143,79 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return {}
 
+    def _resolveGenericPointerProtocolOutputTarget(
+            self,
+            protocolId,
+            outputName,
+            runtimeObjectResolver,
+    ):
+        protocolId = self._toOptionalInt(protocolId)
+        outputName = str(outputName or "").strip()
+
+        if protocolId is None or not outputName or not callable(runtimeObjectResolver):
+            return None
+
+        protocolReader = getattr(
+            self.flatMapper,
+            "getProjectProtocolByProtocolId",
+            None,
+        )
+
+        if not callable(protocolReader):
+            return None
+
+        protocolRow = protocolReader(
+            projectId=self.projectId,
+            protocolId=str(protocolId),
+        )
+
+        protocolDbId = self._toOptionalInt(
+            (protocolRow or {}).get("id")
+        )
+
+        if protocolDbId is None:
+            return None
+
+        outputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+            mapper=self,
+            projectId=self.projectId,
+            parentProtocolDbId=protocolDbId,
+            outputName=outputName,
+        )
+
+        runtimeOutputId = self._toOptionalInt(
+            outputInfo.get("runtimeObjectId")
+        )
+
+        if not outputInfo.get("exists") or runtimeOutputId is None:
+            return None
+
+        return runtimeObjectResolver(runtimeOutputId)
+
+    def _selectGenericPointerSetItem(
+            self,
+            parentTarget,
+            targetObjectId,
+    ):
+        if parentTarget is None or targetObjectId is None:
+            return None
+
+        if not isinstance(parentTarget, ScipionSet) and not self._isSetLike(parentTarget):
+            return None
+
+        mapperGetter = getattr(parentTarget, "_getMapper", None)
+
+        if not callable(mapperGetter):
+            return None
+
+        parentMapper = mapperGetter()
+        selectById = getattr(parentMapper, "selectById", None)
+
+        if not callable(selectById):
+            return None
+
+        return selectById(targetObjectId)
+
     def _resolveGenericPointerRuntimeTarget(
             self,
             reference,
@@ -2151,12 +2224,31 @@ class PostgresqlRuntimeMapper(Mapper):
         if not isinstance(reference, dict) or not callable(runtimeObjectResolver):
             return None, []
 
-        targetObjectId = self._toOptionalInt(reference.get("targetObjectId"))
+        targetObjectId = self._toOptionalInt(
+            reference.get("targetObjectId")
+        )
 
         if targetObjectId is None:
             return None, []
 
-        targetParentObjectId = self._toOptionalInt(reference.get("targetParentObjectId"))
+        targetObjectName = str(
+            reference.get("targetObjectName")
+            or ""
+        ).strip()
+
+        targetParentObjectId = self._toOptionalInt(
+            reference.get("targetParentObjectId")
+        )
+
+        targetParentObjectName = str(
+            reference.get("targetParentObjectName")
+            or ""
+        ).strip()
+
+        targetParentParentObjectId = self._toOptionalInt(
+            reference.get("targetParentParentObjectId")
+        )
+
         extendedParts = [
             part
             for part in str(reference.get("extended") or "").split(".")
@@ -2164,56 +2256,50 @@ class PostgresqlRuntimeMapper(Mapper):
         ]
 
         if extendedParts:
-            protocolReader = getattr(
-                self.flatMapper,
-                "getProjectProtocolByProtocolId",
-                None,
+            target = self._resolveGenericPointerProtocolOutputTarget(
+                protocolId=targetObjectId,
+                outputName=extendedParts[0],
+                runtimeObjectResolver=runtimeObjectResolver,
             )
 
-            protocolRow = None
+            if target is not None:
+                return target, extendedParts[1:]
 
-            if callable(protocolReader):
-                protocolRow = protocolReader(
-                    projectId=self.projectId,
-                    protocolId=str(targetObjectId),
-                )
-
-            protocolDbId = self._toOptionalInt(
-                (protocolRow or {}).get("id")
+        if targetParentObjectId is not None and targetObjectName:
+            target = self._resolveGenericPointerProtocolOutputTarget(
+                protocolId=targetParentObjectId,
+                outputName=targetObjectName,
+                runtimeObjectResolver=runtimeObjectResolver,
             )
 
-            if protocolDbId is not None:
-                rootOutputName = extendedParts[0]
-
-                outputInfo = self.protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
-                    mapper=self,
-                    projectId=self.projectId,
-                    parentProtocolDbId=protocolDbId,
-                    outputName=rootOutputName,
-                )
-
-                runtimeOutputId = self._toOptionalInt(
-                    outputInfo.get("runtimeObjectId")
-                )
-
-                if outputInfo.get("exists") and runtimeOutputId is not None:
-                    target = runtimeObjectResolver(runtimeOutputId)
-
-                    if target is not None:
-                        return target, extendedParts[1:]
+            if target is not None:
+                return target, extendedParts
 
         if targetParentObjectId is not None:
             parentTarget = runtimeObjectResolver(targetParentObjectId)
 
-            if isinstance(parentTarget, ScipionSet):
-                parentMapper = parentTarget._getMapper()
-                selectById = getattr(parentMapper, "selectById", None)
+            target = self._selectGenericPointerSetItem(
+                parentTarget=parentTarget,
+                targetObjectId=targetObjectId,
+            )
 
-                if callable(selectById):
-                    target = selectById(targetObjectId)
+            if target is not None:
+                return target, extendedParts
 
-                    if target is not None:
-                        return target, extendedParts
+        if targetParentParentObjectId is not None and targetParentObjectName:
+            parentTarget = self._resolveGenericPointerProtocolOutputTarget(
+                protocolId=targetParentParentObjectId,
+                outputName=targetParentObjectName,
+                runtimeObjectResolver=runtimeObjectResolver,
+            )
+
+            target = self._selectGenericPointerSetItem(
+                parentTarget=parentTarget,
+                targetObjectId=targetObjectId,
+            )
+
+            if target is not None:
+                return target, extendedParts
 
         target = runtimeObjectResolver(targetObjectId)
 
