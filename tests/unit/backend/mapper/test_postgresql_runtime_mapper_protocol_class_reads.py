@@ -25,10 +25,7 @@
 # ******************************************************************************
 import pytest
 
-from unittest.mock import Mock
-
 from pyworkflow.protocol.protocol import Protocol
-
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )

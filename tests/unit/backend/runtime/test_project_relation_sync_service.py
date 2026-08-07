@@ -714,7 +714,7 @@ def test_DeleteImportedOutputRelationsClearsAuthoritativeSnapshot():
     }
 
 
-def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
+def test_CollectProtocolRelationsMergesRuntimeAndIsolatedSqliteSnapshots():
     firstRelation = buildRelation()
 
     secondRelation = {
@@ -729,7 +729,7 @@ def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
         firstRelation,
     ])
 
-    fallbackProtocol = FakeProtocol([
+    sqliteProtocol = FakeProtocol([
         firstRelation,
         secondRelation,
     ])
@@ -742,8 +742,8 @@ def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
             runtimeProtocol,
         ),
         (
-            "readFallbackMapper",
-            fallbackProtocol,
+            "project_sqlite_isolated",
+            sqliteProtocol,
         ),
     ])
 
@@ -771,7 +771,7 @@ def test_CollectProtocolRelationsMergesRuntimeAndFallbackSnapshots():
             "relations": 1,
         },
         {
-            "source": "readFallbackMapper",
+            "source": "project_sqlite_isolated",
             "relations": 1,
         },
     ]
@@ -977,13 +977,13 @@ def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
         lambda: repository,
     )
 
-    emptyFallbackProtocol = FakeProtocol([])
+    protocolWithoutRelations = FakeProtocol([])
 
     report = RuntimeProjectRelationSyncService().syncProjectRelations(
         mapper=SimpleNamespace(),
         projectId=4,
         protocolsByScipionId={
-            "20": emptyFallbackProtocol,
+            "20": protocolWithoutRelations,
         },
         protocolDbIdByScipionId={
             "20": 200,
@@ -1009,7 +1009,7 @@ def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
         "object_child_extended": None,
     }
 
-    fallbackRelation = {
+    sqliteRelation = {
         **runtimeRelation,
         "id": 8,
         "object_child_extended": "",
@@ -1025,9 +1025,9 @@ def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
             ]),
         ),
         (
-            "readFallbackMapper",
+            "project_sqlite_isolated",
             FakeProtocol([
-                fallbackRelation,
+                sqliteRelation,
             ]),
         ),
     ])
@@ -1049,7 +1049,7 @@ def test_CollectProtocolRelationsDeduplicatesLogicalRelationWithDifferentIds():
     assert result["errors"] == []
 
 
-def test_CollectProtocolRelationsEnrichesDuplicateEndpointsFromFallback():
+def test_CollectProtocolRelationsEnrichesDuplicateEndpointsFromIsolatedSqlite():
     relation = {
         "id": 1,
         "parent_id": 79,
@@ -1068,11 +1068,11 @@ def test_CollectProtocolRelationsEnrichesDuplicateEndpointsFromFallback():
         {}
     )
 
-    fallbackProtocol = FakeProtocol([
+    sqliteProtocol = FakeProtocol([
         relation,
     ])
 
-    fallbackProtocol.mapper = FakeRelationMapper({
+    sqliteProtocol.mapper = FakeRelationMapper({
         58: FakeRelationEndpoint(
             producerProtocolId=2,
             objectName="2.outputParticles",
@@ -1092,7 +1092,7 @@ def test_CollectProtocolRelationsEnrichesDuplicateEndpointsFromFallback():
             ),
             (
                 "project_sqlite_isolated",
-                fallbackProtocol,
+                sqliteProtocol,
             ),
         ])
     )
