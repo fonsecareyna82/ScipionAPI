@@ -634,6 +634,20 @@ def test_CreationCursorFiltersByStableItemId():
         "00:00:00.002000",
     ]
 
+def test_CreationZeroSentinelUsesStableItemIdFloor():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    whereSql, whereParams = mapper._buildWhere(
+        'creation>"0"'
+    )
+
+    assert whereSql == '"scipionItemId" > 0'
+    assert whereParams == []
+
 
 def test_UnsupportedWhereExpressionFailsExplicitly():
     mapper = PostgresqlSetRuntimeMapper(

@@ -2637,6 +2637,10 @@ class PostgresqlSetRuntimeMapper:
                 match.group("value")
             )
 
+            if field == "creation" and operator == ">" and str(value).strip() == "0":
+                clauses.append('"scipionItemId" > 0')
+                continue
+
             expression, expressionParams = (
                 self._fieldExpression(
                     field
