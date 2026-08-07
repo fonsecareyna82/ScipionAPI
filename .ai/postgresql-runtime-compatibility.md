@@ -253,6 +253,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 23. Temporary canonical `scipionObjId` and parent-id preparation for PostgreSQL output persistence is transactional with respect to the in-memory Scipion object tree: successful persistence restores the original runtime identity afterward, and partial preparation failures restore every object already modified before propagating the error.
 24. Structured PostgreSQL pointers to direct outputs and Set items preserve semantic owner identity in addition to raw runtime ids: legacy in-memory output ids may be restored after persistence, but pointer hydration resolves the canonical PostgreSQL output through its owning protocol and output name before resolving a Set item by `scipionItemId`.
 25. Structured Pointer serialization uses the same semantic reference contract for generic object trees and PostgreSQL Set item values, including PointerList entries; detached PostgreSQL runtime parents are discovered through their weak runtime parent references without restoring strong `_objParent` links.
+26. PostgreSQL Set-item Pointer hydration consumes the same semantic owner identity persisted by generic and Set serializers: when a raw parent Set id is legacy or unavailable, the runtime Set factory resolves the canonical PostgreSQL Set through the owning protocol id and output name, then resolves the target by `scipionItemId`; pointer caches are keyed by the canonical PostgreSQL Set id.
 
 ## Historical failure mode
 

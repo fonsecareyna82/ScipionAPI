@@ -1471,6 +1471,150 @@ def test_PointerResolverBuildsExternalSetWithoutMutatingParentOutput():
         is externalSet
     )
 
+
+def test_PointerResolverUsesSemanticIdentityForLegacyExternalSetItem():
+    targetItem = ExampleItem()
+    targetItem.setObjId(7)
+
+    class FakeExternalSetMapper:
+        def __init__(self):
+            self.selectedIds = []
+
+        def selectById(self, itemId):
+            self.selectedIds.append(int(itemId))
+
+            if int(itemId) == 7:
+                return targetItem
+
+            return None
+
+    class FakeExternalSet(ExampleSet):
+        def __init__(self):
+            super().__init__()
+            self.mapper = FakeExternalSetMapper()
+
+        def _getMapper(self):
+            return self.mapper
+
+        def isPostgresqlRuntimeOutput(self):
+            return True
+
+    class FakePointerRepository:
+        def __init__(self):
+            self.runtimeIdCalls = []
+            self.protocolOutputCalls = []
+
+        def getPersistedSetOutputRowByRuntimeObjectId(
+                self,
+                mapper,
+                projectId,
+                runtimeObjectId,
+        ):
+            self.runtimeIdCalls.append(int(runtimeObjectId))
+            return None
+
+        def getPersistedSetOutputRowByProtocolOutput(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+                outputName,
+        ):
+            self.protocolOutputCalls.append({
+                "projectId": int(projectId),
+                "protocolId": int(protocolId),
+                "outputName": str(outputName),
+            })
+
+            return {
+                "setId": 32,
+                "projectId": 4,
+                "protocolDbId": 20,
+                "protocolId": "200",
+                "objectId": 402,
+                "runtimeObjectId": 999,
+                "outputName": "outputTargets",
+                "className": "ExampleSet",
+                "itemClassName": "ExampleItem",
+                "properties": {},
+            }
+
+    sourceSet = ExampleSet()
+    sourceSet.setObjId(300)
+    sourceSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 300,
+    }
+
+    externalSet = FakeExternalSet()
+    externalSet.setObjId(999)
+    externalSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 999,
+    }
+
+    factory = PostgresqlRuntimeSetFactory()
+    repository = FakePointerRepository()
+
+    factory.protocolGraphRepository = repository
+    factory._runtimeSetsByIdentity[(4, 999)] = externalSet
+
+    resolver = factory._buildPointerResolver(
+        db=object(),
+        runtimeSet=sourceSet,
+        classRegistry={
+            "ExampleSet": ExampleSet,
+            "ExampleItem": ExampleItem,
+        },
+    )
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 7,
+        "targetClassName": "ExampleItem",
+        "targetObjectName": None,
+        "targetParentObjectId": 3_000_999,
+        "targetParentClassName": "ExampleSet",
+        "targetParentObjectName": "outputTargets",
+        "targetParentParentObjectId": 200,
+        "extended": "",
+        "uniqueId": "7",
+    }
+
+    assert resolver(reference) is targetItem
+
+    assert repository.runtimeIdCalls == [
+        3_000_999,
+    ]
+
+    assert repository.protocolOutputCalls == [
+        {
+            "projectId": 4,
+            "protocolId": 200,
+            "outputName": "outputTargets",
+        },
+    ]
+
+    assert externalSet.mapper.selectedIds == [
+        7,
+    ]
+
+    assert factory._resolvedPointerTargets[
+        (
+            4,
+            999,
+            7,
+        )
+    ] is targetItem
+
+    assert (
+        4,
+        3_000_999,
+        7,
+    ) not in factory._resolvedPointerTargets
+
+
 def test_ClearCachesClosesSetsOnceAndReleasesRuntimeObjects():
     class FakeRuntimeSet:
         def __init__(self):
