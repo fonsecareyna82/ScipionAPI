@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
@@ -347,6 +349,73 @@ def test_PrepareOutputObjectIdsKeepsDistinctCanonicalIdsForSharedPaths():
 
     assert outputObject.getObjId() == 3_000_000_130
     assert sharedChild.getObjId() == 3_000_000_131
+
+
+def test_PrepareOutputObjectIdsRestoresPartialIdentityOnFailure():
+    service = RuntimeProtocolOutputPersistenceService()
+
+    firstChild = FakeRuntimeObject(
+        objectId=3_000_000_141
+    )
+
+    secondChild = FakeRuntimeObject(
+        objectId=3_000_000_142
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_140,
+        attributes=[
+            (
+                "_first",
+                firstChild,
+            ),
+            (
+                "_second",
+                secondChild,
+            ),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    firstChild._objParentId = 3_000_000_140
+    secondChild._objParentId = 3_000_000_140
+
+    mapper = FakeMapper([
+        1_000_140,
+        1_000_141,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    with pytest.raises(
+            AssertionError,
+            match="Unexpected object id allocation",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == [
+        341,
+        341,
+        341,
+    ]
+
+    assert outputObject.getObjId() == 3_000_000_140
+    assert outputObject._objParentId == 4
+
+    assert firstChild.getObjId() == 3_000_000_141
+    assert firstChild._objParentId == 3_000_000_140
+
+    assert secondChild.getObjId() == 3_000_000_142
+    assert secondChild._objParentId == 3_000_000_140
 
 
 def test_RestoreOutputObjectIdsRestoresRunDbIdentity():

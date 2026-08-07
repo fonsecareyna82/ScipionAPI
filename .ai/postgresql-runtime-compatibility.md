@@ -250,6 +250,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 20. Generic PostgreSQL runtime object hydration and `updateFrom()` preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
 21. Normal PostgreSQL mapper reads restore structured generic-object pointers through read-only PostgreSQL references, while consumer runtime reads keep using their separate detached resolvers; recursive pointer graphs fail without unbounded recursion.
 22. Generic PostgreSQL object-tree persistence distinguishes recursive cycles from shared object references: cycles are cut, while the same Scipion object reused at multiple valid paths is persisted at every path using that path's canonical `scipionObjId`; output identity preparation and object-tree storage must use the same path-to-id mapping, including legacy Sets that fall back to detached object-tree persistence when their backing artifact is missing.
+23. Temporary canonical `scipionObjId` and parent-id preparation for PostgreSQL output persistence is transactional with respect to the in-memory Scipion object tree: successful persistence restores the original runtime identity afterward, and partial preparation failures restore every object already modified before propagating the error.
 
 ## Historical failure mode
 

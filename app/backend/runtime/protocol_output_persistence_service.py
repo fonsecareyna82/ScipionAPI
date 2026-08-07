@@ -316,14 +316,14 @@ class RuntimeProtocolOutputPersistenceService:
 
                 scipionObjectIdsByPath[path] = canonicalObjectId
 
-                self._setScipionObjectId(runtimeObject, canonicalObjectId)
-                self._setScipionObjectParentId(runtimeObject, parentRuntimeObjectId)
-
                 identitySnapshot.append({
                     "runtimeObject": runtimeObject,
                     "previousObjectId": previousObjectId,
                     "previousParentObjectId": previousParentObjectId,
                 })
+
+                self._setScipionObjectId(runtimeObject, canonicalObjectId)
+                self._setScipionObjectParentId(runtimeObject, parentRuntimeObjectId)
 
                 preparedItems.append({
                     "path": path,
@@ -366,13 +366,18 @@ class RuntimeProtocolOutputPersistenceService:
             finally:
                 activeObjectIdentities.discard(runtimeObjectIdentity)
 
-        prepareObject(
-            runtimeObject=outputObj,
-            path=str(outputName),
-            parentRuntimeObjectId=(
-                protocolRuntimeId
-            ),
-        )
+        try:
+            prepareObject(
+                runtimeObject=outputObj,
+                path=str(outputName),
+                parentRuntimeObjectId=protocolRuntimeId,
+            )
+
+        except Exception:
+            self._restoreOutputObjectIdsAfterPersistence({
+                "_identitySnapshot": identitySnapshot,
+            })
+            raise
 
         return {
             "outputName": str(
