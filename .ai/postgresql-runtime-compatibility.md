@@ -243,7 +243,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 15. Set-level properties required by native Scipion code are available in the detached runtime Set.
 16. Native nested Set loads triggered by snapshot construction bypass managed-path refresh without disabling real recursive-materialization detection.
 17. Worker finalization removes only the current worker's SQLite snapshots after closing mappers, on both successful and failed protocol execution.
-18. Required regression tests18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
+18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
 
 ## Historical failure mode
 

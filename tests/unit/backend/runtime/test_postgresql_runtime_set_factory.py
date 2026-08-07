@@ -2204,6 +2204,44 @@ def test_RuntimeSetDetachedConsumerCloneDetachesLinkedPostgresqlSetPointer():
     ):
         detachedTargetSet.enableAppend()
 
+    detachedRuntimeSets = runtimeClone._postgresqlDetachedRuntimeSets
+
+    assert detachedRuntimeSets
+    assert runtimeClone._postgresqlOwnsDetachedRuntimeSets is True
+
+    runtimeClone.close()
+
+    assert detachedRuntimeSets
+    assert runtimeClone._postgresqlOwnsDetachedRuntimeSets is True
+
+    runtimeClone.releasePostgresqlDetachedConsumer()
+
+    assert detachedRuntimeSets == {}
+    assert runtimeClone._postgresqlOwnsDetachedRuntimeSets is False
+
+
+def test_RuntimeSetDetachedConsumerCloneRemainsReadOnly():
+    _, runtimeSet = buildRuntimeSet()
+
+    detachedConsumer = runtimeSet.clone(
+        _postgresqlDetachedConsumer=True
+    )
+
+    secondClone = detachedConsumer.clone()
+
+    assert secondClone is not detachedConsumer
+    assert secondClone._postgresqlDetachedConsumer is True
+    assert secondClone.supportsPostgresqlNativeWrite() is False
+    assert secondClone.isPostgresqlWritable() is False
+
+    with pytest.raises(
+            RuntimeError,
+            match="read-only",
+    ):
+        secondClone.enableAppend()
+
+    detachedConsumer.releasePostgresqlDetachedConsumer()
+
 
 def test_RuntimeSetCloneHandlesNativeCloneReturningNone():
     from pwem.objects import SetOfParticles
