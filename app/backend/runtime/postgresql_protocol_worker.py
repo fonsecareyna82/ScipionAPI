@@ -853,7 +853,7 @@ class RuntimePostgresqlProtocolWorker:
                 )
 
             self.dependencyEventListener = None
-            self._closeExecutionInputSets()
+        self._closeExecutionInputSets()
 
         if self.project is not None:
             try:
