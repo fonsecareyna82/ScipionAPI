@@ -366,7 +366,7 @@ def test_RefreshProtocolAppliesStoredRuntimeState():
     assert workingDirCalls == [protocol]
 
 
-def test_UpdateFromRefreshesProtocolFromPostgresqlWithoutFallback():
+def test_UpdateFromRefreshesProtocolFromPostgresql():
     row = buildRow(
         100,
         "ExampleProtocol",
@@ -374,15 +374,11 @@ def test_UpdateFromRefreshesProtocolFromPostgresqlWithoutFallback():
 
     row["status"] = "running"
 
-    fallbackMapper = Mock()
-
     mapper = buildMapper(
         rows=[
             row,
         ],
     )
-
-    mapper._recordReadFallback = Mock()
 
     protocol = buildProtocol(
         ExampleProtocol,
@@ -419,9 +415,6 @@ def test_UpdateFromRefreshesProtocolFromPostgresqlWithoutFallback():
     assert mapper._runtimeProtocolsById[
         100
     ] is protocol
-
-    fallbackMapper.updateFrom.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
 
 
 def test_UpdateFromProtocolRestoresStateWhenRefreshFails():

@@ -952,6 +952,7 @@ def test_CollectRuntimeProtocolRelationsReadsAndClosesIsolatedProjectSqlite(
 
     assert result["errors"] == []
 
+
 def test_SyncProjectRelationsUsesPreloadedRuntimeSnapshot(
         monkeypatch,
 ):

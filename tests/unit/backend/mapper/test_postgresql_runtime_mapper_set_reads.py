@@ -350,38 +350,24 @@ def test_SelectSetByIdReturnsCachedRuntimeSet():
     )
 
 
-def test_SelectByIdUsesPostgresqlSetBeforeSqliteFallback():
+def test_SelectByIdUsesPostgresqlSetBeforeGenericObject():
     mapper = buildMapper()
 
     runtimeSet = ExampleSet()
+    runtimeSet.setObjId(300)
 
-    runtimeSet.setObjId(
-        300
-    )
+    mapper._selectProtocolByIdFromPostgresql = lambda objId: None
+    mapper._selectSetByIdFromPostgresql = lambda objId: runtimeSet
 
-    mapper._selectProtocolByIdFromPostgresql = (
-        lambda objId: None
-    )
-
-    mapper._selectSetByIdFromPostgresql = (
-        lambda objId: runtimeSet
-    )
-
-    def failFallback(
-            objId,
-    ):
+    def failGenericObjectLookup(objId):
         raise AssertionError(
-            "SQLite fallback must not be read "
-            "when PostgreSQL returned the set"
+            "Generic object lookup must not run when "
+            "PostgreSQL already returned the set"
         )
 
-    mapper._selectByIdFromReadFallback = (
-        failFallback
-    )
+    mapper._selectGenericObjectByIdFromPostgresql = failGenericObjectLookup
 
-    assert mapper.selectById(
-        300
-    ) is runtimeSet
+    assert mapper.selectById(300) is runtimeSet
 
 
 def test_SelectByIdKeepsProtocolPrecedence():
@@ -414,7 +400,7 @@ def test_SelectByIdKeepsProtocolPrecedence():
     ) is protocol
 
 
-def test_UpdateFromRefreshesPostgresqlRuntimeSetWithoutFallback():
+def test_UpdateFromRefreshesPostgresqlRuntimeSet():
     mapper = buildMapper()
 
     parentProtocol = Object()
@@ -468,9 +454,6 @@ def test_UpdateFromRefreshesPostgresqlRuntimeSetWithoutFallback():
         selectRuntimeProtocol
     )
 
-    mapper.readFallbackMapper = Mock()
-    mapper._recordReadFallback = Mock()
-
     result = mapper.updateFrom(
         runtimeSet
     )
@@ -517,9 +500,6 @@ def test_UpdateFromRefreshesPostgresqlRuntimeSetWithoutFallback():
     assert buildCall[
         "parent"
     ] is parentProtocol
-
-    mapper.readFallbackMapper.updateFrom.assert_not_called()
-    mapper._recordReadFallback.assert_not_called()
 
 
 def test_UpdateFromSetDoesNotRefreshExistingParentProtocol():
