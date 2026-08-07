@@ -2155,6 +2155,43 @@ def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
     )
 
 
+def test_RuntimeSetCloneDetachesLinkedPostgresqlSetPointer():
+    _, targetSet = buildRuntimeSet()
+
+    runtimeClass = type(
+        "RuntimeExampleLinkedSet",
+        (PostgresqlRuntimeSetMixin, ExampleLinkedSet),
+        {"__module__": __name__},
+    )
+
+    runtimeSet = runtimeClass()
+    runtimeSet.setObjId(998)
+    runtimeSet._postgresqlNativeSetClass = ExampleLinkedSet
+    runtimeSet._postgresqlMapperFactory = lambda writable=False: None
+    runtimeSet._postgresqlSqliteMaterializer = object()
+    runtimeSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 998,
+    }
+    runtimeSet._postgresqlRuntimeClasses = {}
+    runtimeSet._postgresqlRuntimeValues = {}
+    runtimeSet._postgresqlRuntimeProperties = {}
+    runtimeSet._mapper = None
+
+    runtimeSet.setLinkedSet(targetSet)
+
+    runtimeClone = runtimeSet.clone()
+    detachedTargetSet = runtimeClone.getLinkedSet()
+
+    assert runtimeClone is not runtimeSet
+    assert runtimeSet.getLinkedSet() is targetSet
+
+    assert detachedTargetSet is not targetSet
+    assert isinstance(detachedTargetSet, PostgresqlRuntimeSetMixin)
+    assert detachedTargetSet.getObjId() == targetSet.getObjId()
+    assert detachedTargetSet.isPostgresqlWritable() is False
+
+
 def test_RuntimeSetCloneHandlesNativeCloneReturningNone():
     from pwem.objects import SetOfParticles
     runtimeClass = type(

@@ -263,6 +263,124 @@ class PostgresqlRuntimeSetMixin:
 
         return isinstance(current, (Pointer, PointerList))
 
+    def _getDetachedPostgresqlPointerSet(self, sourceSet):
+        detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
+
+        if not isinstance(detachedRuntimeSets, dict):
+            return sourceSet
+
+        checker = getattr(sourceSet, "isPostgresqlRuntimeOutput", None)
+
+        if not callable(checker) or not checker():
+            return sourceSet
+
+        sourceIdentity = id(sourceSet)
+
+        detachedSet = detachedRuntimeSets.get(sourceIdentity)
+
+        if detachedSet is not None:
+            return detachedSet
+
+        if not isinstance(sourceSet, PostgresqlRuntimeSetMixin):
+            return sourceSet
+
+        return sourceSet.clone(_postgresqlDetachedRuntimeSets=detachedRuntimeSets)
+
+    def _detachPostgresqlRuntimePointers(self, runtimeObject) -> None:
+        detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
+
+        if not isinstance(detachedRuntimeSets, dict):
+            return
+
+        visited = set()
+
+        def detachPointers(candidate):
+            if candidate is None:
+                return
+
+            candidateIdentity = id(candidate)
+
+            if candidateIdentity in visited:
+                return
+
+            visited.add(candidateIdentity)
+
+            if isinstance(candidate, Pointer):
+                target = candidate.getObjValue()
+
+                if isinstance(target, ScipionSet):
+                    detachedTarget = self._getDetachedPostgresqlPointerSet(target)
+
+                    if detachedTarget is not target:
+                        candidate.set(detachedTarget, cleanExtended=False)
+
+                return
+
+            if isinstance(candidate, PointerList):
+                for pointer in candidate:
+                    detachPointers(pointer)
+
+                return
+
+            attributesGetter = getattr(candidate, "getAttributes", None)
+
+            if not callable(attributesGetter):
+                return
+
+            try:
+                attributes = list(attributesGetter())
+            except Exception:
+                return
+
+            for _, attribute in attributes:
+                detachPointers(attribute)
+
+        detachPointers(runtimeObject)
+
+    def _releaseDetachedPostgresqlRuntimeSets(self) -> None:
+        if not bool(getattr(self, "_postgresqlOwnsDetachedRuntimeSets", False)):
+            return
+
+        detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
+
+        if not isinstance(detachedRuntimeSets, dict):
+            return
+
+        self._postgresqlOwnsDetachedRuntimeSets = False
+
+        runtimeSets = list(detachedRuntimeSets.values())
+        detachedRuntimeSets.clear()
+
+        releasedSetIds = set()
+
+        for runtimeSet in runtimeSets:
+            if runtimeSet is self:
+                continue
+
+            runtimeSetIdentity = id(runtimeSet)
+
+            if runtimeSetIdentity in releasedSetIds:
+                continue
+
+            releasedSetIds.add(runtimeSetIdentity)
+
+            close = getattr(runtimeSet, "close", None)
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("Could not close detached PostgreSQL pointer Set.", exc_info=True)
+
+            materializer = getattr(runtimeSet, "_postgresqlSqliteMaterializer", None)
+            releaseRuntimeSet = getattr(materializer, "releaseRuntimeSet", None)
+
+            if callable(releaseRuntimeSet):
+                try:
+                    releaseRuntimeSet(runtimeSet)
+                except Exception:
+                    logger.debug("Could not release detached PostgreSQL pointer Set snapshot.", exc_info=True)
+
     def loadAllProperties(
             self,
     ):
@@ -284,6 +402,7 @@ class PostgresqlRuntimeSetMixin:
             mapper.close()
 
         self._mapper = None
+        self._releaseDetachedPostgresqlRuntimeSets()
 
     def getFileName(self):
         materializer = getattr(
@@ -671,6 +790,11 @@ class PostgresqlRuntimeSetMixin:
         implementation. Some Sets accept copyEnable, while others,
         such as TiltSeries, accept ignoreAttrs.
         """
+        detachedRuntimeSets = kwargs.pop("_postgresqlDetachedRuntimeSets", None)
+        ownsDetachedRuntimeSets = detachedRuntimeSets is None
+
+        if detachedRuntimeSets is None:
+            detachedRuntimeSets = {}
         try:
             runtimeClone = super().clone(
                 *args,
@@ -890,11 +1014,11 @@ class PostgresqlRuntimeSetMixin:
                 )
 
                 try:
-                    item._objParentId = (
-                        runtimeClone.getObjId()
-                    )
+                    item._objParentId = runtimeClone.getObjId()
                 except Exception:
                     pass
+
+                runtimeClone._detachPostgresqlRuntimePointers(item)
 
                 return item
 
@@ -904,9 +1028,13 @@ class PostgresqlRuntimeSetMixin:
 
             return mapper
 
-        runtimeClone._postgresqlMapperFactory = (
-            cloneMapperFactory
-        )
+        runtimeClone._postgresqlMapperFactory = cloneMapperFactory
+        runtimeClone._postgresqlDetachedRuntimeSets = detachedRuntimeSets
+        runtimeClone._postgresqlOwnsDetachedRuntimeSets = ownsDetachedRuntimeSets
+
+        detachedRuntimeSets[id(self)] = runtimeClone
+
+        runtimeClone._detachPostgresqlRuntimePointers(runtimeClone)
 
         return runtimeClone
 
