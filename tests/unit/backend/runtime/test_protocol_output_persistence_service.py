@@ -410,6 +410,139 @@ def test_RegisterOutputPreparesDetachedSetAsCanonicalObjectTree(
     assert childObject.getObjId() == 3_000_000_101
 
 
+def test_RegisterOutputDoesNotRetryTreePersistenceAfterInternalTypeError(
+        monkeypatch,
+):
+    class RuntimeObjectStub:
+        def __init__(self, objectId):
+            self._objId = objectId
+            self._objParentId = None
+
+        def getObjId(self):
+            return self._objId
+
+        def setObjId(self, objectId):
+            self._objId = objectId
+
+        def getObjParentId(self):
+            return self._objParentId
+
+        def setObjParentId(self, parentObjectId):
+            self._objParentId = parentObjectId
+
+        def getAttributesToStore(self):
+            return []
+
+        def getClassName(self):
+            return "Volume"
+
+    outputObject = RuntimeObjectStub(
+        objectId=3_000_000_200
+    )
+
+    class ProtocolStub:
+        def getObjId(self):
+            return 23
+
+        def iterOutputAttributes(self):
+            return [
+                (
+                    "outputVolume",
+                    outputObject,
+                ),
+            ]
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.db = object()
+
+        def allocateProjectObjectId(self, projectId):
+            assert projectId == 7
+            return 1_000_200
+
+    storeCalls = []
+
+    class ObjectMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+        def getStoredObjectTree(
+                self,
+                projectId,
+                protocolDbId,
+                outputName,
+        ):
+            return []
+
+        def _getAttributesToStore(
+                self,
+                runtimeObject,
+        ):
+            return runtimeObject.getAttributesToStore()
+
+        def storeObjectTree(self, **kwargs):
+            storeCalls.append(kwargs)
+            raise TypeError(
+                "internal tree serialization failure"
+            )
+
+    class SetMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionObjectPostgresqlMapper",
+        ObjectMapperStub,
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionSetPostgresqlMapper",
+        SetMapperStub,
+    )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    monkeypatch.setattr(
+        service,
+        "resolveProtocolDbIdForOutputPersistence",
+        lambda **kwargs: 17,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "isScipionSetLikeOutput",
+        lambda outputObj: False,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "isPersistableNonSetOutput",
+        lambda outputObj: True,
+    )
+
+    report = service.registerOutput(
+        projectId=7,
+        protocol=ProtocolStub(),
+        mapper=RuntimeMapperStub(),
+        returnReport=True,
+    )
+
+    assert len(storeCalls) == 1
+
+    assert storeCalls[0]["registerType"] is True
+    assert storeCalls[0]["includeNestedProperties"] is True
+    assert storeCalls[0]["scipionObjectIdsByPath"] == {
+        "outputVolume": 1_000_200,
+    }
+
+    assert report["persisted"] == []
+    assert len(report["errors"]) == 1
+
+    assert outputObject.getObjId() == 3_000_000_200
+
+
 def test_ProtocolFormOutputReaderDelegatesOutputRows(
         monkeypatch,
 ):

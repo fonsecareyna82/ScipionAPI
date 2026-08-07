@@ -2465,25 +2465,15 @@ class RuntimeProtocolOutputPersistenceService:
 
                     if isinstance(identityPreparation, dict):
                         scipionObjectIdsByPath = identityPreparation.get("_scipionObjectIdsByPath") or {}
-                    try:
-                        syncInfo = objectMapper.storeObjectTree(
-                            projectId=projectId,
-                            protocolDbId=int(protocolDbId),
-                            outputName=outputName,
-                            scipionObj=outputObj,
-                            registerType=True,
-                            includeNestedProperties=True,
-                            scipionObjectIdsByPath=scipionObjectIdsByPath,
-                        )
-                    except TypeError:
-                        syncInfo = objectMapper.storeObjectTree(
-                            projectId=projectId,
-                            protocolDbId=int(protocolDbId),
-                            outputName=outputName,
-                            scipionObj=outputObj,
-                            includeNestedProperties=True,
-                            scipionObjectIdsByPath=scipionObjectIdsByPath,
-                        )
+                    syncInfo = objectMapper.storeObjectTree(
+                        projectId=projectId,
+                        protocolDbId=int(protocolDbId),
+                        outputName=outputName,
+                        scipionObj=outputObj,
+                        registerType=True,
+                        includeNestedProperties=True,
+                        scipionObjectIdsByPath=scipionObjectIdsByPath,
+                    )
 
                     persistedOutputs.append({
                         "outputName": outputName,
