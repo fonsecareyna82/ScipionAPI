@@ -686,6 +686,7 @@ class RuntimePostgresqlProtocolWorker:
         self.protocol = None
         self.runtimeMapper = None
         self.dependencyEventListener = None
+        self._executionInputSetsByRuntimeObjectId = {}
 
     def load(self) -> None:
         from app.backend.database import getMapper
@@ -806,6 +807,36 @@ class RuntimePostgresqlProtocolWorker:
             self.protocolId
         )
 
+    def _closeExecutionInputSets(self) -> None:
+        runtimeInputSets = list(self._executionInputSetsByRuntimeObjectId.values())
+        self._executionInputSetsByRuntimeObjectId.clear()
+
+        closedInputSetIds = set()
+
+        for runtimeInputSet in runtimeInputSets:
+            runtimeInputSetId = id(runtimeInputSet)
+
+            if runtimeInputSetId in closedInputSetIds:
+                continue
+
+            closedInputSetIds.add(runtimeInputSetId)
+
+            close = getattr(runtimeInputSet, "close", None)
+
+            if not callable(close):
+                continue
+
+            try:
+                close()
+            except Exception:
+                logger.debug(
+                    "Could not close detached PostgreSQL execution input Set. "
+                    "projectId=%s protocolId=%s",
+                    self.projectId,
+                    self.protocolId,
+                    exc_info=True,
+                )
+
     def close(self) -> None:
         if (
                 self.dependencyEventListener
@@ -822,6 +853,7 @@ class RuntimePostgresqlProtocolWorker:
                 )
 
             self.dependencyEventListener = None
+            self._closeExecutionInputSets()
 
         if self.project is not None:
             try:
@@ -2007,6 +2039,56 @@ class RuntimePostgresqlProtocolWorker:
                     dependencyEvent,
                 )
 
+    def _getExecutionInputObject(
+            self,
+            runtimeObjectId: int,
+    ):
+        runtimeObjectId = int(runtimeObjectId)
+
+        cachedInputSet = self._executionInputSetsByRuntimeObjectId.get(runtimeObjectId)
+
+        if cachedInputSet is not None:
+            return cachedInputSet
+
+        sourceOutputObject = self.runtimeMapper.selectRuntimeInputObjectById(runtimeObjectId)
+
+        if sourceOutputObject is None:
+            return None
+
+        if not isinstance(sourceOutputObject, Set):
+            return sourceOutputObject
+
+        cloneRuntimeSet = getattr(sourceOutputObject, "clone", None)
+
+        if not callable(cloneRuntimeSet):
+            raise RuntimeError(
+                "PostgreSQL input Set does not support detached cloning. "
+                "runtimeObjectId=%s className=%s"
+                % (
+                    runtimeObjectId,
+                    sourceOutputObject.__class__.__name__,
+                )
+            )
+
+        runtimeInputSet = cloneRuntimeSet()
+
+        if runtimeInputSet is sourceOutputObject:
+            raise RuntimeError(
+                "PostgreSQL input Set clone reused the parent output object. "
+                "runtimeObjectId=%s className=%s"
+                % (
+                    runtimeObjectId,
+                    sourceOutputObject.__class__.__name__,
+                )
+            )
+
+        runtimeInputSet._postgresqlSupportsNativeWrite = False
+        runtimeInputSet._postgresqlWritable = False
+
+        self._executionInputSetsByRuntimeObjectId[runtimeObjectId] = runtimeInputSet
+
+        return runtimeInputSet
+
     def restoreExecutionInputs(
             self,
             persistResolvedRefs: bool = True,
@@ -2109,12 +2191,20 @@ class RuntimePostgresqlProtocolWorker:
                 })
                 continue
 
-            outputObject = (
-                self.runtimeMapper
-                .selectRuntimeInputObjectById(
-                    int(runtimeObjectId)
-                )
-            )
+            try:
+                outputObject = self._getExecutionInputObject(int(runtimeObjectId))
+            except Exception as error:
+                errors.append({
+                    **dict(ref),
+                    "error": (
+                            "Could not build detached PostgreSQL input %s: %s"
+                            % (
+                                parentOutputName,
+                                error,
+                            )
+                    ),
+                })
+                continue
 
             if outputObject is None:
                 errors.append({

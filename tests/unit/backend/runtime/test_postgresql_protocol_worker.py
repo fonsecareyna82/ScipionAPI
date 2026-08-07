@@ -286,51 +286,42 @@ def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
     assert worker.protocol is protocol
 
 
-def test_RestoreExecutionInputsRefreshesCachedPostgresqlSet(
+def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
         monkeypatch,
 ):
-    class CachedInputSet(Set):
-        def __init__(self):
+    class InputSet(Set):
+        def __init__(self, size):
             super().__init__()
-
-            self._size.set(
-                2236
-            )
-
+            self._size.set(size)
             self.refreshCalls = 0
+            self.cloneCalls = 0
+            self.lastClone = None
+
+        def clone(self):
+            self.cloneCalls += 1
+
+            runtimeClone = InputSet(self.getSize())
+            runtimeClone.setObjId(self.getObjId())
+
+            self.lastClone = runtimeClone
+            return runtimeClone
 
         def refreshPostgresqlRuntimeState(self):
             self.refreshCalls += 1
-
-            self._size.set(
-                5236
-            )
-
+            self._size.set(5236)
             return self
 
     class RuntimeMapperStub:
-        def __init__(
-                self,
-                outputSet,
-        ):
+        def __init__(self, outputSet):
             self.outputSet = outputSet
             self.selectCalls = []
 
-        def selectRuntimeInputObjectById(
-                self,
-                runtimeObjectId,
-        ):
-            self.selectCalls.append(
-                runtimeObjectId
-            )
-
+        def selectRuntimeInputObjectById(self, runtimeObjectId):
+            self.selectCalls.append(runtimeObjectId)
             return self.outputSet
 
     class GraphRepositoryStub:
-        def getPostgresqlRuntimeOutputInfo(
-                self,
-                **kwargs,
-        ):
+        def getPostgresqlRuntimeOutputInfo(self, **kwargs):
             assert kwargs["projectId"] == 1
             assert kwargs["parentProtocolDbId"] == 20
             assert kwargs["outputName"] == "outputParticles"
@@ -342,25 +333,14 @@ def test_RestoreExecutionInputsRefreshesCachedPostgresqlSet(
             }
 
     class InputProtocolStub:
-        def getParam(
-                self,
-                paramName,
-        ):
+        def getParam(self, paramName):
             assert paramName == "inputParticles"
-
             return SimpleNamespace()
 
-    inputSet = CachedInputSet()
+    parentOutputSet = InputSet(2236)
+    parentOutputSet.setObjId(44)
 
-    inputSet.setObjId(
-        44
-    )
-
-    assert inputSet.getSize() == 2236
-
-    runtimeMapper = RuntimeMapperStub(
-        inputSet
-    )
+    runtimeMapper = RuntimeMapperStub(parentOutputSet)
 
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -394,15 +374,17 @@ def test_RestoreExecutionInputsRefreshesCachedPostgresqlSet(
     assert firstReport["errors"] == []
     assert firstReport["restored"] == 1
 
-    assert inputSet.refreshCalls == 1
-    assert inputSet.getSize() == 5236
+    runtimeInputSet = parentOutputSet.lastClone
 
-    assert runtimeMapper.selectCalls == [
-        44,
-    ]
+    assert runtimeInputSet is not None
+    assert runtimeInputSet is not parentOutputSet
+    assert parentOutputSet.cloneCalls == 1
+    assert parentOutputSet.refreshCalls == 0
+    assert parentOutputSet.getSize() == 2236
 
-    assert worker.protocol.inputParticles.get() is inputSet
-    assert worker.protocol.inputParticles.get().getSize() == 5236
+    assert runtimeInputSet.refreshCalls == 1
+    assert runtimeInputSet.getSize() == 5236
+    assert worker.protocol.inputParticles.get() is runtimeInputSet
     assert firstReport["items"][0]["parentProtocolModified"] is False
 
     secondReport = worker.restoreExecutionInputs(
@@ -411,15 +393,42 @@ def test_RestoreExecutionInputsRefreshesCachedPostgresqlSet(
     )
 
     assert secondReport["errors"] == []
-    assert inputSet.refreshCalls == 2
+    assert parentOutputSet.cloneCalls == 1
+    assert parentOutputSet.refreshCalls == 0
+    assert parentOutputSet.getSize() == 2236
+
+    assert runtimeInputSet.refreshCalls == 2
+    assert runtimeInputSet.getSize() == 5236
+    assert worker.protocol.inputParticles.get() is runtimeInputSet
 
     assert runtimeMapper.selectCalls == [
         44,
-        44,
     ]
 
-    assert worker.protocol.inputParticles.get() is inputSet
-    assert worker.protocol.inputParticles.get().getSize() == 5236
+
+def test_CloseClosesDetachedExecutionInputSets():
+    class RuntimeInputSet:
+        def __init__(self):
+            self.closeCalls = 0
+
+        def close(self):
+            self.closeCalls += 1
+
+    runtimeInputSet = RuntimeInputSet()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker._executionInputSetsByRuntimeObjectId = {
+        44: runtimeInputSet,
+    }
+
+    worker.close()
+
+    assert runtimeInputSet.closeCalls == 1
+    assert worker._executionInputSetsByRuntimeObjectId == {}
 
 
 def test_NonStreamingProtocolWaitsForRunningParent():
