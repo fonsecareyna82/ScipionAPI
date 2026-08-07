@@ -62,6 +62,7 @@ from pyworkflow.utils import LoggingConfigurator
 from pyworkflow.utils.log import setDefaultLoggingContext
 
 from app.backend.project import PostgresqlProject
+from app.backend.api.services.settings_service import SettingsService
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     setPostgresqlRuntimeParentReference,
 )
@@ -2865,6 +2866,59 @@ class RuntimePostgresqlProtocolWorker:
                 statusValue=STATUS_FAILED,
             )
 
+    def _getEffectiveQueueLaunchParams(self):
+        settingsService = SettingsService()
+
+        instanceSettings = settingsService.getRuntimeInstanceSettings(
+            mapper=self.mapper,
+            currentUser=None,
+        )
+
+        hostSettings = settingsService.getRuntimeHostSettings(
+            mapper=self.mapper,
+            currentUser=None,
+        )
+
+        queues = list(hostSettings.get("queues") or [])
+
+        if not queues:
+            raise RuntimeError(
+                "Protocol requires queue execution but no queues are configured in the effective host settings."
+            )
+
+        defaultQueueName = str(instanceSettings.get("defaultQueueName") or "").strip()
+
+        selectedQueue = next(
+            (
+                queue
+                for queue in queues
+                if str(queue.get("name") or "").strip() == defaultQueueName
+            ),
+            None,
+        )
+
+        if selectedQueue is None:
+            selectedQueue = queues[0]
+
+        queueName = str(selectedQueue.get("name") or "").strip()
+
+        if not queueName:
+            raise RuntimeError(
+                "Effective queue configuration does not define a queue name."
+            )
+
+        queueParams = {}
+
+        for queueParam in selectedQueue.get("params") or []:
+            variableName = str(queueParam.get("variableName") or "").strip()
+
+            if not variableName:
+                continue
+
+            queueParams[variableName] = str(queueParam.get("value") or "")
+
+        return queueName, queueParams
+
     def submitToQueue(self) -> int:
         command = buildPostgresqlWorkerCommand(
             projectId=self.projectId,
@@ -2878,13 +2932,12 @@ class RuntimePostgresqlProtocolWorker:
             .getHostConfig()
         )
 
-        submitDict = dict(
-            hostConfig.getQueuesDefault()
-        )
+        submitDict = self.protocol.getSubmitDict()
 
-        submitDict.update(
-            self.protocol.getSubmitDict()
-        )
+        if not self.protocol.hasQueueParams():
+            queueName, queueParams = self._getEffectiveQueueLaunchParams()
+            submitDict["JOB_QUEUE"] = queueName
+            submitDict.update(queueParams)
 
         submitDict["JOB_COMMAND"] = (
             shlex.join(command)

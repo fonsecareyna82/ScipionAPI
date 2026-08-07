@@ -1257,3 +1257,109 @@ def test_CompatibilitySqliteCleanupFailureIsBestEffort(
     assert report["error"] == "cleanup failure"
 
 
+def test_EffectiveQueueLaunchParamsUsesRuntimeApiSettings(monkeypatch):
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(self, mapper, currentUser):
+            return {
+                "defaultQueueName": "gpu",
+            }
+
+        def getRuntimeHostSettings(self, mapper, currentUser):
+            return {
+                "queues": [
+                    {
+                        "name": "cpu",
+                        "params": [
+                            {
+                                "variableName": "JOB_TIME",
+                                "value": "24",
+                            },
+                        ],
+                    },
+                    {
+                        "name": "gpu",
+                        "params": [
+                            {
+                                "variableName": "JOB_TIME",
+                                "value": "72",
+                            },
+                            {
+                                "variableName": "JOB_MEMORY",
+                                "value": "64000",
+                            },
+                            {
+                                "variableName": "GPU_COUNT",
+                                "value": "1",
+                            },
+                        ],
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        SettingsServiceStub,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = object()
+
+    queueName, queueParams = worker._getEffectiveQueueLaunchParams()
+
+    assert queueName == "gpu"
+    assert queueParams == {
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+        "GPU_COUNT": "1",
+    }
+
+
+def test_EffectiveQueueLaunchParamsFallsBackToFirstConfiguredQueue(monkeypatch):
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(self, mapper, currentUser):
+            return {
+                "defaultQueueName": "missing",
+            }
+
+        def getRuntimeHostSettings(self, mapper, currentUser):
+            return {
+                "queues": [
+                    {
+                        "name": "gpu",
+                        "params": [
+                            {
+                                "variableName": "JOB_TIME",
+                                "value": "72",
+                            },
+                        ],
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        SettingsServiceStub,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = object()
+
+    queueName, queueParams = worker._getEffectiveQueueLaunchParams()
+
+    assert queueName == "gpu"
+    assert queueParams == {
+        "JOB_TIME": "72",
+    }
+
+
+
