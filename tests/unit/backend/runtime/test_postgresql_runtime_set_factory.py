@@ -2155,6 +2155,38 @@ def test_RuntimeSetClonePreservesPostgresqlRuntimeState():
     )
 
 
+def test_RuntimeSetCloneHandlesNativeCloneReturningNone():
+    from pwem.objects import SetOfParticles
+    runtimeClass = type(
+        "RuntimeSetOfParticles",
+        (PostgresqlRuntimeSetMixin, SetOfParticles),
+        {"__module__": __name__},
+    )
+
+    runtimeSet = runtimeClass()
+    runtimeSet.setObjId(1001877)
+
+    runtimeSet._postgresqlNativeSetClass = SetOfParticles
+    runtimeSet._postgresqlMapperFactory = lambda writable=False: None
+    runtimeSet._postgresqlSqliteMaterializer = object()
+    runtimeSet._postgresqlRuntimeInfo = {"runtimeObjectId": 1001877}
+    runtimeSet._postgresqlRuntimeClasses = {}
+    runtimeSet._postgresqlRuntimeValues = {}
+    runtimeSet._postgresqlRuntimeProperties = {}
+    runtimeSet._mapper = None
+
+    runtimeClone = runtimeSet.clone()
+
+    assert runtimeClone is not None
+    assert runtimeClone is not runtimeSet
+    assert isinstance(runtimeClone, PostgresqlRuntimeSetMixin)
+    assert runtimeClone.getClass() is SetOfParticles
+    assert runtimeClone.getObjId() == 1001877
+    assert runtimeClone._mapper is None
+    assert runtimeClone._postgresqlMaterializedFileName is None
+    assert runtimeClone._postgresqlMaterializedRevision is None
+
+
 def test_NestedRuntimeSetCloneCanIterateChildren():
     _, runtimeSet = buildNestedRuntimeSet()
 

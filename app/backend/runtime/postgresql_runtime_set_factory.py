@@ -715,6 +715,19 @@ class PostgresqlRuntimeSetMixin:
                     self.isEnabled()
                 )
 
+        if runtimeClone is None:
+            nativeSetClass = self.getClass()
+
+            if not isinstance(nativeSetClass, type):
+                raise TypeError(
+                    "Could not resolve native Scipion Set class while cloning "
+                    "PostgreSQL runtime Set. className=%s objectId=%s"
+                    % (self.getClassName(), self.getObjId())
+                )
+
+            runtimeClone = nativeSetClass()
+            runtimeClone.copy(self, copyId=True, ignoreAttrs=["_mapperPath", "_size"])
+
         sourceMapperFactory = getattr(
             self,
             "_postgresqlMapperFactory",
