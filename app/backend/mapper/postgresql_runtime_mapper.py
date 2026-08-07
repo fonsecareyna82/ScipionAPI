@@ -1010,11 +1010,9 @@ class PostgresqlRuntimeMapper(Mapper):
                     targetChild,
                 )
 
-            targetChild._objParent = targetObject
+            targetChild._objParent = None
 
-            targetObjectId = self._getObjId(
-                targetObject
-            )
+            targetObjectId = self._getObjId(targetObject)
 
             if targetObjectId is not None:
                 self._setObjParentId(

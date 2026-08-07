@@ -1392,13 +1392,13 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
     assert targetObject.title.get() == "PostgreSQL object"
     assert targetObject.title.getObjId() == 701
     assert targetObject.title.getObjParentId() == 700
-    assert targetObject.title._objParent is targetObject
+    assert targetObject.title._objParent is None
 
     assert targetObject.count is countBeforeUpdate
     assert targetObject.count.get() == 5
     assert targetObject.count.getObjId() == 702
     assert targetObject.count.getObjParentId() == 700
-    assert targetObject.count._objParent is targetObject
+    assert targetObject.count._objParent is None
 
     assert targetObject._objParent is ownerProtocol
     assert ownerProtocol.mock_calls == []
@@ -1409,6 +1409,35 @@ def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
             700,
         ),
     ]
+
+
+def test_UpdateFromGenericObjectRemainsSafeForRecursiveCopy():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    # Reproduce stale strong links created by the old PostgreSQL hydration.
+    targetObject.title._objParent = targetObject
+    targetObject.count._objParent = targetObject
+
+    mapper.updateFrom(
+        targetObject
+    )
+
+    assert targetObject.title._objParent is None
+    assert targetObject.count._objParent is None
+
+    copiedObject = FakeComposite()
+    copiedObject.copy(
+        targetObject,
+        copyId=False,
+    )
+
+    assert copiedObject.title.get() == "PostgreSQL object"
+    assert copiedObject.count.get() == 5
 
 
 def test_UpdateFromRaisesWhenGenericObjectIsMissingFromPostgresql():

@@ -247,7 +247,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 17. Worker finalization removes only the current worker's SQLite snapshots after closing mappers, on both successful and failed protocol execution.
 18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
 19. Structured pointers inside generic PostgreSQL runtime inputs resolve through consumer-owned detached targets without restoring canonical parent protocol access.
-20. Generic PostgreSQL runtime object trees preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
+20. Generic PostgreSQL runtime object hydration and `updateFrom()` preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
 
 ## Historical failure mode
 
