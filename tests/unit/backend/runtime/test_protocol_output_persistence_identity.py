@@ -284,6 +284,71 @@ def test_PrepareOutputObjectIdsReusesPersistedIdsByPath():
     assert report["reused"] == 2
 
 
+def test_PrepareOutputObjectIdsKeepsDistinctCanonicalIdsForSharedPaths():
+    service = RuntimeProtocolOutputPersistenceService()
+
+    sharedChild = FakeRuntimeObject(
+        objectId=3_000_000_131
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_130,
+        attributes=[
+            (
+                "_first",
+                sharedChild,
+            ),
+            (
+                "_second",
+                sharedChild,
+            ),
+        ],
+    )
+
+    mapper = FakeMapper([
+        1_000_130,
+        1_000_131,
+        1_000_132,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    preparation = service._prepareOutputObjectIdsForPersistence(
+        mapper=mapper,
+        objectMapper=objectMapper,
+        projectId=341,
+        protocolDbId=700,
+        protocolId=3,
+        outputName="outputObject",
+        outputObj=outputObject,
+        includeNestedProperties=True,
+    )
+
+    assert preparation["_scipionObjectIdsByPath"] == {
+        "outputObject": 1_000_130,
+        "outputObject._first": 1_000_131,
+        "outputObject._second": 1_000_132,
+    }
+
+    assert preparation["prepared"] == 3
+    assert preparation["allocated"] == 3
+    assert preparation["reused"] == 0
+
+    assert mapper.allocateCalls == [
+        341,
+        341,
+        341,
+    ]
+
+    assert outputObject.getObjId() == 1_000_130
+    assert sharedChild.getObjId() == 1_000_132
+
+    service._restoreOutputObjectIdsAfterPersistence(preparation)
+
+    assert outputObject.getObjId() == 3_000_000_130
+    assert sharedChild.getObjId() == 3_000_000_131
+
+
 def test_RestoreOutputObjectIdsRestoresRunDbIdentity():
     service = (
         RuntimeProtocolOutputPersistenceService()

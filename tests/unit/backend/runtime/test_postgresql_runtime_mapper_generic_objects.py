@@ -157,9 +157,11 @@ def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
         def __init__(self):
             self.nextObjectId = 1
             self.paths = []
+            self.scipionObjectIdsByPath = {}
 
         def execute(self, query, params, commit=False):
             self.paths.append(params[5])
+            self.scipionObjectIdsByPath[params[5]] = params[2]
 
             objectId = self.nextObjectId
             self.nextObjectId += 1
@@ -186,6 +188,15 @@ def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
 
     storedPaths = []
 
+    scipionObjectIdsByPath = {
+        "outputObject": 700,
+        "outputObject.targets": 701,
+        "outputObject.targets.__item__000001": 702,
+        "outputObject.targets.__item__000001._extended": 703,
+        "outputObject.targets.__item__000002": 704,
+        "outputObject.targets.__item__000002._extended": 705,
+    }
+
     mapper._storeObjectNode(
         projectId=7,
         protocolDbId=55,
@@ -196,6 +207,7 @@ def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
         storedPaths=storedPaths,
         includeNestedProperties=True,
         visited=set(),
+        scipionObjectIdsByPath=scipionObjectIdsByPath,
     )
 
     assert storedPaths == [

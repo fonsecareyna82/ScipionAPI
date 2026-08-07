@@ -145,6 +145,7 @@ class ScipionObjectPostgresqlMapper:
         scipionObj: Any,
         registerType: bool = True,
         includeNestedProperties: bool = True,
+        scipionObjectIdsByPath: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         if not projectId:
             raise ValueError("projectId is required")
@@ -167,18 +168,22 @@ class ScipionObjectPostgresqlMapper:
                 )
             )
 
-            rootObjectId = self._storeObjectNode(
-                projectId=projectId,
-                protocolDbId=protocolDbId,
-                scipionObj=scipionObj,
-                name=outputName,
-                path=outputName,
-                parentObjectId=None,
-                storedPaths=storedPaths,
-                includeNestedProperties=includeNestedProperties,
-                visited=set(),
-            )
+            storeNodeKwargs = {
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "scipionObj": scipionObj,
+                "name": outputName,
+                "path": outputName,
+                "parentObjectId": None,
+                "storedPaths": storedPaths,
+                "includeNestedProperties": includeNestedProperties,
+                "visited": set(),
+            }
 
+            if isinstance(scipionObjectIdsByPath, dict):
+                storeNodeKwargs["scipionObjectIdsByPath"] = scipionObjectIdsByPath
+
+            rootObjectId = self._storeObjectNode(**storeNodeKwargs)
             staleObjectsDeleted = (
                 self._deleteStaleObjectTreePaths(
                     projectId=projectId,
@@ -970,11 +975,20 @@ class ScipionObjectPostgresqlMapper:
         storedPaths: List[str],
         includeNestedProperties: bool,
         visited: Set[int],
+        scipionObjectIdsByPath: Optional[Dict[str, int]] = None,
     ) -> int:
         objIdentity = id(scipionObj)
         if objIdentity in visited:
             return parentObjectId or 0
         visited.add(objIdentity)
+
+        scipionObjectId = None
+
+        if isinstance(scipionObjectIdsByPath, dict):
+            scipionObjectId = scipionObjectIdsByPath.get(path)
+
+        if scipionObjectId is None:
+            scipionObjectId = self._getScipionObjId(scipionObj, path)
 
         attributes = self._getAttributesToStore(scipionObj)
         metadata = {
@@ -1015,7 +1029,7 @@ class ScipionObjectPostgresqlMapper:
             (
                 projectId,
                 protocolDbId,
-                self._getScipionObjId(scipionObj, path),
+                scipionObjectId,
                 parentObjectId,
                 name,
                 path,
@@ -1043,6 +1057,7 @@ class ScipionObjectPostgresqlMapper:
                     storedPaths=storedPaths,
                     includeNestedProperties=includeNestedProperties,
                     visited=visited,
+                    scipionObjectIdsByPath=scipionObjectIdsByPath,
                 )
 
         visited.discard(objIdentity)

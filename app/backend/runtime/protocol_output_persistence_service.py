@@ -279,150 +279,92 @@ class RuntimeProtocolOutputPersistenceService:
         except (TypeError, ValueError):
             protocolRuntimeId = None
 
-        visited = set()
+        activeObjectIdentities = set()
         preparedItems = []
         identitySnapshot = []
+        scipionObjectIdsByPath = {}
 
         def prepareObject(
                 runtimeObject,
                 path: str,
-                parentRuntimeObjectId:
-                Optional[int],
+                parentRuntimeObjectId: Optional[int],
         ) -> None:
             if runtimeObject is None:
                 return
 
-            runtimeObjectIdentity = id(
-                runtimeObject
-            )
+            runtimeObjectIdentity = id(runtimeObject)
 
-            if runtimeObjectIdentity in visited:
+            if runtimeObjectIdentity in activeObjectIdentities:
                 return
 
-            visited.add(
-                runtimeObjectIdentity
-            )
+            activeObjectIdentities.add(runtimeObjectIdentity)
 
-            previousObjectId = (
-                self.getScipionObjectId(
-                    runtimeObject
-                )
-            )
+            try:
+                previousObjectId = self.getScipionObjectId(runtimeObject)
 
-            previousParentObjectId = (
-                self.safeCall(
+                previousParentObjectId = self.safeCall(
                     runtimeObject,
                     "getObjParentId",
-                    getattr(
-                        runtimeObject,
-                        "_objParentId",
-                        None,
-                    ),
-                )
-            )
-
-            canonicalObjectId = (
-                storedIdsByPath.get(
-                    path
-                )
-            )
-
-            reused = (
-                canonicalObjectId
-                is not None
-            )
-
-            if canonicalObjectId is None:
-                canonicalObjectId = int(
-                    allocator(
-                        int(projectId)
-                    )
+                    getattr(runtimeObject, "_objParentId", None),
                 )
 
-            self._setScipionObjectId(
-                runtimeObject,
-                canonicalObjectId,
-            )
+                canonicalObjectId = storedIdsByPath.get(path)
+                reused = canonicalObjectId is not None
 
-            self._setScipionObjectParentId(
-                runtimeObject,
-                parentRuntimeObjectId,
-            )
+                if canonicalObjectId is None:
+                    canonicalObjectId = int(allocator(int(projectId)))
 
-            identitySnapshot.append({
-                "runtimeObject": runtimeObject,
-                "previousObjectId": (
-                    previousObjectId
-                ),
-                "previousParentObjectId": (
-                    previousParentObjectId
-                ),
-            })
+                scipionObjectIdsByPath[path] = canonicalObjectId
 
-            preparedItems.append({
-                "path": path,
-                "previousObjectId": (
-                    previousObjectId
-                ),
-                "canonicalObjectId": (
-                    canonicalObjectId
-                ),
-                "reused": reused,
-                "previousParentObjectId": (
-                    previousParentObjectId
-                ),
-            })
+                self._setScipionObjectId(runtimeObject, canonicalObjectId)
+                self._setScipionObjectParentId(runtimeObject, parentRuntimeObjectId)
 
-            if not includeNestedProperties:
-                return
+                identitySnapshot.append({
+                    "runtimeObject": runtimeObject,
+                    "previousObjectId": previousObjectId,
+                    "previousParentObjectId": previousParentObjectId,
+                })
 
-            attributesReader = getattr(
-                objectMapper,
-                "_getAttributesToStore",
-                None,
-            )
+                preparedItems.append({
+                    "path": path,
+                    "previousObjectId": previousObjectId,
+                    "canonicalObjectId": canonicalObjectId,
+                    "reused": reused,
+                    "previousParentObjectId": previousParentObjectId,
+                })
 
-            if callable(attributesReader):
-                try:
-                    attributes = list(
-                        attributesReader(
-                            runtimeObject
-                        )
-                        or []
-                    )
-                except Exception:
-                    return
-            else:
-                attributesGetter = getattr(
-                    runtimeObject,
-                    "getAttributesToStore",
-                    None,
-                )
-
-                if not callable(attributesGetter):
+                if not includeNestedProperties:
                     return
 
-                try:
-                    attributes = list(
-                        attributesGetter()
-                        or []
+                attributesReader = getattr(objectMapper, "_getAttributesToStore", None)
+
+                if callable(attributesReader):
+                    try:
+                        attributes = list(attributesReader(runtimeObject) or [])
+                    except Exception:
+                        return
+                else:
+                    attributesGetter = getattr(runtimeObject, "getAttributesToStore", None)
+
+                    if not callable(attributesGetter):
+                        return
+
+                    try:
+                        attributes = list(attributesGetter() or [])
+                    except Exception:
+                        return
+
+                for attributeName, childObject in attributes:
+                    childPath = "%s.%s" % (path, str(attributeName))
+
+                    prepareObject(
+                        runtimeObject=childObject,
+                        path=childPath,
+                        parentRuntimeObjectId=canonicalObjectId,
                     )
-                except Exception:
-                    return
 
-            for attributeName, childObject in attributes:
-                childPath = "%s.%s" % (
-                    path,
-                    str(attributeName),
-                )
-
-                prepareObject(
-                    runtimeObject=childObject,
-                    path=childPath,
-                    parentRuntimeObjectId=(
-                        canonicalObjectId
-                    ),
-                )
+            finally:
+                activeObjectIdentities.discard(runtimeObjectIdentity)
 
         prepareObject(
             runtimeObject=outputObj,
@@ -458,6 +400,7 @@ class RuntimeProtocolOutputPersistenceService:
             "_identitySnapshot": (
                 identitySnapshot
             ),
+            "_scipionObjectIdsByPath": dict(scipionObjectIdsByPath),
         }
 
     def _restoreOutputObjectIdsAfterPersistence(
@@ -2507,6 +2450,10 @@ class RuntimeProtocolOutputPersistenceService:
 
 
                 elif isTreeOutput:
+                    scipionObjectIdsByPath = {}
+
+                    if isinstance(identityPreparation, dict):
+                        scipionObjectIdsByPath = identityPreparation.get("_scipionObjectIdsByPath") or {}
                     try:
                         syncInfo = objectMapper.storeObjectTree(
                             projectId=projectId,
@@ -2515,6 +2462,7 @@ class RuntimeProtocolOutputPersistenceService:
                             scipionObj=outputObj,
                             registerType=True,
                             includeNestedProperties=True,
+                            scipionObjectIdsByPath=scipionObjectIdsByPath,
                         )
                     except TypeError:
                         syncInfo = objectMapper.storeObjectTree(
@@ -2523,6 +2471,7 @@ class RuntimeProtocolOutputPersistenceService:
                             outputName=outputName,
                             scipionObj=outputObj,
                             includeNestedProperties=True,
+                            scipionObjectIdsByPath=scipionObjectIdsByPath,
                         )
 
                     persistedOutputs.append({
