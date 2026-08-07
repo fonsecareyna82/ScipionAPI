@@ -765,6 +765,7 @@ class RuntimeProtocolOutputPersistenceService:
                 List[str]
             ],
             artifactError: Exception,
+            scipionObjectIdsByPath: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         Persist the metadata tree of a Set whose backing SQLite database
@@ -803,6 +804,7 @@ class RuntimeProtocolOutputPersistenceService:
             scipionObj=outputObj,
             registerType=False,
             includeNestedProperties=True,
+            scipionObjectIdsByPath=scipionObjectIdsByPath or {},
         )
 
         rootObjectId = syncInfo.get(
@@ -2298,29 +2300,16 @@ class RuntimeProtocolOutputPersistenceService:
             identityPreparation = None
 
             try:
-                if (
-                        (
-                                isSetOutput
-                                and not isPostgresqlRuntimeSet
-                        )
-                        or isTreeOutput
-                ):
-                    identityPreparation = (
-                        self
-                        ._prepareOutputObjectIdsForPersistence(
+                if isTreeOutput:
+                    identityPreparation = self._prepareOutputObjectIdsForPersistence(
                         mapper=mapper,
                         objectMapper=objectMapper,
                         projectId=projectId,
-                        protocolDbId=int(
-                            protocolDbId
-                        ),
+                        protocolDbId=int(protocolDbId),
                         protocolId=protocolId,
                         outputName=outputName,
                         outputObj=outputObj,
-                        includeNestedProperties=(
-                            isTreeOutput
-                        ),
-                        )
+                        includeNestedProperties=True,
                     )
 
                 if isSetOutput:
@@ -2382,18 +2371,28 @@ class RuntimeProtocolOutputPersistenceService:
                             ),
                         )
 
-                        syncInfo = (
-                            self._storeDetachedSetOutput(
-                                objectMapper=objectMapper,
-                                projectId=projectId,
-                                protocolDbId=int(
-                                    protocolDbId
-                                ),
-                                outputName=outputName,
-                                outputObj=outputObj,
-                                projectPaths=projectPaths,
-                                artifactError=artifactError,
-                            )
+                        identityPreparation = self._prepareOutputObjectIdsForPersistence(
+                            mapper=mapper,
+                            objectMapper=objectMapper,
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            protocolId=protocolId,
+                            outputName=outputName,
+                            outputObj=outputObj,
+                            includeNestedProperties=True,
+                        )
+
+                        scipionObjectIdsByPath = identityPreparation.get("_scipionObjectIdsByPath") or {}
+
+                        syncInfo = self._storeDetachedSetOutput(
+                            objectMapper=objectMapper,
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            outputName=outputName,
+                            outputObj=outputObj,
+                            projectPaths=projectPaths,
+                            artifactError=artifactError,
+                            scipionObjectIdsByPath=scipionObjectIdsByPath,
                         )
 
                         persistedOutputs.append({
@@ -2410,15 +2409,22 @@ class RuntimeProtocolOutputPersistenceService:
                         continue
 
                     try:
-                        syncInfo = (
-                            setMapper.storeSet(
-                                projectId=projectId,
-                                protocolDbId=int(
-                                    protocolDbId
-                                ),
-                                outputName=outputName,
-                                scipionSet=outputObj,
-                            )
+                        identityPreparation = self._prepareOutputObjectIdsForPersistence(
+                            mapper=mapper,
+                            objectMapper=objectMapper,
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            protocolId=protocolId,
+                            outputName=outputName,
+                            outputObj=outputObj,
+                            includeNestedProperties=False,
+                        )
+
+                        syncInfo = setMapper.storeSet(
+                            projectId=projectId,
+                            protocolDbId=int(protocolDbId),
+                            outputName=outputName,
+                            scipionSet=outputObj,
                         )
 
                     finally:

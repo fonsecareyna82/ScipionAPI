@@ -214,6 +214,202 @@ def test_StoreDetachedSetOutputDelegatesMetadataPersistence():
     }
 
 
+def test_RegisterOutputPreparesDetachedSetAsCanonicalObjectTree(
+        monkeypatch,
+):
+    class RuntimeObjectStub:
+        def __init__(
+                self,
+                objectId,
+                attributes=None,
+        ):
+            self._objId = objectId
+            self._objParentId = None
+            self._attributes = list(attributes or [])
+
+        def getObjId(self):
+            return self._objId
+
+        def setObjId(self, objectId):
+            self._objId = objectId
+
+        def getObjParentId(self):
+            return self._objParentId
+
+        def setObjParentId(self, parentObjectId):
+            self._objParentId = parentObjectId
+
+        def getAttributesToStore(self):
+            return list(self._attributes)
+
+    class DetachedSetStub(RuntimeObjectStub):
+        def getClassName(self):
+            return "SetOfParticles"
+
+        def getFileName(self):
+            return "Runs/000023_Test/extra/output.sqlite"
+
+        def getSize(self):
+            return 24
+
+    childObject = RuntimeObjectStub(
+        objectId=3_000_000_101
+    )
+
+    outputSet = DetachedSetStub(
+        objectId=3_000_000_100,
+        attributes=[
+            (
+                "_child",
+                childObject,
+            ),
+        ],
+    )
+
+    class ProtocolStub:
+        def getObjId(self):
+            return 23
+
+        def iterOutputAttributes(self):
+            return [
+                (
+                    "outputParticles",
+                    outputSet,
+                ),
+            ]
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.db = object()
+            self.objectIds = iter([
+                1_000_100,
+                1_000_101,
+            ])
+
+        def allocateProjectObjectId(self, projectId):
+            assert projectId == 7
+            return next(self.objectIds)
+
+    storeCalls = []
+
+    class ObjectMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+        def getStoredObjectTree(
+                self,
+                projectId,
+                protocolDbId,
+                outputName,
+        ):
+            return []
+
+        def _getAttributesToStore(
+                self,
+                runtimeObject,
+        ):
+            return runtimeObject.getAttributesToStore()
+
+        def registerObjectTypeFromObject(
+                self,
+                *args,
+                **kwargs,
+        ):
+            return {}
+
+        def storeObjectTree(
+                self,
+                **kwargs,
+        ):
+            storeCalls.append(kwargs)
+
+            return {
+                "rootObjectId": 81,
+                "storedObjectsCount": 2,
+            }
+
+        def mergeStoredObjectMetadata(
+                self,
+                **kwargs,
+        ):
+            return 1
+
+    class SetMapperStub:
+        def __init__(self, db):
+            self.db = db
+
+        def isPostgresqlNativeSetOutput(
+                self,
+                projectId,
+                protocolDbId,
+                outputName,
+        ):
+            return False
+
+        def storeSet(self, **kwargs):
+            pytest.fail(
+                "A detached Set must not use flat Set persistence."
+            )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionObjectPostgresqlMapper",
+        ObjectMapperStub,
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionSetPostgresqlMapper",
+        SetMapperStub,
+    )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    monkeypatch.setattr(
+        service,
+        "resolveProtocolDbIdForOutputPersistence",
+        lambda **kwargs: 17,
+    )
+
+    def failSetArtifactOpen(**kwargs):
+        raise FileNotFoundError(
+            "missing output.sqlite"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_openRelativeSetMapperForPersistence",
+        failSetArtifactOpen,
+    )
+
+    report = service.registerOutput(
+        projectId=7,
+        protocol=ProtocolStub(),
+        mapper=RuntimeMapperStub(),
+        returnReport=True,
+        allowDetachedSetOutputs=True,
+    )
+
+    assert len(storeCalls) == 1
+
+    assert storeCalls[0]["scipionObjectIdsByPath"] == {
+        "outputParticles": 1_000_100,
+        "outputParticles._child": 1_000_101,
+    }
+
+    assert storeCalls[0]["includeNestedProperties"] is True
+
+    assert report["errors"] == []
+    assert report["skipped"] == []
+
+    assert len(report["persisted"]) == 1
+    assert report["persisted"][0]["mapperKind"] == "detached_set"
+    assert report["persisted"][0]["artifactMissing"] is True
+
+    assert outputSet.getObjId() == 3_000_000_100
+    assert childObject.getObjId() == 3_000_000_101
+
+
 def test_ProtocolFormOutputReaderDelegatesOutputRows(
         monkeypatch,
 ):
