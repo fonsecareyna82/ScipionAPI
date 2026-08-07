@@ -32,7 +32,7 @@ Unlike the 3 core repos (which consolidated test deps into `pyproject.toml`'s `[
 
 ## Testing
 
-- CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`. Note: still on `actions/checkout@v4`/`setup-python@v5`, not yet bumped to `@v7` like the 3 core repos.
+- CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.
 - Run locally: needs real Postgres + Redis (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -r requirements.txt && pip install -e . && pytest`.
 - `tests/smoke/` (e.g. `test_app_import.py`, `test_main_app.py`) is the fastest thing to run to sanity-check the app still imports/boots.
 
