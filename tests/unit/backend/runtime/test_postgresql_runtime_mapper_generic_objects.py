@@ -90,7 +90,7 @@ def test_ObjectPointerReferencePreservesBaseTargetAndExtended():
 
     parentProtocol = Object()
     parentProtocol.setObjId(101)
-    parentProtocol.setObjName("protocol")
+    parentProtocol._objName = "protocol"
 
     pointer = Pointer(
         parentProtocol,
