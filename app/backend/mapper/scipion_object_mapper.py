@@ -988,6 +988,9 @@ class ScipionObjectPostgresqlMapper:
             "hasSourceObjId": self._getSourceObjId(scipionObj) is not None,
         }
 
+        if metadata["isPointer"]:
+            metadata["pointerReference"] = self._serializePointerReference(scipionObj)
+
         cur = self.db.execute(
             """
             INSERT INTO scipion_objects (
@@ -1165,6 +1168,87 @@ class ScipionObjectPostgresqlMapper:
 
     def _getScipionObjId(self, scipionObj: Any, path: str) -> Optional[int]:
         return self._getSourceObjId(scipionObj)
+
+    def _serializePointerReference(self, pointer) -> Dict[str, Any]:
+        targetObject = None
+
+        try:
+            if pointer.hasValue():
+                targetObject = pointer.getObjValue()
+        except Exception:
+            targetObject = None
+
+        targetParent = None
+
+        if targetObject is not None:
+            getObjParent = getattr(targetObject, "getObjParent", None)
+
+            if callable(getObjParent):
+                try:
+                    targetParent = getObjParent()
+                except Exception:
+                    targetParent = None
+
+            if targetParent is None:
+                targetParent = getattr(targetObject, "_objParent", None)
+
+        targetObjectId = self._getSourceObjId(targetObject)
+        targetParentObjectId = self._getSourceObjId(targetParent)
+
+        if targetParentObjectId is None and targetObject is not None:
+            getObjParentId = getattr(targetObject, "getObjParentId", None)
+
+            if callable(getObjParentId):
+                try:
+                    parentObjectId = getObjParentId()
+                    targetParentObjectId = int(parentObjectId) if parentObjectId not in (None, "") else None
+                except Exception:
+                    targetParentObjectId = None
+
+        extended = ""
+
+        getExtended = getattr(pointer, "getExtended", None)
+
+        if callable(getExtended):
+            try:
+                extended = str(getExtended() or "")
+            except Exception:
+                extended = ""
+
+        uniqueId = None
+
+        getUniqueId = getattr(pointer, "getUniqueId", None)
+
+        if callable(getUniqueId):
+            try:
+                value = getUniqueId()
+                uniqueId = str(value) if value else None
+            except Exception:
+                uniqueId = None
+
+        targetObjectName = None
+
+        if targetObject is not None:
+            getObjName = getattr(targetObject, "getObjName", None)
+
+            if callable(getObjName):
+                try:
+                    value = getObjName()
+                    targetObjectName = str(value) if value else None
+                except Exception:
+                    targetObjectName = None
+
+        return {
+            "version": 1,
+            "kind": "pointer",
+            "targetObjectId": targetObjectId,
+            "targetClassName": self._getClassName(targetObject) if targetObject is not None else None,
+            "targetObjectName": targetObjectName,
+            "targetParentObjectId": targetParentObjectId,
+            "targetParentClassName": self._getClassName(targetParent) if targetParent is not None else None,
+            "extended": extended,
+            "uniqueId": uniqueId,
+        }
 
     def _getObjectValueText(self, scipionObj: Any) -> Optional[str]:
         if self._isPointer(scipionObj):

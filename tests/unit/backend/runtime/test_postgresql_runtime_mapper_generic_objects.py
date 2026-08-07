@@ -83,6 +83,65 @@ def test_ObjectTreePersistenceExcludesRuntimeParentReference():
     assert "_objParent" not in attributeNames
 
 
+def test_ObjectPointerReferencePreservesBaseTargetAndExtended():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+    parentProtocol.setObjName("protocol")
+
+    pointer = Pointer(
+        parentProtocol,
+        extended="outputParticles",
+    )
+
+    reference = mapper._serializePointerReference(
+        pointer
+    )
+
+    assert reference == {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 101,
+        "targetClassName": "Object",
+        "targetObjectName": "protocol",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "outputParticles",
+        "uniqueId": "101.outputParticles",
+    }
+
+
+def test_ObjectPointerReferencePreservesDirectTargetParentIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    targetSet = Object()
+    targetSet.setObjId(300)
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParent = targetSet
+    targetObject._objParentId = 300
+
+    pointer = Pointer(
+        targetObject
+    )
+
+    reference = mapper._serializePointerReference(
+        pointer
+    )
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetClassName"] == "Object"
+    assert reference["targetParentObjectId"] == 300
+    assert reference["targetParentClassName"] == "Object"
+    assert reference["extended"] == ""
+
+
 class FakeObjectMapper:
     def __init__(
             self,
