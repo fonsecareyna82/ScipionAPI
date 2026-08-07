@@ -1388,6 +1388,27 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return runtimeSet
 
+    def _resolvePostgresqlMapperObjectReference(
+            self,
+            runtimeObjectId,
+    ):
+        runtimeObjectId = self._toOptionalInt(runtimeObjectId)
+
+        if runtimeObjectId is None:
+            return None
+
+        protocol = self._selectProtocolByIdFromPostgresql(runtimeObjectId, refreshCached=False)
+
+        if protocol is not None:
+            return protocol
+
+        runtimeSet = self._selectSetByIdFromPostgresql(runtimeObjectId, refreshParentProtocol=False)
+
+        if runtimeSet is not None:
+            return runtimeSet
+
+        return self._selectGenericObjectByIdFromPostgresql(runtimeObjectId)
+
     def _selectGenericObjectByIdFromPostgresql(
             self,
             objId,
@@ -1395,47 +1416,72 @@ class PostgresqlRuntimeMapper(Mapper):
             runtimeObjectResolver=None,
     ):
         """
-        Reconstruct one detached, generic Scipion object from PostgreSQL.
+        Reconstruct one detached generic Scipion object from PostgreSQL.
 
-        Protocols and sets have their own readers and are deliberately rejected
-        here. Pointer-containing trees are also rejected until their complete
-        target and extended semantics can be restored safely.
+        Normal mapper reads resolve structured Pointer nodes through read-only
+        PostgreSQL object references. Runtime consumer reads may instead supply
+        their own detached resolver.
+
+        Legacy Pointer rows without structured pointerReference metadata remain
+        unsupported because their original target semantics cannot be restored
+        safely.
         """
-        runtimeObjectId = self._toOptionalInt(
-            objId
-        )
+        runtimeObjectId = self._toOptionalInt(objId)
 
         if runtimeObjectId is None:
             return None
 
-        objectMapper = getattr(
-            self,
-            "objectMapper",
-            None,
-        )
+        useMapperReferenceResolver = runtimeObjectResolver is None and not allowPartialTree
+        resolvingObjectIds = None
 
-        reader = getattr(
-            objectMapper,
-            "getStoredObjectSubtreeByScipionObjId",
-            None,
-        )
+        if useMapperReferenceResolver:
+            resolvingObjectIds = getattr(self, "_postgresqlGenericObjectReadIds", None)
 
-        if not callable(reader):
-            return None
+            if not isinstance(resolvingObjectIds, set):
+                resolvingObjectIds = set()
+                self._postgresqlGenericObjectReadIds = resolvingObjectIds
 
-        rows = reader(
-            projectId=self.projectId,
-            scipionObjId=runtimeObjectId,
-        )
+            if runtimeObjectId in resolvingObjectIds:
+                logger.warning(
+                    "Skipping recursive PostgreSQL generic object reference. "
+                    "projectId=%s runtimeObjectId=%s",
+                    self.projectId,
+                    runtimeObjectId,
+                )
+                return None
 
-        if not rows:
-            return None
+            resolvingObjectIds.add(runtimeObjectId)
+            runtimeObjectResolver = self._resolvePostgresqlMapperObjectReference
 
-        return self._buildGenericObjectFromPostgresqlRows(
-            rows,
-            allowPartialTree=allowPartialTree,
-            runtimeObjectResolver=runtimeObjectResolver,
-        )
+        try:
+            objectMapper = getattr(self, "objectMapper", None)
+
+            reader = getattr(
+                objectMapper,
+                "getStoredObjectSubtreeByScipionObjId",
+                None,
+            )
+
+            if not callable(reader):
+                return None
+
+            rows = reader(
+                projectId=self.projectId,
+                scipionObjId=runtimeObjectId,
+            )
+
+            if not rows:
+                return None
+
+            return self._buildGenericObjectFromPostgresqlRows(
+                rows,
+                allowPartialTree=allowPartialTree,
+                runtimeObjectResolver=runtimeObjectResolver,
+            )
+
+        finally:
+            if resolvingObjectIds is not None:
+                resolvingObjectIds.discard(runtimeObjectId)
 
     @staticmethod
     def _isRuntimeOnlyGenericObjectRow(

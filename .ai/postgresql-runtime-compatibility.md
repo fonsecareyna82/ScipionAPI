@@ -248,6 +248,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
 19. Structured pointers inside generic PostgreSQL runtime inputs resolve and refresh through the same consumer-owned detached target resolver without restoring canonical parent protocol access; the transient resolver is removed when the consumer input lifecycle ends.
 20. Generic PostgreSQL runtime object hydration and `updateFrom()` preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
+21. Normal PostgreSQL mapper reads restore structured generic-object pointers through read-only PostgreSQL references, while consumer runtime reads keep using their separate detached resolvers; recursive pointer graphs fail without unbounded recursion.
 
 ## Historical failure mode
 
