@@ -870,8 +870,7 @@ class PostgresqlRuntimeMapper(Mapper):
         if not callable(runtimeObjectResolver):
             runtimeObjectResolver = None
 
-        storedObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId,
-                                                                   runtimeObjectResolver=runtimeObjectResolver)
+        storedObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId, runtimeObjectResolver=runtimeObjectResolver)
 
         if storedObject is None:
             return False
@@ -2677,8 +2676,7 @@ class PostgresqlRuntimeMapper(Mapper):
         if runtimeSet is not None:
             return runtimeSet
 
-        runtimeObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId, allowPartialTree=True,
-                                                                    runtimeObjectResolver=runtimeObjectResolver)
+        runtimeObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId, allowPartialTree=True, runtimeObjectResolver=runtimeObjectResolver)
 
         if runtimeObject is not None and callable(runtimeObjectResolver):
             runtimeObject._postgresqlRuntimeObjectResolver = runtimeObjectResolver

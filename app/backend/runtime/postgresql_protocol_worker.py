@@ -831,9 +831,14 @@ class RuntimePostgresqlProtocolWorker:
         )
 
     def _closeExecutionInputSets(self) -> None:
-        runtimeInputSets = list(
-            self._executionInputSetsByRuntimeObjectId.values()
-        )
+        runtimeInputSets = list(self._executionInputSetsByRuntimeObjectId.values())
+        runtimeInputObjects = list(self._executionInputObjectsByRuntimeObjectId.values())
+
+        for runtimeInputObject in runtimeInputObjects:
+            runtimeInputObjectDict = getattr(runtimeInputObject, "__dict__", None)
+
+            if isinstance(runtimeInputObjectDict, dict):
+                runtimeInputObjectDict.pop("_postgresqlRuntimeObjectResolver", None)
 
         self._executionInputSetsByRuntimeObjectId.clear()
         self._executionInputObjectsByRuntimeObjectId.clear()

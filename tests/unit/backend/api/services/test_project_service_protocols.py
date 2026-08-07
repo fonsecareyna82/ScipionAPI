@@ -589,6 +589,8 @@ def test_ResolvePostgresqlRuntimeInputObjectCachesGenericDetachedInput(
                 "runtimeObjectResolver": runtimeObjectResolver,
             })
 
+            genericInput._postgresqlRuntimeObjectResolver = runtimeObjectResolver
+
             return genericInput
 
     runtimeMapper = RuntimeMapperStub()
@@ -626,6 +628,14 @@ def test_ResolvePostgresqlRuntimeInputObjectCachesGenericDetachedInput(
     assert service._postgresqlLaunchInputObjectsByRuntimeObjectId == {
         700: genericInput,
     }
+    assert genericInput._postgresqlRuntimeObjectResolver is calls[0]["runtimeObjectResolver"]
+
+    service._releasePostgresqlRuntimeLaunchInputs()
+
+    assert "_postgresqlRuntimeObjectResolver" not in genericInput.__dict__
+    assert service._postgresqlLaunchInputObjectsByRuntimeObjectId == {}
+    assert service._postgresqlLaunchInputSetsByRuntimeObjectId == {}
+    assert service._postgresqlLaunchInputObjectIdsResolving == set()
 
 
 def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):

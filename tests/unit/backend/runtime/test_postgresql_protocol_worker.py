@@ -469,6 +469,8 @@ def test_ExecutionInputGenericObjectUsesDetachedRuntimeResolver():
                 "runtimeObjectResolver": runtimeObjectResolver,
             })
 
+            genericInput._postgresqlRuntimeObjectResolver = runtimeObjectResolver
+
             return genericInput
 
     runtimeMapper = RuntimeMapperStub()
@@ -500,6 +502,12 @@ def test_ExecutionInputGenericObjectUsesDetachedRuntimeResolver():
     assert worker._executionInputObjectsByRuntimeObjectId == {
         700: genericInput,
     }
+    assert genericInput._postgresqlRuntimeObjectResolver is runtimeMapper.calls[0]["runtimeObjectResolver"]
+
+    worker._closeExecutionInputSets()
+
+    assert "_postgresqlRuntimeObjectResolver" not in genericInput.__dict__
+    assert worker._executionInputObjectsByRuntimeObjectId == {}
 
 
 def test_CloseClosesDetachedExecutionInputSets():

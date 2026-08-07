@@ -5552,13 +5552,14 @@ class ProjectService:
     def _releasePostgresqlRuntimeLaunchInputs(
             self,
     ) -> None:
-        runtimeInputSets = list(
-            getattr(
-                self,
-                "_postgresqlLaunchInputSetsByRuntimeObjectId",
-                {},
-            ).values()
-        )
+        runtimeInputSets = list(getattr(self, "_postgresqlLaunchInputSetsByRuntimeObjectId", {}).values())
+        runtimeInputObjects = list(getattr(self, "_postgresqlLaunchInputObjectsByRuntimeObjectId", {}).values())
+
+        for runtimeInputObject in runtimeInputObjects:
+            runtimeInputObjectDict = getattr(runtimeInputObject, "__dict__", None)
+
+            if isinstance(runtimeInputObjectDict, dict):
+                runtimeInputObjectDict.pop("_postgresqlRuntimeObjectResolver", None)
 
         self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
         self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}

@@ -246,7 +246,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 16. Native nested Set loads triggered by snapshot construction bypass managed-path refresh without disabling real recursive-materialization detection.
 17. Worker finalization removes only the current worker's SQLite snapshots after closing mappers, on both successful and failed protocol execution.
 18. Detached consumer input graphs remain transitively read-only through nested Sets, Set-valued pointers, and further clones.
-19. Structured pointers inside generic PostgreSQL runtime inputs resolve and refresh through the same consumer-owned detached target resolver without restoring canonical parent protocol access.
+19. Structured pointers inside generic PostgreSQL runtime inputs resolve and refresh through the same consumer-owned detached target resolver without restoring canonical parent protocol access; the transient resolver is removed when the consumer input lifecycle ends.
 20. Generic PostgreSQL runtime object hydration and `updateFrom()` preserve `_objParentId` without introducing strong `_objParent` cycles and remain safe for native recursive copy operations.
 
 ## Historical failure mode
