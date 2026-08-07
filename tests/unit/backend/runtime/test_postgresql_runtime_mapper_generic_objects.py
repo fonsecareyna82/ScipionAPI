@@ -264,7 +264,14 @@ def test_ObjectTreePersistenceStillStopsRecursiveObjectCycles():
         "outputObject",
     ]
 
-    assert list(mapper._iterProperties(outputObject)) == []
+    properties = list(mapper._iterProperties(outputObject))
+
+    assert [prop["propertyPath"] for prop in properties] == [
+        "selfReference",
+    ]
+
+    assert properties[0]["className"] == "RecursiveObject"
+    assert properties[0]["isNested"] is True
 
 
 class FakeObjectMapper:
