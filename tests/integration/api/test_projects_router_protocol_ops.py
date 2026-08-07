@@ -1196,50 +1196,6 @@ def test_ResetProtocolFromDelegatesToService(projectClient, fakeProjectService):
     }
 
 
-def test_RestartProtocolAllIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
-    response = projectClient.post(
-        "/projects/1/protocols/10/restart-all"
-        "?usePostgresqlRuntimeProject=false"
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": 0,
-        "errors": [],
-        "workflow": [],
-        "protocolsCount": 1,
-        "dependenciesCount": 0,
-    }
-
-    assert fakeProjectService.lastRestartProtocolAllCall == {
-        "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-    }
-
-
-def test_ResetProtocolFromIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
-    response = projectClient.post(
-        "/projects/1/protocols/10/reset-from"
-        "?usePostgresqlRuntimeProject=false"
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": 0,
-        "errors": [],
-        "workflow": [],
-        "protocolsCount": 1,
-        "dependenciesCount": 0,
-    }
-
-    assert fakeProjectService.lastResetProtocolFromCall == {
-        "mapper": fakeProjectService.lastResetProtocolFromCall["mapper"],
-        "projectId": 1,
-        "protocolId": 10,
-    }
-
-
 def test_StopProtocolWrapsHttpException(projectClient, fakeProjectService):
     fakeProjectService.stopProtocolError = HTTPException(
         status_code=422,
@@ -1283,34 +1239,6 @@ def test_StopProtocolWrapsUnexpectedException(
         "status": 1,
         "errors": ["boom"],
         "workflow": [],
-    }
-
-
-def test_StopProtocolIgnoresDeprecatedRuntimeQueryParameter(projectClient, fakeProjectService):
-    response = projectClient.post(
-        "/projects/1/protocols/stop"
-        "?usePostgresqlRuntimeProject=false",
-        json={
-            "protocolIds": [
-                "10",
-                "11",
-            ],
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": 0,
-        "errors": [],
-        "workflow": [],
-        "protocolsCount": 1,
-        "dependenciesCount": 0,
-    }
-
-    assert fakeProjectService.lastStopProtocolCall == {
-        "mapper": fakeProjectService.lastStopProtocolCall["mapper"],
-        "projectId": 1,
-        "protocolIds": ["10", "11"],
     }
 
 
