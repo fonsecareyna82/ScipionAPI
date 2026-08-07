@@ -42,7 +42,13 @@ from pwem.objects import Volume
 from app.backend.mapper.scipion_object_mapper import (
     ScipionObjectPostgresqlMapper,
 )
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    setPostgresqlRuntimeParentReference,
+)
 
+from app.backend.mapper.scipion_set_mapper import (
+    ScipionSetPostgresqlMapper,
+)
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
@@ -161,6 +167,86 @@ def test_ObjectPointerReferencePreservesLegacySetOwnerIdentity():
     targetObject.setObjId(7)
     targetObject._objParent = targetSet
     targetObject._objParentId = 3_000_900
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+
+def test_ObjectPointerReferencePreservesPostgresqlRuntimeParentIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParentId = 101
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetSet,
+        parent=parentProtocol,
+    )
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParentId = 3_000_900
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetObject,
+        parent=targetSet,
+    )
+
+    assert targetSet._objParent is None
+    assert targetObject._objParent is None
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+    assert targetSet._objParent is None
+    assert targetObject._objParent is None
+
+
+def test_SetPointerReferenceUsesPostgresqlRuntimeParentIdentity():
+    mapper = ScipionSetPostgresqlMapper.__new__(
+        ScipionSetPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParentId = 101
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetSet,
+        parent=parentProtocol,
+    )
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParentId = 3_000_900
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetObject,
+        parent=targetSet,
+    )
 
     pointer = Pointer(targetObject)
 

@@ -27,6 +27,7 @@ import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import psycopg2.extras
+from app.backend.mapper.postgresql_scipion_item_hydrator import getPostgresqlRuntimeParent
 
 
 class ScipionObjectPostgresqlMapper:
@@ -1211,6 +1212,9 @@ class ScipionObjectPostgresqlMapper:
             if targetParent is None:
                 targetParent = getattr(targetObject, "_objParent", None)
 
+            if targetParent is None:
+                targetParent = getPostgresqlRuntimeParent(targetObject)
+
         targetObjectId = self._getSourceObjId(targetObject)
         targetParentObjectId = self._getSourceObjId(targetParent)
 
@@ -1251,6 +1255,9 @@ class ScipionObjectPostgresqlMapper:
 
             if targetParentParent is None:
                 targetParentParent = getattr(targetParent, "_objParent", None)
+
+            if targetParentParent is None:
+                targetParentParent = getPostgresqlRuntimeParent(targetParent)
 
         targetParentParentObjectId = self._getSourceObjId(targetParentParent)
 
