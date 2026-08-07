@@ -33,6 +33,7 @@ from pyworkflow.object import (
     Integer,
     Object,
     Pointer,
+    PointerList,
     String,
 )
 
@@ -140,6 +141,130 @@ def test_ObjectPointerReferencePreservesDirectTargetParentIdentity():
     assert reference["targetParentObjectId"] == 300
     assert reference["targetParentClassName"] == "Object"
     assert reference["extended"] == ""
+
+
+def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
+    class CursorStub:
+        def __init__(self, objectId):
+            self.objectId = objectId
+
+        def fetchone(self):
+            return {
+                "id": self.objectId,
+            }
+
+    class DbStub:
+        def __init__(self):
+            self.nextObjectId = 1
+            self.paths = []
+
+        def execute(self, query, params, commit=False):
+            self.paths.append(params[5])
+
+            objectId = self.nextObjectId
+            self.nextObjectId += 1
+
+            return CursorStub(objectId)
+
+    class PointerContainer(Object):
+        def __init__(self):
+            super().__init__()
+            self.targets = PointerList()
+
+    target = Object()
+    target.setObjId(900)
+
+    sharedPointer = Pointer(target)
+
+    outputObject = PointerContainer()
+    outputObject.setObjId(700)
+    outputObject.targets.append(sharedPointer)
+    outputObject.targets.append(sharedPointer)
+
+    db = DbStub()
+    mapper = ScipionObjectPostgresqlMapper(db)
+
+    storedPaths = []
+
+    mapper._storeObjectNode(
+        projectId=7,
+        protocolDbId=55,
+        scipionObj=outputObject,
+        name="outputObject",
+        path="outputObject",
+        parentObjectId=None,
+        storedPaths=storedPaths,
+        includeNestedProperties=True,
+        visited=set(),
+    )
+
+    assert storedPaths == [
+        "outputObject",
+        "outputObject.targets",
+        "outputObject.targets.__item__000001",
+        "outputObject.targets.__item__000001._extended",
+        "outputObject.targets.__item__000002",
+        "outputObject.targets.__item__000002._extended",
+    ]
+
+    propertyPaths = [
+        prop["propertyPath"]
+        for prop in mapper._iterProperties(outputObject)
+    ]
+
+    assert "targets.__item__000001" in propertyPaths
+    assert "targets.__item__000002" in propertyPaths
+
+
+def test_ObjectTreePersistenceStillStopsRecursiveObjectCycles():
+    class CursorStub:
+        def __init__(self, objectId):
+            self.objectId = objectId
+
+        def fetchone(self):
+            return {
+                "id": self.objectId,
+            }
+
+    class DbStub:
+        def __init__(self):
+            self.nextObjectId = 1
+
+        def execute(self, query, params, commit=False):
+            objectId = self.nextObjectId
+            self.nextObjectId += 1
+
+            return CursorStub(objectId)
+
+    class RecursiveObject(Object):
+        def __init__(self):
+            super().__init__()
+            self.selfReference = self
+
+    outputObject = RecursiveObject()
+    outputObject.setObjId(700)
+
+    mapper = ScipionObjectPostgresqlMapper(DbStub())
+
+    storedPaths = []
+
+    mapper._storeObjectNode(
+        projectId=7,
+        protocolDbId=55,
+        scipionObj=outputObject,
+        name="outputObject",
+        path="outputObject",
+        parentObjectId=None,
+        storedPaths=storedPaths,
+        includeNestedProperties=True,
+        visited=set(),
+    )
+
+    assert storedPaths == [
+        "outputObject",
+    ]
+
+    assert list(mapper._iterProperties(outputObject)) == []
 
 
 class FakeObjectMapper:

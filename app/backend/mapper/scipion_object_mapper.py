@@ -1045,6 +1045,8 @@ class ScipionObjectPostgresqlMapper:
                     visited=visited,
                 )
 
+        visited.discard(objIdentity)
+
         return objectId
 
     def _iterProperties(
@@ -1083,6 +1085,8 @@ class ScipionObjectPostgresqlMapper:
                     includeNestedProperties=includeNestedProperties,
                     visited=visited,
                 )
+
+        visited.discard(objIdentity)
 
     def _getAttributesToStore(
             self,
