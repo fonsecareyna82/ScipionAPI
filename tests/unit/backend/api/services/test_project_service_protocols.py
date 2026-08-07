@@ -708,6 +708,7 @@ def test_BuildMissingOutputSyncItemsClassifiesMissingOutputs(service):
         },
     ]
 
+
 def test_RegisterOutputReturnsPersistenceReport(
     projectServiceModule,
     service,
@@ -789,8 +790,13 @@ def test_RegisterOutputReturnsPersistenceReport(
             protocolDbId,
             outputName,
             scipionObj,
-            includeNestedProperties,
+            registerType=True,
+            includeNestedProperties=True,
+            scipionObjectIdsByPath=None,
         ):
+            assert registerType is True
+            assert scipionObjectIdsByPath == {}
+
             return {
                 "projectId": projectId,
                 "protocolDbId": protocolDbId,
