@@ -5140,19 +5140,11 @@ class ProjectService:
             projectId: int,
             parentId,
     ):
-        protocolIdentityResolver = ProtocolIdentityResolver(
+        parentScipionProtocolId = self._resolveScipionProtocolId(
             mapper=mapper,
             projectId=projectId,
+            protocolId=parentId,
         )
-
-        parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
-            parentId
-        )
-
-        if parentProtocolDbId is None:
-            return None, None
-
-        parentScipionProtocolId = protocolIdentityResolver.toOptionalInt(parentId)
 
         if parentScipionProtocolId is None:
             return None, None
