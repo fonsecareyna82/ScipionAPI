@@ -5189,7 +5189,7 @@ class ProjectService:
             projectId=projectId,
             protocol=protocol,
             parentProtocolsById=parentProtocolsById,
-            getParentProtocolCallback=self._getParentProtocolForPointer,
+            getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
 
     def syncPostgresqlRuntimeProtocolInputsAndDependencies(
@@ -5841,11 +5841,10 @@ class ProjectService:
             projectId=projectId,
             protocols=protocols,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
             getScipionObjectIdCallback=self._getScipionObjectId,
-            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             saveProtocolCallback=self.saveProtocol,
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
-            getParentProtocolForPointerCallback=self._getParentProtocolForPointer,
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
@@ -6318,7 +6317,7 @@ class ProjectService:
                     projectId=projectId,
                     protocol=protocol,
                     parentProtocolsById=parentProtocolsById,
-                    getParentProtocolCallback=self._getParentProtocolForPointer,
+                    getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
                 )
 
                 protocolReport["restore"] = restoreReport

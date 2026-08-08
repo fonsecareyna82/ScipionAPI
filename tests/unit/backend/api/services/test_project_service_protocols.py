@@ -2152,11 +2152,10 @@ def test_DuplicateProtocolUsesPostgresqlRuntimeService(
         "projectId",
         "protocols",
         "getScipionProtocolForRuntimeCallback",
+        "getScipionProtocolByRuntimeIdCallback",
         "getScipionObjectIdCallback",
-        "resolvePostgresqlProtocolDbIdCallback",
         "saveProtocolCallback",
         "syncPostgresqlRuntimeProtocolCallback",
-        "getParentProtocolForPointerCallback",
         "storeProtocolCallback",
         "buildProtocolMutationResultCallback",
     }

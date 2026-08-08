@@ -84,11 +84,10 @@ class RuntimeProtocolDuplicateService:
             projectId: int,
             protocols,
             getScipionProtocolForRuntimeCallback: Callable,
+            getScipionProtocolByRuntimeIdCallback: Callable,
             getScipionObjectIdCallback: Callable,
-            resolvePostgresqlProtocolDbIdCallback: Callable,
             saveProtocolCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
-            getParentProtocolForPointerCallback: Callable,
             storeProtocolCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
     ):
@@ -98,7 +97,10 @@ class RuntimeProtocolDuplicateService:
         # Phase 1: resolve all source protocols and create all duplicated
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
-        protocolGraphRepository = ProtocolGraphRepository()
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
@@ -114,10 +116,8 @@ class RuntimeProtocolDuplicateService:
 
             sourceScipionProtocolId = getScipionObjectIdCallback(sourceProtocol)
 
-            sourceProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=sourceScipionProtocolId,
+            sourceProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                sourceScipionProtocolId
             )
 
             if sourceProtocolDbId is None:
@@ -171,10 +171,8 @@ class RuntimeProtocolDuplicateService:
             newProtocol.runMode.set(MODE_RESTART)
             duplicatedProtocolId = getScipionObjectIdCallback(newProtocol)
 
-            duplicatedProtocolDbId = resolvePostgresqlProtocolDbIdCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=duplicatedProtocolId,
+            duplicatedProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                duplicatedProtocolId
             )
 
             if duplicatedProtocolDbId is None:
@@ -236,7 +234,7 @@ class RuntimeProtocolDuplicateService:
                     mapper=mapper,
                     projectId=projectId,
                     protocol=newProtocol,
-                    getParentProtocolCallback=getParentProtocolForPointerCallback,
+                    getScipionProtocolByRuntimeIdCallback=getScipionProtocolByRuntimeIdCallback,
                 )
 
                 if pointerRestore.get("errors"):
@@ -658,12 +656,12 @@ class RuntimeProtocolDuplicateService:
             projectId=projectId,
         )
 
-        sourceProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            sourceProtocolId,
+        sourceProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            sourceProtocolId
         )
 
-        duplicatedProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            duplicatedProtocolId,
+        duplicatedProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            duplicatedProtocolId
         )
 
         if sourceProtocolDbId is None:
@@ -732,8 +730,8 @@ class RuntimeProtocolDuplicateService:
                     parentProtocolId = originalParentProtocolIdText
 
             if parentProtocolDbId in (None, "") and parentProtocolId not in (None, ""):
-                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-                    parentProtocolId,
+                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    parentProtocolId
                 )
 
             if parentProtocolDbId not in (None, ""):
@@ -804,7 +802,7 @@ class RuntimeProtocolDuplicateService:
             mapper,
             projectId: int,
             protocol,
-            getParentProtocolCallback: Callable,
+            getScipionProtocolByRuntimeIdCallback: Callable,
             parentProtocolsById: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -831,11 +829,8 @@ class RuntimeProtocolDuplicateService:
             )
         )
 
-        protocolDbId = (
-            protocolIdentityResolver
-            .resolvePostgresqlProtocolDbId(
-                protocolId,
-            )
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            protocolId
         )
 
         if protocolDbId is None:
@@ -925,41 +920,42 @@ class RuntimeProtocolDuplicateService:
         def resolveParentProtocol(
                 parentProtocolId,
         ):
-            parentScipionProtocolId = (
-                protocolIdentityResolver
-                .resolveScipionProtocolId(
-                    parentProtocolId,
+            parentScipionProtocolId = protocolIdentityResolver.toOptionalInt(parentProtocolId)
+
+            if parentScipionProtocolId is None:
+                raise ValueError(
+                    "Invalid Scipion parent protocol id: %s"
+                    % parentProtocolId
                 )
+
+            parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                parentScipionProtocolId
             )
+
+            if parentProtocolDbId is None:
+                raise ValueError(
+                    "Parent protocol %s was not found in PostgreSQL"
+                    % parentScipionProtocolId
+                )
 
             parentProtocol = None
 
             if parentProtocolsById:
                 parentProtocol = (
-                    parentProtocolsById.get(
-                        str(
-                            parentScipionProtocolId
-                        )
-                    )
-                    or parentProtocolsById.get(
-                        parentScipionProtocolId
-                    )
+                        parentProtocolsById.get(str(parentScipionProtocolId))
+                        or parentProtocolsById.get(parentScipionProtocolId)
                 )
 
             if parentProtocol is None:
-                (
-                    parentScipionProtocolId,
-                    parentProtocol,
-                ) = getParentProtocolCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    parentId=parentProtocolId,
+                parentProtocol = getScipionProtocolByRuntimeIdCallback(parentScipionProtocolId)
+
+            if parentProtocol is None:
+                raise ValueError(
+                    "Parent protocol %s was not found in Scipion runtime"
+                    % parentScipionProtocolId
                 )
 
-            return (
-                parentScipionProtocolId,
-                parentProtocol,
-            )
+            return parentScipionProtocolId, parentProtocol
 
         for inputName in inputNames:
             try:
