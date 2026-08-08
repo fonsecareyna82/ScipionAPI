@@ -203,7 +203,7 @@ class FakeIdentityResolver:
         self.mapper = mapper
         self.projectId = int(projectId)
 
-    def resolvePostgresqlProtocolDbId(self, protocolId):
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
         return self.mapper.protocolDbIds.get(int(protocolId))
 
 
@@ -325,6 +325,69 @@ def test_ResetServiceHasNoLegacyRuntimePath():
     assert "currentProject._getSubworkflow" not in source
     assert "currentProject.resetWorkFlow" not in source
     assert "postgresqlRuntimeReset=False" not in source
+
+
+def test_ResetValidationUsesStrictScipionProtocolIdentity():
+    class IdentityMapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    class CurrentProjectStub:
+        def getPostgresqlRuntimeMapper(self):
+            return object()
+
+    protocol = FakeProtocol(
+        31,
+        STATUS_FINISHED,
+    )
+    mapper = IdentityMapperStub()
+
+    result = RuntimeProtocolResetService()._validatePostgresqlSubworkflow(
+        mapper=mapper,
+        projectId=7,
+        workflowProtocolMap={
+            "31": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=CurrentProjectStub(),
+    )
+
+    assert result["resetItems"] == []
+    assert result["errors"] == [
+        {
+            "protocolId": "31",
+            "error": "Protocol was not found in PostgreSQL",
+        },
+    ]
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(

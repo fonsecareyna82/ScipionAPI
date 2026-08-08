@@ -302,11 +302,8 @@ class RuntimeProtocolResetService:
                 protocolId
             )
 
-            protocolDbId = (
-                identityResolver
-                .resolvePostgresqlProtocolDbId(
-                    protocolId
-                )
+            protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
             )
 
             if protocolDbId is None:
