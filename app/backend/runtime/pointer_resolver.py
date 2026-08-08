@@ -343,15 +343,13 @@ class RuntimePointerResolver:
             projectId=projectId,
         )
 
-        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
-            self._getScipionObjectId(protocol),
-        )
+        protocolId = self._getScipionObjectId(protocol)
 
         protocolDbId = None
 
         if protocolId is not None:
-            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-                protocolId,
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
             )
 
         completeValues = []
@@ -592,8 +590,8 @@ class RuntimePointerResolver:
                 parentId=parentId,
             )
 
-            parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-                parentScipionProtocolId,
+            parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                parentScipionProtocolId
             )
 
             if parentProtocolDbId is None:
@@ -741,8 +739,8 @@ class RuntimePointerResolver:
                     )
                     continue
 
-                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-                    parentScipionProtocolId,
+                parentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    parentScipionProtocolId
                 )
 
                 if parentProtocolDbId is None:
