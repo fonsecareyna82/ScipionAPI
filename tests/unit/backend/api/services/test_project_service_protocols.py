@@ -560,16 +560,83 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(projectServiceModul
 def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModule):
     expectedParentProtocol = object()
     loadedProtocolIds = []
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert projectId == 344
+            assert str(protocolId) == "40"
+
+            return {
+                "id": 140,
+                "protocolId": "40",
+            }
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            pytest.fail(
+                "Known Scipion parent protocol ids must not be resolved through protocols.id"
+            )
+
     service = object.__new__(projectServiceModule.ProjectService)
-    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
     service._getScipionProtocolByRuntimeId = lambda protocolId: loadedProtocolIds.append(int(protocolId)) or expectedParentProtocol
 
-    parentProtocolId, parentProtocol = service._getParentProtocolForPointer(mapper=object(), projectId=344, parentId="40")
+    parentProtocolId, parentProtocol = service._getParentProtocolForPointer(
+        mapper=MapperStub(),
+        projectId=344,
+        parentId="40",
+    )
 
     assert parentProtocolId == 40
     assert parentProtocol is expectedParentProtocol
     assert loadedProtocolIds == [40]
-    assert not hasattr(service, "_loadProtocolFromRuntimeDb")
+
+
+def test_GetParentProtocolForPointerNeverFallsBackToPostgresqlDbId(projectServiceModule):
+    class MapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = MapperStub()
+
+    service = object.__new__(projectServiceModule.ProjectService)
+    service._getScipionProtocolByRuntimeId = lambda protocolId: pytest.fail(
+        "A missing Scipion parent protocol must not load a protocol through a colliding PostgreSQL id"
+    )
+
+    parentProtocolId, parentProtocol = service._getParentProtocolForPointer(
+        mapper=mapper,
+        projectId=7,
+        parentId="31",
+    )
+
+    assert parentProtocolId is None
+    assert parentProtocol is None
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 def test_ResolvePostgresqlRuntimeInputObjectCachesGenericDetachedInput(

@@ -69,9 +69,7 @@ class RuntimeProtocolLaunchPrepareService:
             projectId=projectId,
         )
 
-        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
-            getProtocolIdCallback(protocol),
-        )
+        protocolId = getProtocolIdCallback(protocol)
 
         if protocolId is None:
             return {
@@ -82,8 +80,8 @@ class RuntimeProtocolLaunchPrepareService:
                 "errors": [],
             }
 
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            protocolId,
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            protocolId
         )
 
         if protocolDbId is None:
@@ -115,9 +113,7 @@ class RuntimeProtocolLaunchPrepareService:
         }
 
         def resolveParentProtocol(parentProtocolId):
-            parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
-                parentProtocolId
-            )
+            parentScipionProtocolId = parentProtocolId
 
             parentProtocol = resolvedParentProtocolsById.get(
                 str(parentScipionProtocolId)
@@ -207,12 +203,7 @@ class RuntimeProtocolLaunchPrepareService:
                 else parentOutputName
             )
 
-            parentScipionProtocolId = (
-                protocolIdentityResolver
-                .resolveScipionProtocolId(
-                    parentProtocolId
-                )
-            )
+            parentScipionProtocolId = parentProtocolId
 
             itemReport = {
                 "inputName": inputName,
@@ -247,11 +238,8 @@ class RuntimeProtocolLaunchPrepareService:
                         None,
                         "",
                 ):
-                    resolvedParentProtocolDbId = (
-                        protocolIdentityResolver
-                        .resolvePostgresqlProtocolDbId(
-                            parentScipionProtocolId
-                        )
+                    resolvedParentProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                        parentScipionProtocolId
                     )
 
                 if resolvedParentProtocolDbId in (

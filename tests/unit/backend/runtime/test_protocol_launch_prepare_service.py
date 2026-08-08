@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+
 from pyworkflow.object import Object, Pointer
 from pyworkflow.protocol.protocol import Protocol
 
@@ -59,7 +61,7 @@ class FakeProtocolIdentityResolver:
     def resolveScipionProtocolId(self, protocolId):
         return int(protocolId)
 
-    def resolvePostgresqlProtocolDbId(self, protocolId):
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
         protocolId = int(protocolId)
 
         if protocolId == 6:
@@ -280,6 +282,158 @@ def test_PreparePointersUsesDirectOutputsWithoutModifyingParent(
             "items"
         ]
     )
+
+
+def test_PreparePointersUsesStrictChildScipionProtocolIdentity():
+    class MapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = MapperStub()
+
+    childProtocol = ChildProtocol()
+    childProtocol.setObjId(31)
+
+    report = RuntimeProtocolLaunchPrepareService().preparePointerOutputsForLaunch(
+        mapper=mapper,
+        projectId=7,
+        protocol=childProtocol,
+        getProtocolIdCallback=lambda protocol: protocol.getObjId(),
+        getParentProtocolCallback=lambda **kwargs: None,
+        resolveRuntimeInputObjectCallback=lambda runtimeObjectId: None,
+    )
+
+    assert report["protocolId"] == "31"
+    assert report["protocolDbId"] is None
+    assert report["prepared"] == 0
+    assert report["skipped"] is True
+    assert report["reason"] == "protocol_not_found_in_postgresql"
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
+
+
+def test_PreparePointersUsesStrictParentScipionProtocolIdentity(monkeypatch):
+    class MapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+
+            if str(protocolId) == "6":
+                return {
+                    "id": 106,
+                    "protocolId": "6",
+                }
+
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            if int(protocolDbId) == 31:
+                return {
+                    "id": 31,
+                    "protocolId": "99",
+                }
+
+            return None
+
+    class ProtocolGraphRepositoryStub:
+        def loadInputRefsForProtocol(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 7
+            assert protocolDbId == 106
+
+            return [
+                {
+                    "inputName": "inputTiltSeries",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": None,
+                    "parentProtocolId": "31",
+                    "parentOutputName": "outputTiltSeries",
+                },
+            ]
+
+        def getPostgresqlRuntimeOutputInfo(self, **kwargs):
+            raise AssertionError(
+                "Parent output lookup must not happen when the strict parent protocol lookup fails"
+            )
+
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    mapper = MapperStub()
+
+    childProtocol = ChildProtocol()
+    childProtocol.setObjId(6)
+
+    report = RuntimeProtocolLaunchPrepareService().preparePointerOutputsForLaunch(
+        mapper=mapper,
+        projectId=7,
+        protocol=childProtocol,
+        getProtocolIdCallback=lambda protocol: protocol.getObjId(),
+        getParentProtocolCallback=lambda **kwargs: (
+            pytest.fail("Parent protocol callback must not be called")
+        ),
+        resolveRuntimeInputObjectCallback=lambda runtimeObjectId: None,
+    )
+
+    assert report["prepared"] == 0
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["parentProtocolId"] == "31"
+    assert report["errors"][0]["error"] == "Parent protocol 31 was not found in PostgreSQL"
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "6",
+        },
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 class SamplingOutput(Object):

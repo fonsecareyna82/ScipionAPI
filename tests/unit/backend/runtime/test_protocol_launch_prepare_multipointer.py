@@ -72,7 +72,7 @@ class FakeProtocolIdentityResolver:
     def resolveScipionProtocolId(self, protocolId):
         return int(protocolId)
 
-    def resolvePostgresqlProtocolDbId(self, protocolId):
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
         return self.protocolDbIds.get(int(protocolId))
 
 
