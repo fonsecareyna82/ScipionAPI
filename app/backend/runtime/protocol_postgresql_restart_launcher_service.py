@@ -125,11 +125,8 @@ class RuntimePostgresqlRestartLauncherService:
         for protocol, level in items:
             protocolId = protocol.getObjId()
 
-            protocolDbId = (
-                identityResolver
-                .resolvePostgresqlProtocolDbId(
-                    protocolId
-                )
+            protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
             )
 
             if protocolDbId is None:
@@ -174,11 +171,8 @@ class RuntimePostgresqlRestartLauncherService:
         for protocol, level in items:
             protocolId = protocol.getObjId()
 
-            protocolDbId = (
-                identityResolver
-                .resolvePostgresqlProtocolDbId(
-                    protocolId
-                )
+            protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
             )
 
             if protocolDbId is None:
@@ -372,11 +366,8 @@ class RuntimePostgresqlRestartLauncherService:
             protocol.getObjId()
         )
 
-        protocolDbId = (
-            identityResolver
-            .resolvePostgresqlProtocolDbId(
-                protocolId
-            )
+        protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            protocolId
         )
 
         if protocolDbId is None:

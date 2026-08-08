@@ -106,15 +106,10 @@ class RuntimePostgresqlContinueLauncherService:
                 })
                 continue
 
-            protocolId = int(
-                protocolId
-            )
+            protocolId = int(protocolId)
 
-            protocolDbId = (
-                identityResolver
-                .resolvePostgresqlProtocolDbId(
-                    protocolId
-                )
+            protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
             )
 
             protocolStatus = str(

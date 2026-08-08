@@ -26,6 +26,8 @@
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 from pyworkflow.protocol import (
     MODE_RESUME,
     STATUS_SCHEDULED, STATUS_SAVED,
@@ -117,7 +119,7 @@ class IdentityResolverStub:
     def __init__(self, **kwargs):
         pass
 
-    def resolvePostgresqlProtocolDbId(
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(
             self,
             protocolId,
     ):
@@ -162,6 +164,31 @@ class GraphRepositoryStub:
         )
 
         return True
+
+
+class IdentityCollisionMapperStub:
+    def __init__(self):
+        self.scipionLookups = []
+        self.dbLookups = []
+
+    def getProjectProtocolByProtocolId(self, projectId, protocolId):
+        self.scipionLookups.append({
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+        return None
+
+    def getProjectProtocolByDbId(self, projectId, protocolDbId):
+        self.dbLookups.append({
+            "projectId": projectId,
+            "protocolDbId": protocolDbId,
+        })
+
+        return {
+            "id": 31,
+            "protocolId": "99",
+        }
+
 
 class MapperStub:
     def __init__(self):
@@ -353,6 +380,120 @@ def test_ContinuePlanRejectsActiveProtocol(
     assert plan["errors"][0][
         "status"
     ] == "running"
+
+
+def test_ContinuePlanUsesStrictScipionProtocolIdentity():
+    mapper = IdentityCollisionMapperStub()
+
+    protocol = ProtocolStub(
+        31,
+        status="finished",
+        streaming=False,
+    )
+
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(
+        mapper=mapper,
+        projectId=7,
+        workflowProtocolMap={
+            "31": (
+                protocol,
+                0,
+            ),
+        },
+    )
+
+    assert len(plan["entries"]) == 1
+
+    entry = plan["entries"][0]
+
+    assert entry["protocolId"] == 31
+    assert entry["protocolDbId"] is None
+    assert entry["action"] == "error"
+    assert entry["reason"] == "protocol_not_found"
+
+    assert plan["errors"] == [
+        {
+            "protocolId": "31",
+            "error": "Protocol was not found in PostgreSQL",
+        },
+    ]
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
+
+
+def test_RestartValidationUsesStrictScipionProtocolIdentity():
+    mapper = IdentityCollisionMapperStub()
+
+    protocol = ProtocolStub(
+        31,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=mapper,
+        projectId=7,
+        workflowProtocolMap={
+            "31": (
+                protocol,
+                0,
+            ),
+        },
+    )
+
+    assert result["protocolDbIds"] == []
+    assert result["errors"] == [
+        {
+            "protocolId": "31",
+            "error": "Protocol was not found in PostgreSQL",
+        },
+    ]
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
+
+
+def test_RestartPreparationUsesStrictScipionProtocolIdentity():
+    mapper = IdentityCollisionMapperStub()
+
+    protocol = ProtocolStub(
+        31,
+        status="finished",
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Protocol 31 was not found in PostgreSQL",
+    ):
+        RuntimePostgresqlRestartLauncherService()._prepareProtocol(
+            mapper=mapper,
+            projectId=7,
+            protocol=protocol,
+            level=0,
+            runtimeMapper=object(),
+        )
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 def test_ResumePreparationPreservesOutputsAndCpuTime(
