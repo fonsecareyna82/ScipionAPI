@@ -27,6 +27,8 @@ import threading
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 import app.backend.runtime.postgresql_protocol_worker as postgresqlProtocolWorkerModule
 
 from pyworkflow.object import (
@@ -286,6 +288,53 @@ def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
     assert worker.protocol is protocol
 
 
+def test_WorkerProtocolDbIdUsesStrictScipionIdentity():
+    class IdentityMapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = IdentityMapperStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=7,
+        protocolId=31,
+    )
+    worker.mapper = mapper
+
+    with pytest.raises(
+            RuntimeError,
+            match="Protocol 31 was not found in PostgreSQL",
+    ):
+        worker.getProtocolDbId()
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
+
+
 def test_WorkerAppliesTransientQueueOverrideInMemory():
     class QueueProtocolStub:
         def __init__(self):
@@ -318,6 +367,55 @@ def test_WorkerAppliesTransientQueueOverrideInMemory():
             "JOB_TIME": "72",
         },
     ]
+
+
+def test_StepAdapterProtocolDbIdUsesStrictScipionIdentity():
+    class IdentityMapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    class ProtocolIdentityStub:
+        def getObjId(self):
+            return 31
+
+    mapper = IdentityMapperStub()
+
+    with pytest.raises(
+            RuntimeError,
+            match="Protocol 31 was not found in PostgreSQL",
+    ):
+        RuntimePostgresqlStepAdapter(
+            mapper=mapper,
+            projectId=7,
+            protocol=ProtocolIdentityStub(),
+        )
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(

@@ -252,11 +252,8 @@ class RuntimePostgresqlStepAdapter:
             protocol.getObjId()
         )
 
-        self.protocolDbId = (
-            identityResolver
-            .resolvePostgresqlProtocolDbId(
-                self.protocolId
-            )
+        self.protocolDbId = identityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            self.protocolId
         )
 
         if self.protocolDbId is None:
@@ -977,11 +974,8 @@ class RuntimePostgresqlProtocolWorker:
             projectId=self.projectId,
         )
 
-        protocolDbId = (
-            resolver
-            .resolvePostgresqlProtocolDbId(
-                self.protocolId
-            )
+        protocolDbId = resolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            self.protocolId
         )
 
         if protocolDbId is None:
