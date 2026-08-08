@@ -1155,7 +1155,7 @@ def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
 
     runtimeObject = FakeComposite()
     runtimeObject.setObjId(700)
-    runtimeObject._objName("originalOutput")
+    runtimeObject._objName = "originalOutput"
     runtimeObject.title.set("Original title")
     runtimeObject.count.set(3)
 
@@ -1173,7 +1173,7 @@ def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
             storedObject,
             preserveParentObject=False,
     ):
-        targetObject.setObjName("mutatedOutput")
+        targetObject._objName = "mutatedOutput"
         targetObject.title.set("Mutated title")
         targetObject.count.set(99)
 
