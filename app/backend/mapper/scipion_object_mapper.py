@@ -1117,15 +1117,12 @@ class ScipionObjectPostgresqlMapper:
         if not callable(getter):
             return []
 
-        try:
-            return [
-                (str(name), value)
-                for name, value in getter()
-                if str(name)
-                   not in self.RUNTIME_ONLY_ATTRIBUTE_NAMES
-            ]
-        except Exception:
-            return []
+        return [
+            (str(name), value)
+            for name, value in (getter() or [])
+            if str(name)
+               not in self.RUNTIME_ONLY_ATTRIBUTE_NAMES
+        ]
 
     def _getClassName(self, scipionObj: Any) -> Optional[str]:
         getter = getattr(scipionObj, "getClassName", None)

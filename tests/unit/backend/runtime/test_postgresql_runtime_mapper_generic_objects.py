@@ -401,6 +401,71 @@ def test_ObjectTreePersistenceStillStopsRecursiveObjectCycles():
     assert properties[0]["isNested"] is True
 
 
+def test_ObjectTreePersistenceDoesNotDeleteStoredChildrenWhenAttributeEnumerationFails(
+        monkeypatch,
+):
+    class DbStub:
+        def transaction(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(
+                self,
+                excType,
+                excValue,
+                traceback,
+        ):
+            return False
+
+        def execute(self, *args, **kwargs):
+            pytest.fail(
+                "Object persistence must stop before writing when attribute enumeration fails"
+            )
+
+    class FailingObject(Object):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "attribute enumeration failed"
+            )
+
+    outputObject = FailingObject()
+    outputObject.setObjId(700)
+
+    mapper = ScipionObjectPostgresqlMapper(
+        DbStub()
+    )
+
+    staleDeleteCalls = []
+
+    monkeypatch.setattr(
+        mapper,
+        "_deleteStoredSetForOutput",
+        lambda **kwargs: 0,
+    )
+
+    monkeypatch.setattr(
+        mapper,
+        "_deleteStaleObjectTreePaths",
+        lambda **kwargs: staleDeleteCalls.append(kwargs) or 0,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="attribute enumeration failed",
+    ):
+        mapper.storeObjectTree(
+            projectId=7,
+            protocolDbId=55,
+            outputName="outputObject",
+            scipionObj=outputObject,
+            registerType=False,
+        )
+
+    assert staleDeleteCalls == []
+
+
 class FakeObjectMapper:
     def __init__(
             self,
