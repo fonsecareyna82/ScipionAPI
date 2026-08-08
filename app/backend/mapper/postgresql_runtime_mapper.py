@@ -753,14 +753,7 @@ class PostgresqlRuntimeMapper(Mapper):
                 try:
                     value = getter()
                 except TypeError:
-                    try:
-                        value = getter(
-                            None
-                        )
-                    except Exception:
-                        value = None
-                except Exception:
-                    value = None
+                    value = getter(None)
 
                 snapshot[
                     "settableValues"
@@ -782,13 +775,10 @@ class PostgresqlRuntimeMapper(Mapper):
             ):
                 return
 
-            try:
-                attributes = list(
-                    attributesGetter()
-                    or []
-                )
-            except Exception:
-                return
+            attributes = list(
+                attributesGetter()
+                or []
+            )
 
             for _, child in attributes:
                 captureValue(
@@ -870,16 +860,38 @@ class PostgresqlRuntimeMapper(Mapper):
         if not callable(runtimeObjectResolver):
             runtimeObjectResolver = None
 
-        storedObject = self._selectGenericObjectByIdFromPostgresql(runtimeObjectId, runtimeObjectResolver=runtimeObjectResolver)
+        storedObject = self._selectGenericObjectByIdFromPostgresql(
+            runtimeObjectId,
+            runtimeObjectResolver=runtimeObjectResolver,
+        )
 
         if storedObject is None:
             return False
 
-        return self._copyGenericObjectStateFromPostgresql(
-            targetObject=obj,
-            storedObject=storedObject,
-            preserveParentObject=True,
-        )
+        stateSnapshot = self._captureRuntimeObjectState(obj)
+
+        try:
+            updated = self._copyGenericObjectStateFromPostgresql(
+                targetObject=obj,
+                storedObject=storedObject,
+                preserveParentObject=True,
+            )
+
+            if not updated:
+                self._restoreRuntimeObjectState(
+                    obj,
+                    stateSnapshot,
+                )
+
+            return updated
+
+        except Exception:
+            self._restoreRuntimeObjectState(
+                obj,
+                stateSnapshot,
+            )
+
+            raise
 
     def _copyGenericObjectStateFromPostgresql(
             self,

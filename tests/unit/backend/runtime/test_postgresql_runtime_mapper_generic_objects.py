@@ -1146,6 +1146,81 @@ def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
     )
 
 
+def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
+        monkeypatch,
+):
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject._objName("originalOutput")
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    def partiallyUpdateObject(
+            targetObject,
+            storedObject,
+            preserveParentObject=False,
+    ):
+        targetObject.setObjName("mutatedOutput")
+        targetObject.title.set("Mutated title")
+        targetObject.count.set(99)
+
+        return False
+
+    monkeypatch.setattr(
+        mapper,
+        "_copyGenericObjectStateFromPostgresql",
+        partiallyUpdateObject,
+    )
+
+    updated = mapper._updateGenericObjectFromPostgresql(
+        runtimeObject
+    )
+
+    assert updated is False
+
+    assert runtimeObject.getObjId() == 700
+    assert runtimeObject.getObjName() == "originalOutput"
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
+def test_RuntimeObjectSnapshotFailsWhenAttributeEnumerationFails():
+    class FailingSnapshotObject(FakeComposite):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "snapshot attribute enumeration failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    runtimeObject = FailingSnapshotObject()
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    with pytest.raises(
+            RuntimeError,
+            match="snapshot attribute enumeration failed",
+    ):
+        mapper._captureRuntimeObjectState(
+            runtimeObject
+        )
+
+
 def test_GenericPointerPrefersSemanticSetOwnerOverCollidingLegacyRuntimeId():
     mapper = buildRuntimeMapper(
         buildRows()

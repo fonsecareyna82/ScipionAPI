@@ -258,6 +258,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 28. PostgreSQL object-tree persistence errors are never interpreted as mapper-signature compatibility failures: `storeObjectTree()` is invoked once with the canonical runtime persistence contract, and internal `TypeError` exceptions propagate through normal output-persistence error handling without retrying or partially replaying the tree write.
 29. Runtime paths that already possess a Scipion protocol id obtained from a Scipion runtime protocol must resolve it exclusively through `protocols.protocolId`; they must never reinterpret that known Scipion id as `protocols.id`. The dual-namespace protocol resolver remains valid only at boundaries that genuinely accept either PostgreSQL database ids or Scipion runtime protocol ids.
 30. PostgreSQL object-tree persistence must never interpret failure to enumerate `getAttributesToStore()` as an empty object tree. Attribute-enumeration errors must propagate and abort the persistence transaction before stale object-tree paths are deleted, preventing transient serialization failures from deleting previously valid persisted children.
+31. PostgreSQL `updateFrom()` refreshes must be transactional with respect to the in-memory runtime object. Snapshot capture failures must abort the refresh before mutation, and any failed or incomplete generic-object refresh must restore the previous object identity, metadata and mutable nested values instead of leaving partially refreshed consumer state.
 
 ## Historical failure mode
 
