@@ -31,12 +31,14 @@ from app.backend.mapper.scipion_set_mapper import (
     ScipionSetPostgresqlMapper,
 )
 
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
 from app.backend.runtime import (
     protocol_output_persistence_service as outputPersistenceModule,
 )
+
 
 class FakeDb:
     def __init__(self):
@@ -541,6 +543,103 @@ def test_RegisterOutputDoesNotRetryTreePersistenceAfterInternalTypeError(
     assert len(report["errors"]) == 1
 
     assert outputObject.getObjId() == 3_000_000_200
+
+
+def test_StrictScipionProtocolIdentityNeverFallsBackToPostgresqlDbId():
+    class ProtocolStub:
+        def getObjId(self):
+            return 31
+
+    class IdentityMapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = IdentityMapperStub()
+    resolver = ProtocolIdentityResolver(mapper=mapper, projectId=7)
+
+    assert resolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(31) is None
+    assert mapper.dbLookups == []
+
+    assert resolver.resolveProtocolDbIdsFromProtocols([ProtocolStub()]) == {
+        "protocolIds": ["31"],
+        "protocolDbIds": [],
+        "missingProtocolIds": ["31"],
+    }
+    assert mapper.dbLookups == []
+
+    assert resolver.resolvePostgresqlProtocolDbId(31) == 31
+    assert mapper.dbLookups == [
+        {
+            "projectId": 7,
+            "protocolDbId": 31,
+        },
+    ]
+
+
+def test_OutputPersistenceScipionProtocolIdNeverFallsBackToPostgresqlDbId():
+    class ProtocolStub:
+        def getObjId(self):
+            return 31
+
+    class IdentityMapperStub:
+        def __init__(self):
+            self.db = object()
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = IdentityMapperStub()
+    service = RuntimeProtocolOutputPersistenceService()
+
+    assert service.resolveProtocolDbIdForOutputPersistence(
+        mapper=mapper,
+        projectId=7,
+        protocol=ProtocolStub(),
+    ) is None
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+    assert mapper.dbLookups == []
 
 
 def test_ProtocolFormOutputReaderDelegatesOutputRows(
