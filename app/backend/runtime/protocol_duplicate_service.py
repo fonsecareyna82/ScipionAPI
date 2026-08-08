@@ -97,6 +97,8 @@ class RuntimeProtocolDuplicateService:
         # Phase 1: resolve all source protocols and create all duplicated
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
+        protocolGraphRepository = ProtocolGraphRepository()
+
         protocolIdentityResolver = ProtocolIdentityResolver(
             mapper=mapper,
             projectId=projectId,
