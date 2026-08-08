@@ -27,6 +27,7 @@ import inspect
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 
 
 class FetchDatabaseStub:
@@ -229,6 +230,61 @@ def test_ProtocolIdentityResolverUsesRuntimeFlatMapper():
             "protocolId": "19",
         },
     ]
+
+
+def test_ProtocolInputSyncUsesStrictScipionProtocolIdentity():
+    class ProtocolStub:
+        def getObjId(self):
+            return 31
+
+    class MapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            if int(protocolDbId) != 31:
+                return None
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = MapperStub()
+
+    result = RuntimeProtocolInputSyncService().syncProtocolInputsAndDependencies(
+        mapper=mapper,
+        projectId=7,
+        protocol=ProtocolStub(),
+        params={},
+    )
+
+    assert result["protocolId"] == "31"
+    assert result["protocolDbId"] is None
+    assert result["skipped"] is True
+    assert result["reason"] == "protocol_not_found"
+
+    assert mapper.scipionLookups == [
+        {
+            "projectId": 7,
+            "protocolId": "31",
+        },
+    ]
+
+    assert mapper.dbLookups == []
 
 
 def test_ProtocolIdentityResolverKeepsDbOnlyCompatibility():

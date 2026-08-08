@@ -113,17 +113,15 @@ class RuntimeProtocolInputSyncService:
             projectId=projectId,
         )
 
-        protocolId = protocolIdentityResolver.resolveScipionProtocolId(
-            self._getScipionObjectId(protocol),
-        )
+        protocolId = self._getScipionObjectId(protocol)
 
         if protocolId is None:
             return self._emptySyncReport(
                 reason="protocol_without_id",
             )
 
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
-            protocolId,
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            protocolId
         )
 
         if protocolDbId is None:
