@@ -1985,7 +1985,7 @@ class RuntimeProtocolOutputPersistenceService:
             projectId=projectId,
         )
 
-        return protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+        return protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolId)
 
     def loadPersistedProtocolOutputNames(
             self,

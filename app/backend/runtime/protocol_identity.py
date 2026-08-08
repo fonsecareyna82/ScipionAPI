@@ -102,6 +102,17 @@ class ProtocolIdentityResolver:
 
         return self.toOptionalInt(protocolRow.get("id"))
 
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            self,
+            protocolId: Any,
+    ) -> Optional[int]:
+        protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is None:
+            return None
+
+        return self.toOptionalInt(protocolRow.get("id"))
+
     def resolveReaderProtocolId(self, protocolId: Any) -> Optional[int]:
         """
         Return the id expected by PostgreSQL readers.
@@ -225,7 +236,7 @@ class ProtocolIdentityResolver:
         missingProtocolIds = []
 
         for protocolIdText in protocolIds:
-            protocolDbId = self.resolvePostgresqlProtocolDbId(protocolIdText)
+            protocolDbId = self.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolIdText)
 
             if protocolDbId is None:
                 missingProtocolIds.append(protocolIdText)
