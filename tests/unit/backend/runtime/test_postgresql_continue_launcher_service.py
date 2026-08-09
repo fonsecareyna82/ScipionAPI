@@ -308,6 +308,7 @@ def test_ContinuePlanClassifiesMixedWorkflow(
             mapper=SimpleNamespace(),
             projectId=7,
             workflowProtocolMap=workflow,
+            currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
         )
     )
 
@@ -366,6 +367,7 @@ def test_ContinuePlanRejectsActiveProtocol(
                     0,
                 ),
             },
+            currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
         )
     )
 
@@ -400,6 +402,7 @@ def test_ContinuePlanUsesStrictScipionProtocolIdentity():
                 0,
             ),
         },
+        currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
     )
 
     assert len(plan["entries"]) == 1
@@ -425,6 +428,41 @@ def test_ContinuePlanUsesStrictScipionProtocolIdentity():
         },
     ]
     assert mapper.dbLookups == []
+
+
+def test_ContinuePlanRejectsMissingRuntimeMapper():
+    protocol = ProtocolStub(
+        1,
+        status="finished",
+        streaming=False,
+    )
+
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "1": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: None),
+    )
+
+    assert plan == {
+        "entries": [],
+        "errors": [{
+            "error": "PostgreSQL runtime mapper is not available",
+        }],
+        "summary": {
+            "protocolsCount": 0,
+            "actionableCount": 0,
+            "restartProtocolIds": [],
+            "resumeProtocolIds": [],
+            "skipped": [],
+            "parentProtocolsModified": False,
+        },
+    }
 
 
 def test_RestartValidationUsesStrictScipionProtocolIdentity():

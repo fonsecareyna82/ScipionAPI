@@ -6440,9 +6440,8 @@ class ProjectService:
         return service.buildContinuePlan(
             mapper=mapper,
             projectId=projectId,
-            workflowProtocolMap=(
-                workflowProtocolMap
-            ),
+            workflowProtocolMap=workflowProtocolMap,
+            currentProject=self.currentProject,
         )
 
     def _launchPostgresqlContinueSubworkflow(

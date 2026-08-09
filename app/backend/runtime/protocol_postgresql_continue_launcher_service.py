@@ -64,7 +64,26 @@ class RuntimePostgresqlContinueLauncherService:
             mapper,
             projectId: int,
             workflowProtocolMap,
+            currentProject,
     ) -> Dict[str, Any]:
+        runtimeMapper = currentProject.getPostgresqlRuntimeMapper() if currentProject is not None else None
+
+        if runtimeMapper is None:
+            return {
+                "entries": [],
+                "errors": [{
+                    "error": "PostgreSQL runtime mapper is not available",
+                }],
+                "summary": {
+                    "protocolsCount": 0,
+                    "actionableCount": 0,
+                    "restartProtocolIds": [],
+                    "resumeProtocolIds": [],
+                    "skipped": [],
+                    "parentProtocolsModified": False,
+                },
+            }
+
         items = (
             self.restartLauncher
             ._workflowItems(
