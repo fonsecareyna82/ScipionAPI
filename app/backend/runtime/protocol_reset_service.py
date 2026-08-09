@@ -582,37 +582,20 @@ class RuntimeProtocolResetService:
                     detail=stopErrors,
                 )
 
-        cleanupInfo = (
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=(
-                    protocolsToReset
-                ),
-            )
-            if protocolsToReset
-            else {
-                "protocolsCount": 0,
-                "setsDeleted": 0,
-                "objectsDeleted": 0,
-                "items": [],
-            }
-        )
+        cleanupInfo = {
+            "protocolsCount": 0,
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "filesSkipped": [],
+            "fileErrors": [],
+            "items": [],
+        }
 
-        refCleanupInfo = (
-            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocols=(
-                    protocolsToReset
-                ),
-            )
-            if protocolsToReset
-            else {
-                "updated": 0,
-                "parentProtocolDbIds": [],
-            }
-        )
+        refCleanupInfo = {
+            "updated": 0,
+            "parentProtocolDbIds": [],
+        }
 
         runtimeMapper = validationInfo[
             "runtimeMapper"
@@ -622,14 +605,39 @@ class RuntimeProtocolResetService:
 
         for item in resetItems:
             try:
+                protocol = item["protocol"]
+
+                itemCleanupInfo = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=[protocol],
+                )
+
+                cleanupInfo["protocolsCount"] += int(itemCleanupInfo.get("protocolsCount") or 0)
+                cleanupInfo["setsDeleted"] += int(itemCleanupInfo.get("setsDeleted") or 0)
+                cleanupInfo["objectsDeleted"] += int(itemCleanupInfo.get("objectsDeleted") or 0)
+                cleanupInfo["filesDeleted"] += int(itemCleanupInfo.get("filesDeleted") or 0)
+                cleanupInfo["filesSkipped"].extend(itemCleanupInfo.get("filesSkipped") or [])
+                cleanupInfo["fileErrors"].extend(itemCleanupInfo.get("fileErrors") or [])
+                cleanupInfo["items"].extend(itemCleanupInfo.get("items") or [])
+
+                itemRefCleanupInfo = clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=[protocol],
+                )
+
+                refCleanupInfo["updated"] += int(itemRefCleanupInfo.get("updated") or 0)
+
+                for parentProtocolDbId in itemRefCleanupInfo.get("parentProtocolDbIds") or []:
+                    if parentProtocolDbId not in refCleanupInfo["parentProtocolDbIds"]:
+                        refCleanupInfo["parentProtocolDbIds"].append(parentProtocolDbId)
+
                 resetReports.append(
-                    self
-                    ._resetPostgresqlProtocol(
+                    self._resetPostgresqlProtocol(
                         mapper=mapper,
                         projectId=projectId,
-                        runtimeMapper=(
-                            runtimeMapper
-                        ),
+                        runtimeMapper=runtimeMapper,
                         item=item,
                     )
                 )

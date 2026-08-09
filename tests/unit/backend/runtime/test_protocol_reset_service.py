@@ -503,8 +503,15 @@ def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
         "projectId": 1,
         "protocolIds": ["10"],
     }]
-    assert cleanupCalls[0]["protocols"] == [rootProtocol, childProtocol]
-    assert refCleanupCalls[0]["protocols"] == [rootProtocol, childProtocol]
+    assert [call["protocols"] for call in cleanupCalls] == [
+        [rootProtocol],
+        [childProtocol],
+    ]
+
+    assert [call["protocols"] for call in refCleanupCalls] == [
+        [rootProtocol],
+        [childProtocol],
+    ]
 
     assert runtimeMapper.deletedRelations == [rootProtocol, childProtocol]
     assert runtimeMapper.storedProtocols == [rootProtocol, childProtocol]
@@ -565,6 +572,120 @@ def test_PostgresqlResetStopsActiveProtocolsAndResetsSubtree(
         "status": str(STATUS_SAVED),
         "reason": "protocol_already_saved",
     }]
+
+
+def test_PostgresqlResetDoesNotPrecleanLaterProtocolsAfterResetFailure(
+        monkeypatch,
+        patchResetTypes,
+):
+    class FailingResetProtocol(FakeProtocol):
+        def cleanExecutionAttributes(self):
+            super().cleanExecutionAttributes()
+            raise RuntimeError("reset failed")
+
+    mapper = FakeMapper({
+        10: 110,
+        11: 111,
+        12: 112,
+    })
+
+    runtimeMapper = FakeRuntimeMapper()
+    currentProject = FakeCurrentProject(runtimeMapper)
+
+    rootProtocol = FakeProtocol(
+        10,
+        STATUS_FINISHED,
+        outputNames=["outputRoot"],
+    )
+
+    failingProtocol = FailingResetProtocol(
+        11,
+        STATUS_FINISHED,
+        outputNames=["outputFailing"],
+        pointerTarget=rootProtocol,
+    )
+
+    untouchedProtocol = FakeProtocol(
+        12,
+        STATUS_FINISHED,
+        outputNames=["outputUntouched"],
+        pointerTarget=failingProtocol,
+    )
+
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService,
+        "resetProtocolRuntimeMetadata",
+        lambda self, **kwargs: {
+            "protocolId": str(kwargs["protocolId"]),
+            "cpuTimeSeconds": 0.0,
+            "elapsedTimeSeconds": 0.0,
+            "pid": None,
+            "jobIds": [],
+        },
+    )
+
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    def cleanupCallback(**kwargs):
+        cleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "protocolsCount": len(kwargs["protocols"]),
+            "setsDeleted": len(kwargs["protocols"]),
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "filesSkipped": [],
+            "fileErrors": [],
+            "items": [],
+        }
+
+    def refCleanupCallback(**kwargs):
+        refCleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "updated": len(kwargs["protocols"]),
+            "parentProtocolDbIds": [
+                mapper.protocolDbIds[protocol.getObjId()]
+                for protocol in kwargs["protocols"]
+            ],
+        }
+
+    with pytest.raises(HTTPException) as error:
+        callReset(
+            mapper=mapper,
+            currentProject=currentProject,
+            rootProtocol=rootProtocol,
+            workflowProtocolMap=OrderedDict([
+                ("10", (rootProtocol, 0)),
+                ("11", (failingProtocol, 1)),
+                ("12", (untouchedProtocol, 2)),
+            ]),
+            cleanupCallback=cleanupCallback,
+            refCleanupCallback=refCleanupCallback,
+        )
+
+    assert error.value.status_code == 500
+    assert error.value.detail["protocolId"] == "11"
+    assert error.value.detail["error"] == "reset failed"
+
+    assert cleanupCalls == [
+        [rootProtocol],
+        [failingProtocol],
+    ]
+
+    assert refCleanupCalls == [
+        [rootProtocol],
+        [failingProtocol],
+    ]
+
+    assert untouchedProtocol.getStatus() == STATUS_FINISHED
+    assert hasattr(untouchedProtocol, "outputUntouched")
+    assert untouchedProtocol._outputs == ["outputUntouched"]
+    assert untouchedProtocol.cleanExecutionCalls == 0
+    assert untouchedProtocol.cleanWorkingDirCalls == 0
+    assert untouchedProtocol.makeWorkingDirCalls == 0
+    assert untouchedProtocol not in runtimeMapper.storedProtocols
 
 
 def test_PostgresqlResetStopsBeforeDestructiveCleanup(
