@@ -793,6 +793,107 @@ def test_RestartPreparationUsesStrictScipionProtocolIdentity():
     assert mapper.dbLookups == []
 
 
+def test_RestartLaunchDoesNotPrecleanLaterProtocolAfterPreparationFailure(
+        monkeypatch,
+):
+    service = RuntimePostgresqlRestartLauncherService()
+
+    firstProtocol = ProtocolStub(10)
+    failingProtocol = ProtocolStub(11)
+    laterProtocol = ProtocolStub(12)
+
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    def cleanupCallback(**kwargs):
+        cleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "protocolsCount": len(kwargs["protocols"]),
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "fileErrors": [],
+            "items": [],
+        }
+
+    def refCleanupCallback(**kwargs):
+        refCleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "updated": 0,
+            "parentProtocolDbIds": [],
+        }
+
+    def prepareProtocol(**kwargs):
+        protocol = kwargs["protocol"]
+        protocolId = protocol.getObjId()
+
+        if protocolId == 11:
+            raise RuntimeError("restart preparation failed")
+
+        return {
+            "protocolId": str(protocolId),
+            "protocolDbId": 100 + protocolId,
+            "level": int(kwargs["level"]),
+            "interactive": False,
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_prepareProtocol",
+        prepareProtocol,
+    )
+
+    validationInfo = {
+        "errors": [],
+        "runtimeStructures": {
+            "10": {
+                "outputNames": [],
+                "pointerParams": [],
+            },
+            "11": {
+                "outputNames": [],
+                "pointerParams": [],
+            },
+            "12": {
+                "outputNames": [],
+                "pointerParams": [],
+            },
+        },
+    }
+
+    with pytest.raises(
+            RuntimeError,
+            match="restart preparation failed",
+    ):
+        service.launchRestartSubworkflow(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            workflowProtocolMap={
+                "10": (firstProtocol, 0),
+                "11": (failingProtocol, 1),
+                "12": (laterProtocol, 2),
+            },
+            currentProject=SimpleNamespace(
+                getPostgresqlRuntimeMapper=lambda: object()
+            ),
+            validationInfo=validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=cleanupCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=refCleanupCallback,
+        )
+
+    assert cleanupCalls == [
+        [firstProtocol],
+        [failingProtocol],
+    ]
+
+    assert refCleanupCalls == [
+        [firstProtocol],
+        [failingProtocol],
+    ]
+
+
 def test_ResumePreparationPreservesOutputsAndCpuTime(
         monkeypatch,
 ):

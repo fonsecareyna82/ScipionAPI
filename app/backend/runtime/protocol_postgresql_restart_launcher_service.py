@@ -488,6 +488,8 @@ class RuntimePostgresqlRestartLauncherService:
             workflowProtocolMap,
             currentProject,
             validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
     ) -> Dict[str, Any]:
         from app.backend.runtime.postgresql_protocol_worker import (
             buildPostgresqlWorkerCommand,
@@ -512,6 +514,20 @@ class RuntimePostgresqlRestartLauncherService:
 
         preparedItems = []
 
+        outputCleanup = {
+            "protocolsCount": 0,
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "fileErrors": [],
+            "items": [],
+        }
+
+        inputRefCleanup = {
+            "updated": 0,
+            "parentProtocolDbIds": [],
+        }
+
         # Prepare the complete subtree before allowing
         # any worker to start.
         for protocol, level in items:
@@ -522,6 +538,31 @@ class RuntimePostgresqlRestartLauncherService:
                 raise RuntimeError(
                     "Validated runtime structure was not found for protocol %s" % protocolId
                 )
+
+            itemOutputCleanup = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=[protocol],
+            )
+
+            outputCleanup["protocolsCount"] += int(itemOutputCleanup.get("protocolsCount") or 0)
+            outputCleanup["setsDeleted"] += int(itemOutputCleanup.get("setsDeleted") or 0)
+            outputCleanup["objectsDeleted"] += int(itemOutputCleanup.get("objectsDeleted") or 0)
+            outputCleanup["filesDeleted"] += int(itemOutputCleanup.get("filesDeleted") or 0)
+            outputCleanup["fileErrors"].extend(itemOutputCleanup.get("fileErrors") or [])
+            outputCleanup["items"].extend(itemOutputCleanup.get("items") or [])
+
+            itemInputRefCleanup = clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=[protocol],
+            )
+
+            inputRefCleanup["updated"] += int(itemInputRefCleanup.get("updated") or 0)
+
+            for parentProtocolDbId in itemInputRefCleanup.get("parentProtocolDbIds") or []:
+                if parentProtocolDbId not in inputRefCleanup["parentProtocolDbIds"]:
+                    inputRefCleanup["parentProtocolDbIds"].append(parentProtocolDbId)
 
             preparedItems.append(
                 self._prepareProtocol(
@@ -624,10 +665,10 @@ class RuntimePostgresqlRestartLauncherService:
                 })
 
         return {
-            "protocolsCount": len(
-                preparedItems
-            ),
+            "protocolsCount": len(preparedItems),
             "prepared": preparedItems,
             "launched": launchedItems,
+            "outputCleanup": outputCleanup,
+            "inputRefCleanup": inputRefCleanup,
             "errors": errors,
         }

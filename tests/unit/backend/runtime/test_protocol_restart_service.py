@@ -67,11 +67,6 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         ),
     }
 
-    workflowProtocols = [
-        protocolA,
-        protocolB,
-    ]
-
     operations = []
 
     def getSubworkflow(**kwargs):
@@ -83,15 +78,6 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         assert kwargs["protocolId"] == 10
 
         return workflowProtocolMap
-
-    def mapProtocols(protocolMap):
-        operations.append(
-            "map"
-        )
-
-        assert protocolMap is workflowProtocolMap
-
-        return workflowProtocols
 
     def validate(**kwargs):
         operations.append(
@@ -129,18 +115,24 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         }
 
     def launch(**kwargs):
-        operations.append(
-            "launch"
-        )
+        operations.append("launch")
 
         assert kwargs["workflowProtocolMap"] is workflowProtocolMap
         assert kwargs["validationInfo"] == {
             "errors": [],
             "validatedProtocolsCount": 2,
         }
+        assert kwargs["deletePersistedProtocolOutputsForRuntimeProtocolsCallback"] is deleteOutputs
+        assert kwargs["clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback"] is clearRefs
 
         return {
             "protocolsCount": 2,
+            "outputCleanup": {
+                "protocolsCount": 2,
+            },
+            "inputRefCleanup": {
+                "updated": 1,
+            },
             "errors": [],
         }
 
@@ -149,7 +141,6 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         projectId=7,
         protocolId=10,
         getPostgresqlRuntimeSubworkflowCallback=getSubworkflow,
-        workflowProtocolMapToProtocolsCallback=mapProtocols,
         deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deleteOutputs,
         clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearRefs,
         validatePostgresqlRestartSubworkflowCallback=validate,
@@ -159,15 +150,19 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
 
     assert operations == [
         "resolve",
-        "map",
         "validate",
-        "cleanup_outputs",
-        "cleanup_refs",
         "launch",
     ]
 
     assert result["protocolsCount"] == 2
     assert result["postgresqlRuntimeRestart"] is True
+    assert result["postgresqlCleanup"] == {
+        "protocolsCount": 2,
+    }
+
+    assert result["postgresqlInputRefCleanup"] == {
+        "updated": 1,
+    }
     workerLaunch = result[
         "postgresqlWorkerLaunch"
     ]
@@ -202,14 +197,6 @@ def test_InvalidPostgresqlRestartDoesNotCleanupOrLaunch():
         )
         return workflowProtocolMap
 
-    def mapProtocols(protocolMap):
-        operations.append(
-            "map"
-        )
-        return [
-            protocol,
-        ]
-
     def validate(**kwargs):
         operations.append(
             "validate"
@@ -241,7 +228,6 @@ def test_InvalidPostgresqlRestartDoesNotCleanupOrLaunch():
             projectId=7,
             protocolId=10,
             getPostgresqlRuntimeSubworkflowCallback=getSubworkflow,
-            workflowProtocolMapToProtocolsCallback=mapProtocols,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=unexpected,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=unexpected,
             validatePostgresqlRestartSubworkflowCallback=validate,
@@ -253,7 +239,6 @@ def test_InvalidPostgresqlRestartDoesNotCleanupOrLaunch():
 
     assert operations == [
         "resolve",
-        "map",
         "validate",
     ]
 
@@ -266,3 +251,4 @@ def test_LegacyProtocolRestartCompatibilityIsRemoved():
     assert "usingPostgresqlRuntime" not in parameters
     assert "currentProject" not in parameters
     assert "getScipionProtocolForRuntimeCallback" not in parameters
+    assert "workflowProtocolMapToProtocolsCallback" not in parameters

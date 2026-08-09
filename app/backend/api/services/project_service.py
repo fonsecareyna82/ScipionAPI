@@ -6409,6 +6409,8 @@ class ProjectService:
             projectId: int,
             workflowProtocolMap,
             validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
     ) -> Dict[str, Any]:
         service = (
             RuntimePostgresqlRestartLauncherService()
@@ -6420,6 +6422,8 @@ class ProjectService:
             workflowProtocolMap=workflowProtocolMap,
             currentProject=self.currentProject,
             validationInfo=validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
         )
 
     def _buildPostgresqlContinuePlan(
@@ -6474,7 +6478,6 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-            workflowProtocolMapToProtocolsCallback=self._workflowProtocolMapToProtocols,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
                 self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
             ),

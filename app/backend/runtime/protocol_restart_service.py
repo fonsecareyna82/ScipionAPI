@@ -43,7 +43,6 @@ class RuntimeProtocolRestartService:
             projectId: int,
             protocolId,
             getPostgresqlRuntimeSubworkflowCallback: Callable,
-            workflowProtocolMapToProtocolsCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             validatePostgresqlRestartSubworkflowCallback: Callable,
@@ -71,10 +70,6 @@ class RuntimeProtocolRestartService:
                 detail="Failed to resolve protocol subworkflow: %s" % error,
             )
 
-        workflowProtocols = workflowProtocolMapToProtocolsCallback(
-            workflowProtocolMap
-        )
-
         validationInfo = validatePostgresqlRestartSubworkflowCallback(
             mapper=mapper,
             projectId=projectId,
@@ -87,25 +82,13 @@ class RuntimeProtocolRestartService:
                 detail=validationInfo["errors"],
             )
 
-        # Destructive cleanup starts only after the complete
-        # PostgreSQL graph has been validated.
-        cleanupInfo = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=workflowProtocols,
-        )
-
-        refCleanupInfo = clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocols=workflowProtocols,
-        )
-
         launchInfo = launchPostgresqlRestartSubworkflowCallback(
             mapper=mapper,
             projectId=projectId,
             workflowProtocolMap=workflowProtocolMap,
             validationInfo=validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
         )
 
         if launchInfo.get("errors"):
@@ -113,6 +96,9 @@ class RuntimeProtocolRestartService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=launchInfo["errors"],
             )
+
+        cleanupInfo = launchInfo.get("outputCleanup")
+        refCleanupInfo = launchInfo.get("inputRefCleanup")
 
         return buildProtocolMutationResultCallback(
             "Protocol subtree restarted successfully",
