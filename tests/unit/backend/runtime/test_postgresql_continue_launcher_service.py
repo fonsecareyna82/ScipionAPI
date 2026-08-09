@@ -139,6 +139,7 @@ class GraphRepositoryStub:
     def __init__(self):
         self.refsByProtocolDbId = {}
         self.relationSyncCalls = []
+        self.relationSyncError = None
 
     def loadInputRefsForProtocol(
             self,
@@ -170,6 +171,9 @@ class GraphRepositoryStub:
             kwargs
         )
 
+        if self.relationSyncError is not None:
+            raise self.relationSyncError
+
         return True
 
 
@@ -200,6 +204,7 @@ class IdentityCollisionMapperStub:
 class MapperStub:
     def __init__(self):
         self.prepareContinueCalls = []
+        self.prepareContinueError = None
 
     def prepareProtocolStepsForContinue(
             self,
@@ -208,6 +213,9 @@ class MapperStub:
         self.prepareContinueCalls.append(
             kwargs
         )
+
+        if self.prepareContinueError is not None:
+            raise self.prepareContinueError
 
         return 3
 
@@ -987,6 +995,144 @@ def test_ResumePreparationPreservesOutputsAndCpuTime(
             "synchronized": False,
         },
     ]
+
+
+def test_ResumePreparationDoesNotScheduleProtocolWhenRelationInvalidationFails(
+        monkeypatch,
+):
+    graphRepository = installPlanStubs(
+        monkeypatch
+    )
+
+    graphRepository.relationSyncError = RuntimeError(
+        "relation invalidation failed"
+    )
+
+    protocol = ProtocolStub(
+        1,
+        status="failed",
+        streaming=True,
+    )
+
+    protocol._jobId = [77]
+
+    mapper = MapperStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    entry = {
+        "protocol": protocol,
+        "protocolId": 1,
+        "protocolDbId": 101,
+        "level": 0,
+        "action": CONTINUE_ACTION_RESUME,
+    }
+
+    service = RuntimePostgresqlContinueLauncherService()
+
+    with pytest.raises(
+            RuntimeError,
+            match="relation invalidation failed",
+    ):
+        service._prepareResumeProtocol(
+            mapper=mapper,
+            projectId=7,
+            entry=entry,
+            runtimeMapper=runtimeMapper,
+        )
+
+    assert protocol.runMode.get() is None
+    assert protocol.status == "failed"
+    assert protocol.pid == 999
+    assert protocol._jobId == [77]
+    assert protocol._steps == ["old-step"]
+    assert protocol._stepsDone.get() == 4
+    assert protocol._numberOfSteps.get() == 4
+    assert protocol._cpuTime.get() == 90
+    assert protocol.makeWorkingDirCalls == 0
+    assert protocol.cleanWorkingDirCalls == 0
+
+    assert mapper.prepareContinueCalls == []
+    assert runtimeMapper.storeCalls == []
+    assert runtimeMapper.commitCalls == 0
+
+    assert graphRepository.relationSyncCalls == [{
+        "mapper": mapper,
+        "projectId": 7,
+        "protocolId": 1,
+        "synchronized": False,
+    }]
+
+
+def test_ResumePreparationDoesNotScheduleProtocolWhenStepPreparationFails(
+        monkeypatch,
+):
+    graphRepository = installPlanStubs(
+        monkeypatch
+    )
+
+    protocol = ProtocolStub(
+        1,
+        status="failed",
+        streaming=True,
+    )
+
+    protocol._jobId = [77]
+
+    mapper = MapperStub()
+    mapper.prepareContinueError = RuntimeError(
+        "step preparation failed"
+    )
+
+    runtimeMapper = RuntimeMapperStub()
+
+    entry = {
+        "protocol": protocol,
+        "protocolId": 1,
+        "protocolDbId": 101,
+        "level": 0,
+        "action": CONTINUE_ACTION_RESUME,
+    }
+
+    service = RuntimePostgresqlContinueLauncherService()
+
+    with pytest.raises(
+            RuntimeError,
+            match="step preparation failed",
+    ):
+        service._prepareResumeProtocol(
+            mapper=mapper,
+            projectId=7,
+            entry=entry,
+            runtimeMapper=runtimeMapper,
+        )
+
+    assert protocol.runMode.get() is None
+    assert protocol.status == "failed"
+    assert protocol.pid == 999
+    assert protocol._jobId == [77]
+    assert protocol._steps == ["old-step"]
+    assert protocol._stepsDone.get() == 4
+    assert protocol._numberOfSteps.get() == 4
+    assert protocol._cpuTime.get() == 90
+    assert protocol.makeWorkingDirCalls == 0
+    assert protocol.cleanWorkingDirCalls == 0
+
+    assert runtimeMapper.storeCalls == []
+    assert runtimeMapper.commitCalls == 0
+
+    assert graphRepository.relationSyncCalls == [{
+        "mapper": mapper,
+        "projectId": 7,
+        "protocolId": 1,
+        "synchronized": False,
+    }]
+
+    assert mapper.prepareContinueCalls == [{
+        "projectId": 7,
+        "protocolId": 1,
+        "statusValue": STATUS_SAVED,
+        "event": "continue_resume",
+    }]
 
 
 def test_ContinueLaunchDoesNotPrecleanLaterRestartAfterPreparationFailure(

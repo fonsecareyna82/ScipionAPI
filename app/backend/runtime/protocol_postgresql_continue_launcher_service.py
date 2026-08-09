@@ -542,6 +542,22 @@ class RuntimePostgresqlContinueLauncherService:
             entry["protocolDbId"]
         )
 
+        # PostgreSQL resume state must be prepared before
+        # the runtime protocol is persisted as scheduled.
+        ProtocolGraphRepository().setProtocolRelationsSynchronized(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            synchronized=False,
+        )
+
+        stepsPrepared = mapper.prepareProtocolStepsForContinue(
+            projectId=projectId,
+            protocolId=protocolId,
+            statusValue=STATUS_SAVED,
+            event="continue_resume",
+        )
+
         protocol.runMode.set(
             MODE_RESUME
         )
@@ -603,24 +619,6 @@ class RuntimePostgresqlContinueLauncherService:
         )
 
         runtimeMapper.commit()
-
-        # Match native continue semantics:
-        # previous steps become SAVED, so the
-        # streaming protocol can execute them
-        # again while preserving its outputs.
-        stepsPrepared = mapper.prepareProtocolStepsForContinue(
-            projectId=projectId,
-            protocolId=protocolId,
-            statusValue=STATUS_SAVED,
-            event="continue_resume",
-        )
-
-        ProtocolGraphRepository().setProtocolRelationsSynchronized(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            synchronized=False,
-        )
 
         return {
             "protocolId": str(
