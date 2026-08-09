@@ -652,6 +652,59 @@ def test_PostgresqlResetValidatesWholeSubworkflowBeforeMutation(
     assert hasattr(missingProtocol, "outputMissing")
 
 
+def test_PostgresqlResetStatusReadFailureAbortsBeforeMutation(
+        patchResetTypes,
+):
+    class FailingStatusProtocol(FakeProtocol):
+        def getStatus(self):
+            raise RuntimeError("status read failed")
+
+    mapper = FakeMapper({10: 110})
+    runtimeMapper = FakeRuntimeMapper()
+    currentProject = FakeCurrentProject(runtimeMapper)
+
+    protocol = FailingStatusProtocol(
+        10,
+        STATUS_RUNNING,
+        outputNames=["outputParticles"],
+    )
+
+    stopCalls = []
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    with pytest.raises(HTTPException) as error:
+        callReset(
+            mapper=mapper,
+            currentProject=currentProject,
+            rootProtocol=protocol,
+            workflowProtocolMap={"10": (protocol, 0)},
+            stopCallback=lambda **kwargs: stopCalls.append(kwargs),
+            cleanupCallback=lambda **kwargs: cleanupCalls.append(kwargs),
+            refCleanupCallback=lambda **kwargs: refCleanupCalls.append(kwargs),
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == [{
+        "protocolId": "10",
+        "error": "Could not read protocol runtime status: status read failed",
+    }]
+
+    assert stopCalls == []
+    assert cleanupCalls == []
+    assert refCleanupCalls == []
+
+    assert runtimeMapper.deletedRelations == []
+    assert runtimeMapper.storedProtocols == []
+    assert mapper.deletedProtocolSteps == []
+
+    assert protocol.status.get() == STATUS_RUNNING
+    assert hasattr(protocol, "outputParticles")
+    assert protocol.cleanExecutionCalls == 0
+    assert protocol.cleanWorkingDirCalls == 0
+    assert protocol.makeWorkingDirCalls == 0
+
+
 def test_PostgresqlResetSkipsSubworkflowAlreadySaved(
         patchResetTypes,
 ):

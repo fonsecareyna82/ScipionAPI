@@ -121,14 +121,7 @@ class RuntimeProtocolResetService:
     def _getProtocolStatus(
             protocol,
     ) -> str:
-        try:
-            return str(
-                protocol.getStatus()
-                or ""
-            ).strip().lower()
-
-        except Exception:
-            return ""
+        return str(protocol.getStatus() or "").strip().lower()
 
     @staticmethod
     def _detachOutputs(
@@ -319,20 +312,21 @@ class RuntimeProtocolResetService:
 
                 continue
 
+            try:
+                protocolStatus = self._getProtocolStatus(protocol)
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not read protocol runtime status: %s" % error,
+                })
+                continue
+
             item = {
                 "protocol": protocol,
                 "protocolId": protocolId,
-                "protocolDbId": int(
-                    protocolDbId
-                ),
-                "level": int(
-                    level
-                ),
-                "status": (
-                    self._getProtocolStatus(
-                        protocol
-                    )
-                ),
+                "protocolDbId": int(protocolDbId),
+                "level": int(level),
+                "status": protocolStatus,
             }
 
             if (
