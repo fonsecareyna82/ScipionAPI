@@ -120,73 +120,12 @@ class RuntimeProtocolContinueService:
                 )
             )
 
-        restartProtocols = [
-            entry["protocol"]
-            for entry in (
-                continuePlan.get(
-                    "entries"
-                )
-                or []
-            )
-            if entry.get("action")
-            == "restart"
-        ]
-
-        restartOutputCleanup = None
-        restartInputRefCleanup = None
-
-        # No destructive operation occurs until
-        # the complete mixed workflow has passed
-        # PostgreSQL validation.
-        if restartProtocols:
-            restartOutputCleanup = (
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=(
-                        restartProtocols
-                    ),
-                )
-            )
-
-            if restartOutputCleanup.get(
-                    "errors"
-            ):
-                raise HTTPException(
-                    status_code=(
-                        status
-                        .HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    detail={
-                        "message": (
-                            "Failed to delete "
-                            "PostgreSQL outputs for "
-                            "protocols restarted by "
-                            "continue-all"
-                        ),
-                        "errors": (
-                            restartOutputCleanup
-                            .get("errors")
-                        ),
-                    },
-                )
-
-            restartInputRefCleanup = (
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocols=(
-                        restartProtocols
-                    ),
-                )
-            )
-
-        launchInfo = (
-            launchPostgresqlContinueSubworkflowCallback(
-                mapper=mapper,
-                projectId=projectId,
-                plan=continuePlan,
-            )
+        launchInfo = launchPostgresqlContinueSubworkflowCallback(
+            mapper=mapper,
+            projectId=projectId,
+            plan=continuePlan,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
         )
 
         if launchInfo.get("errors"):
@@ -199,6 +138,9 @@ class RuntimeProtocolContinueService:
                     "errors"
                 ],
             )
+
+        restartOutputCleanup = launchInfo.get("restartOutputCleanup")
+        restartInputRefCleanup = launchInfo.get("restartInputRefCleanup")
 
         return (
             buildProtocolMutationResultCallback(

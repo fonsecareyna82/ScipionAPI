@@ -888,6 +888,136 @@ def test_ResumePreparationPreservesOutputsAndCpuTime(
     ]
 
 
+def test_ContinueLaunchDoesNotPrecleanLaterRestartAfterPreparationFailure(
+        monkeypatch,
+):
+    service = RuntimePostgresqlContinueLauncherService()
+
+    firstRestart = ProtocolStub(
+        10,
+        status="finished",
+        streaming=False,
+    )
+
+    failingResume = ProtocolStub(
+        11,
+        status="finished",
+        streaming=True,
+    )
+
+    laterRestart = ProtocolStub(
+        12,
+        status="finished",
+        streaming=False,
+    )
+
+    plan = {
+        "errors": [],
+        "entries": [
+            {
+                "protocol": firstRestart,
+                "protocolId": 10,
+                "protocolDbId": 110,
+                "level": 0,
+                "action": CONTINUE_ACTION_RESTART,
+                "reason": "native_continue_requires_restart",
+                "runtimeStructure": {
+                    "outputNames": [],
+                    "pointerParams": [],
+                },
+            },
+            {
+                "protocol": failingResume,
+                "protocolId": 11,
+                "protocolDbId": 111,
+                "level": 1,
+                "action": CONTINUE_ACTION_RESUME,
+                "reason": "streaming_execution_exists",
+            },
+            {
+                "protocol": laterRestart,
+                "protocolId": 12,
+                "protocolDbId": 112,
+                "level": 2,
+                "action": CONTINUE_ACTION_RESTART,
+                "reason": "native_continue_requires_restart",
+                "runtimeStructure": {
+                    "outputNames": [],
+                    "pointerParams": [],
+                },
+            },
+        ],
+    }
+
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    def cleanupCallback(**kwargs):
+        cleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "protocolsCount": len(kwargs["protocols"]),
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "filesSkipped": [],
+            "fileErrors": [],
+            "items": [],
+        }
+
+    def refCleanupCallback(**kwargs):
+        refCleanupCalls.append(list(kwargs["protocols"]))
+
+        return {
+            "updated": 0,
+            "parentProtocolDbIds": [],
+        }
+
+    monkeypatch.setattr(
+        service,
+        "_prepareRestartProtocol",
+        lambda **kwargs: {
+            "protocolId": str(kwargs["entry"]["protocolId"]),
+            "protocolDbId": kwargs["entry"]["protocolDbId"],
+            "level": kwargs["entry"]["level"],
+            "action": CONTINUE_ACTION_RESTART,
+            "interactive": False,
+        },
+    )
+
+    def failResume(**kwargs):
+        raise RuntimeError("resume preparation failed")
+
+    monkeypatch.setattr(
+        service,
+        "_prepareResumeProtocol",
+        failResume,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="resume preparation failed",
+    ):
+        service.launchContinueSubworkflow(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            currentProject=SimpleNamespace(
+                getPostgresqlRuntimeMapper=lambda: object()
+            ),
+            plan=plan,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=cleanupCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=refCleanupCallback,
+        )
+
+    assert cleanupCalls == [
+        [firstRestart],
+    ]
+
+    assert refCleanupCalls == [
+        [firstRestart],
+    ]
+
+
 def test_PostgresqlLaunchersDoNotExecuteDirectQueries():
     for launcherClass in (
             RuntimePostgresqlRestartLauncherService,

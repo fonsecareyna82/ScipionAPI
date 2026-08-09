@@ -127,14 +127,20 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
         }
 
     def launch(**kwargs):
-        operations.append(
-            "launch"
-        )
+        operations.append("launch")
 
         assert kwargs["plan"] is plan
+        assert kwargs["deletePersistedProtocolOutputsForRuntimeProtocolsCallback"] is deleteOutputs
+        assert kwargs["clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback"] is clearRefs
 
         return {
             "protocolsCount": 2,
+            "restartOutputCleanup": {
+                "protocolsCount": 1,
+            },
+            "restartInputRefCleanup": {
+                "updated": 1,
+            },
             "errors": [],
         }
 
@@ -176,14 +182,20 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
 
     assert operations == [
         "plan",
-        "cleanup_outputs",
-        "cleanup_refs",
         "launch",
     ]
 
     assert result[
         "postgresqlRuntimeContinue"
     ] is True
+    assert result["postgresqlRestartOutputCleanup"] == {
+        "protocolsCount": 1,
+    }
+
+    assert result["postgresqlRestartInputRefCleanup"] == {
+        "updated": 1,
+    }
+
     workerLaunch = result[
         "postgresqlWorkerLaunch"
     ]

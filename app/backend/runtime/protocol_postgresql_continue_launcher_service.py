@@ -657,13 +657,14 @@ class RuntimePostgresqlContinueLauncherService:
                 "Validated restart runtime structure was not found for protocol %s" % entry["protocolId"]
             )
 
-        prepared = self.restartLauncher._prepareProtocol(mapper=mapper,
-                                                         projectId=projectId,
-                                                         protocol=entry["protocol"],
-                                                         level=int(entry["level"]),
-                                                         runtimeMapper=runtimeMapper,
-                                                         runtimeStructure=runtimeStructure,
-                                                        )
+        prepared = self.restartLauncher._prepareProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=entry["protocol"],
+            level=int(entry["level"]),
+            runtimeMapper=runtimeMapper,
+            runtimeStructure=runtimeStructure,
+        )
 
         return {
             **prepared,
@@ -715,6 +716,8 @@ class RuntimePostgresqlContinueLauncherService:
             projectId: int,
             currentProject,
             plan,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
     ) -> Dict[str, Any]:
         if plan.get("errors"):
             raise ValueError(
@@ -740,6 +743,8 @@ class RuntimePostgresqlContinueLauncherService:
 
         preparedItems = []
         skippedItems = []
+        restartOutputCleanup = None
+        restartInputRefCleanup = None
 
         # Prepare the entire mixed subtree before
         # allowing any worker to start.
@@ -788,18 +793,58 @@ class RuntimePostgresqlContinueLauncherService:
 
                 continue
 
-            if (
-                    action
-                    == CONTINUE_ACTION_RESTART
-            ):
+            if action == CONTINUE_ACTION_RESTART:
+                protocol = entry["protocol"]
+
+                itemOutputCleanup = deletePersistedProtocolOutputsForRuntimeProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=[protocol],
+                )
+
+                if restartOutputCleanup is None:
+                    restartOutputCleanup = {
+                        "protocolsCount": 0,
+                        "setsDeleted": 0,
+                        "objectsDeleted": 0,
+                        "filesDeleted": 0,
+                        "filesSkipped": [],
+                        "fileErrors": [],
+                        "items": [],
+                    }
+
+                restartOutputCleanup["protocolsCount"] += int(itemOutputCleanup.get("protocolsCount") or 0)
+                restartOutputCleanup["setsDeleted"] += int(itemOutputCleanup.get("setsDeleted") or 0)
+                restartOutputCleanup["objectsDeleted"] += int(itemOutputCleanup.get("objectsDeleted") or 0)
+                restartOutputCleanup["filesDeleted"] += int(itemOutputCleanup.get("filesDeleted") or 0)
+                restartOutputCleanup["filesSkipped"].extend(itemOutputCleanup.get("filesSkipped") or [])
+                restartOutputCleanup["fileErrors"].extend(itemOutputCleanup.get("fileErrors") or [])
+                restartOutputCleanup["items"].extend(itemOutputCleanup.get("items") or [])
+
+                itemInputRefCleanup = clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=[protocol],
+                )
+
+                if restartInputRefCleanup is None:
+                    restartInputRefCleanup = {
+                        "updated": 0,
+                        "parentProtocolDbIds": [],
+                    }
+
+                restartInputRefCleanup["updated"] += int(itemInputRefCleanup.get("updated") or 0)
+
+                for parentProtocolDbId in itemInputRefCleanup.get("parentProtocolDbIds") or []:
+                    if parentProtocolDbId not in restartInputRefCleanup["parentProtocolDbIds"]:
+                        restartInputRefCleanup["parentProtocolDbIds"].append(parentProtocolDbId)
+
                 preparedItems.append(
                     self._prepareRestartProtocol(
                         mapper=mapper,
                         projectId=projectId,
                         entry=entry,
-                        runtimeMapper=(
-                            runtimeMapper
-                        ),
+                        runtimeMapper=runtimeMapper,
                     )
                 )
 
@@ -918,6 +963,8 @@ class RuntimePostgresqlContinueLauncherService:
             "prepared": preparedItems,
             "launched": launchedItems,
             "skipped": skippedItems,
+            "restartOutputCleanup": restartOutputCleanup,
+            "restartInputRefCleanup": restartInputRefCleanup,
             "errors": errors,
             "parentProtocolsModified": False,
         }

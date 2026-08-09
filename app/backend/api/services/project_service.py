@@ -6444,21 +6444,21 @@ class ProjectService:
             mapper,
             projectId: int,
             plan,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
     ) -> Dict[str, Any]:
         service = (
             RuntimePostgresqlContinueLauncherService()
         )
 
-        return (
-            service
-            .launchContinueSubworkflow(
+        return service.launchContinueSubworkflow(
                 mapper=mapper,
                 projectId=projectId,
-                currentProject=(
-                    self.currentProject
-                ),
+                currentProject=self.currentProject,
                 plan=plan,
-            )
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+
         )
 
     def restartProtocolAll(
