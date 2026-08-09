@@ -46,6 +46,9 @@ from app.backend.runtime.protocol_identity import (
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
+from app.backend.runtime.protocol_stop_service import (
+    RuntimeProtocolStopService,
+)
 
 
 class RuntimePostgresqlRestartLauncherService:
@@ -614,6 +617,8 @@ class RuntimePostgresqlRestartLauncherService:
                 )
             )
 
+            process = None
+
             try:
                 process = subprocess.Popen(
                     command,
@@ -649,6 +654,15 @@ class RuntimePostgresqlRestartLauncherService:
                 })
 
             except Exception as error:
+                if process is not None:
+                    try:
+                        RuntimeProtocolStopService()._killProcessGroup(
+                            pid=int(process.pid),
+                            projectId=projectId,
+                            protocolId=protocolId,
+                        )
+                    except Exception:
+                        pass
                 protocol.setFailed(
                     str(error)
                 )

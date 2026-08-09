@@ -50,6 +50,9 @@ from app.backend.runtime.protocol_postgresql_restart_launcher_service import (
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
+from app.backend.runtime.protocol_stop_service import (
+    RuntimeProtocolStopService,
+)
 
 
 CONTINUE_ACTION_RESTART = "restart"
@@ -879,6 +882,7 @@ class RuntimePostgresqlContinueLauncherService:
                 )
             )
 
+            process = None
             try:
                 process = (
                     self._spawnWorker(
@@ -913,6 +917,15 @@ class RuntimePostgresqlContinueLauncherService:
                 })
 
             except Exception as error:
+                if process is not None:
+                    try:
+                        RuntimeProtocolStopService()._killProcessGroup(
+                            pid=int(process.pid),
+                            projectId=projectId,
+                            protocolId=protocolId,
+                        )
+                    except Exception:
+                        pass
                 protocol.setFailed(
                     str(error)
                 )

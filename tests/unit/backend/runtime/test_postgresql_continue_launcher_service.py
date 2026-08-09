@@ -100,6 +100,10 @@ class ProtocolStub:
     def setStatus(self, status):
         self.status = status
 
+    def setFailed(self, error):
+        self.status = "failed"
+        self.error = str(error)
+
     def worksInStreaming(self):
         return self.streaming
 
@@ -232,6 +236,32 @@ class RuntimeMapperStub:
 
     def commit(self):
         self.commitCalls += 1
+
+
+class FailFirstStoreRuntimeMapperStub(RuntimeMapperStub):
+    def __init__(self):
+        super().__init__()
+        self.storeAttempts = 0
+
+    def store(self, protocol):
+        self.storeAttempts += 1
+
+        if self.storeAttempts == 1:
+            raise RuntimeError("runtime persistence failed")
+
+        super().store(protocol)
+
+
+class StopServiceStub:
+    def __init__(self):
+        self.killCalls = []
+
+    def _killProcessGroup(self, **kwargs):
+        self.killCalls.append(kwargs)
+
+        return {
+            "terminated": True,
+        }
 
 
 def installPlanStubs(
@@ -1306,5 +1336,154 @@ def test_PostgresqlLaunchersDoNotExposeLegacyStorageProvenance():
         ):
             assert legacyField not in source
 
+
+
+def test_ContinueLaunchStopsSpawnedWorkerWhenPersistenceFails(
+        monkeypatch,
+):
+    service = RuntimePostgresqlContinueLauncherService()
+    protocol = ProtocolStub(
+        10,
+        status="finished",
+        streaming=True,
+    )
+
+    runtimeMapper = FailFirstStoreRuntimeMapperStub()
+    stopService = StopServiceStub()
+
+    monkeypatch.setattr(
+        continueModule,
+        "RuntimeProtocolStopService",
+        lambda: stopService,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_prepareResumeProtocol",
+        lambda **kwargs: {
+            "protocolId": "10",
+            "protocolDbId": 110,
+            "level": 0,
+            "action": CONTINUE_ACTION_RESUME,
+            "interactive": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_spawnWorker",
+        lambda **kwargs: SimpleNamespace(pid=4321),
+    )
+
+    result = service.launchContinueSubworkflow(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        currentProject=SimpleNamespace(
+            path="/tmp",
+            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
+        ),
+        plan={
+            "errors": [],
+            "entries": [{
+                "protocol": protocol,
+                "protocolId": 10,
+                "protocolDbId": 110,
+                "level": 0,
+                "action": CONTINUE_ACTION_RESUME,
+                "reason": "streaming_execution_exists",
+            }],
+        },
+        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=lambda **kwargs: {},
+        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=lambda **kwargs: {},
+    )
+
+    assert stopService.killCalls == [{
+        "pid": 4321,
+        "projectId": 7,
+        "protocolId": 10,
+    }]
+
+    assert protocol.status == "failed"
+    assert result["launched"] == []
+    assert len(result["errors"]) == 1
+
+
+def test_RestartLaunchStopsSpawnedWorkerWhenPersistenceFails(
+        monkeypatch,
+):
+    service = RuntimePostgresqlRestartLauncherService()
+    protocol = ProtocolStub(10)
+
+    runtimeMapper = FailFirstStoreRuntimeMapperStub()
+    stopService = StopServiceStub()
+
+    monkeypatch.setattr(
+        restartModule,
+        "RuntimeProtocolStopService",
+        lambda: stopService,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_prepareProtocol",
+        lambda **kwargs: {
+            "protocolId": "10",
+            "protocolDbId": 110,
+            "level": 0,
+            "interactive": False,
+        },
+    )
+
+    monkeypatch.setattr(
+        restartModule.subprocess,
+        "Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=4321),
+    )
+
+    result = service.launchRestartSubworkflow(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            path="/tmp",
+            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
+        ),
+        validationInfo={
+            "errors": [],
+            "runtimeStructures": {
+                "10": {
+                    "outputNames": [],
+                    "pointerParams": [],
+                },
+            },
+        },
+        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=lambda **kwargs: {
+            "protocolsCount": 1,
+            "setsDeleted": 0,
+            "objectsDeleted": 0,
+            "filesDeleted": 0,
+            "fileErrors": [],
+            "items": [],
+        },
+        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=lambda **kwargs: {
+            "updated": 0,
+            "parentProtocolDbIds": [],
+        },
+    )
+
+    assert stopService.killCalls == [{
+        "pid": 4321,
+        "projectId": 7,
+        "protocolId": 10,
+    }]
+
+    assert protocol.status == "failed"
+    assert result["launched"] == []
+    assert len(result["errors"]) == 1
 
 
