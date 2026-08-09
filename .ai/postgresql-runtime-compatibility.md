@@ -261,6 +261,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 31. PostgreSQL `updateFrom()` refreshes must be transactional with respect to the in-memory runtime object. Snapshot capture failures must abort the refresh before mutation, and any failed or incomplete generic-object refresh must restore the previous object identity, metadata and mutable nested values instead of leaving partially refreshed consumer state.
 32. Once PostgreSQL `updateFrom()` has identified a supported generic runtime object and found its persisted PostgreSQL representation, refresh failure is an execution error rather than an unsupported-object condition. The previous in-memory state must be restored and the refresh error must propagate; it must never fall through to the generic `NotImplementedError` path.
 33. PostgreSQL `updateFrom()` rollback failures must never be swallowed. If restoring any captured mutable runtime value fails, the mapper must raise an explicit rollback error preserving the underlying restoration exception, because the in-memory object can no longer be considered transactionally restored.
+34. PostgreSQL `updateFrom()` snapshot capture must never reinterpret a `TypeError` raised by a Scipion object's `get()` implementation as a getter-signature compatibility failure. Runtime values are read through the standard zero-argument `get()` contract exactly once, and any getter failure must propagate before refresh mutation begins.
 
 ## Historical failure mode
 

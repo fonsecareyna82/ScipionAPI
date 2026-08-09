@@ -750,10 +750,7 @@ class PostgresqlRuntimeMapper(Mapper):
                     callable(getter)
                     and callable(setter)
             ):
-                try:
-                    value = getter()
-                except TypeError:
-                    value = getter(None)
+                value = getter()
 
                 snapshot[
                     "settableValues"

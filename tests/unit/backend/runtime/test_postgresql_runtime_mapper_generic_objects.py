@@ -1267,6 +1267,36 @@ def test_GenericObjectUpdateFromPropagatesRollbackFailure(
     ) == "rollback setter failed"
 
 
+def test_RuntimeObjectSnapshotDoesNotRetryGetterTypeError():
+    class FailingSnapshotString(String):
+        def __init__(self):
+            super().__init__()
+            self.getCalls = 0
+
+        def get(self, default=None):
+            self.getCalls += 1
+            raise TypeError(
+                "snapshot getter failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.title = FailingSnapshotString()
+
+    with pytest.raises(
+            TypeError,
+            match="snapshot getter failed",
+    ):
+        mapper._captureRuntimeObjectState(
+            runtimeObject
+        )
+
+    assert runtimeObject.title.getCalls == 1
+
+
 def test_RuntimeObjectSnapshotFailsWhenAttributeEnumerationFails():
     class FailingSnapshotObject(FakeComposite):
         def getAttributesToStore(self):
