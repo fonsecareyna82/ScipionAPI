@@ -3897,16 +3897,22 @@ class PostgresqlRuntimeMapper(Mapper):
             raise ValueError("Cannot store protocol without object id.")
 
         context = self._buildProtocolContext(protocol)
-        protocolDbId = self.flatMapper.saveProtocol(context)
-
         steps = self._buildProtocolSteps(protocol)
-        if steps:
-            self.flatMapper.replaceProtocolSteps(
-                projectId=self.projectId,
-                protocolDbId=int(protocolDbId),
-                protocolId=int(protocolId),
-                steps=steps,
+
+        with self.db.transaction():
+            protocolDbId = self.flatMapper.saveProtocol(
+                context,
+                commit=False,
             )
+
+            if steps:
+                self.flatMapper.replaceProtocolSteps(
+                    projectId=self.projectId,
+                    protocolDbId=int(protocolDbId),
+                    protocolId=int(protocolId),
+                    steps=steps,
+                    commit=False,
+                )
 
     def _prepareNativeSetForPostgresqlSnapshot(
             self,

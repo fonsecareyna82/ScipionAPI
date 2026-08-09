@@ -26,11 +26,112 @@
 from contextlib import contextmanager
 import pytest
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.mapper.postgresql_runtime_mapper import PostgresqlRuntimeMapper
+
+
+class RuntimeFlatMapperStub:
+    def __init__(self):
+        self.saveProtocolCalls = []
+        self.replaceProtocolStepsCalls = []
+        self.replaceProtocolStepsError = None
+
+    def saveProtocol(
+            self,
+            protocol,
+            commit=True,
+    ):
+        self.saveProtocolCalls.append({
+            "protocol": protocol,
+            "commit": commit,
+        })
+
+        return 101
+
+    def replaceProtocolSteps(
+            self,
+            **kwargs,
+    ):
+        self.replaceProtocolStepsCalls.append(
+            kwargs
+        )
+
+        if self.replaceProtocolStepsError is not None:
+            raise self.replaceProtocolStepsError
+
+
+def test_RuntimeProtocolStoreRollsBackMetadataWhenStepReplacementFails():
+    runtimeMapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    runtimeMapper.projectId = 7
+    runtimeMapper.db = FakeDb()
+    runtimeMapper.flatMapper = RuntimeFlatMapperStub()
+    runtimeMapper._runtimeProtocolsById = {}
+
+    protocol = object()
+
+    runtimeMapper._ensureObjId = lambda obj: 31
+    runtimeMapper._buildProtocolContext = lambda obj: {
+        "info": {
+            "protocolId": 31,
+        },
+    }
+    runtimeMapper._buildProtocolSteps = lambda obj: [
+        {
+            "index": 0,
+            "name": "firstStep",
+            "status": "running",
+        },
+    ]
+
+    runtimeMapper.flatMapper.replaceProtocolStepsError = RuntimeError(
+        "step replacement failed"
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="step replacement failed",
+    ):
+        runtimeMapper._storeProtocol(
+            protocol
+        )
+
+    assert runtimeMapper.db.transactionCalls == 1
+    assert runtimeMapper.db.transactionCommits == 0
+    assert runtimeMapper.db.transactionRollbacks == 1
+
+    assert runtimeMapper.flatMapper.saveProtocolCalls == [{
+        "protocol": {
+            "info": {
+                "protocolId": 31,
+            },
+        },
+        "commit": False,
+    }]
+
+    assert runtimeMapper.flatMapper.replaceProtocolStepsCalls == [{
+        "projectId": 7,
+        "protocolDbId": 101,
+        "protocolId": 31,
+        "steps": [{
+            "index": 0,
+            "name": "firstStep",
+            "status": "running",
+        }],
+        "commit": False,
+    }]
 
 
 class FakeCursor:
-    def __init__(self, rowcount=0):
+    def __init__(self, rowcount=0, row=None):
         self.rowcount = int(rowcount)
+        self.row = row or {
+            "id": 101,
+        }
+
+    def fetchone(self):
+        return self.row
 
 
 class FakeDb:
@@ -241,3 +342,60 @@ def test_ReplaceProtocolStepsRollsBackWholeReplacementWhenStepFails():
     assert mapper.db.executeCalls[1]["commit"] is False
     assert "INSERT INTO protocol_steps" in mapper.db.executeCalls[0]["query"]
     assert "INSERT INTO protocol_steps" in mapper.db.executeCalls[1]["query"]
+
+
+def test_SaveProtocolCanJoinExistingTransaction():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+
+    protocolDbId = mapper.saveProtocol(
+        {
+            "info": {
+                "protocolId": 31,
+                "projectId": 7,
+                "protocolClassName": "ProtocolStub",
+                "status": "scheduled",
+            },
+            "values": {},
+            "parentIds": [],
+            "childIds": [],
+        },
+        commit=False,
+    )
+
+    assert protocolDbId == 101
+    assert len(mapper.db.executeCalls) == 1
+    assert mapper.db.executeCalls[0]["commit"] is False
+    assert "INSERT INTO protocols" in mapper.db.executeCalls[0]["query"]
+
+
+def test_ReplaceProtocolStepsCanJoinExistingTransaction():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+
+    mapper.replaceProtocolSteps(
+        projectId=7,
+        protocolDbId=101,
+        protocolId=31,
+        steps=[
+            {
+                "index": 0,
+                "name": "firstStep",
+                "status": "running",
+            },
+        ],
+        commit=False,
+    )
+
+    assert mapper.db.transactionCalls == 0
+    assert len(mapper.db.executeCalls) == 2
+
+    assert all(
+        call["commit"] is False
+        for call in mapper.db.executeCalls
+    )
+
+    assert "INSERT INTO protocol_steps" in mapper.db.executeCalls[0]["query"]
+    assert "DELETE FROM protocol_steps" in mapper.db.executeCalls[1]["query"]
+
+

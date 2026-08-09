@@ -1739,7 +1739,11 @@ class PostgresqlFlatMapper(Mapper):
     # -----------------------------
     # Protocol Methods
     # -----------------------------
-    def saveProtocol(self, protocol: Dict[str, Any]) -> int:
+    def saveProtocol(
+            self,
+            protocol: Dict[str, Any],
+            commit: bool = True,
+    ) -> int:
         """Insert a new protocol row or update it if it already exists, then return its database id."""
         protocolId = protocol["info"].get("protocolId")
         projectId = protocol["info"].get("projectId")
@@ -1791,6 +1795,7 @@ class PostgresqlFlatMapper(Mapper):
                 parentIds,
                 childIds,
             ),
+            commit=commit,
         )
         return cur.fetchone()["id"]
 
@@ -2353,11 +2358,12 @@ class PostgresqlFlatMapper(Mapper):
             protocolDbId: int,
             protocolId: int,
             steps: List[Dict[str, Any]],
+            commit: bool = True,
     ) -> None:
         steps = list(steps or [])
         stepIndexes = [int(step["index"]) for step in steps]
 
-        with self.db.transaction():
+        def replaceSteps():
             for step in steps:
                 self.upsertProtocolStep(
                     projectId=projectId,
@@ -2391,6 +2397,12 @@ class PostgresqlFlatMapper(Mapper):
                     ),
                     commit=False,
                 )
+
+        if commit:
+            with self.db.transaction():
+                replaceSteps()
+        else:
+            replaceSteps()
 
     def upsertProtocolStep(
             self,
