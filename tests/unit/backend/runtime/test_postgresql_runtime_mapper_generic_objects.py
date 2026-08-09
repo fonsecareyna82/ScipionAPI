@@ -1297,6 +1297,100 @@ def test_RuntimeObjectSnapshotDoesNotRetryGetterTypeError():
     assert runtimeObject.title.getCalls == 1
 
 
+def test_GenericObjectUpdateFromPropagatesValueSetterFailure(
+        monkeypatch,
+):
+    class FailingUpdateString(String):
+        def __init__(self):
+            super().__init__()
+            self.failOnValue = None
+
+        def set(self, value):
+            if getattr(self, "failOnValue", None) == value:
+                raise RuntimeError(
+                    "generic value setter failed"
+                )
+
+            return super().set(value)
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject.title = FailingUpdateString()
+    runtimeObject.title.set("Original title")
+    runtimeObject.title.failOnValue = "PostgreSQL title"
+    runtimeObject.count.set(3)
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+    storedObject.title = FailingUpdateString()
+    storedObject.title.set("PostgreSQL title")
+    storedObject.count.set(5)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="generic value setter failed",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
+def test_GenericObjectUpdateFromPropagatesStoredAttributeEnumerationFailure(
+        monkeypatch,
+):
+    class FailingStoredComposite(FakeComposite):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "stored attribute enumeration failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject._objName = "originalOutput"
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    storedObject = FailingStoredComposite()
+    storedObject.setObjId(700)
+    storedObject._objName = "mutatedOutput"
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="stored attribute enumeration failed",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert runtimeObject.getObjId() == 700
+    assert runtimeObject.getObjName() == "originalOutput"
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
 def test_RuntimeObjectSnapshotFailsWhenAttributeEnumerationFails():
     class FailingSnapshotObject(FakeComposite):
         def getAttributesToStore(self):

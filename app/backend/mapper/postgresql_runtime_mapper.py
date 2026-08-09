@@ -958,19 +958,7 @@ class PostgresqlRuntimeMapper(Mapper):
             None,
         )
 
-        try:
-            valueSetter(storedValue)
-        except Exception:
-            logger.debug(
-                "Could not update generic object value "
-                "from PostgreSQL. projectId=%s "
-                "runtimeObjectId=%s className=%s",
-                self.projectId,
-                storedObjectId,
-                self._getClassName(storedObject),
-                exc_info=True,
-            )
-            return False
+        valueSetter(storedValue)
 
         self._copyGenericObjectMetadataFromPostgresql(
             targetObject,
@@ -986,12 +974,9 @@ class PostgresqlRuntimeMapper(Mapper):
         storedAttributes = []
 
         if callable(attributesGetter):
-            try:
-                storedAttributes = list(
-                    attributesGetter() or []
-                )
-            except Exception:
-                return False
+            storedAttributes = list(
+                attributesGetter() or []
+            )
 
         for attributeName, storedChild in storedAttributes:
             attributeName = str(attributeName)
