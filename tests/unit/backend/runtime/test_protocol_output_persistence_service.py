@@ -642,6 +642,76 @@ def test_OutputPersistenceScipionProtocolIdNeverFallsBackToPostgresqlDbId():
     assert mapper.dbLookups == []
 
 
+def test_RuntimeProtocolOutputCleanupNeverFallsBackToPostgresqlDbId(
+        monkeypatch,
+):
+    class ProtocolStub:
+        def getObjId(self):
+            return 31
+
+    class IdentityMapperStub:
+        def __init__(self):
+            self.db = object()
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    mapper = IdentityMapperStub()
+    service = RuntimeProtocolOutputPersistenceService()
+    protocol = ProtocolStub()
+
+    monkeypatch.setattr(
+        service,
+        "collectPersistedProtocolOutputFiles",
+        lambda **kwargs: pytest.fail(
+            "Runtime protocol cleanup must not fall back to protocols.id"
+        ),
+    )
+
+    result = service.deletePersistedProtocolOutputs(
+        mapper=mapper,
+        projectId=7,
+        protocolId=protocol.getObjId(),
+        protocol=protocol,
+    )
+
+    assert result == {
+        "protocolDbId": None,
+        "setsDeleted": 0,
+        "objectsDeleted": 0,
+        "filesDeleted": 0,
+        "filesSkipped": [],
+        "fileErrors": [],
+        "skipped": True,
+        "reason": "protocol_not_found",
+    }
+
+    assert mapper.scipionLookups == [{
+        "projectId": 7,
+        "protocolId": "31",
+    }]
+
+    assert mapper.dbLookups == []
+
+
 def test_ProtocolFormOutputReaderDelegatesOutputRows(
         monkeypatch,
 ):

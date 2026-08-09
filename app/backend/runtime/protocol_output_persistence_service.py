@@ -2567,7 +2567,11 @@ class RuntimeProtocolOutputPersistenceService:
             getCurrentProjectPathCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+
+        if protocol is not None:
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolId)
+        else:
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
 
         if protocolDbId is None:
             return {
