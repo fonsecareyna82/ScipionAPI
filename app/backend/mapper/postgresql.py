@@ -136,12 +136,17 @@ class PostgresqlDb:
         cursor = self.cursor
         connection = self.conn
 
-        cursor.execute(query, params)
+        try:
+            cursor.execute(query, params)
 
-        if commit:
-            connection.commit()
+            if commit:
+                connection.commit()
 
-        return cursor
+            return cursor
+
+        except Exception:
+            connection.rollback()
+            raise
 
     def executeReturningOne(
             self,

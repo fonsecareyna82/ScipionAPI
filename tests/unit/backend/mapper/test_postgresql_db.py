@@ -25,6 +25,8 @@
 # ******************************************************************************
 import threading
 
+import pytest
+
 from app.backend.mapper import postgresql as postgresqlModule
 from app.backend.mapper.postgresql import PostgresqlDb
 
@@ -34,10 +36,14 @@ class FakeCursor:
         self.connection = connection
         self.closed = False
         self._row = None
+        self.executeError = None
 
     def execute(self, query, params=None):
         if self.closed:
             raise RuntimeError("Cursor is closed")
+
+        if self.executeError is not None:
+            raise self.executeError
 
         self._row = {
             "query": query,
@@ -65,6 +71,7 @@ class FakeConnection:
         self.cursors = []
         self.commits = 0
         self.rollbacks = 0
+        self.commitError = None
 
     def cursor(self, cursor_factory=None):
         cursor = FakeCursor(self)
@@ -74,6 +81,9 @@ class FakeConnection:
 
     def commit(self):
         self.commits += 1
+
+        if self.commitError is not None:
+            raise self.commitError
 
     def rollback(self):
         self.rollbacks += 1
@@ -165,3 +175,74 @@ def test_PostgresqlDbUsesIndependentResourcesPerThread(monkeypatch):
         connection.closed
         for connection in connectionFactory.connections
     )
+
+
+def test_PostgresqlDbExecuteRollsBackWhenStatementFails(monkeypatch):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+    cursor = connection.cursors[0]
+    cursor.executeError = RuntimeError("statement failed")
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="statement failed",
+        ):
+            db.execute("BROKEN SQL")
+
+        assert connection.commits == 0
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
+
+
+def test_PostgresqlDbExecuteRollsBackWhenCommitFails(monkeypatch):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+    connection.commitError = RuntimeError("commit failed")
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="commit failed",
+        ):
+            db.execute(
+                "UPDATE example SET value = 1"
+            )
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
+
+
