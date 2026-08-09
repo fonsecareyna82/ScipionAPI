@@ -2367,7 +2367,6 @@ def test_RestartProtocolAllUsesPostgresqlRuntimeService(
         "projectId",
         "protocolId",
         "getPostgresqlRuntimeSubworkflowCallback",
-        "workflowProtocolMapToProtocolsCallback",
         "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
         "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
         "validatePostgresqlRestartSubworkflowCallback",
