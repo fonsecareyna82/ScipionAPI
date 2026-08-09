@@ -61,105 +61,6 @@ CLASSES = {
 }
 
 
-def test_NewNativeSetIsReopenedBeforePostgresqlSnapshot(
-        tmp_path,
-):
-    setPath = (
-        tmp_path
-        / "output.sqlite"
-    )
-
-    outputSet = SnapshotSet(
-        filename=str(setPath),
-        classesDict=CLASSES,
-    )
-
-    item = SnapshotItem()
-    item.setObjId(1)
-    item._name.set(
-        "item-1"
-    )
-
-    outputSet.append(
-        item
-    )
-
-    originalMapper = (
-        outputSet._mapper
-    )
-
-    try:
-        assert (
-            originalMapper.doCreateTables
-            is False
-        )
-
-        assert not hasattr(
-            originalMapper,
-            "_objColumns",
-        )
-
-        runtimeMapper = object.__new__(
-            PostgresqlRuntimeMapper
-        )
-
-        report = (
-            runtimeMapper
-            ._prepareNativeSetForPostgresqlSnapshot(
-                outputSet
-            )
-        )
-
-        assert report["reopened"] is True
-
-        assert outputSet._mapper is not (
-            originalMapper
-        )
-
-        assert hasattr(
-            outputSet._mapper,
-            "_objColumns",
-        )
-
-        restoredItem = (
-            outputSet.getFirstItem()
-        )
-
-        assert restoredItem.getObjId() == 1
-        assert restoredItem._name.get() == (
-            "item-1"
-        )
-
-    finally:
-        outputSet.close()
-
-
-def test_PostgresqlRuntimeSetIsNotReopened():
-    outputSet = SnapshotSet()
-
-    outputSet.isPostgresqlRuntimeOutput = (
-        lambda: True
-    )
-
-    runtimeMapper = object.__new__(
-        PostgresqlRuntimeMapper
-    )
-
-    report = (
-        runtimeMapper
-        ._prepareNativeSetForPostgresqlSnapshot(
-            outputSet
-        )
-    )
-
-    assert report == {
-        "reopened": False,
-        "reason": (
-            "postgresql_runtime_set"
-        ),
-    }
-
-
 def test_RuntimeMapperRejectsGenericNativeSetPersistence():
     class ProtocolStub:
         def getObjId(self):
@@ -208,7 +109,7 @@ def test_RuntimeMapperRejectsGenericNativeSetPersistence():
     assert runtimeMapper.setMapper.storeCalls == []
 
 
-def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():
+def test_PopulatedSetUsesFreshIdentityWhenAdopted():
     freshObjectId = (
         POSTGRESQL_RUNTIME_OBJECT_ID_START
         + 481
@@ -324,24 +225,6 @@ def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():
 
     originalIdentity = id(
         outputSet
-    )
-
-    def prepareNativeSet(runtimeSet):
-        # Simulate the SQLite mapper restoring its own
-        # internal root id when the Set is reopened.
-        runtimeSet.setObjId(
-            7
-        )
-
-        return {
-            "reopened": True,
-            "reason": (
-                "native_mapper_schema_initialized"
-            ),
-        }
-
-    runtimeMapper._prepareNativeSetForPostgresqlSnapshot = (
-        prepareNativeSet
     )
 
     outputSet.enablePostgresqlWrite = (
