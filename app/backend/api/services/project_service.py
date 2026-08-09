@@ -6408,6 +6408,7 @@ class ProjectService:
             mapper,
             projectId: int,
             workflowProtocolMap,
+            validationInfo,
     ) -> Dict[str, Any]:
         service = (
             RuntimePostgresqlRestartLauncherService()
@@ -6416,10 +6417,9 @@ class ProjectService:
         return service.launchRestartSubworkflow(
             mapper=mapper,
             projectId=projectId,
-            workflowProtocolMap=(
-                workflowProtocolMap
-            ),
+            workflowProtocolMap=workflowProtocolMap,
             currentProject=self.currentProject,
+            validationInfo=validationInfo,
         )
 
     def _buildPostgresqlContinuePlan(

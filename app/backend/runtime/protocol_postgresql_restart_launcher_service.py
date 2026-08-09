@@ -134,6 +134,7 @@ class RuntimePostgresqlRestartLauncherService:
 
         errors = []
         protocolDbIds = set()
+        runtimeStructures = {}
 
         for protocol, level in items:
             protocolId = protocol.getObjId()
@@ -180,6 +181,40 @@ class RuntimePostgresqlRestartLauncherService:
                         "operation is available"
                     ),
                 })
+
+            try:
+                outputNames = [
+                    outputName
+                    for outputName, _
+                    in list(protocol.iterOutputAttributes())
+                ]
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime outputs: %s" % error,
+                })
+                continue
+
+            try:
+                definition = protocol.getDefinition()
+                pointerParams = []
+
+                for paramName, param in list(definition.iterParams()):
+                    if isinstance(param, MultiPointerParam):
+                        pointerParams.append((paramName, "multi"))
+                    elif isinstance(param, (PointerParam, RelationParam)):
+                        pointerParams.append((paramName, "single"))
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime input parameters: %s" % error,
+                })
+                continue
+
+            runtimeStructures[str(protocolId)] = {
+                "outputNames": outputNames,
+                "pointerParams": pointerParams,
+            }
 
         for protocol, level in items:
             protocolId = protocol.getObjId()
@@ -290,9 +325,8 @@ class RuntimePostgresqlRestartLauncherService:
 
         return {
             "protocolsCount": len(items),
-            "protocolDbIds": sorted(
-                protocolDbIds
-            ),
+            "protocolDbIds": sorted(protocolDbIds),
+            "runtimeStructures": runtimeStructures,
             "errors": errors,
             "parentProtocolsModified": False,
         }
@@ -300,31 +334,20 @@ class RuntimePostgresqlRestartLauncherService:
     @staticmethod
     def _detachOutputs(
             protocol,
+            outputNames=None,
     ) -> None:
-        outputNames = [
-            outputName
-            for outputName, _
-            in list(
-                protocol
-                .iterOutputAttributes()
-            )
-        ]
+        if outputNames is None:
+            outputNames = [
+                outputName
+                for outputName, _
+                in list(protocol.iterOutputAttributes())
+            ]
 
         for outputName in outputNames:
-            if hasattr(
-                    protocol,
-                    outputName,
-            ):
-                delattr(
-                    protocol,
-                    outputName,
-                )
+            if hasattr(protocol, outputName):
+                delattr(protocol, outputName)
 
-        outputs = getattr(
-            protocol,
-            "_outputs",
-            None,
-        )
+        outputs = getattr(protocol, "_outputs", None)
 
         if outputs is not None:
             outputs.clear()
@@ -332,34 +355,23 @@ class RuntimePostgresqlRestartLauncherService:
     @staticmethod
     def _clearRuntimePointers(
             protocol,
+            pointerParams=None,
     ) -> None:
-        definition = protocol.getDefinition()
+        if pointerParams is None:
+            definition = protocol.getDefinition()
+            pointerParams = []
 
-        for paramName, param in (
-                definition.iterParams()
-        ):
-            if isinstance(
-                    param,
-                    MultiPointerParam,
-            ):
-                setattr(
-                    protocol,
-                    paramName,
-                    PointerList(),
-                )
+            for paramName, param in list(definition.iterParams()):
+                if isinstance(param, MultiPointerParam):
+                    pointerParams.append((paramName, "multi"))
+                elif isinstance(param, (PointerParam, RelationParam)):
+                    pointerParams.append((paramName, "single"))
 
-            elif isinstance(
-                    param,
-                    (
-                        PointerParam,
-                        RelationParam,
-                    ),
-            ):
-                setattr(
-                    protocol,
-                    paramName,
-                    Pointer(),
-                )
+        for paramName, pointerKind in pointerParams:
+            if pointerKind == "multi":
+                setattr(protocol, paramName, PointerList())
+            else:
+                setattr(protocol, paramName, Pointer())
 
     def _prepareProtocol(
             self,
@@ -369,6 +381,7 @@ class RuntimePostgresqlRestartLauncherService:
             protocol,
             level: int,
             runtimeMapper,
+            runtimeStructure=None,
     ) -> Dict[str, Any]:
         identityResolver = ProtocolIdentityResolver(
             mapper=mapper,
@@ -394,12 +407,17 @@ class RuntimePostgresqlRestartLauncherService:
             protocolDbId
         )
 
+        outputNames = None if runtimeStructure is None else list(runtimeStructure.get("outputNames") or [])
+        pointerParams = None if runtimeStructure is None else list(runtimeStructure.get("pointerParams") or [])
+
         self._detachOutputs(
-            protocol
+            protocol,
+            outputNames=outputNames,
         )
 
         self._clearRuntimePointers(
-            protocol
+            protocol,
+            pointerParams=pointerParams,
         )
 
         protocol.setSaved()
@@ -469,6 +487,7 @@ class RuntimePostgresqlRestartLauncherService:
             projectId: int,
             workflowProtocolMap,
             currentProject,
+            validationInfo,
     ) -> Dict[str, Any]:
         from app.backend.runtime.postgresql_protocol_worker import (
             buildPostgresqlWorkerCommand,
@@ -489,11 +508,21 @@ class RuntimePostgresqlRestartLauncherService:
             workflowProtocolMap
         )
 
+        runtimeStructures = validationInfo.get("runtimeStructures") or {}
+
         preparedItems = []
 
         # Prepare the complete subtree before allowing
         # any worker to start.
         for protocol, level in items:
+            protocolId = str(protocol.getObjId())
+            runtimeStructure = runtimeStructures.get(protocolId)
+
+            if runtimeStructure is None:
+                raise RuntimeError(
+                    "Validated runtime structure was not found for protocol %s" % protocolId
+                )
+
             preparedItems.append(
                 self._prepareProtocol(
                     mapper=mapper,
@@ -501,6 +530,7 @@ class RuntimePostgresqlRestartLauncherService:
                     protocol=protocol,
                     level=level,
                     runtimeMapper=runtimeMapper,
+                    runtimeStructure=runtimeStructure,
                 )
             )
 

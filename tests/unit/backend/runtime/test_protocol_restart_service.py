@@ -134,6 +134,10 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         )
 
         assert kwargs["workflowProtocolMap"] is workflowProtocolMap
+        assert kwargs["validationInfo"] == {
+            "errors": [],
+            "validatedProtocolsCount": 2,
+        }
 
         return {
             "protocolsCount": 2,

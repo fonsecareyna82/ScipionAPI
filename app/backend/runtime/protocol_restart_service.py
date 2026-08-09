@@ -105,6 +105,7 @@ class RuntimeProtocolRestartService:
             mapper=mapper,
             projectId=projectId,
             workflowProtocolMap=workflowProtocolMap,
+            validationInfo=validationInfo,
         )
 
         if launchInfo.get("errors"):

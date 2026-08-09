@@ -34,6 +34,7 @@ from pyworkflow.protocol import (
 )
 
 import app.backend.runtime.protocol_postgresql_continue_launcher_service as continueModule
+import app.backend.runtime.protocol_postgresql_restart_launcher_service as restartModule
 
 from app.backend.runtime.protocol_postgresql_continue_launcher_service import (
     CONTINUE_ACTION_RESTART,
@@ -89,6 +90,12 @@ class ProtocolStub:
 
     def getStatus(self):
         return self.status
+
+    def iterOutputAttributes(self):
+        return []
+
+    def getDefinition(self):
+        return SimpleNamespace(iterParams=lambda: [])
 
     def setStatus(self, status):
         self.status = status
@@ -234,6 +241,26 @@ def installPlanStubs(
 
     monkeypatch.setattr(
         continueModule,
+        "ProtocolGraphRepository",
+        lambda: graphRepository,
+    )
+
+    return graphRepository
+
+
+def installRestartValidationStubs(
+        monkeypatch,
+):
+    graphRepository = GraphRepositoryStub()
+
+    monkeypatch.setattr(
+        restartModule,
+        "ProtocolIdentityResolver",
+        IdentityResolverStub,
+    )
+
+    monkeypatch.setattr(
+        restartModule,
         "ProtocolGraphRepository",
         lambda: graphRepository,
     )
@@ -536,6 +563,86 @@ def test_RestartValidationRejectsMissingRuntimeMapper():
         }],
         "parentProtocolsModified": False,
     }
+
+
+def test_RestartValidationRejectsOutputEnumerationFailure(
+        monkeypatch,
+):
+    class FailingOutputProtocol(ProtocolStub):
+        def iterOutputAttributes(self):
+            raise RuntimeError("output enumeration failed")
+
+    installRestartValidationStubs(
+        monkeypatch
+    )
+
+    protocol = FailingOutputProtocol(
+        10,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: object()
+        ),
+    )
+
+    assert result["errors"] == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime outputs: output enumeration failed",
+    }]
+
+    assert result["runtimeStructures"] == {}
+
+
+def test_RestartValidationRejectsInputEnumerationFailure(
+        monkeypatch,
+):
+    class FailingDefinition:
+        def iterParams(self):
+            raise RuntimeError("input enumeration failed")
+
+    class FailingInputProtocol(ProtocolStub):
+        def getDefinition(self):
+            return FailingDefinition()
+
+    installRestartValidationStubs(
+        monkeypatch
+    )
+
+    protocol = FailingInputProtocol(
+        10,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: object()
+        ),
+    )
+
+    assert result["errors"] == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime input parameters: input enumeration failed",
+    }]
+
+    assert result["runtimeStructures"] == {}
 
 
 def test_RestartPreparationUsesStrictScipionProtocolIdentity():
