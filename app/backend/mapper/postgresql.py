@@ -197,9 +197,15 @@ class PostgresqlDb:
     ) -> Optional[Dict]:
         """Fetch a single row."""
         cursor = self.cursor
-        cursor.execute(query, params)
+        connection = self.conn
 
-        return cursor.fetchone()
+        try:
+            cursor.execute(query, params)
+            return cursor.fetchone()
+
+        except Exception:
+            connection.rollback()
+            raise
 
     def fetchAll(
             self,
@@ -208,9 +214,15 @@ class PostgresqlDb:
     ) -> List[Dict]:
         """Fetch all rows."""
         cursor = self.cursor
-        cursor.execute(query, params)
+        connection = self.conn
 
-        return cursor.fetchall()
+        try:
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+        except Exception:
+            connection.rollback()
+            raise
 
     def close(self):
         with self._resourcesLock:

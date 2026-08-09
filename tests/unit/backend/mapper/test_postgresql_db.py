@@ -37,6 +37,7 @@ class FakeCursor:
         self.closed = False
         self._row = None
         self.executeError = None
+        self.fetchallError = None
 
     def execute(self, query, params=None):
         if self.closed:
@@ -58,6 +59,9 @@ class FakeCursor:
         return dict(self._row)
 
     def fetchall(self):
+        if self.fetchallError is not None:
+            raise self.fetchallError
+
         return [dict(self._row)]
 
     def close(self):
@@ -245,4 +249,71 @@ def test_PostgresqlDbExecuteRollsBackWhenCommitFails(monkeypatch):
     finally:
         db.close()
 
+
+def test_PostgresqlDbFetchOneRollsBackWhenStatementFails(monkeypatch):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+    cursor = connection.cursors[0]
+    cursor.executeError = RuntimeError("statement failed")
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="statement failed",
+        ):
+            db.fetchOne("BROKEN SELECT")
+
+        assert connection.commits == 0
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
+
+
+def test_PostgresqlDbFetchAllRollsBackWhenFetchFails(monkeypatch):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+    cursor = connection.cursors[0]
+    cursor.fetchallError = RuntimeError("fetch failed")
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="fetch failed",
+        ):
+            db.fetchAll("SELECT * FROM example")
+
+        assert connection.commits == 0
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
 
