@@ -31,6 +31,9 @@ from typing import Any, Dict, List, Optional
 
 import pyworkflow.object as pwobject
 from pyworkflow.mapper.mapper import Mapper
+from pyworkflow.mapper.sqlite import (
+    SqliteFlatMapper,
+)
 from pyworkflow.project.project import PROJECT_CREATION_TIME
 from pyworkflow.protocol.protocol import LegacyProtocol, Protocol
 from pyworkflow.protocol.params import (
@@ -3911,6 +3914,126 @@ class PostgresqlRuntimeMapper(Mapper):
                     commit=False,
                 )
 
+    def _prepareNativeSetForPostgresqlSnapshot(
+            self,
+            scipionSet,
+    ) -> Dict[str, Any]:
+        """
+        Reopen a newly-created native SQLite Set before iterating it.
+
+        A SqliteFlatMapper created for a new file does not build
+        _objColumns during construction. Once the first item creates
+        the tables, reopening the mapper loads the final schema and
+        makes the Set safe to iterate for PostgreSQL snapshotting.
+        """
+        runtimeChecker = getattr(
+            scipionSet,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        if callable(runtimeChecker):
+            try:
+                if runtimeChecker():
+                    return {
+                        "reopened": False,
+                        "reason": (
+                            "postgresql_runtime_set"
+                        ),
+                    }
+
+            except Exception:
+                pass
+
+        currentMapper = getattr(
+            scipionSet,
+            "_mapper",
+            None,
+        )
+
+        if not isinstance(
+                currentMapper,
+                SqliteFlatMapper,
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "not_native_sqlite_set"
+                ),
+            }
+
+        # An empty new Set has no item schema yet.
+        # iterItems() already handles that case.
+        if getattr(
+                currentMapper,
+                "doCreateTables",
+                False,
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "empty_native_set"
+                ),
+            }
+
+        if hasattr(
+                currentMapper,
+                "_objColumns",
+        ):
+            return {
+                "reopened": False,
+                "reason": (
+                    "mapper_schema_ready"
+                ),
+            }
+
+        fileName = scipionSet.getFileName()
+
+        if not fileName:
+            raise RuntimeError(
+                "Cannot prepare native output Set "
+                "without a mapper filename."
+            )
+
+        # Commit items/properties before replacing
+        # the current mapper instance.
+        scipionSet.write()
+        scipionSet.close()
+        scipionSet.load()
+
+        reopenedMapper = getattr(
+            scipionSet,
+            "_mapper",
+            None,
+        )
+
+        if (
+                not isinstance(
+                    reopenedMapper,
+                    SqliteFlatMapper,
+                )
+                or not hasattr(
+                    reopenedMapper,
+                    "_objColumns",
+                )
+        ):
+            raise RuntimeError(
+                "Native output Set mapper schema "
+                "could not be initialized after "
+                "reopening %s."
+                % fileName
+            )
+
+        return {
+            "reopened": True,
+            "reason": (
+                "native_mapper_schema_initialized"
+            ),
+            "fileName": str(
+                fileName
+            ),
+        }
+
     def getPostgresqlOutputSetCapability(
             self,
             setClass,
@@ -4186,6 +4309,8 @@ class PostgresqlRuntimeMapper(Mapper):
         runtimeObjectId = None
 
         try:
+            self._prepareNativeSetForPostgresqlSnapshot(runtimeSet)
+
             runtimeObjectId = self._assignFreshRuntimeObjectId(
                 runtimeSet
             )
@@ -4708,6 +4833,10 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         try:
+            self._prepareNativeSetForPostgresqlSnapshot(
+                sourceSet
+            )
+
             self._setObjId(
                 sourceSet,
                 runtimeObjectId,
