@@ -280,6 +280,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 50. Every exception escaping `PostgresqlDb.execute()` must roll back the current thread's PostgreSQL transaction before being propagated. Failed statements or commits must never leave the shared runtime connection in PostgreSQL's aborted-transaction state and cause unrelated subsequent runtime operations to fail.
 51. Every exception escaping `PostgresqlDb.fetchOne()` or `PostgresqlDb.fetchAll()` must roll back the current thread's PostgreSQL transaction before being propagated. Failed read statements or result fetching must never leave the shared runtime connection in PostgreSQL's aborted-transaction state.
 52. PostgreSQL continue resume preparation must complete relation invalidation and PostgreSQL protocol-step preparation before mutating or persisting the runtime protocol as `MODE_RESUME` / `STATUS_SCHEDULED`. Failures during either prerequisite must leave the runtime protocol's run mode, launcher identity, runtime step counters, status and working-directory state untouched, preventing a failed continue preparation from leaving a protocol falsely scheduled without a worker.
+53. PostgreSQL protocol-step replacement must be atomic. Every step upsert, terminal-step normalization and stale-step deletion belonging to one `replaceProtocolSteps()` call must participate in the same PostgreSQL transaction; failure at any point must roll back the whole replacement instead of exposing a partially refreshed protocol-step set.
 
 ## Historical failure mode
 

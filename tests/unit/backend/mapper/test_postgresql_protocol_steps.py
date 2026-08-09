@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from contextlib import contextmanager
+import pytest
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 
@@ -35,6 +37,10 @@ class FakeDb:
     def __init__(self):
         self.executeReturningOneCalls = []
         self.executeCalls = []
+        self.failOnExecuteCall = None
+        self.transactionCalls = 0
+        self.transactionCommits = 0
+        self.transactionRollbacks = 0
         self.executeResult = FakeCursor(rowcount=3)
 
         self.executeReturningOneResult = {
@@ -47,13 +53,33 @@ class FakeDb:
             self,
             query,
             params,
+            commit=True,
     ):
         self.executeCalls.append({
             "query": query,
             "params": params,
+            "commit": commit,
         })
 
+        if (
+                self.failOnExecuteCall is not None
+                and len(self.executeCalls) == self.failOnExecuteCall
+        ):
+            raise RuntimeError("execute failed")
+
         return self.executeResult
+
+    @contextmanager
+    def transaction(self):
+        self.transactionCalls += 1
+
+        try:
+            yield self
+            self.transactionCommits += 1
+
+        except Exception:
+            self.transactionRollbacks += 1
+            raise
 
     def executeReturningOne(
             self,
@@ -177,3 +203,41 @@ def test_AbortRunningProtocolStepsUpdatesOnlyRunningRows():
     )
 
 
+def test_ReplaceProtocolStepsRollsBackWholeReplacementWhenStepFails():
+    mapper = object.__new__(PostgresqlFlatMapper)
+    mapper.db = FakeDb()
+    mapper.db.failOnExecuteCall = 2
+
+    steps = [
+        {
+            "index": 0,
+            "name": "firstStep",
+            "status": "running",
+        },
+        {
+            "index": 1,
+            "name": "secondStep",
+            "status": "running",
+        },
+    ]
+
+    with pytest.raises(
+            RuntimeError,
+            match="execute failed",
+    ):
+        mapper.replaceProtocolSteps(
+            projectId=7,
+            protocolDbId=101,
+            protocolId=31,
+            steps=steps,
+        )
+
+    assert mapper.db.transactionCalls == 1
+    assert mapper.db.transactionCommits == 0
+    assert mapper.db.transactionRollbacks == 1
+
+    assert len(mapper.db.executeCalls) == 2
+    assert mapper.db.executeCalls[0]["commit"] is False
+    assert mapper.db.executeCalls[1]["commit"] is False
+    assert "INSERT INTO protocol_steps" in mapper.db.executeCalls[0]["query"]
+    assert "INSERT INTO protocol_steps" in mapper.db.executeCalls[1]["query"]

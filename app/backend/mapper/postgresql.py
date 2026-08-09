@@ -2347,29 +2347,50 @@ class PostgresqlFlatMapper(Mapper):
 
         return int(cursor.rowcount or 0)
 
-    def replaceProtocolSteps(self, projectId: int, protocolDbId: int, protocolId: int,
-                             steps: List[Dict[str, Any]]) -> None:
+    def replaceProtocolSteps(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            protocolId: int,
+            steps: List[Dict[str, Any]],
+    ) -> None:
         steps = list(steps or [])
         stepIndexes = [int(step["index"]) for step in steps]
 
-        for step in steps:
-            self.upsertProtocolStep(projectId, protocolDbId, protocolId, step)
+        with self.db.transaction():
+            for step in steps:
+                self.upsertProtocolStep(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    protocolId=protocolId,
+                    step=step,
+                    commit=False,
+                )
 
-        if stepIndexes:
-            self.db.execute(
-                """
-                DELETE FROM protocol_steps
-                 WHERE "projectId" = %s
-                   AND "protocolDbId" = %s
-                   AND NOT ("stepIndex" = ANY(%s))
-                """,
-                (projectId, protocolDbId, stepIndexes),
-            )
-        else:
-            self.db.execute(
-                'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
-                (projectId, protocolDbId),
-            )
+            if stepIndexes:
+                self.db.execute(
+                    """
+                    DELETE FROM protocol_steps
+                     WHERE "projectId" = %s
+                       AND "protocolDbId" = %s
+                       AND NOT ("stepIndex" = ANY(%s))
+                    """,
+                    (
+                        projectId,
+                        protocolDbId,
+                        stepIndexes,
+                    ),
+                    commit=False,
+                )
+            else:
+                self.db.execute(
+                    'DELETE FROM protocol_steps WHERE "projectId" = %s AND "protocolDbId" = %s',
+                    (
+                        projectId,
+                        protocolDbId,
+                    ),
+                    commit=False,
+                )
 
     def upsertProtocolStep(
             self,
@@ -2377,6 +2398,7 @@ class PostgresqlFlatMapper(Mapper):
             protocolDbId: int,
             protocolId: int,
             step: Dict[str, Any],
+            commit: bool = True,
     ) -> None:
         statusText = str(step.get("status") or "").strip().lower()
         terminalStep = statusText in {"finished", "failed", "aborted", "interactive", "done"}
@@ -2500,6 +2522,7 @@ class PostgresqlFlatMapper(Mapper):
                     )
                 ),
             ),
+            commit=commit,
         )
         if terminalStep:
             self.db.execute(
@@ -2525,6 +2548,7 @@ class PostgresqlFlatMapper(Mapper):
                    AND "stepIndex" = %s
                 """,
                 (projectId, protocolDbId, step["index"]),
+                commit=commit,
             )
 
     def listProtocolSteps(
