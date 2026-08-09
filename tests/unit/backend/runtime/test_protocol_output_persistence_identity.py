@@ -418,6 +418,49 @@ def test_PrepareOutputObjectIdsRestoresPartialIdentityOnFailure():
     assert secondChild._objParentId == 3_000_000_140
 
 
+def test_PrepareOutputObjectIdsRestoresIdentityOnAttributeEnumerationFailure():
+    class FailingObjectMapper(FakeObjectMapper):
+        def _getAttributesToStore(self, runtimeObject):
+            raise RuntimeError(
+                "output identity attribute enumeration failed"
+            )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_150
+    )
+    outputObject._objParentId = 4
+
+    mapper = FakeMapper([
+        1_000_150,
+    ])
+
+    objectMapper = FailingObjectMapper()
+
+    with pytest.raises(
+            RuntimeError,
+            match="output identity attribute enumeration failed",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == [
+        341,
+    ]
+
+    assert outputObject.getObjId() == 3_000_000_150
+    assert outputObject._objParentId == 4
+
+
 def test_RestoreOutputObjectIdsRestoresRunDbIdentity():
     service = (
         RuntimeProtocolOutputPersistenceService()

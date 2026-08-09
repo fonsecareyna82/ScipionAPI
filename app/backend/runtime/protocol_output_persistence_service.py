@@ -339,20 +339,14 @@ class RuntimeProtocolOutputPersistenceService:
                 attributesReader = getattr(objectMapper, "_getAttributesToStore", None)
 
                 if callable(attributesReader):
-                    try:
-                        attributes = list(attributesReader(runtimeObject) or [])
-                    except Exception:
-                        return
+                    attributes = list(attributesReader(runtimeObject) or [])
                 else:
                     attributesGetter = getattr(runtimeObject, "getAttributesToStore", None)
 
                     if not callable(attributesGetter):
                         return
 
-                    try:
-                        attributes = list(attributesGetter() or [])
-                    except Exception:
-                        return
+                    attributes = list(attributesGetter() or [])
 
                 for attributeName, childObject in attributes:
                     childPath = "%s.%s" % (path, str(attributeName))
