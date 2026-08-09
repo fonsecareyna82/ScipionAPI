@@ -6160,12 +6160,7 @@ class ProjectService:
             if protocolId in (None, ""):
                 continue
 
-            protocolDbId = (
-                protocolIdentityResolver
-                .resolvePostgresqlProtocolDbId(
-                    protocolId,
-                )
-            )
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolId)
 
             if protocolDbId is None:
                 continue

@@ -576,6 +576,83 @@ def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModu
     assert loadedProtocolIds == [40]
 
 
+def test_ClearChildInputRefObjectIdsUsesStrictScipionProtocolIdentity(
+        projectServiceModule,
+        monkeypatch,
+):
+    class ProtocolStub:
+        def getObjId(self):
+            return 31
+
+    class IdentityMapperStub:
+        def __init__(self):
+            self.scipionLookups = []
+            self.dbLookups = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            self.scipionLookups.append({
+                "projectId": projectId,
+                "protocolId": protocolId,
+            })
+
+            return None
+
+        def getProjectProtocolByDbId(self, projectId, protocolDbId):
+            self.dbLookups.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+            })
+
+            return {
+                "id": 31,
+                "protocolId": "99",
+            }
+
+    clearCalls = []
+
+    class GraphRepositoryStub:
+        def clearInputRefObjectIdsForParentProtocolDbIds(self, **kwargs):
+            clearCalls.append(kwargs)
+
+            return {
+                "updated": 0,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolGraphRepository",
+        GraphRepositoryStub,
+    )
+
+    mapper = IdentityMapperStub()
+    service = object.__new__(projectServiceModule.ProjectService)
+
+    result = service._clearPostgresqlChildInputRefObjectIdsForOutputProtocols(
+        mapper=mapper,
+        projectId=7,
+        protocols=[
+            ProtocolStub(),
+        ],
+    )
+
+    assert result == {
+        "updated": 0,
+    }
+
+    assert mapper.scipionLookups == [{
+        "projectId": 7,
+        "protocolId": "31",
+    }]
+
+    assert mapper.dbLookups == []
+
+    assert clearCalls == [{
+        "mapper": mapper,
+        "projectId": 7,
+        "parentProtocolDbIds": [],
+    }]
+
+
 def test_ResolvePostgresqlRuntimeInputObjectCachesGenericDetachedInput(
         projectServiceModule,
 ):
