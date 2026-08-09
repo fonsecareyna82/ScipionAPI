@@ -1199,6 +1199,74 @@ def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
     assert runtimeObject.count.get() == 3
 
 
+def test_GenericObjectUpdateFromPropagatesRollbackFailure(
+        monkeypatch,
+):
+    class FailingRestoreString(String):
+        def __init__(self):
+            super().__init__()
+            self.failOnValue = None
+
+        def set(self, value):
+            if value == self.failOnValue:
+                raise RuntimeError(
+                    "rollback setter failed"
+                )
+
+            return super().set(value)
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject.title = FailingRestoreString()
+    runtimeObject.title.set("Original title")
+    runtimeObject.title.failOnValue = "Original title"
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    def partiallyUpdateObject(
+            targetObject,
+            storedObject,
+            preserveParentObject=False,
+    ):
+        targetObject.title.set("Mutated title")
+
+        return False
+
+    monkeypatch.setattr(
+        mapper,
+        "_copyGenericObjectStateFromPostgresql",
+        partiallyUpdateObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Could not restore runtime object value after failed updateFrom",
+    ) as error:
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert isinstance(
+        error.value.__cause__,
+        RuntimeError,
+    )
+
+    assert str(
+        error.value.__cause__
+    ) == "rollback setter failed"
+
+
 def test_RuntimeObjectSnapshotFailsWhenAttributeEnumerationFails():
     class FailingSnapshotObject(FakeComposite):
         def getAttributesToStore(self):

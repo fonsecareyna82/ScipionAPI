@@ -827,12 +827,11 @@ class PostgresqlRuntimeMapper(Mapper):
                 setter(
                     value
                 )
-            except Exception:
-                logger.debug(
-                    "Could not restore runtime object "
-                    "value after failed updateFrom.",
-                    exc_info=True,
-                )
+            except Exception as error:
+                raise RuntimeError(
+                    "Could not restore runtime object value after failed updateFrom. className=%s" % self._getClassName(
+                        candidate)
+                ) from error
 
     def _updateGenericObjectFromPostgresql(self, obj):
         if obj is None:
