@@ -24,8 +24,8 @@
 # *
 # ******************************************************************************
 import os
+import shutil
 import subprocess
-import sys
 
 from app.backend.mapper.postgresql import PostgresqlDb
 
@@ -35,10 +35,11 @@ REQUIRED_POSTGRESQL_RUNTIME_TABLES = {
     "projects",
     "protocols",
     "protocol_steps",
+    "project_object_id_counters",
     "scipion_object_types",
     "scipion_object_type_properties",
     "scipion_objects",
-    "scipion_object_relations",
+    "scipion_relations",
     "scipion_sets",
     "scipion_set_columns",
     "scipion_set_items",
@@ -63,11 +64,15 @@ def test_PostgresqlMigrationsCreateRuntimeSchema(
         "POSTGRES_PORT": str(postgresqlIntegrationEnv["postgresPort"]),
     })
 
+    alembicExecutable = shutil.which("alembic")
+
+    assert alembicExecutable is not None, (
+        "Alembic executable was not found in the current test environment."
+    )
+
     migrationResult = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "alembic",
+            alembicExecutable,
             "upgrade",
             "head",
         ],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -96,6 +97,114 @@ def _importMainModule():
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+
+@pytest.fixture(scope="session")
+def postgresqlIntegrationEnv():
+    explicitTestEnvironment = bool(
+        (os.getenv("SCIPIONAPI_TEST_DATABASE_NAME") or "").strip()
+    )
+
+    if explicitTestEnvironment:
+        databaseUrl = (
+            os.getenv("SCIPIONAPI_TEST_DATABASE_URL")
+            or ""
+        ).strip()
+        databaseName = (
+            os.getenv("SCIPIONAPI_TEST_DATABASE_NAME")
+            or ""
+        ).strip()
+        databaseUser = (
+            os.getenv("SCIPIONAPI_TEST_DATABASE_USER")
+            or ""
+        ).strip()
+        databasePass = (
+            os.getenv("SCIPIONAPI_TEST_DATABASE_PASS")
+            or ""
+        ).strip()
+        postgresHost = (
+            os.getenv("SCIPIONAPI_TEST_POSTGRES_HOST")
+            or ""
+        ).strip()
+        postgresPort = (
+            os.getenv("SCIPIONAPI_TEST_POSTGRES_PORT")
+            or ""
+        ).strip()
+
+    else:
+        databaseUrl = (
+            os.getenv("DATABASE_URL")
+            or ""
+        ).strip()
+        databaseName = (
+            os.getenv("DATABASE_NAME")
+            or ""
+        ).strip()
+        databaseUser = (
+            os.getenv("DATABASE_USER")
+            or ""
+        ).strip()
+        databasePass = (
+            os.getenv("DATABASE_PASS")
+            or ""
+        ).strip()
+        postgresHost = (
+            os.getenv("POSTGRES_HOST")
+            or ""
+        ).strip()
+        postgresPort = (
+            os.getenv("POSTGRES_PORT")
+            or ""
+        ).strip()
+
+    if not databaseName or "test" not in databaseName.lower():
+        pytest.skip(
+            "PostgreSQL integration tests require a dedicated test database. "
+            "Set SCIPIONAPI_TEST_DATABASE_* variables or use DATABASE_NAME "
+            "containing 'test'."
+        )
+
+    requiredValues = {
+        "databaseUrl": databaseUrl,
+        "databaseName": databaseName,
+        "databaseUser": databaseUser,
+        "databasePass": databasePass,
+        "postgresHost": postgresHost,
+        "postgresPort": postgresPort,
+    }
+
+    missingValues = [
+        key
+        for key, value in requiredValues.items()
+        if not value
+    ]
+
+    if missingValues:
+        pytest.skip(
+            "PostgreSQL integration environment is incomplete: %s"
+            % ", ".join(missingValues)
+        )
+
+    try:
+        postgresPortValue = int(
+            postgresPort
+        )
+
+    except ValueError as error:
+        raise RuntimeError(
+            "Invalid PostgreSQL integration test port: %s"
+            % postgresPort
+        ) from error
+
+    return {
+        "rootDir": ROOT_DIR,
+        "databaseUrl": databaseUrl,
+        "databaseName": databaseName,
+        "databaseUser": databaseUser,
+        "databasePass": databasePass,
+        "postgresHost": postgresHost,
+        "postgresPort": postgresPortValue,
+    }
 
 
 def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):
