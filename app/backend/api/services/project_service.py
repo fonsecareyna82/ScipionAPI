@@ -6404,9 +6404,8 @@ class ProjectService:
         return service.validateRestartSubworkflow(
             mapper=mapper,
             projectId=projectId,
-            workflowProtocolMap=(
-                workflowProtocolMap
-            ),
+            workflowProtocolMap=workflowProtocolMap,
+            currentProject=self.currentProject,
         )
 
     def _launchPostgresqlRestartSubworkflow(

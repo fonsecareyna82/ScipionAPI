@@ -444,6 +444,9 @@ def test_RestartValidationUsesStrictScipionProtocolIdentity():
                 0,
             ),
         },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: object()
+        ),
     )
 
     assert result["protocolDbIds"] == []
@@ -465,6 +468,36 @@ def test_RestartValidationUsesStrictScipionProtocolIdentity():
         },
     ]
     assert mapper.dbLookups == []
+
+
+def test_RestartValidationRejectsMissingRuntimeMapper():
+    protocol = ProtocolStub(
+        10,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: None
+        ),
+    )
+
+    assert result == {
+        "protocolsCount": 0,
+        "protocolDbIds": [],
+        "errors": [{
+            "error": "PostgreSQL runtime mapper is not available",
+        }],
+        "parentProtocolsModified": False,
+    }
 
 
 def test_RestartPreparationUsesStrictScipionProtocolIdentity():
