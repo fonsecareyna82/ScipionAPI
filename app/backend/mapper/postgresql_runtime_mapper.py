@@ -878,12 +878,9 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             if not updated:
-                self._restoreRuntimeObjectState(
-                    obj,
-                    stateSnapshot,
-                )
-
-            return updated
+                raise RuntimeError(
+                    "Could not refresh PostgreSQL generic runtime object. projectId=%s runtimeObjectId=%s className=%s" % (
+                        self.projectId, runtimeObjectId, self._getClassName(obj)))
 
         except Exception:
             self._restoreRuntimeObjectState(
@@ -892,6 +889,8 @@ class PostgresqlRuntimeMapper(Mapper):
             )
 
             raise
+
+        return True
 
     def _copyGenericObjectStateFromPostgresql(
             self,

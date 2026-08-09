@@ -1185,11 +1185,13 @@ def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
         partiallyUpdateObject,
     )
 
-    updated = mapper._updateGenericObjectFromPostgresql(
-        runtimeObject
-    )
-
-    assert updated is False
+    with pytest.raises(
+            RuntimeError,
+            match="Could not refresh PostgreSQL generic runtime object",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
 
     assert runtimeObject.getObjId() == 700
     assert runtimeObject.getObjName() == "originalOutput"
