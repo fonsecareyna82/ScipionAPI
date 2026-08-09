@@ -492,6 +492,125 @@ def test_ContinuePlanRejectsMissingRuntimeMapper():
     }
 
 
+def test_ContinuePlanRejectsRestartOutputEnumerationFailure(
+        monkeypatch,
+):
+    class FailingOutputProtocol(ProtocolStub):
+        def iterOutputAttributes(self):
+            raise RuntimeError("output enumeration failed")
+
+    installPlanStubs(
+        monkeypatch
+    )
+
+    protocol = FailingOutputProtocol(
+        10,
+        status="finished",
+        streaming=False,
+    )
+
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
+    )
+
+    assert plan["entries"][0]["action"] == CONTINUE_ACTION_RESTART
+
+    assert plan["errors"] == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime outputs: output enumeration failed",
+    }]
+
+    assert "runtimeStructure" not in plan["entries"][0]
+
+
+def test_ContinuePlanRejectsRestartInputEnumerationFailure(
+        monkeypatch,
+):
+    class FailingDefinition:
+        def iterParams(self):
+            raise RuntimeError("input enumeration failed")
+
+    class FailingInputProtocol(ProtocolStub):
+        def getDefinition(self):
+            return FailingDefinition()
+
+    installPlanStubs(
+        monkeypatch
+    )
+
+    protocol = FailingInputProtocol(
+        10,
+        status="finished",
+        streaming=False,
+    )
+
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
+    )
+
+    assert plan["entries"][0]["action"] == CONTINUE_ACTION_RESTART
+
+    assert plan["errors"] == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime input parameters: input enumeration failed",
+    }]
+
+    assert "runtimeStructure" not in plan["entries"][0]
+
+
+def test_ContinuePlanDoesNotRequireRestartStructureForResume(
+        monkeypatch,
+):
+    class ResumeProtocol(ProtocolStub):
+        def iterOutputAttributes(self):
+            raise AssertionError("resume outputs must not be enumerated")
+
+        def getDefinition(self):
+            raise AssertionError("resume definition must not be enumerated")
+
+    installPlanStubs(
+        monkeypatch
+    )
+
+    protocol = ResumeProtocol(
+        10,
+        status="finished",
+        streaming=True,
+    )
+
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(
+        mapper=SimpleNamespace(),
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()),
+    )
+
+    assert plan["errors"] == []
+    assert plan["entries"][0]["action"] == CONTINUE_ACTION_RESUME
+    assert "runtimeStructure" not in plan["entries"][0]
+
+
 def test_RestartValidationUsesStrictScipionProtocolIdentity():
     mapper = IdentityCollisionMapperStub()
 

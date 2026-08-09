@@ -32,6 +32,12 @@ from pyworkflow.protocol import (
     STATUS_SCHEDULED,
 )
 
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
+
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
@@ -273,6 +279,47 @@ class RuntimePostgresqlContinueLauncherService:
                 entry["reason"] = (
                     "native_continue_requires_restart"
                 )
+
+        for entry in entries:
+            if entry["action"] != CONTINUE_ACTION_RESTART:
+                continue
+
+            protocol = entry["protocol"]
+            protocolId = entry["protocolId"]
+
+            try:
+                outputNames = [
+                    outputName
+                    for outputName, _
+                    in list(protocol.iterOutputAttributes())
+                ]
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime outputs: %s" % error,
+                })
+                continue
+
+            try:
+                definition = protocol.getDefinition()
+                pointerParams = []
+
+                for paramName, param in list(definition.iterParams()):
+                    if isinstance(param, MultiPointerParam):
+                        pointerParams.append((paramName, "multi"))
+                    elif isinstance(param, (PointerParam, RelationParam)):
+                        pointerParams.append((paramName, "single"))
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime input parameters: %s" % error,
+                })
+                continue
+
+            entry["runtimeStructure"] = {
+                "outputNames": outputNames,
+                "pointerParams": pointerParams,
+            }
 
         # Validate every protocol that will receive
         # a new worker before deleting any output.
@@ -603,22 +650,20 @@ class RuntimePostgresqlContinueLauncherService:
             entry,
             runtimeMapper,
     ) -> Dict[str, Any]:
-        prepared = (
-            self.restartLauncher
-            ._prepareProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=(
-                    entry["protocol"]
-                ),
-                level=int(
-                    entry["level"]
-                ),
-                runtimeMapper=(
-                    runtimeMapper
-                ),
+        runtimeStructure = entry.get("runtimeStructure")
+
+        if runtimeStructure is None:
+            raise RuntimeError(
+                "Validated restart runtime structure was not found for protocol %s" % entry["protocolId"]
             )
-        )
+
+        prepared = self.restartLauncher._prepareProtocol(mapper=mapper,
+                                                         projectId=projectId,
+                                                         protocol=entry["protocol"],
+                                                         level=int(entry["level"]),
+                                                         runtimeMapper=runtimeMapper,
+                                                         runtimeStructure=runtimeStructure,
+                                                        )
 
         return {
             **prepared,
