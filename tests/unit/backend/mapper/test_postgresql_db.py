@@ -317,3 +317,100 @@ def test_PostgresqlDbFetchAllRollsBackWhenFetchFails(monkeypatch):
     finally:
         db.close()
 
+
+def test_PostgresqlDbNestedTransactionsCommitOnlyAtOutermostScope(
+        monkeypatch,
+):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+
+    try:
+        with db.transaction():
+            db.execute(
+                "UPDATE first_example SET value = 1",
+                commit=False,
+            )
+
+            with db.transaction():
+                db.execute(
+                    "UPDATE second_example SET value = 2",
+                    commit=False,
+                )
+
+            assert connection.commits == 0
+            assert connection.rollbacks == 0
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 0
+
+    finally:
+        db.close()
+
+
+def test_PostgresqlDbNestedTransactionFailureRollsBackOutermostScope(
+        monkeypatch,
+):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="nested transaction failed",
+        ):
+            with db.transaction():
+                db.execute(
+                    "UPDATE first_example SET value = 1",
+                    commit=False,
+                )
+
+                with db.transaction():
+                    raise RuntimeError(
+                        "nested transaction failed"
+                    )
+
+        assert connection.commits == 0
+        assert connection.rollbacks == 1
+
+        with db.transaction():
+            db.execute(
+                "UPDATE recovery_example SET value = 3",
+                commit=False,
+            )
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
+
+
+

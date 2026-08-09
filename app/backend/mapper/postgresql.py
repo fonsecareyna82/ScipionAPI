@@ -176,13 +176,33 @@ class PostgresqlDb:
     def transaction(self) -> Iterator["PostgresqlDb"]:
         connection = self.conn
 
+        transactionDepth = int(
+            getattr(
+                self._threadLocal,
+                "transactionDepth",
+                0,
+            )
+            or 0
+        )
+
+        outermostTransaction = transactionDepth == 0
+
+        self._threadLocal.transactionDepth = transactionDepth + 1
+
         try:
             yield self
-            connection.commit()
+
+            if outermostTransaction:
+                connection.commit()
 
         except Exception:
-            connection.rollback()
+            if outermostTransaction:
+                connection.rollback()
+
             raise
+
+        finally:
+            self._threadLocal.transactionDepth = transactionDepth
 
     def rollback(self) -> None:
         """
