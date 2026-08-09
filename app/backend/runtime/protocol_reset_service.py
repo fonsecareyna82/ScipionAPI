@@ -126,6 +126,7 @@ class RuntimeProtocolResetService:
     @staticmethod
     def _detachOutputs(
             protocol,
+            outputNames,
     ) -> None:
         """
         Remove only outputs owned by the protocol being reset.
@@ -133,30 +134,11 @@ class RuntimeProtocolResetService:
         Parent protocol outputs are never attached, replaced
         or modified.
         """
-        outputNames = [
-            outputName
-            for outputName, _
-            in list(
-                protocol
-                .iterOutputAttributes()
-            )
-        ]
+        for outputName in outputNames or []:
+            if hasattr(protocol, outputName):
+                delattr(protocol, outputName)
 
-        for outputName in outputNames:
-            if hasattr(
-                    protocol,
-                    outputName,
-            ):
-                delattr(
-                    protocol,
-                    outputName,
-                )
-
-        outputs = getattr(
-            protocol,
-            "_outputs",
-            None,
-        )
+        outputs = getattr(protocol, "_outputs", None)
 
         if outputs is not None:
             outputs.clear()
@@ -164,6 +146,7 @@ class RuntimeProtocolResetService:
     @staticmethod
     def _detachRuntimeInputPointers(
             protocol,
+            pointerParams,
     ) -> None:
         """
         Detach in-memory pointer objects before persisting
@@ -172,33 +155,11 @@ class RuntimeProtocolResetService:
         Authoritative protocol_input_refs rows are deliberately
         preserved. No parent protocol or parent output is changed.
         """
-        definition = protocol.getDefinition()
-
-        for paramName, param in (
-                definition.iterParams()
-        ):
-            if isinstance(
-                    param,
-                    MultiPointerParam,
-            ):
-                setattr(
-                    protocol,
-                    paramName,
-                    PointerList(),
-                )
-
-            elif isinstance(
-                    param,
-                    (
-                        PointerParam,
-                        RelationParam,
-                    ),
-            ):
-                setattr(
-                    protocol,
-                    paramName,
-                    Pointer(),
-                )
+        for paramName, pointerKind in pointerParams or []:
+            if pointerKind == "multi":
+                setattr(protocol, paramName, PointerList())
+            else:
+                setattr(protocol, paramName, Pointer())
 
     @staticmethod
     def _setScalarValue(
@@ -321,12 +282,43 @@ class RuntimeProtocolResetService:
                 })
                 continue
 
+            try:
+                outputNames = [
+                    outputName
+                    for outputName, _
+                    in list(protocol.iterOutputAttributes())
+                ]
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime outputs: %s" % error,
+                })
+                continue
+
+            try:
+                definition = protocol.getDefinition()
+                pointerParams = []
+
+                for paramName, param in list(definition.iterParams()):
+                    if isinstance(param, MultiPointerParam):
+                        pointerParams.append((paramName, "multi"))
+                    elif isinstance(param, (PointerParam, RelationParam)):
+                        pointerParams.append((paramName, "single"))
+            except Exception as error:
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "error": "Could not enumerate protocol runtime input parameters: %s" % error,
+                })
+                continue
+
             item = {
                 "protocol": protocol,
                 "protocolId": protocolId,
                 "protocolDbId": int(protocolDbId),
                 "level": int(level),
                 "status": protocolStatus,
+                "outputNames": outputNames,
+                "pointerParams": pointerParams,
             }
 
             if (
@@ -389,13 +381,15 @@ class RuntimeProtocolResetService:
 
         # Only the selected protocol subtree is modified.
         self._detachOutputs(
-            protocol
+            protocol,
+            item.get("outputNames"),
         )
 
         # Preserve authoritative input refs while avoiding
         # persistent object graphs containing parent protocols.
         self._detachRuntimeInputPointers(
-            protocol
+            protocol,
+            item.get("pointerParams"),
         )
 
         protocol.setSaved()

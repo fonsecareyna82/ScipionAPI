@@ -705,6 +705,114 @@ def test_PostgresqlResetStatusReadFailureAbortsBeforeMutation(
     assert protocol.makeWorkingDirCalls == 0
 
 
+def test_PostgresqlResetOutputEnumerationFailureAbortsBeforeMutation(
+        patchResetTypes,
+):
+    class FailingOutputEnumerationProtocol(FakeProtocol):
+        def iterOutputAttributes(self):
+            raise RuntimeError("output enumeration failed")
+
+    mapper = FakeMapper({10: 110})
+    runtimeMapper = FakeRuntimeMapper()
+    currentProject = FakeCurrentProject(runtimeMapper)
+
+    protocol = FailingOutputEnumerationProtocol(
+        10,
+        STATUS_FINISHED,
+        outputNames=["outputParticles"],
+    )
+
+    stopCalls = []
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    with pytest.raises(HTTPException) as error:
+        callReset(
+            mapper=mapper,
+            currentProject=currentProject,
+            rootProtocol=protocol,
+            workflowProtocolMap={"10": (protocol, 0)},
+            stopCallback=lambda **kwargs: stopCalls.append(kwargs),
+            cleanupCallback=lambda **kwargs: cleanupCalls.append(kwargs),
+            refCleanupCallback=lambda **kwargs: refCleanupCalls.append(kwargs),
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime outputs: output enumeration failed",
+    }]
+
+    assert stopCalls == []
+    assert cleanupCalls == []
+    assert refCleanupCalls == []
+    assert runtimeMapper.deletedRelations == []
+    assert runtimeMapper.storedProtocols == []
+    assert mapper.deletedProtocolSteps == []
+
+    assert protocol.getStatus() == STATUS_FINISHED
+    assert hasattr(protocol, "outputParticles")
+    assert protocol.cleanExecutionCalls == 0
+    assert protocol.cleanWorkingDirCalls == 0
+    assert protocol.makeWorkingDirCalls == 0
+
+
+def test_PostgresqlResetInputEnumerationFailureAbortsBeforeMutation(
+        patchResetTypes,
+):
+    class FailingDefinition:
+        def iterParams(self):
+            raise RuntimeError("input enumeration failed")
+
+    class FailingInputEnumerationProtocol(FakeProtocol):
+        def getDefinition(self):
+            return FailingDefinition()
+
+    mapper = FakeMapper({10: 110})
+    runtimeMapper = FakeRuntimeMapper()
+    currentProject = FakeCurrentProject(runtimeMapper)
+
+    protocol = FailingInputEnumerationProtocol(
+        10,
+        STATUS_FINISHED,
+        outputNames=["outputParticles"],
+    )
+
+    stopCalls = []
+    cleanupCalls = []
+    refCleanupCalls = []
+
+    with pytest.raises(HTTPException) as error:
+        callReset(
+            mapper=mapper,
+            currentProject=currentProject,
+            rootProtocol=protocol,
+            workflowProtocolMap={"10": (protocol, 0)},
+            stopCallback=lambda **kwargs: stopCalls.append(kwargs),
+            cleanupCallback=lambda **kwargs: cleanupCalls.append(kwargs),
+            refCleanupCallback=lambda **kwargs: refCleanupCalls.append(kwargs),
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == [{
+        "protocolId": "10",
+        "error": "Could not enumerate protocol runtime input parameters: input enumeration failed",
+    }]
+
+    assert stopCalls == []
+    assert cleanupCalls == []
+    assert refCleanupCalls == []
+    assert runtimeMapper.deletedRelations == []
+    assert runtimeMapper.storedProtocols == []
+    assert mapper.deletedProtocolSteps == []
+
+    assert protocol.getStatus() == STATUS_FINISHED
+    assert hasattr(protocol, "outputParticles")
+    assert protocol.cleanExecutionCalls == 0
+    assert protocol.cleanWorkingDirCalls == 0
+    assert protocol.makeWorkingDirCalls == 0
+
+
 def test_PostgresqlResetSkipsSubworkflowAlreadySaved(
         patchResetTypes,
 ):
