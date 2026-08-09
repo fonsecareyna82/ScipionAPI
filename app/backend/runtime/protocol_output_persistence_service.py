@@ -300,13 +300,13 @@ class RuntimeProtocolOutputPersistenceService:
             activeObjectIdentities.add(runtimeObjectIdentity)
 
             try:
-                previousObjectId = self.getScipionObjectId(runtimeObject)
+                objectIdGetter = getattr(runtimeObject, "getObjId", None)
+                previousObjectId = objectIdGetter() if callable(objectIdGetter) else getattr(runtimeObject, "_objId",
+                                                                                             None)
 
-                previousParentObjectId = self.safeCall(
-                    runtimeObject,
-                    "getObjParentId",
-                    getattr(runtimeObject, "_objParentId", None),
-                )
+                parentObjectIdGetter = getattr(runtimeObject, "getObjParentId", None)
+                previousParentObjectId = parentObjectIdGetter() if callable(parentObjectIdGetter) else getattr(
+                    runtimeObject, "_objParentId", None)
 
                 canonicalObjectId = storedIdsByPath.get(path)
                 reused = canonicalObjectId is not None
