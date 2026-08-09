@@ -1306,7 +1306,7 @@ def test_GenericObjectUpdateFromPropagatesValueSetterFailure(
             self.failOnValue = None
 
         def set(self, value):
-            if getattr(self, "failOnValue", None) == value:
+            if getattr(self, "failOnValue", None) is not None and value == self.failOnValue:
                 raise RuntimeError(
                     "generic value setter failed"
                 )
