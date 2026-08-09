@@ -420,29 +420,35 @@ class RuntimeProtocolOutputPersistenceService:
             or []
         )
 
-        for item in reversed(
-                identitySnapshot
-        ):
-            runtimeObject = item.get(
-                "runtimeObject"
-            )
+        firstRestoreError = None
+        restoreFailures = 0
+
+        for item in reversed(identitySnapshot):
+            runtimeObject = item.get("runtimeObject")
 
             if runtimeObject is None:
                 continue
 
-            self._setScipionObjectId(
-                runtimeObject,
-                item.get(
-                    "previousObjectId"
-                ),
-            )
+            try:
+                self._setScipionObjectId(runtimeObject, item.get("previousObjectId"))
+            except Exception as error:
+                restoreFailures += 1
 
-            self._setScipionObjectParentId(
-                runtimeObject,
-                item.get(
-                    "previousParentObjectId"
-                ),
-            )
+                if firstRestoreError is None:
+                    firstRestoreError = error
+
+            try:
+                self._setScipionObjectParentId(runtimeObject, item.get("previousParentObjectId"))
+            except Exception as error:
+                restoreFailures += 1
+
+                if firstRestoreError is None:
+                    firstRestoreError = error
+
+        if firstRestoreError is not None:
+            raise RuntimeError(
+                "Could not fully restore temporary PostgreSQL output object identity after persistence. failures=%s" % restoreFailures
+            ) from firstRestoreError
 
     def _resolveProtocolProjectPaths(
             self,

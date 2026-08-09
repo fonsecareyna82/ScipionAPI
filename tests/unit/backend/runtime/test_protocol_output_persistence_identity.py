@@ -533,6 +533,79 @@ def test_RestoreOutputObjectIdsRestoresRunDbIdentity():
     )
 
 
+def test_RestoreOutputObjectIdsContinuesAfterRestoreFailure():
+    class FailingRestoreRuntimeObject(FakeRuntimeObject):
+        def __init__(self, objectId, attributes=None):
+            super().__init__(objectId, attributes)
+            self.failOnObjectId = None
+
+        def setObjId(self, objectId):
+            if self.failOnObjectId is not None and objectId == self.failOnObjectId:
+                raise RuntimeError(
+                    "output identity restore failed"
+                )
+
+            return super().setObjId(objectId)
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    firstChild = FakeRuntimeObject(
+        objectId=3_000_000_161
+    )
+
+    secondChild = FailingRestoreRuntimeObject(
+        objectId=3_000_000_162
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_160,
+        attributes=[
+            ("_first", firstChild),
+            ("_second", secondChild),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    firstChild._objParentId = 3_000_000_160
+    secondChild._objParentId = 3_000_000_160
+    secondChild.failOnObjectId = 3_000_000_162
+
+    mapper = FakeMapper([
+        1_000_160,
+        1_000_161,
+        1_000_162,
+    ])
+
+    preparation = service._prepareOutputObjectIdsForPersistence(
+        mapper=mapper,
+        objectMapper=FakeObjectMapper(),
+        projectId=341,
+        protocolDbId=700,
+        protocolId=4,
+        outputName="outputObject",
+        outputObj=outputObject,
+        includeNestedProperties=True,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Could not fully restore temporary PostgreSQL output object identity",
+    ) as error:
+        service._restoreOutputObjectIdsAfterPersistence(preparation)
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert str(error.value.__cause__) == "output identity restore failed"
+
+    assert outputObject.getObjId() == 3_000_000_160
+    assert outputObject._objParentId == 4
+
+    assert firstChild.getObjId() == 3_000_000_161
+    assert firstChild._objParentId == 3_000_000_160
+
+    assert secondChild.getObjId() == 1_000_162
+    assert secondChild._objParentId == 3_000_000_160
+
+
 class FakePostgresqlRuntimeMapper:
     isPostgresqlRuntimeMapper = True
 
