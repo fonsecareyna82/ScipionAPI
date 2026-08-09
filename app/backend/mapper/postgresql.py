@@ -126,6 +126,16 @@ class PostgresqlDb:
 
             return connection
 
+    def _isTransactionActive(self) -> bool:
+        return int(
+            getattr(
+                self._threadLocal,
+                "transactionDepth",
+                0,
+            )
+            or 0
+        ) > 0
+
     def execute(
             self,
             query: str,
@@ -135,17 +145,20 @@ class PostgresqlDb:
         """Execute a SQL command."""
         cursor = self.cursor
         connection = self.conn
+        transactionActive = self._isTransactionActive()
 
         try:
             cursor.execute(query, params)
 
-            if commit:
+            if commit and not transactionActive:
                 connection.commit()
 
             return cursor
 
         except Exception:
-            connection.rollback()
+            if not transactionActive:
+                connection.rollback()
+
             raise
 
     def executeReturningOne(
@@ -154,22 +167,29 @@ class PostgresqlDb:
             params: Optional[tuple] = None,
     ) -> Optional[Dict]:
         """
-        Execute a write statement with RETURNING and commit it.
+        Execute a write statement with RETURNING.
 
-        The returned row is fetched before committing.
+        Outside an explicit transaction the statement is committed
+        immediately. Inside one, commit ownership belongs to the
+        outer transaction boundary.
         """
         cursor = self.cursor
         connection = self.conn
+        transactionActive = self._isTransactionActive()
 
         try:
             cursor.execute(query, params)
             row = cursor.fetchone()
-            connection.commit()
+
+            if not transactionActive:
+                connection.commit()
 
             return row
 
         except Exception:
-            connection.rollback()
+            if not transactionActive:
+                connection.rollback()
+
             raise
 
     @contextmanager
@@ -218,13 +238,17 @@ class PostgresqlDb:
         """Fetch a single row."""
         cursor = self.cursor
         connection = self.conn
+        transactionActive = self._isTransactionActive()
 
         try:
             cursor.execute(query, params)
             return cursor.fetchone()
 
         except Exception:
-            connection.rollback()
+
+            if not transactionActive:
+                connection.rollback()
+
             raise
 
     def fetchAll(
@@ -235,13 +259,17 @@ class PostgresqlDb:
         """Fetch all rows."""
         cursor = self.cursor
         connection = self.conn
+        transactionActive = self._isTransactionActive()
 
         try:
             cursor.execute(query, params)
             return cursor.fetchall()
 
         except Exception:
-            connection.rollback()
+
+            if not transactionActive:
+                connection.rollback()
+
             raise
 
     def close(self):

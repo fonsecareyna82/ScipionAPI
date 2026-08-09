@@ -413,4 +413,117 @@ def test_PostgresqlDbNestedTransactionFailureRollsBackOutermostScope(
         db.close()
 
 
+def test_PostgresqlDbExecuteDefersDefaultCommitInsideTransaction(
+        monkeypatch,
+):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+
+    try:
+        with db.transaction():
+            db.execute(
+                "UPDATE example SET value = 1"
+            )
+
+            assert connection.commits == 0
+            assert connection.rollbacks == 0
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 0
+
+    finally:
+        db.close()
+
+
+def test_PostgresqlDbExecuteReturningOneDefersCommitInsideTransaction(
+        monkeypatch,
+):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+
+    try:
+        with db.transaction():
+            row = db.executeReturningOne(
+                "INSERT INTO example VALUES (1) RETURNING id"
+            )
+
+            assert row is not None
+            assert connection.commits == 0
+            assert connection.rollbacks == 0
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 0
+
+    finally:
+        db.close()
+
+
+def test_PostgresqlDbExecuteFailureInsideTransactionRollsBackOnlyAtBoundary(
+        monkeypatch,
+):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    connection = connectionFactory.connections[0]
+    cursor = connection.cursors[0]
+    cursor.executeError = RuntimeError("statement failed")
+
+    try:
+        with pytest.raises(
+                RuntimeError,
+                match="statement failed",
+        ):
+            with db.transaction():
+                db.execute(
+                    "BROKEN SQL"
+                )
+
+        assert connection.commits == 0
+        assert connection.rollbacks == 1
+
+    finally:
+        db.close()
+
+
+
 
