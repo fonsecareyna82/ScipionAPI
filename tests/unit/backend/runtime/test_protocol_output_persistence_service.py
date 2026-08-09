@@ -1165,7 +1165,8 @@ def test_ProtocolOutputCleanupDelegatesMetadataDeletion(monkeypatch):
         }
 
     monkeypatch.setattr(backendMapperModule, "ScipionObjectPostgresqlMapper", ObjectMapperStub)
-    monkeypatch.setattr(outputPersistenceModule.ProtocolIdentityResolver, "resolvePostgresqlProtocolDbId", lambda self, protocolId: 31)
+    monkeypatch.setattr(outputPersistenceModule.ProtocolIdentityResolver,
+                        "resolvePostgresqlProtocolDbIdFromScipionProtocolId", lambda self, protocolId: 31)
     monkeypatch.setattr(service, "collectPersistedProtocolOutputFiles", collectOutputFiles)
     monkeypatch.setattr(service, "deletePersistedProtocolOutputFilesFromFilesystem", deleteOutputFiles)
 
