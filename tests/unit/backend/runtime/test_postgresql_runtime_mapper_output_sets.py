@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import pytest
+
 from pyworkflow.object import (
     Object,
     Set,
@@ -157,6 +159,53 @@ def test_PostgresqlRuntimeSetIsNotReopened():
         ),
     }
 
+
+def test_RuntimeMapperRejectsGenericNativeSetPersistence():
+    class ProtocolStub:
+        def getObjId(self):
+            return 17
+
+    class SetMapperStub:
+        def __init__(self):
+            self.storeCalls = []
+
+        def storeSet(self, **kwargs):
+            self.storeCalls.append(kwargs)
+
+    runtimeMapper = object.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    runtimeMapper.projectId = 31
+    runtimeMapper.setMapper = SetMapperStub()
+
+    runtimeMapper._findOwnerProtocol = (
+        lambda obj: ProtocolStub()
+    )
+
+    runtimeMapper._resolveProtocolDbIdFromObject = (
+        lambda protocol: 700
+    )
+
+    runtimeMapper._getObjectName = (
+        lambda obj: "outputParticles"
+    )
+
+    runtimeMapper._getClassName = (
+        lambda obj: "SnapshotSet"
+    )
+
+    outputSet = SnapshotSet()
+
+    with pytest.raises(
+            RuntimeError,
+            match="refuses direct persistence of non-PostgreSQL Sets",
+    ):
+        runtimeMapper._storeSetObject(
+            outputSet
+        )
+
+    assert runtimeMapper.setMapper.storeCalls == []
 
 
 def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():

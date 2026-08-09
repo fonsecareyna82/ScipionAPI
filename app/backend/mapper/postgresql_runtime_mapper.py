@@ -5252,29 +5252,9 @@ class PostgresqlRuntimeMapper(Mapper):
 
             return
 
-        preparationReport = (
-            self
-            ._prepareNativeSetForPostgresqlSnapshot(
-                scipionSet
-            )
-        )
-
-        logger.debug(
-            "Prepared runtime Set for PostgreSQL "
-            "snapshot. projectId=%s "
-            "protocolDbId=%s outputName=%s "
-            "report=%s",
-            self.projectId,
-            protocolDbId,
-            outputName,
-            preparationReport,
-        )
-
-        self.setMapper.storeSet(
-            projectId=self.projectId,
-            protocolDbId=protocolDbId,
-            outputName=outputName,
-            scipionSet=scipionSet,
+        raise RuntimeError(
+            "PostgreSQL runtime mapper refuses direct persistence of non-PostgreSQL Sets. "
+            "Native output Sets must be created or adopted through RuntimePostgresqlOutputSetAdapter."
         )
 
     def _storeObjectTree(self, scipionObj):
