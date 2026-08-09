@@ -1208,7 +1208,7 @@ def test_GenericObjectUpdateFromPropagatesRollbackFailure(
             self.failOnValue = None
 
         def set(self, value):
-            if value == self.failOnValue:
+            if getattr(self, "failOnValue", None) is not None and value == self.failOnValue:
                 raise RuntimeError(
                     "rollback setter failed"
                 )
