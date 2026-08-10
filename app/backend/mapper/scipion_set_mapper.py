@@ -2866,12 +2866,38 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         if firstChild is not None:
-            self._upsertLogicalTableItems(
+            itemsCount, maxItemId = self._upsertLogicalTableItems(
                 tableId=childTableId,
                 parentItemId=parentItemId,
                 firstItem=firstChild,
                 remainingItems=childIterator,
                 batchSize=batchSize,
+            )
+
+            self.db.execute(
+                """
+                UPDATE scipion_set_tables
+                   SET properties = (
+                           COALESCE(
+                               properties,
+                               '{}'::jsonb
+                           )
+                           || jsonb_build_object(
+                               'itemsCount',
+                               %s,
+                               'maxItemId',
+                               %s
+                           )
+                       ),
+                       "updatedAt" = NOW()
+                 WHERE id = %s
+                """,
+                (
+                    itemsCount,
+                    maxItemId,
+                    int(childTableId),
+                ),
+                commit=False,
             )
 
         return int(
@@ -3032,14 +3058,18 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             firstItem: Any,
             remainingItems: Iterator[Any],
             batchSize: int,
-    ) -> int:
+    ) -> Tuple[int, Optional[int]]:
         rows: List[Tuple[Any, ...]] = []
         itemsCount = 0
+        maxItemId = None
 
         for item in self._chainFirst(firstItem, remainingItems):
             itemId = self._getSourceObjId(item)
+
             if itemId is None:
                 continue
+
+            itemId = int(itemId)
 
             rows.append(
                 (
@@ -3053,7 +3083,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     self._jsonParam(self._getItemValues(item)),
                 )
             )
+
             itemsCount += 1
+            maxItemId = itemId if maxItemId is None else max(maxItemId, itemId)
 
             if len(rows) >= batchSize:
                 self._flushSetTableItems(rows)
@@ -3062,7 +3094,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         if rows:
             self._flushSetTableItems(rows)
 
-        return itemsCount
+        return itemsCount, maxItemId
 
     def hasStoredSetTables(self, setId: int) -> bool:
         row = self.db.fetchOne(

@@ -380,6 +380,8 @@ class FakeNestedSetDb:
                     "source": "postgresql",
                     "parentItemId": self.ROOT_ITEM_ID,
                     "parentClassName": "ExampleNestedSet",
+                    "itemsCount": len(self.childItemRows),
+                    "maxItemId": self.CHILD_ITEM_ID,
                 },
                 "createdAt": None,
                 "updatedAt": None,
@@ -1019,6 +1021,8 @@ def test_NestedSetItemsUseLogicalTableMapper():
     )
 
     assert nestedSet._mapper is None
+    assert nestedSet.getSize() == 1
+    assert nestedSet._idCount == 3
     assert nestedSet.isPostgresqlRuntimeOutput()
     assert nestedSet._objParent is None
 

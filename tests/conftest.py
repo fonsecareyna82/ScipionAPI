@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import os
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -205,6 +207,81 @@ def postgresqlIntegrationEnv():
         "postgresHost": postgresHost,
         "postgresPort": postgresPortValue,
     }
+
+
+def _buildPostgresqlIntegrationProcessEnv(
+        postgresqlIntegrationEnv,
+):
+    processEnv = os.environ.copy()
+
+    processEnv.update({
+        "DATABASE_URL": postgresqlIntegrationEnv["databaseUrl"],
+        "DATABASE_NAME": postgresqlIntegrationEnv["databaseName"],
+        "DATABASE_USER": postgresqlIntegrationEnv["databaseUser"],
+        "DATABASE_PASS": postgresqlIntegrationEnv["databasePass"],
+        "POSTGRES_HOST": postgresqlIntegrationEnv["postgresHost"],
+        "POSTGRES_PORT": str(postgresqlIntegrationEnv["postgresPort"]),
+    })
+
+    return processEnv
+
+
+@pytest.fixture(scope="session")
+def postgresqlMigratedEnv(
+        postgresqlIntegrationEnv,
+):
+    alembicExecutable = shutil.which("alembic")
+
+    assert alembicExecutable is not None, (
+        "Alembic executable was not found in the current test environment."
+    )
+
+    migrationResult = subprocess.run(
+        [
+            alembicExecutable,
+            "upgrade",
+            "head",
+        ],
+        cwd=postgresqlIntegrationEnv["rootDir"],
+        env=_buildPostgresqlIntegrationProcessEnv(
+            postgresqlIntegrationEnv
+        ),
+        capture_output=True,
+        text=True,
+    )
+
+    assert migrationResult.returncode == 0, (
+        "Alembic migration failed.\n"
+        "stdout:\n%s\n"
+        "stderr:\n%s"
+        % (
+            migrationResult.stdout,
+            migrationResult.stderr,
+        )
+    )
+
+    return postgresqlIntegrationEnv
+
+
+@pytest.fixture
+def postgresqlIntegrationDb(
+        postgresqlMigratedEnv,
+):
+    from app.backend.mapper.postgresql import PostgresqlDb
+
+    db = PostgresqlDb(
+        dbName=postgresqlMigratedEnv["databaseName"],
+        user=postgresqlMigratedEnv["databaseUser"],
+        password=postgresqlMigratedEnv["databasePass"],
+        host=postgresqlMigratedEnv["postgresHost"],
+        port=postgresqlMigratedEnv["postgresPort"],
+    )
+
+    try:
+        yield db
+
+    finally:
+        db.close()
 
 
 def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):

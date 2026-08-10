@@ -23,10 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import os
-import shutil
-import subprocess
-
 from app.backend.mapper.postgresql import PostgresqlDb
 
 
@@ -51,53 +47,14 @@ REQUIRED_POSTGRESQL_RUNTIME_TABLES = {
 
 
 def test_PostgresqlMigrationsCreateRuntimeSchema(
-        postgresqlIntegrationEnv,
+        postgresqlMigratedEnv,
 ):
-    processEnv = os.environ.copy()
-
-    processEnv.update({
-        "DATABASE_URL": postgresqlIntegrationEnv["databaseUrl"],
-        "DATABASE_NAME": postgresqlIntegrationEnv["databaseName"],
-        "DATABASE_USER": postgresqlIntegrationEnv["databaseUser"],
-        "DATABASE_PASS": postgresqlIntegrationEnv["databasePass"],
-        "POSTGRES_HOST": postgresqlIntegrationEnv["postgresHost"],
-        "POSTGRES_PORT": str(postgresqlIntegrationEnv["postgresPort"]),
-    })
-
-    alembicExecutable = shutil.which("alembic")
-
-    assert alembicExecutable is not None, (
-        "Alembic executable was not found in the current test environment."
-    )
-
-    migrationResult = subprocess.run(
-        [
-            alembicExecutable,
-            "upgrade",
-            "head",
-        ],
-        cwd=postgresqlIntegrationEnv["rootDir"],
-        env=processEnv,
-        capture_output=True,
-        text=True,
-    )
-
-    assert migrationResult.returncode == 0, (
-        "Alembic migration failed.\n"
-        "stdout:\n%s\n"
-        "stderr:\n%s"
-        % (
-            migrationResult.stdout,
-            migrationResult.stderr,
-        )
-    )
-
     db = PostgresqlDb(
-        dbName=postgresqlIntegrationEnv["databaseName"],
-        user=postgresqlIntegrationEnv["databaseUser"],
-        password=postgresqlIntegrationEnv["databasePass"],
-        host=postgresqlIntegrationEnv["postgresHost"],
-        port=postgresqlIntegrationEnv["postgresPort"],
+        dbName=postgresqlMigratedEnv["databaseName"],
+        user=postgresqlMigratedEnv["databaseUser"],
+        password=postgresqlMigratedEnv["databasePass"],
+        host=postgresqlMigratedEnv["postgresHost"],
+        port=postgresqlMigratedEnv["postgresPort"],
     )
 
     try:

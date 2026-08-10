@@ -2377,6 +2377,15 @@ class PostgresqlRuntimeSetFactory:
             nestedProperties
         )
 
+        itemsCount = self._toOptionalInt(tableProperties.get("itemsCount"))
+        maxItemId = self._toOptionalInt(tableProperties.get("maxItemId"))
+
+        if itemsCount is not None:
+            item._size.set(itemsCount)
+
+        if "maxItemId" in tableProperties:
+            item._idCount = maxItemId if maxItemId is not None else 0
+
         setId = self._toOptionalInt(
             table.get("setId")
         )
