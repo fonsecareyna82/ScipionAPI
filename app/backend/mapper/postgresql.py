@@ -150,13 +150,15 @@ class PostgresqlDb:
                 "failedQueryCount": 0,
                 "querySeconds": 0.0,
                 "maxQuerySeconds": 0.0,
+                "batchQueryCount": 0,
+                "batchRowsCount": 0,
             }
 
             self._threadLocal.queryStats = stats
 
         return stats
 
-    def _recordQueryMeasurement(self, startedAt, succeeded):
+    def _recordQueryMeasurement(self, startedAt, succeeded, batchRowsCount=0):
         elapsedSeconds = max(
             0.0,
             time.perf_counter() - startedAt,
@@ -170,6 +172,15 @@ class PostgresqlDb:
             stats["maxQuerySeconds"],
             elapsedSeconds,
         )
+
+        batchRowsCount = max(
+            0,
+            int(batchRowsCount or 0),
+        )
+
+        if batchRowsCount:
+            stats["batchQueryCount"] += 1
+            stats["batchRowsCount"] += batchRowsCount
 
         if not succeeded:
             stats["failedQueryCount"] += 1
@@ -185,6 +196,8 @@ class PostgresqlDb:
             "failedQueryCount": 0,
             "querySeconds": 0.0,
             "maxQuerySeconds": 0.0,
+            "batchQueryCount": 0,
+            "batchRowsCount": 0,
         }
 
         return self.getQueryStats()
@@ -223,6 +236,56 @@ class PostgresqlDb:
             self._recordQueryMeasurement(
                 startedAt,
                 succeeded,
+            )
+
+    def executeValues(
+            self,
+            query: str,
+            values,
+            template: Optional[str] = None,
+            commit: bool = True,
+    ):
+        rows = list(
+            values or []
+        )
+
+        if not rows:
+            return self.cursor
+
+        cursor = self.cursor
+        connection = self.conn
+        transactionActive = self._isTransactionActive()
+
+        startedAt = time.perf_counter()
+        succeeded = False
+
+        try:
+            psycopg2.extras.execute_values(
+                cursor,
+                query,
+                rows,
+                template=template,
+                page_size=len(rows),
+            )
+
+            if commit and not transactionActive:
+                connection.commit()
+
+            succeeded = True
+
+            return cursor
+
+        except Exception:
+            if not transactionActive:
+                connection.rollback()
+
+            raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+                batchRowsCount=len(rows),
             )
 
     def executeReturningOne(

@@ -259,22 +259,38 @@ def test_PostgresqlObservabilityMeasuresRealRuntimeSetOperations(
 
         outputName = "outputObservedItems"
 
-        ScipionSetPostgresqlMapper(
-            postgresqlIntegrationDb
-        ).storeSet(
-            projectId=projectId,
-            protocolDbId=protocolDbId,
-            outputName=outputName,
-            scipionSet=sourceSet,
-        )
+        observability = RuntimePostgresqlObservabilityService()
+        postgresqlIntegrationDb.resetQueryStats()
+
+        with observability.measure(
+                operation="set_store",
+                db=postgresqlIntegrationDb,
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+        ) as storeMetric:
+            storeResult = ScipionSetPostgresqlMapper(
+                postgresqlIntegrationDb
+            ).storeSet(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+                scipionSet=sourceSet,
+            )
+
+        assert storeResult["itemsCount"] == 3
+        assert storeMetric["success"] is True
+        assert storeMetric["queryCount"] > 0
+        assert storeMetric["failedQueryCount"] == 0
+        assert storeMetric["batchQueryCount"] == 2
+        assert storeMetric["batchRowsCount"] == 6
+        assert storeMetric["querySeconds"] > 0.0
 
         readerDb = _openPostgresqlIntegrationDb(
             postgresqlMigratedEnv
         )
 
         readerDb.resetQueryStats()
-
-        observability = RuntimePostgresqlObservabilityService()
 
         readerSetMapper = ScipionSetPostgresqlMapper(
             readerDb

@@ -100,6 +100,18 @@ class RuntimePostgresqlObservabilityService:
                 - int(queryStatsBefore["failedQueryCount"]),
             )
 
+            metric["batchQueryCount"] = max(
+                0,
+                int(queryStatsAfter["batchQueryCount"])
+                - int(queryStatsBefore["batchQueryCount"]),
+            )
+
+            metric["batchRowsCount"] = max(
+                0,
+                int(queryStatsAfter["batchRowsCount"])
+                - int(queryStatsBefore["batchRowsCount"]),
+            )
+
             metric["querySeconds"] = max(
                 0.0,
                 float(queryStatsAfter["querySeconds"])
@@ -123,10 +135,12 @@ class RuntimePostgresqlObservabilityService:
     def _getQueryStats(db):
         if db is None:
             return {
-                "queryCount": 0,
-                "failedQueryCount": 0,
-                "querySeconds": 0.0,
-            }
+                    "queryCount": 0,
+                    "failedQueryCount": 0,
+                    "querySeconds": 0.0,
+                    "batchQueryCount": 0,
+                    "batchRowsCount": 0,
+                }
 
         getter = getattr(
             db,
@@ -139,6 +153,8 @@ class RuntimePostgresqlObservabilityService:
                 "queryCount": 0,
                 "failedQueryCount": 0,
                 "querySeconds": 0.0,
+                "batchQueryCount": 0,
+                "batchRowsCount": 0,
             }
 
         stats = getter() or {}
@@ -152,5 +168,11 @@ class RuntimePostgresqlObservabilityService:
             ),
             "querySeconds": float(
                 stats.get("querySeconds") or 0.0
+            ),
+            "batchQueryCount": int(
+                stats.get("batchQueryCount") or 0
+            ),
+            "batchRowsCount": int(
+                stats.get("batchRowsCount") or 0
             ),
         }

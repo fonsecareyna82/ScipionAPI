@@ -29,8 +29,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 import logging
 
-import psycopg2.extras
-
 from pyworkflow.object import (
     Pointer,
     PointerList,
@@ -3239,8 +3237,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
 
     def _flushSetTableItems(self, rows: List[Tuple[Any, ...]]) -> None:
-        psycopg2.extras.execute_values(
-            self.db.cursor,
+        self.db.executeValues(
             """
             INSERT INTO scipion_set_table_items (
                 "tableId", "scipionItemId", "parentItemId", enabled,
@@ -3259,12 +3256,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             """,
             rows,
             template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
-            page_size=len(rows),
         )
 
     def _flushSetItems(self, rows: List[Tuple[Any, ...]]) -> None:
-        psycopg2.extras.execute_values(
-            self.db.cursor,
+        self.db.executeValues(
             """
             INSERT INTO scipion_set_items (
                 "setId", "scipionItemId", enabled, label, comment, creation, "values"
@@ -3281,7 +3276,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             """,
             rows,
             template="(%s, %s, %s, %s, %s, %s, %s::jsonb)",
-            page_size=len(rows),
         )
 
     def _updateSetProperties(self, setId: int, properties: Dict[str, Any]) -> None:
