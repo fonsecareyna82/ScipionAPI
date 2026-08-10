@@ -31,7 +31,7 @@ from app.backend.utils.constants import (
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
 from app.backend.utils.volume_utils import readVolumeSlice2d
-from pwem.emlib.image.image_readers import ImageReadersRegistry
+from pwem.emlib.image.image_readers import ImageReadersRegistry, ROT_MODE
 from pwem.objects import (
     SetOfClasses2D,
     SetOfParticles,
@@ -739,7 +739,7 @@ class OutputsPreview(FileHandlers):
             scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
 
             # Apply transform on the thumbnail
-            tile = reader.transformSlice(tileArr, scaledShifts, rot)
+            tile = reader.transformSlice(tileArr, scaledShifts, rot, mode=ROT_MODE.CONDITIONAL)
 
         # Apply flip at the end to match viewer orientation
         tile = reader.flipSlice(tile)

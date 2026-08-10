@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
+from pwem.emlib.image.image_readers import ImageStack
 
 
 class FakeCurrentProject:
@@ -411,3 +412,34 @@ def test_RenderTiltSeriesFrameBuildsImageResponse(outputsPreviewModule, tmp_path
     assert response.headers["X-Preview-Mime"] == "image/png"
     assert response.headers["X-Preview-Note"] == "tiltSeries=TS_001 index=1"
     assert len(response.body) > 0
+
+
+def test_RenderImageFromFilePathPreservesRotatedFrameGeometry(
+    outputsPreviewModule,
+    preview,
+    tmp_path,
+    monkeypatch,
+):
+    imagePath = tmp_path / "tilt.mrc"
+    imagePath.write_bytes(b"placeholder")
+
+    imageArray = np.arange(60 * 100, dtype=np.float32).reshape((60, 100))
+
+    monkeypatch.setattr(
+        outputsPreviewModule.ImageReadersRegistry,
+        "open",
+        staticmethod(lambda path: ImageStack(imageArray)),
+    )
+
+    response = preview.renderImageFromFilePath(
+        imagePath,
+        size=100,
+        fmt="png",
+        index=0,
+        applyTransform=True,
+        rot=90.0,
+        shifts=(0.0, 0.0),
+    )
+
+    assert response.headers["X-Preview-Width"] == "60"
+    assert response.headers["X-Preview-Height"] == "100"
