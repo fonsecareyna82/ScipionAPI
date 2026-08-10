@@ -2,6 +2,7 @@
 
 import json
 import threading
+import time
 from datetime import datetime
 
 import psycopg2
@@ -136,6 +137,58 @@ class PostgresqlDb:
             or 0
         ) > 0
 
+    def _getQueryStatsState(self):
+        stats = getattr(
+            self._threadLocal,
+            "queryStats",
+            None,
+        )
+
+        if stats is None:
+            stats = {
+                "queryCount": 0,
+                "failedQueryCount": 0,
+                "querySeconds": 0.0,
+                "maxQuerySeconds": 0.0,
+            }
+
+            self._threadLocal.queryStats = stats
+
+        return stats
+
+    def _recordQueryMeasurement(self, startedAt, succeeded):
+        elapsedSeconds = max(
+            0.0,
+            time.perf_counter() - startedAt,
+        )
+
+        stats = self._getQueryStatsState()
+
+        stats["queryCount"] += 1
+        stats["querySeconds"] += elapsedSeconds
+        stats["maxQuerySeconds"] = max(
+            stats["maxQuerySeconds"],
+            elapsedSeconds,
+        )
+
+        if not succeeded:
+            stats["failedQueryCount"] += 1
+
+    def getQueryStats(self):
+        return dict(
+            self._getQueryStatsState()
+        )
+
+    def resetQueryStats(self):
+        self._threadLocal.queryStats = {
+            "queryCount": 0,
+            "failedQueryCount": 0,
+            "querySeconds": 0.0,
+            "maxQuerySeconds": 0.0,
+        }
+
+        return self.getQueryStats()
+
     def execute(
             self,
             query: str,
@@ -147,11 +200,16 @@ class PostgresqlDb:
         connection = self.conn
         transactionActive = self._isTransactionActive()
 
+        startedAt = time.perf_counter()
+        succeeded = False
+
         try:
             cursor.execute(query, params)
 
             if commit and not transactionActive:
                 connection.commit()
+
+            succeeded = True
 
             return cursor
 
@@ -160,6 +218,12 @@ class PostgresqlDb:
                 connection.rollback()
 
             raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+            )
 
     def executeReturningOne(
             self,
@@ -177,12 +241,17 @@ class PostgresqlDb:
         connection = self.conn
         transactionActive = self._isTransactionActive()
 
+        startedAt = time.perf_counter()
+        succeeded = False
+
         try:
             cursor.execute(query, params)
             row = cursor.fetchone()
 
             if not transactionActive:
                 connection.commit()
+
+            succeeded = True
 
             return row
 
@@ -191,6 +260,12 @@ class PostgresqlDb:
                 connection.rollback()
 
             raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+            )
 
     @contextmanager
     def transaction(self) -> Iterator["PostgresqlDb"]:
@@ -240,16 +315,29 @@ class PostgresqlDb:
         connection = self.conn
         transactionActive = self._isTransactionActive()
 
+        startedAt = time.perf_counter()
+        succeeded = False
+
         try:
             cursor.execute(query, params)
-            return cursor.fetchone()
+
+            row = cursor.fetchone()
+
+            succeeded = True
+
+            return row
 
         except Exception:
-
             if not transactionActive:
                 connection.rollback()
 
             raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+            )
 
     def fetchAll(
             self,
@@ -261,16 +349,29 @@ class PostgresqlDb:
         connection = self.conn
         transactionActive = self._isTransactionActive()
 
+        startedAt = time.perf_counter()
+        succeeded = False
+
         try:
             cursor.execute(query, params)
-            return cursor.fetchall()
+
+            rows = cursor.fetchall()
+
+            succeeded = True
+
+            return rows
 
         except Exception:
-
             if not transactionActive:
                 connection.rollback()
 
             raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+            )
 
     def close(self):
         with self._resourcesLock:

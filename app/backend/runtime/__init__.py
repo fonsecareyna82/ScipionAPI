@@ -28,6 +28,8 @@ from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+from app.backend.runtime.project_integrity_service import RuntimeProjectIntegrityService
+from app.backend.runtime.postgresql_observability_service import RuntimePostgresqlObservabilityService
 from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
 from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
 from app.backend.runtime.runtime_output_proxy_service import RuntimeOutputProxyService
@@ -60,6 +62,8 @@ __all__ = [
     "ProtocolGraphRepository",
     "RuntimeProtocolDeleteService",
     "ProjectRuntimeRepository",
+    "RuntimeProjectIntegrityService",
+    "RuntimePostgresqlObservabilityService",
     "RuntimeProtocolDuplicateService",
     "RuntimeProtocolInputSyncService",
     "RuntimeOutputProxyService",
