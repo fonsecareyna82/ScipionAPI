@@ -35,7 +35,7 @@ class UserOut(BaseModel):
     role: str
     isActive: bool
     firstName: str
-    lastName: str
+    lastName: Optional[str] = None
     institution: Optional[str] = None
     phone: Optional[str] = None
     position: Optional[str] = None
