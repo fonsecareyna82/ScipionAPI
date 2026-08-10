@@ -51,7 +51,7 @@ class FakeDomain:
         }
 
 
-def test_PostgresqlProjectLoadsWithoutProjectSqlite(
+def test_PostgresqlProjectLoadsWithoutLegacyProjectDatabases(
         authTestEnv,
         tmp_path,
         monkeypatch,
@@ -73,9 +73,11 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
         lambda hostsConf: None,
     )
 
-    sqlitePath = tmp_path / "project.sqlite"
+    projectSqlitePath = tmp_path / "project.sqlite"
+    settingsSqlitePath = tmp_path / "settings.sqlite"
 
-    assert not sqlitePath.exists()
+    assert not projectSqlitePath.exists()
+    assert not settingsSqlitePath.exists()
 
     project.load(
         chdir=False,
@@ -110,7 +112,8 @@ def test_PostgresqlProjectLoadsWithoutProjectSqlite(
         0,
     )
 
-    assert not sqlitePath.exists()
+    assert not projectSqlitePath.exists()
+    assert not settingsSqlitePath.exists()
 
     project.closeMapper()
 
