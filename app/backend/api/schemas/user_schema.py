@@ -36,7 +36,7 @@ class UserOut(BaseModel):
     isActive: bool
     firstName: str
     lastName: str
-    institution: str
+    institution: Optional[str] = None
     phone: Optional[str] = None
     position: Optional[str] = None
     country: Optional[str] = None
