@@ -1128,6 +1128,69 @@ def test_StepAdapterPersistsQueueJobIdsInsteadOfChildObject():
     )
 
 
+def test_StepAdapterRedirectsNativeStepPersistenceToPostgresql():
+    events = []
+
+    class ProtocolStub:
+        def __init__(self):
+            self._jobId = []
+            self._lock = threading.RLock()
+
+        def loadSteps(self):
+            raise AssertionError("Native loadSteps must not be used")
+
+        def _storeSteps(self):
+            raise AssertionError("Native _storeSteps must not be used")
+
+        def _Protocol__updateStep(self, step):
+            raise AssertionError("Native __updateStep must not be used")
+
+        def _updateSteps(self, updater, where="1"):
+            raise AssertionError("Native _updateSteps must not be used")
+
+        def _store(self, *objects):
+            events.append(("originalStore", objects))
+
+    protocol = ProtocolStub()
+
+    adapter = object.__new__(
+        RuntimePostgresqlStepAdapter
+    )
+
+    adapter.protocol = protocol
+
+    adapter.loadPreviousSteps = (
+        lambda: events.append("loadPreviousSteps") or ["previous"]
+    )
+
+    adapter.replaceSteps = (
+        lambda: events.append("replaceSteps")
+    )
+
+    adapter.upsertStep = (
+        lambda step: events.append(("upsertStep", step))
+    )
+
+    adapter.persistProtocolProcessIdentity = (
+        lambda: events.append("persistProtocolProcessIdentity")
+    )
+
+    adapter.install()
+
+    step = object()
+
+    assert protocol.loadSteps() == ["previous"]
+
+    protocol._storeSteps()
+    protocol._Protocol__updateStep(step)
+
+    assert events == [
+        "loadPreviousSteps",
+        "replaceSteps",
+        ("upsertStep", step),
+    ]
+
+
 class UpdatedRuntimeStepStub:
     def getIndex(self):
         return 4
