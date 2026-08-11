@@ -1,4 +1,3 @@
-import importlib
 import importlib.metadata as importlibMetadata
 import json
 import logging
@@ -16,6 +15,8 @@ from scipion.install.plugin_funcs import PluginRepository
 
 from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
+from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomain
 from app.utils.scipion_helper import serializeToJson
 from app.backend.resources import getPluginCategoryIds, getPluginCategoryData, getPluginCategoriesCatalog
 
@@ -31,30 +32,40 @@ class PluginService:
         self.pluginRepository = pluginRepository or PluginRepository()
         self.pluginDevelService = pluginDevelService or PluginDevelService()
         self._pluginsCache: Optional[List[Dict[str, Any]]] = None
+        self._pluginsRevision = self._getPluginsRevision()
         self._cacheLock = Lock()
         self._logoBaseUrl = "https://scipion.i2pc.es/"
+
+    @staticmethod
+    def _getPluginsRevision() -> int:
+        try:
+            return int(getPluginsRevision() or 0)
+        except Exception:
+            return 0
 
     def clearCache(self, reloadRepository: bool = True) -> None:
         with self._cacheLock:
             self._pluginsCache = None
+            self._pluginsRevision = self._getPluginsRevision()
 
             if not reloadRepository:
                 return
 
             try:
-                importlib.invalidate_caches()
+                refreshScipionDomain(
+                    force=True
+                )
             except Exception:
-                logger.debug("Could not invalidate import caches after plugin change.", exc_info=True)
-
-            try:
-                Config.setDomain("pwem")
-            except Exception:
-                logger.debug("Could not reset Scipion domain after plugin change.", exc_info=True)
+                logger.exception(
+                    "Could not refresh Scipion domain after plugin change."
+                )
 
             try:
                 self.pluginRepository = PluginRepository()
             except Exception:
-                logger.exception("Could not recreate PluginRepository after plugin change.")
+                logger.exception(
+                    "Could not recreate PluginRepository after plugin change."
+                )
 
     def _buildFullLogo(self, serializedPlugin: Dict[str, Any]) -> str:
         logo = (serializedPlugin.get("logo") or "").lstrip("/")
@@ -390,6 +401,11 @@ class PluginService:
         serializedPlugin["develUpdatedAt"] = develPlugin.get("updatedAt", "")
 
     def getPlugins(self, forceRefresh: bool = False) -> List[Dict[str, Any]]:
+        currentRevision = self._getPluginsRevision()
+
+        if currentRevision != self._pluginsRevision:
+            self.clearCache()
+
         with self._cacheLock:
             if self._pluginsCache is not None and not forceRefresh:
                 return list(self._pluginsCache)
@@ -454,6 +470,8 @@ class PluginService:
             serializedList.sort(key=lambda plugin: str(plugin.get("pipName") or plugin.get("name") or "").lower(), reverse=True)
 
             self._pluginsCache = serializedList
+            self._pluginsRevision = self._getPluginsRevision()
+
             return list(self._pluginsCache)
 
     def getPlugin(self, pluginName: str) -> Optional[Dict[str, Any]]:

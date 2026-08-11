@@ -54,6 +54,7 @@ from app.backend.api.services.protocol_context_service import ProtocolContextSer
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
+from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
 
 from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
 from pwem.objects import SetOfVolumes
@@ -244,8 +245,14 @@ class ProjectService:
         Load a PostgreSQL runtime project directly, without first loading a
         legacy ScipionProject from project.sqlite.
         """
+        runtimeDomain = domain
+
+        if runtimeDomain is None:
+            refreshScipionDomainIfNeeded()
+            runtimeDomain = pyworkflow.Config.getDomain()
+
         postgresqlProject = PostgresqlProject(
-            domain=domain or pyworkflow.Config.getDomain(),
+            domain=runtimeDomain,
             path=str(projectPath),
             projectId=projectId,
             flatMapper=mapper,
