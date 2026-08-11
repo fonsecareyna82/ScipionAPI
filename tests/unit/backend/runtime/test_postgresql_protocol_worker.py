@@ -1242,6 +1242,105 @@ def test_StepAdapterRedirectsNativeStepPersistenceToPostgresql():
     ]
 
 
+def test_StepAdapterReleasesPostgresqlResourcesAfterStepThreadFinishes():
+    events = []
+
+    class DbStub:
+        def closeCurrentThreadResources(self):
+            events.append(
+                (
+                    "close",
+                    threading.get_ident(),
+                )
+            )
+
+    class MapperStub:
+        def __init__(self):
+            self.db = DbStub()
+
+    class ProtocolStub:
+        def __init__(self):
+            self._jobId = []
+            self._lock = threading.RLock()
+
+        def _store(self, *objects):
+            pass
+
+    class StepStub:
+        def _run(self):
+            events.append(
+                (
+                    "run",
+                    threading.get_ident(),
+                )
+            )
+
+            return "done"
+
+    protocol = ProtocolStub()
+    step = StepStub()
+
+    adapter = object.__new__(
+        RuntimePostgresqlStepAdapter
+    )
+
+    adapter.protocol = protocol
+    adapter.mapper = MapperStub()
+    adapter.projectId = 7
+    adapter.protocolId = 31
+
+    adapter.upsertStep = lambda step: events.append(
+        (
+            "upsert",
+            id(step),
+        )
+    )
+
+    adapter.install()
+
+    # Scipion calls this before creating StepThread.
+    protocol._Protocol__updateStep(step)
+
+    # Calling it again must not wrap _run twice.
+    protocol._Protocol__updateStep(step)
+
+    result = []
+
+    thread = threading.Thread(
+        target=lambda: result.append(
+            step._run()
+        )
+    )
+
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+
+    assert result == [
+        "done",
+    ]
+
+    runEvents = [
+        event
+        for event in events
+        if event[0] == "run"
+    ]
+
+    closeEvents = [
+        event
+        for event in events
+        if event[0] == "close"
+    ]
+
+    assert len(runEvents) == 1
+    assert len(closeEvents) == 1
+
+    # Cleanup happens inside the same StepThread
+    # that used PostgreSQL.
+    assert closeEvents[0][1] == runEvents[0][1]
+
+
 class UpdatedRuntimeStepStub:
     def getIndex(self):
         return 4

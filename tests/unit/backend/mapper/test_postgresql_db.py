@@ -181,6 +181,80 @@ def test_PostgresqlDbUsesIndependentResourcesPerThread(monkeypatch):
     )
 
 
+def test_PostgresqlDbReleasesTransientThreadResources(monkeypatch):
+    barrier = threading.Barrier(1)
+    connectionFactory = FakeConnectionFactory(barrier)
+
+    monkeypatch.setattr(
+        postgresqlModule.psycopg2,
+        "connect",
+        connectionFactory,
+    )
+
+    db = PostgresqlDb(
+        dbName="scipion",
+        user="scipion",
+        password="secret",
+    )
+
+    mainConnection = connectionFactory.connections[0]
+
+    try:
+        errors = []
+
+        def runTransientQuery(index):
+            try:
+                db.fetchOne(
+                    "worker-%s" % index
+                )
+
+            except Exception as error:
+                errors.append(error)
+
+            finally:
+                db.closeCurrentThreadResources()
+
+        for index in range(25):
+            thread = threading.Thread(
+                target=runTransientQuery,
+                args=(index,),
+            )
+
+            thread.start()
+            thread.join(timeout=5)
+
+            assert not thread.is_alive()
+
+        assert errors == []
+
+        # Main thread connection remains available.
+        assert mainConnection.closed is False
+
+        # Twenty-five transient threads opened connections,
+        # but all of them were released immediately.
+        assert len(connectionFactory.connections) == 26
+
+        assert all(
+            connection.closed
+            for connection in connectionFactory.connections[1:]
+        )
+
+        # PostgresqlDb no longer retains dead-thread resources.
+        assert db._connections == [
+            mainConnection,
+        ]
+
+        assert len(db._cursors) == 1
+
+        # The main thread continues using its original connection.
+        assert db.conn is mainConnection
+
+    finally:
+        db.close()
+
+    assert mainConnection.closed is True
+
+
 def test_PostgresqlDbExecuteRollsBackWhenStatementFails(monkeypatch):
     barrier = threading.Barrier(1)
     connectionFactory = FakeConnectionFactory(barrier)

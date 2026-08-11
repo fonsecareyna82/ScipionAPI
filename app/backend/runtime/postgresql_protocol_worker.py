@@ -283,6 +283,7 @@ class RuntimePostgresqlStepAdapter:
             adapter.replaceSteps()
 
         def updateStep(protocolSelf, step):
+            adapter.installStepThreadResourceCleanup(step)
             adapter.upsertStep(step)
 
         def updateSteps(
@@ -383,6 +384,65 @@ class RuntimePostgresqlStepAdapter:
                 self.protocol,
             )
         )
+
+    def installStepThreadResourceCleanup(self, step) -> None:
+        runStep = getattr(step, "_run", None)
+
+        if not callable(runStep):
+            return
+
+        wrappedStepIds = getattr(self, "_postgresqlResourceCleanupStepIds", None)
+
+        if wrappedStepIds is None:
+            wrappedStepIds = set()
+            self._postgresqlResourceCleanupStepIds = wrappedStepIds
+
+        stepIdentity = id(step)
+
+        if stepIdentity in wrappedStepIds:
+            return
+
+        adapter = self
+
+        def runWithPostgresqlCleanup(stepSelf):
+            try:
+                return runStep()
+
+            finally:
+                adapter.closeCurrentThreadPostgresqlResources()
+
+        step._run = MethodType(
+            runWithPostgresqlCleanup,
+            step,
+        )
+
+        wrappedStepIds.add(stepIdentity)
+
+    def closeCurrentThreadPostgresqlResources(self) -> None:
+        db = getattr(self.mapper, "db", None)
+
+        if db is None:
+            return
+
+        closeCurrentThreadResources = getattr(
+            db,
+            "closeCurrentThreadResources",
+            None,
+        )
+
+        if not callable(closeCurrentThreadResources):
+            return
+
+        try:
+            closeCurrentThreadResources()
+
+        except Exception:
+            logger.warning(
+                "Could not release PostgreSQL step-thread resources. projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+                exc_info=True,
+            )
 
     def loadPreviousSteps(
             self,

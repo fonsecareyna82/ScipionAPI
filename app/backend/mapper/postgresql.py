@@ -127,6 +127,69 @@ class PostgresqlDb:
 
             return connection
 
+    def closeCurrentThreadResources(self):
+        with self._resourcesLock:
+            if self._closed:
+                return {
+                    "cursorClosed": False,
+                    "connectionClosed": False,
+                }
+
+            cursor = getattr(self._threadLocal, "cursor", None)
+            connection = getattr(self._threadLocal, "connection", None)
+
+            self._threadLocal.cursor = None
+            self._threadLocal.connection = None
+            self._threadLocal.transactionDepth = 0
+
+        firstError = None
+        cursorClosed = False
+        connectionClosed = False
+
+        if cursor is not None:
+            try:
+                if not bool(getattr(cursor, "closed", False)):
+                    cursor.close()
+
+                cursorClosed = True
+
+            except Exception as error:
+                firstError = error
+
+        if connection is not None:
+            try:
+                if not bool(getattr(connection, "closed", False)):
+                    connection.close()
+
+                connectionClosed = True
+
+            except Exception as error:
+                if firstError is None:
+                    firstError = error
+
+        with self._resourcesLock:
+            if cursorClosed:
+                self._cursors = [
+                    registeredCursor
+                    for registeredCursor in self._cursors
+                    if registeredCursor is not cursor
+                ]
+
+            if connectionClosed:
+                self._connections = [
+                    registeredConnection
+                    for registeredConnection in self._connections
+                    if registeredConnection is not connection
+                ]
+
+        if firstError is not None:
+            raise firstError
+
+        return {
+            "cursorClosed": cursorClosed,
+            "connectionClosed": connectionClosed,
+        }
+
     def _isTransactionActive(self) -> bool:
         return int(
             getattr(
