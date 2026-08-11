@@ -177,7 +177,7 @@ summary = "Local plugin summary"
         ],
     )
 
-    monkeypatch.setattr(service, "_loadRawPlugins", lambda: {})
+    monkeypatch.setattr(service, "_loadRawPlugins", lambda forceRefresh=False: {})
     monkeypatch.setattr(service, "_loadPackageMetadata", lambda pipName: {})
     monkeypatch.setattr(
         service,
@@ -257,7 +257,7 @@ def test_get_plugins_uses_pip_installation_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         service,
         "_loadRawPlugins",
-        lambda: {
+        lambda forceRefresh=False: {
             "scipion-em-test": plugin,
         },
     )
@@ -321,7 +321,7 @@ def test_uninstall_plugin_fails_if_pip_package_remains_installed(tmp_path, monke
     monkeypatch.setattr(
         service,
         "_loadRawPlugins",
-        lambda: {
+        lambda forceRefresh=False: {
             "scipion-em-test": plugin,
         },
     )
@@ -365,7 +365,7 @@ def test_uninstall_plugin_refreshes_after_confirmed_pip_removal(tmp_path, monkey
     monkeypatch.setattr(
         service,
         "_loadRawPlugins",
-        lambda: {
+        lambda forceRefresh=False: {
             "scipion-em-test": plugin,
         },
     )
