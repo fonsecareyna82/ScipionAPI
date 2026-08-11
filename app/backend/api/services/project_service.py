@@ -14389,12 +14389,21 @@ class ProjectService:
                     detail="PostgreSQL runtime mapper is not available",
                 )
 
-            outputObj = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
-                parentProtocol=protocol,
-                outputName=outputName,
-                outputInfo=outputInfo,
-                mapper=runtimeMapper,
-            )
+            runtimeObjectId = outputInfo.get("runtimeObjectId")
+            outputObj = None
+
+            selectRuntimeInputObjectById = getattr(runtimeMapper, "selectRuntimeInputObjectById", None)
+
+            if runtimeObjectId not in (None, "") and callable(selectRuntimeInputObjectById):
+                outputObj = selectRuntimeInputObjectById(runtimeObjectId)
+
+            if outputObj is None:
+                outputObj = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                    parentProtocol=protocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    mapper=runtimeMapper,
+                )
 
             if outputObj is None:
                 raise HTTPException(
