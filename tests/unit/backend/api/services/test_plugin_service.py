@@ -376,13 +376,32 @@ def test_uninstall_plugin_refreshes_after_confirmed_pip_removal(tmp_path, monkey
         lambda: clearCacheCalls.append(True),
     )
 
-    def distributionNotFound(pipName):
-        raise pluginServiceModule.importlibMetadata.PackageNotFoundError(pipName)
+    installedState = {
+        "installed": True,
+    }
+
+    def distributionState(pipName):
+        if installedState["installed"]:
+            return object()
+
+        raise pluginServiceModule.importlibMetadata.PackageNotFoundError(
+            pipName
+        )
+
+    def uninstallPip():
+        plugin.uninstallPipCalls += 1
+        installedState["installed"] = False
 
     monkeypatch.setattr(
         pluginServiceModule.importlibMetadata,
         "distribution",
-        distributionNotFound,
+        distributionState,
+    )
+
+    monkeypatch.setattr(
+        plugin,
+        "uninstallPip",
+        uninstallPip,
     )
 
     result = service.uninstallPlugin("scipion-em-test")
