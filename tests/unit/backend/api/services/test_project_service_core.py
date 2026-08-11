@@ -319,6 +319,12 @@ def test_LoadPostgresqlRuntimeProjectForMutationLoadsPostgresqlRuntimeDirectly(
     )
 
     monkeypatch.setattr(
+        projectServiceModule,
+        "refreshScipionDomainIfNeeded",
+        lambda: False,
+    )
+
+    monkeypatch.setattr(
         projectServiceModule.pyworkflow.Config,
         "getDomain",
         lambda: "test-domain",

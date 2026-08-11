@@ -43,7 +43,7 @@ class FakeSettingsService:
             "timeZone": "Europe/Madrid",
             "graphMiniMapEnabled": True,
             "graphFocusModeEnabled": False,
-            "protocolOutputThumbnailsEnabled": True,
+            "protocolOutputThumbnailsEnabled": False,
             "workflowsAutoRefreshSec": 5,
             "workflowViewMode": "treeTb"
         }
@@ -165,7 +165,7 @@ class FakeSettingsService:
         self.lastPutInstanceSettingsCall = {
             "mapper": mapper,
             "currentUser": currentUser,
-            "protocolOutputThumbnailsEnabled": True,
+            "protocolOutputThumbnailsEnabled": False,
             "payload": payload,
         }
         if self.putInstanceSettingsError is not None:
@@ -312,7 +312,7 @@ def test_PutUserSettingsDelegatesToService(settingsClient, fakeSettingsService):
         "graphMiniMapEnabled": False,
         "graphFocusModeEnabled": True,
         "workflowsAutoRefreshSec": 10,
-        "protocolOutputThumbnailsEnabled": True,
+        "protocolOutputThumbnailsEnabled": False,
         "workflowViewMode": "treeTb"
     }
 

@@ -42,7 +42,7 @@ class UserSettings(BaseModel):
 
     graphMiniMapEnabled: bool = True
     graphFocusModeEnabled: bool = False
-    protocolOutputThumbnailsEnabled: bool = True
+    protocolOutputThumbnailsEnabled: bool = False
     workflowsAutoRefreshSec: int = Field(default=5, ge=0, le=300)
 
 
