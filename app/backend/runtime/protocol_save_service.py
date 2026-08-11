@@ -376,7 +376,14 @@ class RuntimeProtocolSaveService:
             resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
 
             newInputs.append(
-                Pointer(parentProtocol, extended=outputName)
+                Pointer(
+                    parentProtocol,
+                    extended=outputName,
+                )
+                if outputName
+                else Pointer(
+                    parentProtocol
+                )
             )
 
             logger.debug(
@@ -467,16 +474,26 @@ class RuntimeProtocolSaveService:
         outputName = resolvedPointerTarget.get("outputName")
         resolvedOutput = resolvedPointerTarget.get("resolvedOutput") or {}
 
-        value = f"{parentScipionProtocolId}.{outputName}"
+        value = (
+            f"{parentScipionProtocolId}.{outputName}"
+            if outputName
+            else str(parentScipionProtocolId)
+        )
         pointer = getattr(protocol, inputName, None)
 
         if not isinstance(
                 pointer,
                 Pointer,
         ):
-            pointer = Pointer(
-                parentProtocol,
-                extended=outputName,
+            pointer = (
+                Pointer(
+                    parentProtocol,
+                    extended=outputName,
+                )
+                if outputName
+                else Pointer(
+                    parentProtocol
+                )
             )
 
             setattr(

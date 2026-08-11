@@ -361,6 +361,20 @@ class RuntimeProtocolInputRefBuilderService:
                     )
                 )
 
+                pointerObj = self.safeCall(
+                    pointerItem,
+                    "getObjValue",
+                    None,
+                )
+
+                directProtocolPointer = (
+                        not parentOutputName
+                        and (
+                                isinstance(targetObj, Protocol)
+                                or isinstance(pointerObj, Protocol)
+                        )
+                )
+
                 missingFields = []
 
                 if parentProtocolId in (
@@ -379,7 +393,7 @@ class RuntimeProtocolInputRefBuilderService:
                         "parentProtocolDbId"
                     )
 
-                if not parentOutputName:
+                if not parentOutputName and not directProtocolPointer:
                     missingFields.append(
                         "parentOutputName"
                     )

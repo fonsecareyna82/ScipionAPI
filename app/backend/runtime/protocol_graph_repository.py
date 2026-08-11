@@ -252,8 +252,8 @@ class ProtocolGraphRepository:
         ).strip()
 
         protocolPrefix = (
-            "%s."
-            % protocolIdText
+                "%s."
+                % protocolIdText
         )
 
         if outputNameText.startswith(
@@ -261,7 +261,7 @@ class ProtocolGraphRepository:
         ):
             outputNameText = (
                 outputNameText[
-                    len(protocolPrefix):
+                len(protocolPrefix):
                 ]
             )
 
@@ -1590,12 +1590,18 @@ class ProtocolGraphRepository:
         if not values:
             return None
 
-        parentId, outputName = values[0].split(".", 1)
+        pointerValue = values[0]
+
+        if "." in pointerValue:
+            parentId, outputName = pointerValue.split(".", 1)
+        else:
+            parentId = pointerValue
+            outputName = None
 
         return {
             "parentId": parentId,
             "outputName": outputName,
-            "value": values[0],
+            "value": pointerValue,
         }
 
     def loadInputRefPointerValues(
@@ -1635,10 +1641,21 @@ class ProtocolGraphRepository:
             parentId = row.get("parentProtocolId")
             outputName = row.get("parentOutputName")
 
-            if parentId in (None, "") or not outputName:
+            if parentId in (None, ""):
                 continue
 
-            pointerValues.append("%s.%s" % (parentId, outputName))
+            if outputName:
+                pointerValues.append(
+                    "%s.%s"
+                    % (
+                        parentId,
+                        outputName,
+                    )
+                )
+            else:
+                pointerValues.append(
+                    str(parentId)
+                )
 
         return pointerValues
 

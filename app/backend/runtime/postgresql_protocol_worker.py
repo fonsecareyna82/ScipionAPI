@@ -1698,6 +1698,16 @@ class RuntimePostgresqlProtocolWorker:
 
             # A streaming child does not need the parent to
             # finish, but the concrete output must already exist.
+            parentOutputName = str(
+                inputRef.get(
+                    "parentOutputName"
+                )
+                or ""
+            ).strip()
+
+            if not parentOutputName:
+                continue
+
             outputInfo = (
                 self.getRuntimeOutputInfo(
                     inputRef
@@ -2215,7 +2225,6 @@ class RuntimePostgresqlProtocolWorker:
                     not inputName
                     or parentProtocolDbId
                     in (None, "")
-                    or not parentOutputName
             ):
                 errors.append({
                     **dict(ref),
@@ -2224,6 +2233,117 @@ class RuntimePostgresqlProtocolWorker:
                         "input reference"
                     ),
                 })
+                continue
+
+            if not parentOutputName:
+                parentProtocolId = ref.get(
+                    "parentProtocolId"
+                )
+
+                if parentProtocolId in (
+                        None,
+                        "",
+                ):
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                            "Direct PostgreSQL protocol input "
+                            "does not expose parentProtocolId"
+                        ),
+                    })
+                    continue
+
+                try:
+                    parentProtocol = (
+                        self.project.getProtocol(
+                            int(parentProtocolId)
+                        )
+                    )
+                except Exception as error:
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "Could not reconstruct PostgreSQL "
+                                "parent protocol %s: %s"
+                                % (
+                                    parentProtocolId,
+                                    error,
+                                )
+                        ),
+                    })
+                    continue
+
+                if parentProtocol is None:
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "PostgreSQL parent protocol %s "
+                                "was not found"
+                                % parentProtocolId
+                        ),
+                    })
+                    continue
+
+                pointer = Pointer(
+                    parentProtocol
+                )
+
+                param = self.protocol.getParam(
+                    inputName
+                )
+
+                if isinstance(
+                        param,
+                        MultiPointerParam,
+                ):
+                    pointerList = (
+                        multiPointerLists.get(
+                            inputName
+                        )
+                    )
+
+                    if pointerList is None:
+                        pointerList = PointerList()
+
+                        multiPointerLists[
+                            inputName
+                        ] = pointerList
+
+                        setattr(
+                            self.protocol,
+                            inputName,
+                            pointerList,
+                        )
+
+                    pointerList.append(
+                        pointer
+                    )
+
+                else:
+                    setattr(
+                        self.protocol,
+                        inputName,
+                        pointer,
+                    )
+
+                restored.append({
+                    "inputName": inputName,
+                    "itemIndex": int(
+                        ref.get("itemIndex")
+                        or 0
+                    ),
+                    "parentProtocolDbId": int(
+                        parentProtocolDbId
+                    ),
+                    "parentProtocolId": str(
+                        parentProtocolId
+                    ),
+                    "parentOutputName": None,
+                    "runtimeObjectId": None,
+                    "directProtocolPointer": True,
+                    "parentProtocolModified": False,
+                })
+
                 continue
 
             outputParts = [

@@ -27,6 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from pyworkflow.object import Pointer, PointerList
+from pyworkflow.protocol.protocol import Protocol
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
@@ -85,9 +86,15 @@ class RuntimePointerResolver:
             return "", ""
 
         if "." not in valueText:
-            return "", valueText
+            try:
+                int(valueText)
+            except (TypeError, ValueError):
+                return "", valueText
+
+            return valueText, ""
 
         parentId, outputName = valueText.split(".", 1)
+
         return parentId.strip(), outputName.strip()
 
     def normalizePointerParamValues(self, rawValue: Any) -> List[str]:
@@ -182,11 +189,27 @@ class RuntimePointerResolver:
 
         result: List[str] = []
 
-        def addValue(parentId, outputName):
-            if parentId in (None, "") or outputName in (None, ""):
+        def addValue(
+                parentId,
+                outputName,
+                allowProtocolOnly=False,
+        ):
+            if parentId in (None, ""):
                 return
 
-            value = "%s.%s" % (str(parentId).strip(), str(outputName).strip())
+            parentIdText = str(parentId).strip()
+            outputNameText = str(outputName or "").strip()
+
+            if outputNameText:
+                value = "%s.%s" % (
+                    parentIdText,
+                    outputNameText,
+                )
+            elif allowProtocolOnly:
+                value = parentIdText
+            else:
+                return
+
             if value not in result:
                 result.append(value)
 
@@ -262,7 +285,24 @@ class RuntimePointerResolver:
             except Exception:
                 parentId = None
 
-        addValue(parentId, extended)
+        if parentId is None and isinstance(targetObj, Protocol):
+            parentId = self._getScipionObjectId(
+                targetObj
+            )
+
+        directProtocolPointer = (
+                not str(extended or "").strip()
+                and (
+                        isinstance(objValue, Protocol)
+                        or isinstance(targetObj, Protocol)
+                )
+        )
+
+        addValue(
+            parentId,
+            extended,
+            allowProtocolOnly=directProtocolPointer,
+        )
 
         return result
 
@@ -454,7 +494,7 @@ class RuntimePointerResolver:
             parentProtocolId = row.get("parentProtocolId")
             parentOutputName = str(row.get("parentOutputName") or "").strip()
 
-            if not inputName or parentProtocolId in (None, "") or not parentOutputName:
+            if not inputName or parentProtocolId in (None, ""):
                 continue
 
             refsByInputName.setdefault(inputName, []).append(dict(row))
@@ -484,14 +524,21 @@ class RuntimePointerResolver:
                 parentProtocolId = ref.get("parentProtocolId")
                 parentOutputName = str(ref.get("parentOutputName") or "").strip()
 
-                if parentProtocolId in (None, "") or not parentOutputName:
+                if parentProtocolId in (None, ""):
                     continue
 
                 parentScipionProtocolId, parentProtocol = resolveParentProtocolCallback(parentProtocolId)
-
-                pointerList.append(
-                    Pointer(parentProtocol, extended=parentOutputName)
+                pointer = (
+                    Pointer(
+                        parentProtocol,
+                        extended=parentOutputName,
+                    )
+                    if parentOutputName
+                    else Pointer(
+                        parentProtocol
+                    )
                 )
+                pointerList.append(pointer)
 
                 restoredItems.append({
                     "inputName": inputName,
@@ -518,7 +565,7 @@ class RuntimePointerResolver:
         parentProtocolId = ref.get("parentProtocolId")
         parentOutputName = str(ref.get("parentOutputName") or "").strip()
 
-        if parentProtocolId in (None, "") or not parentOutputName:
+        if parentProtocolId in (None, ""):
             return {
                 "restored": [],
                 "skipped": True,
@@ -527,7 +574,16 @@ class RuntimePointerResolver:
 
         parentScipionProtocolId, parentProtocol = resolveParentProtocolCallback(parentProtocolId)
 
-        pointer = Pointer(parentProtocol, extended=parentOutputName)
+        pointer = (
+            Pointer(
+                parentProtocol,
+                extended=parentOutputName,
+            )
+            if parentOutputName
+            else Pointer(
+                parentProtocol
+            )
+        )
         setattr(protocol, inputName, pointer)
 
         restoredItems.append({
@@ -569,7 +625,7 @@ class RuntimePointerResolver:
                 "outputName": outputName,
             }
 
-        if not outputName:
+        if not parentId:
             return {
                 "ok": False,
                 "error": "**%s** could not resolve empty pointer input %s"
@@ -604,6 +660,18 @@ class RuntimePointerResolver:
                     "parentScipionProtocolId": parentScipionProtocolId,
                     "parentProtocol": parentProtocol,
                     "parentProtocolDbId": None,
+                }
+
+            if not outputName:
+                return {
+                    "ok": True,
+                    "parentId": parentId,
+                    "outputName": None,
+                    "parentScipionProtocolId": parentScipionProtocolId,
+                    "parentProtocol": parentProtocol,
+                    "parentProtocolDbId": int(parentProtocolDbId),
+                    "resolvedOutput": None,
+                    "directProtocolPointer": True,
                 }
 
             resolvedOutput = resolveParentOutputCallback(
@@ -704,7 +772,7 @@ class RuntimePointerResolver:
             for pointerValue in pointerValues:
                 parentId, outputName = self.splitPointerValue(pointerValue)
 
-                if parentId and outputName:
+                if parentId:
                     validPointerValues.append(pointerValue)
 
             if not validPointerValues:
@@ -721,7 +789,7 @@ class RuntimePointerResolver:
             for itemIndex, pointerValue in enumerate(pointerValues):
                 parentId, outputName = self.splitPointerValue(pointerValue)
 
-                if not parentId or not outputName:
+                if not parentId:
                     continue
 
                 try:
@@ -764,12 +832,35 @@ class RuntimePointerResolver:
                 if parentScipionProtocolId not in parentProtocolIds:
                     parentProtocolIds.append(parentScipionProtocolId)
 
-                outputInfo = protocolGraphRepository.getPersistedOutputInfoForInputRef(
-                    mapper=mapper,
-                    projectId=projectId,
-                    parentProtocolDbId=parentProtocolDbId,
-                    outputName=outputName,
-                )
+                if outputName:
+                    outputInfo = protocolGraphRepository.getPersistedOutputInfoForInputRef(
+                        mapper=mapper,
+                        projectId=projectId,
+                        parentProtocolDbId=parentProtocolDbId,
+                        outputName=outputName,
+                    )
+
+                    parentOutputName = str(
+                        outputName
+                    )
+
+                else:
+                    parentProtocolInfo = protocolGraphRepository.getProtocolRuntimeInfoByDbId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolDbId=parentProtocolDbId,
+                    ) or {}
+
+                    outputInfo = {
+                        "className": parentProtocolInfo.get(
+                            "protocolClassName"
+                        ),
+                        "runtimeObjectId": str(
+                            parentScipionProtocolId
+                        ),
+                    }
+
+                    parentOutputName = None
 
                 inputRefs.append({
                     "projectId": int(projectId),
@@ -779,7 +870,7 @@ class RuntimePointerResolver:
                     "itemIndex": int(itemIndex),
                     "parentProtocolDbId": parentProtocolDbId,
                     "parentProtocolId": str(parentScipionProtocolId),
-                    "parentOutputName": str(outputName),
+                    "parentOutputName": parentOutputName,
                     "objectClassName": outputInfo.get("className"),
                     "objectId": outputInfo.get("runtimeObjectId"),
                 })
