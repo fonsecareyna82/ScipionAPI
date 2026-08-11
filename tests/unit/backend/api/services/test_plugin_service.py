@@ -227,6 +227,67 @@ def test_existing_repository_plugins_are_not_duplicated_by_devel_manifest(tmp_pa
     assert serializedList == [{"pipName": "scipion-em-local", "name": "Catalog Plugin"}]
 
 
+class DummyCatalogPlugin:
+    latestRelease = "1.0.0"
+    pipVersion = "1.0.0"
+
+    def isInstalled(self):
+        return True
+
+    def _getPlugin(self):
+        return None
+
+    def getInstallenv(self):
+        return None
+
+
+def test_get_plugins_uses_pip_installation_state(tmp_path, monkeypatch):
+    service = makeService(tmp_path)
+    plugin = DummyCatalogPlugin()
+
+    monkeypatch.setattr(
+        service,
+        "_getPluginsRevision",
+        lambda: 0,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "serializeToJson",
+        lambda pluginObj: {
+            "pipName": "scipion-em-test",
+            "name": "Test Plugin",
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveCategories",
+        lambda pipName, metadata=None: {
+            "categories": [
+                "unclassified",
+            ],
+            "categoryData": [],
+        },
+    )
+
+    plugins = service.getPlugins(
+        forceRefresh=True
+    )
+
+    assert len(plugins) == 1
+    assert plugins[0]["pipName"] == "scipion-em-test"
+    assert plugins[0]["installed"] is True
+
+
 class DummyInstalledPlugin:
     def __init__(self):
         self.uninstallBinsCalls = 0

@@ -442,7 +442,7 @@ class PluginService:
 
                 isInstalled = False
                 try:
-                    isInstalled = bool(pluginObj._getPlugin())
+                    isInstalled = bool(pluginObj.isInstalled())
                 except Exception:
                     isInstalled = False
 
