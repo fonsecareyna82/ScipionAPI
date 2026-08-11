@@ -1663,6 +1663,29 @@ class RuntimePostgresqlProtocolWorker:
 
                 continue
 
+            parentOutputName = str(
+                inputRef.get(
+                    "parentOutputName"
+                )
+                or ""
+            ).strip()
+
+            directProtocolPointer = (
+                not parentOutputName
+            )
+
+            if (
+                    directProtocolPointer
+                    and parentStatus
+                    not in FINISHED_INPUT_PARENT_STATUSES
+            ):
+                addPending(
+                    parentRow,
+                    "input_parent_not_finished",
+                )
+
+                continue
+
             # A resumed streaming child must not consume an
             # output left by a previous execution while its
             # parent is still only scheduled or saved.

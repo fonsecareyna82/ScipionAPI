@@ -76,6 +76,7 @@ def buildWorker(
         validationErrors=None,
         inputRestoreErrors=None,
         inputCondition=True,
+        parentOutputName="outputSet",
 ):
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -104,7 +105,7 @@ def buildWorker(
             "itemIndex": 0,
             "parentProtocolDbId": 20,
             "parentProtocolId": 2,
-            "parentOutputName": "outputSet",
+            "parentOutputName": parentOutputName,
         },
     ]
 
@@ -732,6 +733,56 @@ def test_StreamingProtocolStartsWhenInputsValidate():
     assert readiness[
         "validationErrors"
     ] == []
+
+
+def test_StreamingDirectProtocolInputWaitsForParentToFinish():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        parentOutputName=None,
+    )
+
+    worker.getRuntimeOutputInfo = lambda inputRef: (
+        pytest.fail(
+            "Direct protocol pointers must not resolve a parent output"
+        )
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["pendingParents"] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "running",
+            "reason": "input_parent_not_finished",
+        },
+    ]
+
+    assert readiness["missingInputs"] == []
+
+
+def test_StreamingDirectProtocolInputStartsAfterParentFinishes():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        parentOutputName=None,
+        validationErrors=[],
+    )
+
+    worker.getRuntimeOutputInfo = lambda inputRef: (
+        pytest.fail(
+            "Direct protocol pointers must not resolve a parent output"
+        )
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
 
 
 def test_StreamingInputParentPrerequisiteDoesNotWaitForTerminalStatus():
