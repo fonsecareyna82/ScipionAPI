@@ -785,7 +785,7 @@ def test_StreamingDirectProtocolInputStartsAfterParentFinishes():
     assert readiness["validationErrors"] == []
 
 
-def test_StreamingInputParentPrerequisiteDoesNotWaitForTerminalStatus():
+def test_StreamingInputParentPrerequisiteWaitsForTerminalStatus():
     worker = buildWorker(
         streaming=True,
         parentStatus="running",
@@ -797,33 +797,20 @@ def test_StreamingInputParentPrerequisiteDoesNotWaitForTerminalStatus():
         validationErrors=[],
     )
 
-    readiness = (
-        worker.getReadinessState()
-    )
+    readiness = worker.getReadinessState()
 
-    assert readiness[
-        "pendingParents"
-    ] == []
+    assert readiness["pendingParents"] == [
+        {
+            "protocolDbId": 102,
+            "protocolId": 2,
+            "status": "running",
+            "reason": "prerequisite_not_terminal",
+        },
+    ]
 
-    assert readiness[
-        "failedParents"
-    ] == []
-
-    assert readiness[
-        "missingInputs"
-    ] == []
-
-    assert readiness[
-        "missingPrerequisites"
-    ] == []
-
-    assert readiness[
-        "inputRestoreErrors"
-    ] == []
-
-    assert readiness[
-        "validationErrors"
-    ] == []
+    assert readiness["failedParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["missingPrerequisites"] == []
 
 
 def test_StreamingProtocolWaitsUntilParentOutputExists():

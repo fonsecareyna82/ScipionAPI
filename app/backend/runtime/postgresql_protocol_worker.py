@@ -1522,30 +1522,11 @@ class RuntimePostgresqlProtocolWorker:
         failedKeys = set()
 
         inputParentDbIds = set()
-        inputParentProtocolIds = set()
 
         for inputRef in inputRefs:
             try:
                 inputParentDbIds.add(int(inputRef["parentProtocolDbId"]))
             except (KeyError, TypeError, ValueError):
-                continue
-
-        for inputRef in activeInputRefs:
-            parentProtocolDbId = None
-
-            try:
-                parentProtocolDbId = int(inputRef["parentProtocolDbId"])
-            except (KeyError, TypeError, ValueError):
-                pass
-
-            parentProtocolId = inputRef.get("parentProtocolId")
-
-            if parentProtocolId in (None, "") and parentProtocolDbId is not None:
-                parentProtocolId = parentRowsByDbId.get(parentProtocolDbId, {}).get("protocolId")
-
-            try:
-                inputParentProtocolIds.add(int(parentProtocolId))
-            except (TypeError, ValueError):
                 continue
 
         def addPending(
@@ -1632,34 +1613,6 @@ class RuntimePostgresqlProtocolWorker:
                 )
                 or ""
             ).strip().lower()
-
-            try:
-                prerequisiteProtocolId = int(
-                    prerequisiteRow[
-                        "protocolId"
-                    ]
-                )
-
-            except (
-                    KeyError,
-                    TypeError,
-                    ValueError,
-            ):
-                prerequisiteProtocolId = None
-
-            # Workflow launches may register the same
-            # protocol both as an execution prerequisite
-            # and as the parent of an input pointer.
-            #
-            # For streaming children, input readiness
-            # takes precedence: the parent may be running
-            # as long as its concrete output is available.
-            if (
-                    streaming
-                    and prerequisiteProtocolId
-                    in inputParentProtocolIds
-            ):
-                continue
 
             if (
                     prerequisiteStatus
