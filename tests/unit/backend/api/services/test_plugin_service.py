@@ -62,6 +62,7 @@ def makeService(tmpPath: Path, plugins=None) -> PluginService:
     service.pluginRepository = None
     service.pluginDevelService = DummyDevelService(tmpPath, plugins=plugins)
     service._pluginsCache = None
+    service._rawPluginsCache = None
     service._pluginsRevision = 0
     service._cacheLock = Lock()
     service._logoBaseUrl = "https://scipion.i2pc.es/"
@@ -232,7 +233,9 @@ class DummyCatalogPlugin:
     pipVersion = "1.0.0"
 
     def isInstalled(self):
-        return True
+        raise AssertionError(
+            "PluginInfo installation state must not be used"
+        )
 
     def _getPlugin(self):
         return None
@@ -279,6 +282,12 @@ def test_get_plugins_uses_pip_installation_state(tmp_path, monkeypatch):
         },
     )
 
+    monkeypatch.setattr(
+        pluginServiceModule.importlibMetadata,
+        "version",
+        lambda pipName: "1.0.0",
+    )
+
     plugins = service.getPlugins(
         forceRefresh=True
     )
@@ -286,6 +295,7 @@ def test_get_plugins_uses_pip_installation_state(tmp_path, monkeypatch):
     assert len(plugins) == 1
     assert plugins[0]["pipName"] == "scipion-em-test"
     assert plugins[0]["installed"] is True
+    assert plugins[0]["pipVersion"] == "1.0.0"
 
 
 class DummyInstalledPlugin:
@@ -385,5 +395,107 @@ def test_uninstall_plugin_refreshes_after_confirmed_pip_removal(tmp_path, monkey
     assert plugin.uninstallPipCalls == 1
     assert service.pluginDevelService.listDevelPlugins() == []
     assert clearCacheCalls == [True]
+
+
+def test_get_plugins_refreshes_installation_state_without_reloading_remote_catalog(tmp_path, monkeypatch):
+    service = makeService(tmp_path)
+    plugin = DummyCatalogPlugin()
+
+    service._rawPluginsCache = {
+        "scipion-em-test": plugin,
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_getPluginsRevision",
+        lambda: 0,
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "serializeToJson",
+        lambda pluginObj: {
+            "pipName": "scipion-em-test",
+            "name": "Test Plugin",
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveCategories",
+        lambda pipName, metadata=None: {
+            "categories": [
+                "unclassified",
+            ],
+            "categoryData": [],
+        },
+    )
+
+    installedVersion = {
+        "value": None,
+    }
+
+    def getVersion(pipName):
+        version = installedVersion["value"]
+
+        if version is None:
+            raise pluginServiceModule.importlibMetadata.PackageNotFoundError(
+                pipName
+            )
+
+        return version
+
+    monkeypatch.setattr(
+        pluginServiceModule.importlibMetadata,
+        "version",
+        getVersion,
+    )
+
+    plugins = service.getPlugins()
+
+    assert plugins[0]["installed"] is False
+
+    installedVersion["value"] = "1.2.3"
+    service._pluginsCache = None
+
+    plugins = service.getPlugins()
+
+    assert plugins[0]["installed"] is True
+    assert plugins[0]["pipVersion"] == "1.2.3"
+
+    installedVersion["value"] = None
+    service._pluginsCache = None
+
+    plugins = service.getPlugins()
+
+    assert plugins[0]["installed"] is False
+    assert plugins[0]["pipVersion"] == ""
+
+
+def test_load_raw_plugins_falls_back_to_cached_catalog(tmp_path):
+    service = makeService(tmp_path)
+
+    cachedPlugin = object()
+
+    service._rawPluginsCache = {
+        "scipion-em-test": cachedPlugin,
+    }
+
+    class FailingRepository:
+        def getPlugins(self, getPipData=False):
+            raise ConnectionError(
+                "remote catalog unavailable"
+            )
+
+    service.pluginRepository = FailingRepository()
+
+    plugins = service._loadRawPlugins(
+        forceRefresh=True
+    )
+
+    assert plugins == {
+        "scipion-em-test": cachedPlugin,
+    }
+
 
 

@@ -32,6 +32,7 @@ class PluginService:
         self.pluginRepository = pluginRepository or PluginRepository()
         self.pluginDevelService = pluginDevelService or PluginDevelService()
         self._pluginsCache: Optional[List[Dict[str, Any]]] = None
+        self._rawPluginsCache: Optional[Dict[str, Any]] = None
         self._pluginsRevision = self._getPluginsRevision()
         self._cacheLock = Lock()
         self._logoBaseUrl = "https://scipion.i2pc.es/"
@@ -51,6 +52,18 @@ class PluginService:
 
         except importlibMetadata.PackageNotFoundError:
             return False
+
+    @staticmethod
+    def _getPipPackageVersion(pipName: str) -> Optional[str]:
+        try:
+            return str(
+                importlibMetadata.version(
+                    pipName
+                )
+            )
+
+        except importlibMetadata.PackageNotFoundError:
+            return None
 
     def clearCache(self, reloadRepository: bool = True) -> None:
         with self._cacheLock:
@@ -91,13 +104,39 @@ class PluginService:
     def _normalizePipName(self, pipName: str) -> str:
         return str(pipName or "").strip().lower()
 
-    def _loadRawPlugins(self) -> Dict[str, Any]:
+    def _loadRawPlugins(self, forceRefresh: bool = False) -> Dict[str, Any]:
+        if self._rawPluginsCache is not None and not forceRefresh:
+            return dict(self._rawPluginsCache)
+
         try:
-            Config.setDomain("pwem")
-            Config.getDomain()
-            return self.pluginRepository.getPlugins(getPipData=True)
+            rawPlugins = self.pluginRepository.getPlugins(getPipData=True)
+
+            self._rawPluginsCache = dict(
+                rawPlugins or {}
+            )
+
+            return dict(
+                self._rawPluginsCache
+            )
+
         except Exception as e:
-            raise RuntimeError("Failed to retrieve plugins") from e
+            if self._rawPluginsCache is not None:
+                logger.warning(
+                    "Could not refresh remote plugin catalog. Reusing cached catalog.",
+                    exc_info=True,
+                )
+
+                return dict(
+                    self._rawPluginsCache
+                )
+
+            logger.exception(
+                "Error retrieving plugins."
+            )
+
+            raise RuntimeError(
+                "Failed to retrieve plugins"
+            ) from e
 
     def _resolvePluginKeyByPipName(self, pipName: str, rawPlugins: Dict[str, Any]) -> str:
         if pipName in rawPlugins:
@@ -419,7 +458,9 @@ class PluginService:
             if self._pluginsCache is not None and not forceRefresh:
                 return list(self._pluginsCache)
 
-            rawPlugins = self._loadRawPlugins()
+            rawPlugins = self._loadRawPlugins(
+                forceRefresh=forceRefresh
+            )
             serializedList: List[Dict[str, Any]] = []
             seenPipNames = set()
 
@@ -440,19 +481,30 @@ class PluginService:
                 # serializedPlugin["categories"] = ['tomography']
                 # serializedPlugin["categoryData"] = [{'description': 'Tomograms, tilt series and subtomogram workflows', 'id': 'tomography', 'title': 'Tomography'}]
 
-                isInstalled = False
-                try:
-                    isInstalled = bool(pluginObj.isInstalled())
-                except Exception:
-                    isInstalled = False
+                installedPipVersion = self._getPipPackageVersion(
+                    pipName
+                )
+
+                isInstalled = installedPipVersion is not None
 
                 serializedPlugin["installed"] = isInstalled
 
                 if isInstalled:
-                    latestRelease = getattr(pluginObj, "latestRelease", None)
-                    pipVersion = getattr(pluginObj, "pipVersion", None)
-                    serializedPlugin["toUpdate"] = self._isUpdateAvailable(latestRelease, pipVersion)
+                    serializedPlugin["pipVersion"] = installedPipVersion
+
+                    latestRelease = getattr(
+                        pluginObj,
+                        "latestRelease",
+                        None,
+                    )
+
+                    serializedPlugin["toUpdate"] = self._isUpdateAvailable(
+                        latestRelease,
+                        installedPipVersion,
+                    )
+
                 else:
+                    serializedPlugin["pipVersion"] = ""
                     serializedPlugin["toUpdate"] = False
 
                 self._applyDevelMetadata(serializedPlugin)
@@ -502,7 +554,9 @@ class PluginService:
             if taskId:
                 writePluginTaskStep(taskId, "Resolving plugin...")
 
-            rawPlugins = self._loadRawPlugins()
+            rawPlugins = self._loadRawPlugins(
+                forceRefresh=True
+            )
             resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
             plugin = rawPlugins[resolvedKey]
 
@@ -560,13 +614,17 @@ class PluginService:
             if taskId:
                 writePluginTaskStep(taskId, "Resolving plugin...")
 
-            rawPlugins = self._loadRawPlugins()
+            rawPlugins = self._loadRawPlugins(
+                forceRefresh=True
+            )
             resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
             plugin = rawPlugins[resolvedKey]
 
             isInstalled = False
             try:
-                isInstalled = bool(plugin.isInstalled())
+                isInstalled = self._isPipPackageInstalled(
+                    pluginName
+                )
             except Exception:
                 isInstalled = False
 
