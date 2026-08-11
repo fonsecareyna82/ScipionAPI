@@ -26,6 +26,9 @@
 from pathlib import Path
 from threading import Lock
 
+import pytest
+
+import app.backend.api.services.plugin_service as pluginServiceModule
 from app.backend.api.services.plugin_service import PluginService
 
 
@@ -46,12 +49,20 @@ class DummyDevelService:
                 return plugin
         return None
 
+    def unregisterDevelPlugin(self, pipName):
+        self._plugins = [
+            plugin
+            for plugin in self._plugins
+            if plugin.get("pipName") != pipName
+        ]
+
 
 def makeService(tmpPath: Path, plugins=None) -> PluginService:
     service = PluginService.__new__(PluginService)
     service.pluginRepository = None
     service.pluginDevelService = DummyDevelService(tmpPath, plugins=plugins)
     service._pluginsCache = None
+    service._pluginsRevision = 0
     service._cacheLock = Lock()
     service._logoBaseUrl = "https://scipion.i2pc.es/"
     return service
@@ -214,3 +225,104 @@ def test_existing_repository_plugins_are_not_duplicated_by_devel_manifest(tmp_pa
     service._appendMissingDevelPlugins(serializedList, seenPipNames)
 
     assert serializedList == [{"pipName": "scipion-em-local", "name": "Catalog Plugin"}]
+
+
+class DummyInstalledPlugin:
+    def __init__(self):
+        self.uninstallBinsCalls = 0
+        self.uninstallPipCalls = 0
+
+    def isInstalled(self):
+        return True
+
+    def uninstallBins(self):
+        self.uninstallBinsCalls += 1
+
+    def uninstallPip(self):
+        self.uninstallPipCalls += 1
+
+
+def test_uninstall_plugin_fails_if_pip_package_remains_installed(tmp_path, monkeypatch):
+    service = makeService(tmp_path)
+    plugin = DummyInstalledPlugin()
+    clearCacheCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda: clearCacheCalls.append(True),
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule.importlibMetadata,
+        "distribution",
+        lambda pipName: object(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Plugin pip package is still installed after uninstall",
+    ):
+        service.uninstallPlugin("scipion-em-test")
+
+    assert plugin.uninstallBinsCalls == 1
+    assert plugin.uninstallPipCalls == 1
+    assert clearCacheCalls == []
+
+
+def test_uninstall_plugin_refreshes_after_confirmed_pip_removal(tmp_path, monkeypatch):
+    service = makeService(
+        tmp_path,
+        plugins=[
+            {
+                "pipName": "scipion-em-test",
+                "path": str(tmp_path / "scipion-em-test"),
+            }
+        ],
+    )
+    plugin = DummyInstalledPlugin()
+    clearCacheCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda: clearCacheCalls.append(True),
+    )
+
+    def distributionNotFound(pipName):
+        raise pluginServiceModule.importlibMetadata.PackageNotFoundError(pipName)
+
+    monkeypatch.setattr(
+        pluginServiceModule.importlibMetadata,
+        "distribution",
+        distributionNotFound,
+    )
+
+    result = service.uninstallPlugin("scipion-em-test")
+
+    assert result == {
+        "uninstalled": "SUCCESS",
+    }
+
+    assert plugin.uninstallBinsCalls == 1
+    assert plugin.uninstallPipCalls == 1
+    assert service.pluginDevelService.listDevelPlugins() == []
+    assert clearCacheCalls == [True]
+
+

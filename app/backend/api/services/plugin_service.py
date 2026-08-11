@@ -43,6 +43,15 @@ class PluginService:
         except Exception:
             return 0
 
+    @staticmethod
+    def _isPipPackageInstalled(pipName: str) -> bool:
+        try:
+            importlibMetadata.distribution(pipName)
+            return True
+
+        except importlibMetadata.PackageNotFoundError:
+            return False
+
     def clearCache(self, reloadRepository: bool = True) -> None:
         with self._cacheLock:
             self._pluginsCache = None
@@ -568,7 +577,17 @@ class PluginService:
 
                 if taskId:
                     writePluginTaskStep(taskId, "Uninstalling pip module...")
+
                 plugin.uninstallPip()
+
+                if taskId:
+                    writePluginTaskStep(taskId, "Verifying pip module removal...")
+
+                if self._isPipPackageInstalled(pluginName):
+                    raise RuntimeError(
+                        "Plugin pip package is still installed after uninstall: %s"
+                        % pluginName
+                    )
             else:
                 if taskId:
                     writePluginTaskStep(taskId, "Plugin is not installed. Nothing to do.")
