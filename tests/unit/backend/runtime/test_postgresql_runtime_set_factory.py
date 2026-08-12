@@ -3276,7 +3276,37 @@ def test_RuntimeSetLoadUsesFirstItemSamplingWhenSetPropertyIsMissing():
 
 
 
+def test_RuntimeSetCreateCopyUsesNativeSetClass(tmp_path):
+    class NativeCopySet(ExampleSet):
+        @classmethod
+        def create(
+                cls,
+                outputPath,
+                prefix=None,
+                suffix=None,
+                ext=None,
+                **kwargs,
+        ):
+            return cls()
 
+    factory = PostgresqlRuntimeSetFactory()
+
+    runtimeSetClass = factory._getRuntimeSetClass(
+        NativeCopySet
+    )
+
+    runtimeSet = runtimeSetClass()
+
+    copiedSet = runtimeSet.createCopy(
+        str(tmp_path),
+        ext="sqlite",
+    )
+
+    assert type(copiedSet) is NativeCopySet
+    assert not isinstance(
+        copiedSet,
+        PostgresqlRuntimeSetMixin,
+    )
 
 
 

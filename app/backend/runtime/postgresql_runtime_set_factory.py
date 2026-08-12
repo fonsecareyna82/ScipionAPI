@@ -71,6 +71,34 @@ class PostgresqlRuntimeSetMixin:
 
         return super().getClass()
 
+    @classmethod
+    def create(
+            cls,
+            outputPath,
+            prefix=None,
+            suffix=None,
+            ext=None,
+            **kwargs,
+    ):
+        nativeSetClass = getattr(
+            cls,
+            "_postgresqlNativeSetClass",
+            None,
+        )
+
+        if not isinstance(nativeSetClass, type):
+            raise RuntimeError(
+                "PostgreSQL runtime Set does not have a native Set class."
+            )
+
+        return nativeSetClass.create(
+            outputPath,
+            prefix=prefix,
+            suffix=suffix,
+            ext=ext,
+            **kwargs,
+        )
+
     def load(self):
         mapperFactory = getattr(
             self,
@@ -3622,6 +3650,7 @@ class PostgresqlRuntimeSetFactory:
             ),
             {
                 "__module__": nativeSetClass.__module__,
+                "_postgresqlNativeSetClass": nativeSetClass,
             },
         )
 
