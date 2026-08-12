@@ -23,3 +23,44 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import scipionapi_cli.install as installModule
+
+
+def test_ResolveApiPortUsesRequestedPort():
+    assert installModule._resolveApiPort(
+        {"API_PORT": "41000"},
+        requestedApiPort=42000,
+    ) == "42000"
+
+
+def test_ResolveApiPortPreservesExistingPort():
+    assert installModule._resolveApiPort(
+        {"API_PORT": "41000"},
+    ) == "41000"
+
+
+def test_ResolveApiPortSelectsFreePort(monkeypatch):
+    monkeypatch.setattr(
+        installModule,
+        "getFreePort",
+        lambda: 45000,
+    )
+
+    assert installModule._resolveApiPort({}) == "45000"
+
+
+def test_FindFreePortSkipsExcludedPort(monkeypatch):
+    ports = iter([
+        45000,
+        45001,
+    ])
+
+    monkeypatch.setattr(
+        installModule,
+        "getFreePort",
+        lambda: next(ports),
+    )
+
+    assert installModule._findFreePort(
+        excludedPorts=["45000"],
+    ) == "45001"

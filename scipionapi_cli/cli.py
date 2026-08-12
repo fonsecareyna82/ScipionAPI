@@ -183,6 +183,19 @@ def install(
         help="Name of an environment variable containing the admin password.",
         show_default=False,
     ),
+    apiPort: Optional[int] = typer.Option(
+        None,
+        "--api-port",
+        envvar="SCIPIONAPI_API_PORT",
+        help=(
+            "API/Web port. If omitted, an existing API_PORT "
+            "is preserved or a free port is selected automatically."
+        ),
+        min=1,
+        max=65535,
+        show_default=False,
+    ),
+
 ) -> None:
     # nonInteractiveInstall
     adminPassword = _resolveAdminPassword(password, passwordEnv)
@@ -191,6 +204,7 @@ def install(
         adminUser=user,
         adminEmail=email,
         adminPassword=adminPassword,
+        apiPort=apiPort,
     )
 
 
@@ -242,6 +256,18 @@ def provision(
         "--api-base-url",
         help="API base URL the web frontend should use. Defaults to the resolved API mount path.",
     ),
+    apiPort: Optional[int] = typer.Option(
+        None,
+        "--api-port",
+        envvar="SCIPIONAPI_API_PORT",
+        help=(
+            "API/Web port. If omitted, an existing API_PORT "
+            "is preserved or a free port is selected automatically."
+        ),
+        min=1,
+        max=65535,
+        show_default=False,
+    ),
     runBootstrap: bool = typer.Option(
         True,
         "--bootstrap/--no-bootstrap",
@@ -292,6 +318,7 @@ def provision(
         pythonVersion=pythonVersion,
         installScipionCore=installScipionCore,
         scipionCorePackages=scipionCorePackages,
+        apiPort=apiPort,
     )
 
 

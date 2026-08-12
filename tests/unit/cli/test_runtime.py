@@ -23,3 +23,22 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import socket
+
+from scipionapi_cli.runtime import _canBindTcpPort
+
+
+def test_CanBindTcpPortDetectsOccupiedPort():
+    with socket.socket(
+        socket.AF_INET,
+        socket.SOCK_STREAM,
+    ) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        occupiedPort = listener.getsockname()[1]
+
+        assert _canBindTcpPort(
+            "127.0.0.1",
+            str(occupiedPort),
+        ) is False

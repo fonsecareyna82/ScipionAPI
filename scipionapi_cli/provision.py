@@ -282,6 +282,7 @@ def provisionCommand(
     webDist: Optional[str] = None,
     apiMountPath: str = "/api",
     apiBaseUrl: Optional[str] = None,
+    apiPort: Optional[int] = None,
     runBootstrap: bool = True,
     envName: str = "scipion4Web",
     pythonVersion: str = "3.8",
@@ -301,6 +302,7 @@ def provisionCommand(
             ("webDist", webDist or "not provided"),
             ("API mount path", apiMountPath),
             ("API base URL", apiBaseUrl or "auto"),
+            ("API port", apiPort if apiPort is not None else "auto / existing"),
             ("Run bootstrap", runBootstrap),
             ("Env name", envName),
             ("Python version", pythonVersion),
@@ -349,7 +351,12 @@ def provisionCommand(
     )
 
     _printStep("Running install phase")
-    installCommand(adminUser=adminUser, adminEmail=adminEmail, adminPassword=adminPassword)
+    installCommand(
+        adminUser=adminUser,
+        adminEmail=adminEmail,
+        adminPassword=adminPassword,
+        apiPort=apiPort,
+    )
     _printSuccess("Install phase completed")
 
     env = readEnvFile(envPath)
@@ -414,7 +421,7 @@ def provisionCommand(
     _printSuccess("Runtime services started")
 
     apiHost = env.get("API_HOST", "0.0.0.0")
-    apiPort = env.get("API_PORT", "8080")
+    resolvedApiPort = env.get("API_PORT", "")
     serveWeb = (env.get("SERVE_WEB") or "").strip() == "1"
     mountPath = _normalizeMountPath(env.get("API_MOUNT_PATH") or resolvedApiMountPath)
 
@@ -427,13 +434,13 @@ def provisionCommand(
         ("SCIPION_HOME", scipionHome),
         ("Env file", envPath),
         ("API host", apiHost),
-        ("API port", apiPort),
-        ("API docs", f"http://{displayHost}:{apiPort}{mountPath}/docs" if serveWeb else f"http://{displayHost}:{apiPort}/docs"),
+        ("API port", resolvedApiPort),
+        ("API docs", f"http://{displayHost}:{resolvedApiPort}{mountPath}/docs" if serveWeb else f"http://{displayHost}:{resolvedApiPort}/docs"),
         ("Serve web", "yes" if serveWeb else "no"),
     ]
 
     if serveWeb:
-        summaryRows.append(("Web URL", f"http://{displayHost}:{apiPort}/"))
+        summaryRows.append(("Web URL", f"http://{displayHost}:{resolvedApiPort}/"))
         summaryRows.append(("WEB_DIST_PATH", env.get("WEB_DIST_PATH", "")))
         summaryRows.append(("WEB_API_BASE_URL", env.get("WEB_API_BASE_URL", "")))
 

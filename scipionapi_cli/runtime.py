@@ -219,6 +219,34 @@ def _tcpReachable(host: str, port: str, timeoutSec: float = 1.0) -> bool:
         return False
 
 
+def _canBindTcpPort(host: str, port: str) -> bool:
+    # Check whether the configured API address can be bound.
+    try:
+        bindHost = (host or "0.0.0.0").strip()
+        bindPort = int(str(port).strip())
+
+        family = (
+            socket.AF_INET6
+            if ":" in bindHost
+            else socket.AF_INET
+        )
+
+        with socket.socket(
+            family,
+            socket.SOCK_STREAM,
+        ) as sock:
+            sock.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_REUSEADDR,
+                1,
+            )
+            sock.bind((bindHost, bindPort))
+
+        return True
+
+    except Exception:
+        return False
+
 def _httpCheck(url: str, timeoutSec: float = 2.0) -> Tuple[bool, str]:
     # httpCheck
     try:
@@ -484,6 +512,14 @@ def startCommand() -> None:
     )
 
     if not apiPidPath.exists():
+        if not _canBindTcpPort(apiHost, apiPort):
+            raise RuntimeError(
+                f"API port {apiPort} is already in use "
+                f"on host {apiHost}. "
+                "Run install/provision with --api-port <port> "
+                f"or update API_PORT in {envPath}."
+            )
+
         _printInfo("Launching uvicorn")
         apiEnv = os.environ.copy()
         apiEnv["PYTHONPATH"] = str(repoRoot)

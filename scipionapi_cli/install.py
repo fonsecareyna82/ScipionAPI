@@ -84,6 +84,69 @@ def _maskSecret(value: str, visible: int = 4) -> str:
     return f"{text[:visible]}{'*' * 8}"
 
 
+def _normalizePort(value: Any, label: str) -> str:
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"Invalid {label}: {value}"
+        )
+
+    if port < 1 or port > 65535:
+        raise RuntimeError(
+            f"Invalid {label}: {port}. "
+            "Expected a value between 1 and 65535."
+        )
+
+    return str(port)
+
+
+def _findFreePort(
+    excludedPorts: Optional[List[str]] = None,
+) -> str:
+    excluded = {
+        str(port).strip()
+        for port in (excludedPorts or [])
+        if str(port).strip()
+    }
+
+    for _ in range(20):
+        port = getFreePort()
+
+        if not port:
+            continue
+
+        portValue = str(port)
+
+        if portValue not in excluded:
+            return portValue
+
+    raise RuntimeError(
+        "Could not find a free TCP port."
+    )
+
+
+def _resolveApiPort(
+    existing: Dict[str, str],
+    requestedApiPort: Optional[int] = None,
+) -> str:
+    if requestedApiPort is not None:
+        return _normalizePort(
+            requestedApiPort,
+            "API port",
+        )
+
+    existingApiPort = existing.get("API_PORT")
+
+    if existingApiPort:
+        return _normalizePort(
+            existingApiPort,
+            "API_PORT",
+        )
+
+    return _findFreePort()
+
+
 def _writeFileIfMissingOrEmpty(path: Path, content: str) -> Path:
     # writeFileIfMissingOrEmpty
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +326,12 @@ def _printSummaryTable(rows: List[Tuple[str, Any]]) -> None:
             print(f"  {key}: {value}", flush=True)
 
 
-def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
+def installCommand(
+    adminUser: str,
+    adminEmail: str,
+    adminPassword: str,
+    apiPort: Optional[int] = None,
+) -> None:
     # installCommandNonInteractive
     repoRoot = resolveRepoRoot()
 
@@ -326,13 +394,22 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
     )
     _printSuccess(f"Scipion config ready: {scipionConfPath}")
     _printSuccess(f"Hosts config ready: {hostsConfPath}")
-    apiPort = existing.get("API_PORT") or "8080"
+    apiPort = _resolveApiPort(
+        existing,
+        requestedApiPort=apiPort,
+    )
 
     scipionPort = existing.get("SCIPION_PORT")
+
     if not scipionPort:
-        scipionPort = str(getFreePort())
+        scipionPort = _findFreePort(
+            excludedPorts=[apiPort],
+        )
     else:
-        scipionPort = str(scipionPort)
+        scipionPort = _normalizePort(
+            scipionPort,
+            "SCIPION_PORT",
+        )
 
     _printKeyValueTable(
         "Resolved paths and settings",
@@ -428,7 +505,7 @@ def installCommand(adminUser: str, adminEmail: str, adminPassword: str) -> None:
             ("Database", dbName),
             ("Database user", dbUser),
             ("API host", env.get("API_HOST", "0.0.0.0")),
-            ("API port", env.get("API_PORT", "8080")),
+            ("API port", env.get("API_PORT", apiPort)),
             ("SCIPION_PORT", env.get("SCIPION_PORT", scipionPort)),
             ("Admin email", adminEmail),
             ("Conda executable", condaExe or "not detected"),

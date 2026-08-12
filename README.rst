@@ -453,6 +453,19 @@ Override the location before running install/provision:
     export SCIPION_HOME=/path/to/scipion_home
     ./scripts/scipionapi provision --user ... --email ... --pass ...
 
+To force a specific API/Web port:
+
+::
+
+    ./scripts/scipionapi provision \
+      --user "admin" \
+      --email "admin@local" \
+      --pass "changeMe" \
+      --api-port 39080
+
+If ``--api-port`` is omitted, the first installation selects a free port
+automatically and persists it in ``${SCIPION_HOME}/.env``.
+
 ----------------------------------------------------------
 10. .env Variables (generated under SCIPION_HOME)
 ----------------------------------------------------------
@@ -480,7 +493,7 @@ Services:
 
 * ``BROKER_URL`` (default: ``redis://localhost:6379/0``)
 * ``API_HOST`` (default: ``0.0.0.0``)
-* ``API_PORT`` (default: ``8080``)
+* ``API_PORT`` (a free port is selected automatically on first install; the persisted value is reused afterwards; override with ``--api-port``)
 * ``CELERY_APP`` (default: ``app.workers.task_queue``)
 * ``CELERY_LOGLEVEL`` (default: ``info``)
 
