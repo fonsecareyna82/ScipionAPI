@@ -231,6 +231,7 @@ removeCondaEnv() {
 
 validateFullInstallRoot() {
   local allowLegacy="${1:-0}"
+  local allowCleanedLegacy="${2:-0}"
   local markerPath="${repoRoot}/.scipionweb-installation"
 
   if [[ -f "${markerPath}" ]]; then
@@ -248,6 +249,10 @@ validateFullInstallRoot() {
       echo "ERROR: Guided installation marker does not match repo root: ${repoRoot}" >&2
       return 1
     fi
+    if ! grep -Fxq "SCIPION_HOME=${repoRoot}/scipion_home" "${markerPath}"; then
+      echo "ERROR: Guided installation marker has an invalid SCIPION_HOME: ${markerPath}" >&2
+      return 1
+    fi
   else
     if [[ "${allowLegacy}" != "1" ]]; then
       echo "ERROR: Full uninstall requires a guided installation marker." >&2
@@ -260,7 +265,8 @@ validateFullInstallRoot() {
       return 1
     fi
 
-    if [[ ! -f "${repoRoot}/scipion_home/.env" ]]; then
+    if [[ "${allowCleanedLegacy}" != "1" && \
+          ! -f "${repoRoot}/scipion_home/.env" ]]; then
       echo "ERROR: Legacy full uninstall could not verify SCIPION_HOME/.env: ${repoRoot}" >&2
       return 1
     fi
@@ -283,7 +289,10 @@ validateFullInstallRoot() {
 
 removeFullInstallRoot() {
   local allowLegacy="${1:-0}"
-  validateFullInstallRoot "${allowLegacy}"
+
+  # The Python cleanup has already removed SCIPION_HOME at this point.
+  # Revalidate the root layout, but do not require the legacy .env again.
+  validateFullInstallRoot "${allowLegacy}" "1"
 
   local rootToRemove="${repoRoot}"
   cd /

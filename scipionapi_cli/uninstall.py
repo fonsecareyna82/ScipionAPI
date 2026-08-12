@@ -140,6 +140,27 @@ def _validateGuidedInstallationMarker(repoRoot: Path) -> Path:
             f"repository root: {markerRoot} != {repoRoot}"
         )
 
+    configuredScipionHome = marker.get("SCIPION_HOME")
+    if not configuredScipionHome:
+        raise RuntimeError(
+            f"Guided installation marker has no SCIPION_HOME: {markerPath}"
+        )
+
+    markerScipionHome = Path(
+        configuredScipionHome
+    ).expanduser().resolve()
+
+    expectedScipionHome = (
+        repoRoot / "scipion_home"
+    ).resolve()
+
+    if markerScipionHome != expectedScipionHome:
+        raise RuntimeError(
+            "Guided installation marker SCIPION_HOME does not match "
+            "the installation root: "
+            f"{markerScipionHome} != {expectedScipionHome}"
+        )
+
     unsafeRoots = {
         Path("/").resolve(),
         Path.home().expanduser().resolve(),
@@ -203,6 +224,32 @@ def _validateFullInstallationRoot(
 
     _validateLegacyInstallationRoot(repoRoot)
     return "legacy"
+
+
+def _validateFullScipionHome(
+    repoRoot: Path,
+    scipionHome: Path,
+) -> Path:
+    repoRoot = repoRoot.expanduser().resolve()
+    expectedPath = repoRoot / "scipion_home"
+
+    if expectedPath.is_symlink():
+        raise RuntimeError(
+            "Refusing full uninstall because the installation SCIPION_HOME "
+            f"is a symbolic link: {expectedPath}"
+        )
+
+    expectedHome = expectedPath.resolve()
+    resolvedHome = scipionHome.expanduser().resolve()
+
+    if resolvedHome != expectedHome:
+        raise RuntimeError(
+            "Full uninstall resolved SCIPION_HOME outside this installation: "
+            f"{resolvedHome} != {expectedHome}. "
+            "Unset SCIPION_HOME or use the regular uninstall command."
+        )
+
+    return expectedHome
 
 
 def _confirmPlan(
@@ -392,7 +439,18 @@ def uninstallWebCommand(
         keepCondaEnv = False
 
     scipionHome, envPath, env = _readInstallationEnv(repoRoot)
-    condaEnv = os.environ.get("SCIPIONAPI_ENV_NAME") or os.environ.get("SCIPIONAPI_CONDA_ENV") or "scipion4Web"
+
+    if full:
+        _validateFullScipionHome(
+            repoRoot,
+            scipionHome,
+        )
+
+    condaEnv = (
+            os.environ.get("SCIPIONAPI_ENV_NAME")
+            or os.environ.get("SCIPIONAPI_CONDA_ENV")
+            or "scipion4Web"
+    )
 
     _printPanel("ScipionAPI web uninstall")
     _printKeyValueTable(

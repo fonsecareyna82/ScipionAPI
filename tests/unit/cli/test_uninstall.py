@@ -7,6 +7,12 @@ from scipionapi_cli.uninstall import (
     _validateGuidedInstallationMarker,
     _validateLegacyInstallationRoot,
 )
+from scipionapi_cli.uninstall import (
+    _validateFullInstallationRoot,
+    _validateFullScipionHome,
+    _validateGuidedInstallationMarker,
+    _validateLegacyInstallationRoot,
+)
 
 
 def _writeMarker(repo_root: Path, install_root: Path) -> None:
@@ -88,3 +94,55 @@ def test_ValidateLegacyInstallationRootRejectsGitCheckout(tmp_path):
 
     with pytest.raises(RuntimeError, match="Git checkout"):
         _validateLegacyInstallationRoot(repo_root)
+
+
+def test_ValidateFullScipionHomeAcceptsInstallationHome(tmp_path):
+    repo_root = tmp_path / "scipionweb"
+    scipion_home = repo_root / "scipion_home"
+
+    repo_root.mkdir()
+    scipion_home.mkdir()
+
+    assert _validateFullScipionHome(
+        repo_root,
+        scipion_home,
+    ) == scipion_home.resolve()
+
+
+def test_ValidateFullScipionHomeRejectsExternalHome(tmp_path):
+    repo_root = tmp_path / "scipionweb"
+    external_home = tmp_path / "other-scipion-home"
+
+    repo_root.mkdir()
+    external_home.mkdir()
+
+    with pytest.raises(
+        RuntimeError,
+        match="outside this installation",
+    ):
+        _validateFullScipionHome(
+            repo_root,
+            external_home,
+        )
+
+
+def test_ValidateFullScipionHomeRejectsSymlink(tmp_path):
+    repo_root = tmp_path / "scipionweb"
+    external_home = tmp_path / "external-home"
+
+    repo_root.mkdir()
+    external_home.mkdir()
+
+    (repo_root / "scipion_home").symlink_to(
+        external_home,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="symbolic link",
+    ):
+        _validateFullScipionHome(
+            repo_root,
+            external_home,
+        )

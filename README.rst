@@ -436,9 +436,25 @@ Completely remove an installation created by the guided ``install.sh``:
     cd /path/to/scipionweb
     ./scripts/scipionapi uninstall --full
 
-``--full`` is intentionally restricted to installations carrying the
-``.scipionweb-installation`` marker created by ``install.sh``. It stops the
-runtime, removes the configured PostgreSQL database and role, removes
+By default, ``--full`` is restricted to installations carrying the
+``.scipionweb-installation`` marker created by ``install.sh``.
+
+For older packaged installations created before this marker existed, use:
+
+::
+
+    /path/to/scipionweb/scripts/scipionapi uninstall \
+      --full \
+      --legacy-install
+
+Legacy full uninstall is only accepted for packaged installations with the
+expected ScipionAPI layout. Git checkouts are always rejected.
+
+A full uninstall stops the runtime, removes the configured PostgreSQL database
+and role, removes ``SCIPION_HOME``, removes the conda environment, and finally
+removes the installation directory. Use ``--dry-run`` to inspect the plan
+first.
+It stops the runtime, removes the configured PostgreSQL database and role, removes
 ``SCIPION_HOME``, removes the conda environment, and finally removes the guided
 installation directory. Use ``--dry-run`` to inspect the plan first.
 
