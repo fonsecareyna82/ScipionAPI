@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import os
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -99,6 +100,146 @@ def _storeProtocolStep(mapper, projectId, protocolDbId, protocolId, name):
                 "schemaVersion": 2,
             },
         ],
+    )
+
+
+def test_MaterializeProjectRebasesExternalRelativeSymlink(tmp_path):
+    sourcePath = tmp_path / "source-project"
+    targetPath = tmp_path / "projects" / "imported-project"
+
+    sourceLink = (
+        sourcePath
+        / "Runs"
+        / "000174_ProtImportTs"
+        / "extra"
+        / "tilt10.mrc"
+    )
+
+    externalFile = (
+        tmp_path
+        / "external-data"
+        / "tilt10.mrc"
+    )
+
+    sourceLink.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    externalFile.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    externalFile.write_bytes(
+        b"EXTERNAL_TILT_DATA"
+    )
+
+    relativeTarget = os.path.relpath(
+        externalFile,
+        start=sourceLink.parent,
+    )
+
+    sourceLink.symlink_to(
+        relativeTarget
+    )
+
+    assert sourceLink.is_symlink()
+    assert sourceLink.exists()
+    assert sourceLink.resolve() == externalFile.resolve()
+
+    RuntimeProjectImportService._materializeProject(
+        sourcePath=sourcePath,
+        targetPath=targetPath,
+    )
+
+    importedLink = (
+        targetPath
+        / sourceLink.relative_to(sourcePath)
+    )
+
+    assert importedLink.is_symlink()
+    assert importedLink.exists()
+
+    assert importedLink.resolve() == externalFile.resolve()
+
+    assert importedLink.read_bytes() == (
+        b"EXTERNAL_TILT_DATA"
+    )
+
+
+def test_MaterializeProjectRebasesInternalRelativeSymlink(tmp_path):
+    sourcePath = tmp_path / "source-project"
+    targetPath = tmp_path / "projects" / "imported-project"
+
+    sourceFile = (
+        sourcePath
+        / "Uploads"
+        / "data"
+        / "tilt10.mrc"
+    )
+
+    sourceLink = (
+        sourcePath
+        / "Runs"
+        / "000174_ProtImportTs"
+        / "extra"
+        / "tilt10.mrc"
+    )
+
+    sourceFile.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sourceLink.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sourceFile.write_bytes(
+        b"INTERNAL_TILT_DATA"
+    )
+
+    relativeTarget = os.path.relpath(
+        sourceFile,
+        start=sourceLink.parent,
+    )
+
+    sourceLink.symlink_to(
+        relativeTarget
+    )
+
+    assert sourceLink.is_symlink()
+    assert sourceLink.exists()
+    assert sourceLink.resolve() == sourceFile.resolve()
+
+    RuntimeProjectImportService._materializeProject(
+        sourcePath=sourcePath,
+        targetPath=targetPath,
+    )
+
+    importedLink = (
+        targetPath
+        / sourceLink.relative_to(sourcePath)
+    )
+
+    importedFile = (
+        targetPath
+        / sourceFile.relative_to(sourcePath)
+    )
+
+    assert importedFile.is_file()
+
+    assert importedLink.is_symlink()
+    assert importedLink.exists()
+
+    assert importedLink.resolve() == importedFile.resolve()
+
+    assert importedLink.resolve() != sourceFile.resolve()
+
+    assert importedLink.read_bytes() == (
+        b"INTERNAL_TILT_DATA"
     )
 
 
