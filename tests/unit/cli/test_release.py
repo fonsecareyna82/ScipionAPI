@@ -12,8 +12,8 @@ from scipionapi_cli.release import (
 
 def test_NormalizeRemoteDirRemovesTrailingSlash():
     assert _normalizeRemoteDir(
-        "scipionfiles/downloads/scipion/scipionWeb/"
-    ) == "scipionfiles/downloads/scipion/scipionWeb"
+        "/home/scipion/scipionfiles/downloads/scipion/scipionWeb/"
+    ) == "/home/scipion/scipionfiles/downloads/scipion/scipionWeb"
 
 
 @pytest.mark.parametrize(
@@ -27,8 +27,8 @@ def test_NormalizeRemoteDirRejectsUnsafeValues(value):
 
 def test_NormalizeLoginAcceptsScipionSshLogin():
     assert _normalizeLogin(
-        "scipion@scipion.cnb.csic.es"
-    ) == "scipion@scipion.cnb.csic.es"
+        "scipion@nolan.cnb.csic.es"
+    ) == "scipion@nolan.cnb.csic.es"
 
 
 @pytest.mark.parametrize("value", ["", "-bad", "bad login", "bad;login"])
@@ -111,3 +111,12 @@ def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
     )
 
     assert uploads == []
+
+
+def test_ReleaseDefaultsMatchScipionDownloadServer():
+    assert releaseModule.DEFAULT_RELEASE_LOGIN == (
+        "scipion@nolan.cnb.csic.es"
+    )
+    assert releaseModule.DEFAULT_RELEASE_REMOTE_DIR == (
+        "/home/scipion/scipionfiles/downloads/scipion/scipionWeb"
+    )

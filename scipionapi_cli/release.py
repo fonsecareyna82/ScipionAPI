@@ -23,8 +23,8 @@ from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.update import DEFAULT_UPDATE_BASE_URL
 
 
-DEFAULT_RELEASE_LOGIN = "scipion@scipion.cnb.csic.es"
-DEFAULT_RELEASE_REMOTE_DIR = "scipionfiles/downloads/scipion/scipionWeb"
+DEFAULT_RELEASE_LOGIN = "scipion@nolan.cnb.csic.es"
+DEFAULT_RELEASE_REMOTE_DIR = "/home/scipion/scipionfiles/downloads/scipion/scipionWeb"
 DEFAULT_RELEASE_BASE_URL = DEFAULT_UPDATE_BASE_URL
 
 console = Console()
