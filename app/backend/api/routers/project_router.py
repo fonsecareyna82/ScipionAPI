@@ -1776,7 +1776,7 @@ async def writeRemoteFile(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
-async def previewOutput(
+def previewOutput(
     projectId: int,
     protocolId: Union[int, str],
     outputName: str,
