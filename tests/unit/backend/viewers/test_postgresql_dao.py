@@ -329,6 +329,24 @@ def test_GenerateTableActionsAddsParticleAction(postgresqlDaoModule, monkeypatch
     assert _getActionNames(table) == ["Particle"]
 
 
+def test_GenerateTableActionsAddsRelionPseudoSubtomogramAction(
+    postgresqlDaoModule,
+    monkeypatch,
+):
+    storedSet = _makeStoredSet(
+        setClassName="RelionSetOfPseudoSubtomograms",
+        itemClassName="RelionPSubtomogram",
+    )
+    setMapper = FakeSetMapper(storedSet=storedSet)
+    dao = _buildDao(postgresqlDaoModule, monkeypatch, setMapper)
+
+    table = dao.getTables()["objects"]
+    dao.fillTable(table, FakeObjectManager())
+
+    assert dao._objectsType["RelionPSubtomogram"] == "RelionSetOfPseudoSubtomograms"
+    assert _getActionNames(table) == ["RelionPSubtomogram"]
+
+
 def test_GenerateTableActionsAddsVolumesForClass3D(postgresqlDaoModule, monkeypatch):
     dao, _setMapper = _buildLogicalDao(
         postgresqlDaoModule,

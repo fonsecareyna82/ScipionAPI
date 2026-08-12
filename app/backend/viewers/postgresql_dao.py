@@ -78,6 +78,9 @@ EXTENDED_COLUMN_NAME = "stack"
 PROPERTY_KEY_COLUMN = "key"
 PROPERTY_VALUE_COLUMN = "value"
 ADITIONAL_INFO_DISPLAY_COLUMN_LIST = ["_size", "id"]
+SUBSET_COMPATIBLE_NON_STANDARD_SET_TYPES = {
+    "RelionSetOfPseudoSubtomograms",
+}
 
 
 def _guessType(value):
@@ -448,6 +451,10 @@ class PostgresqlDAO(IDAO):
 
         return "SetOf%s%s" % (normalizedName, suffix)
 
+    def _supportsSubset(self, objectType: str) -> bool:
+        objectType = str(objectType or "").strip()
+        return objectType.startswith("SetOf") or objectType in SUBSET_COMPATIBLE_NON_STANDARD_SET_TYPES
+
     def generateTableActions(self, table, objectManager) -> None:
         if table.getName() == PROPERTIES_TABLE:
             return
@@ -488,7 +495,7 @@ class PostgresqlDAO(IDAO):
             if objectType:
                 self._addTableAction(table, actionName, objectType, objectManager)
 
-        elif alias in self._objectsType and str(self._objectsType[alias]).startswith("SetOf"):
+        elif alias in self._objectsType and self._supportsSubset(self._objectsType[alias]):
             self._addTableAction(table, alias, self._objectsType[alias], objectManager)
 
     def _addTableAction(self, table, actionName: str, objectType: str, objectManager) -> None:
