@@ -43,10 +43,70 @@ from app.backend.runtime.protocol_status_sync_service import (
 from app.backend.runtime.protocol_output_persistence_service import (
     RuntimeProtocolOutputPersistenceService,
 )
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 
 
 class ProtocolContextService:
     """Build the web context for a Scipion protocol."""
+
+    def _hasUnavailablePostgresqlInputs(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocol,
+            getScipionObjectIdCallback: Callable,
+            resolvePostgresqlProtocolDbIdCallback: Callable,
+    ) -> bool:
+        if mapper is None:
+            return False
+
+        protocolId = getScipionObjectIdCallback(protocol)
+
+        if protocolId in (None, ""):
+            return False
+
+        protocolDbId = resolvePostgresqlProtocolDbIdCallback(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return False
+
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        inputRefs = protocolGraphRepository.loadInputRefsForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+        )
+
+        for inputRef in inputRefs or []:
+            parentOutputName = str(inputRef.get("parentOutputName") or "").strip()
+
+            if not parentOutputName:
+                continue
+
+            parentProtocolDbId = inputRef.get("parentProtocolDbId")
+
+            if parentProtocolDbId in (None, ""):
+                return True
+
+            rootOutputName = parentOutputName.split(".", 1)[0]
+
+            outputInfo = protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(parentProtocolDbId),
+                outputName=rootOutputName,
+            )
+
+            if not outputInfo.get("exists") or outputInfo.get("runtimeObjectId") in (None, ""):
+                return True
+
+        return False
 
     def buildContext(
             self,
@@ -250,11 +310,17 @@ class ProtocolContextService:
             },
         }
 
-        emptyInput, openSetPointer, emptyPointers = (
-            protocol.getInputStatus()
+        emptyInput, openSetPointer, emptyPointers = protocol.getInputStatus()
+
+        unavailablePostgresqlInputs = self._hasUnavailablePostgresqlInputs(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            getScipionObjectIdCallback=getScipionObjectIdCallback,
+            resolvePostgresqlProtocolDbIdCallback=resolvePostgresqlProtocolDbIdCallback,
         )
 
-        if openSetPointer or emptyPointers:
+        if openSetPointer or emptyPointers or unavailablePostgresqlInputs:
             info["executeMode"] = {
                 "schedule": {
                     "label": "Schedule",
