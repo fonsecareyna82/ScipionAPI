@@ -414,6 +414,35 @@ Options include ``--api-only``/``--web-only`` to update a single side,
 the full list (including ``--base-url``/``--api-zip-url``/``--web-zip-url``
 for custom release sources).
 
+Publish a release to the ScipionWeb download server (developer/admin use):
+
+::
+
+    ./scripts/scipionapi release \
+      --upload \
+      --version v4.0.0 \
+      --downloads-dir /path/to/release/files
+
+The upload command publishes the paired API/Web ZIPs plus ``install.sh`` and
+updates ``manifest.json`` as the final atomic step. Use ``--dry-run`` first to
+inspect the resolved remote path and release plan. The SSH login, remote path,
+and public URL can be overridden with ``--login``, ``--remote-dir``, and
+``--base-url`` (or ``SCIPIONWEB_RELEASE_*`` environment variables).
+
+Completely remove an installation created by the guided ``install.sh``:
+
+::
+
+    cd /path/to/scipionweb
+    ./scripts/scipionapi uninstall --full
+
+``--full`` is intentionally restricted to installations carrying the
+``.scipionweb-installation`` marker created by ``install.sh``. It stops the
+runtime, removes the configured PostgreSQL database and role, removes
+``SCIPION_HOME``, removes the conda environment, and finally removes the guided
+installation directory. Use ``--dry-run`` to inspect the plan first.
+
+
 Read-only diagnostics (repository, environment, database, broker, imports,
 runtime services):
 

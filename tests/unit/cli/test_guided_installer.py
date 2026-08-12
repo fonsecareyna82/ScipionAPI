@@ -27,3 +27,13 @@ def test_GuidedInstallerHelpIsAvailableWithoutPreflight():
     assert "ScipionWeb administrator username" in result.stdout
     assert "--check-only" in result.stdout
     assert "--non-interactive" in result.stdout
+
+
+def test_GuidedInstallerCreatesFullUninstallMarker():
+    content = INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'INSTALL_MARKER_NAME=".scipionweb-installation"' in content
+    assert "INSTALL_TYPE=guided" in content
+    assert "INSTALL_ROOT=${INSTALL_DIR}" in content
+    assert "write_install_marker" in content
+    assert "./scripts/scipionapi uninstall --full" in content

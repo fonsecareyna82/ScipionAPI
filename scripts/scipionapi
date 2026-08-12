@@ -69,6 +69,8 @@ Typical usage:
   ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
   ./scripts/scipionapi install --user ... --email ... --pass ...
   ./scripts/scipionapi update [--version v4.0.0]
+  ./scripts/scipionapi release --upload --version v4.0.0 --downloads-dir <dir>
+  ./scripts/scipionapi uninstall --full
   ./scripts/scipionapi uninstall-web --yes
   ./scripts/scipionapi start|stop|restart|status|logs
 
@@ -77,7 +79,8 @@ Notes:
   - install configures SCIPION_HOME, database, migrations, and admin user
   - provision combines bootstrap/install/start in one flow
   - update downloads ScipionAPI/ScipionWeb release ZIPs and preserves current .env/data
-  - uninstall-web stops services and removes the web runtime resources without deleting this repo
+  - release --upload publishes release ZIPs, install.sh, and manifest.json
+  - uninstall/uninstall-web removes runtime resources; --full also removes a guided installation root
   - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
   - To force an isolated home: export SCIPION_HOME=<path>
 EOF
@@ -226,17 +229,82 @@ removeCondaEnv() {
   "${condaExe}" env remove -n "${effectiveEnvName}" -y || true
 }
 
+validateFullInstallRoot() {
+  local allowLegacy="${1:-0}"
+  local markerPath="${repoRoot}/.scipionweb-installation"
+
+  if [[ -f "${markerPath}" ]]; then
+    if ! grep -Fxq "FORMAT=1" "${markerPath}"; then
+      echo "ERROR: Unsupported guided installation marker format: ${markerPath}" >&2
+      return 1
+    fi
+
+    if ! grep -Fxq "INSTALL_TYPE=guided" "${markerPath}"; then
+      echo "ERROR: Invalid guided installation marker: ${markerPath}" >&2
+      return 1
+    fi
+
+    if ! grep -Fxq "INSTALL_ROOT=${repoRoot}" "${markerPath}"; then
+      echo "ERROR: Guided installation marker does not match repo root: ${repoRoot}" >&2
+      return 1
+    fi
+  else
+    if [[ "${allowLegacy}" != "1" ]]; then
+      echo "ERROR: Full uninstall requires a guided installation marker." >&2
+      echo "If this is a pre-marker packaged installation, rerun with --full --legacy-install." >&2
+      return 1
+    fi
+
+    if [[ -e "${repoRoot}/.git" ]]; then
+      echo "ERROR: Refusing legacy full uninstall for a Git checkout: ${repoRoot}" >&2
+      return 1
+    fi
+
+    if [[ ! -f "${repoRoot}/scipion_home/.env" ]]; then
+      echo "ERROR: Legacy full uninstall could not verify SCIPION_HOME/.env: ${repoRoot}" >&2
+      return 1
+    fi
+  fi
+
+  case "${repoRoot}" in
+    /|"${HOME}"|"${HOME}/"|/home|/usr|/opt|/var|/tmp)
+      echo "ERROR: Refusing unsafe full uninstall root: ${repoRoot}" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ ! -f "${repoRoot}/pyproject.toml" ]] || \
+     [[ ! -f "${repoRoot}/alembic.ini" ]] || \
+     [[ ! -x "${repoRoot}/scripts/scipionapi" ]]; then
+    echo "ERROR: Installation root does not have the expected ScipionAPI layout: ${repoRoot}" >&2
+    return 1
+  fi
+}
+
+removeFullInstallRoot() {
+  local allowLegacy="${1:-0}"
+  validateFullInstallRoot "${allowLegacy}"
+
+  local rootToRemove="${repoRoot}"
+  cd /
+  rm -rf -- "${rootToRemove}"
+  echo "Removed ScipionWeb installation: ${rootToRemove}"
+}
+
 uninstallWeb() {
   if has_flag "-h" "$@" || has_flag "--help" "$@" || has_flag "help" "$@"; then
     if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
       runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@"
     else
       cat <<EOF
-Usage: ./scripts/scipionapi uninstall-web [OPTIONS]
+Usage: ./scripts/scipionapi uninstall [OPTIONS]
+       ./scripts/scipionapi uninstall-web [OPTIONS]
 
 Safely remove ScipionWeb/ScipionAPI runtime resources.
 
 Options:
+  --full                 Completely remove the installation root after cleanup.
+  --legacy-install       Allow --full for a pre-marker packaged installation.
   --dry-run              Print the cleanup plan without removing anything.
   --yes, -y              Run without interactive confirmation.
   --keep-database        Do not drop the configured PostgreSQL database.
@@ -248,7 +316,9 @@ Options:
   -h, --help             Show this help and exit.
 
 Important:
-  Conda env removal is now opt-in. Use --remove-conda-env explicitly.
+  --full uses .scipionweb-installation for guided installs. Older packaged
+  installs may use --full --legacy-install; Git checkouts are always rejected.
+  Full removal deletes SCIPION_HOME, the conda env, and finally the root.
 EOF
     fi
     return 0
@@ -257,13 +327,33 @@ EOF
   requireEnvOrExplain
   cd "${repoRoot}"
 
+  local full="0"
+  if has_flag "--full" "$@"; then
+    full="1"
+  fi
+
+  local legacyInstall="0"
+  if has_flag "--legacy-install" "$@"; then
+    legacyInstall="1"
+  fi
+
+  if [[ "${full}" == "1" ]]; then
+    validateFullInstallRoot "${legacyInstall}"
+  fi
+
+  local dryRun="0"
+  if has_flag "--dry-run" "$@"; then
+    dryRun="1"
+  fi
+
   local removeConda="0"
-  if has_flag "--remove-conda-env" "$@" && ! has_flag "--dry-run" "$@"; then
+  if [[ "${dryRun}" == "0" ]] && \
+     { [[ "${full}" == "1" ]] || has_flag "--remove-conda-env" "$@"; }; then
     removeConda="1"
   fi
 
   local condaFlag="--keep-conda-env"
-  if [[ "${removeConda}" == "1" ]]; then
+  if [[ "${full}" == "1" || "${removeConda}" == "1" ]]; then
     condaFlag="--remove-conda-env"
   fi
 
@@ -283,8 +373,16 @@ EOF
 
   if [[ "${removeConda}" == "1" ]]; then
     removeCondaEnv
-  else
+  elif [[ "${full}" == "0" ]]; then
     echo "Keeping conda env: ${effectiveEnvName}"
+  fi
+
+  if [[ "${full}" == "1" ]]; then
+    if [[ "${dryRun}" == "1" ]]; then
+      echo "Would remove installation root: ${repoRoot}"
+    else
+      removeFullInstallRoot "${legacyInstall}"
+    fi
   fi
 }
 
@@ -338,7 +436,7 @@ if [[ "${cmd}" == "provision" ]]; then
   runInCondaCli provision "$@"
 fi
 
-if [[ "${cmd}" == "uninstall-web" ]]; then
+if [[ "${cmd}" == "uninstall-web" || "${cmd}" == "uninstall" ]]; then
   shift || true
   uninstallWeb "$@"
   exit 0

@@ -11,6 +11,7 @@ set -euo pipefail
 DEFAULT_BASE_URL="https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
 DEFAULT_INSTALL_DIR="${HOME}/scipionweb"
 DEFAULT_VERSION="latest"
+INSTALL_MARKER_NAME=".scipionweb-installation"
 
 BASE_URL="${SCIPIONWEB_DOWNLOAD_BASE_URL:-${DEFAULT_BASE_URL}}"
 INSTALL_DIR="${SCIPIONWEB_INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
@@ -558,6 +559,21 @@ extract_api() {
   print_ok "ScipionAPI extracted to ${INSTALL_DIR}"
 }
 
+write_install_marker() {
+  local marker_path="${INSTALL_DIR}/${INSTALL_MARKER_NAME}"
+
+  cat > "${marker_path}" <<EOF
+FORMAT=1
+INSTALL_TYPE=guided
+INSTALL_ROOT=${INSTALL_DIR}
+SCIPION_HOME=${INSTALL_DIR}/scipion_home
+VERSION=${RELEASE_VERSION}
+EOF
+
+  chmod 0644 "${marker_path}"
+  print_ok "Guided installation marker created: ${marker_path}"
+}
+
 run_provision() {
   local web_zip="$1"
   local provision_args=(provision --user "${ADMIN_USER}" --email "${ADMIN_EMAIL}" --password-env SCIPIONWEB_INSTALL_ADMIN_PASS --web-dist "${web_zip}")
@@ -619,6 +635,7 @@ Useful commands:
   ./scripts/scipionapi restart
   ./scripts/scipionapi stop
   ./scripts/scipionapi update
+  ./scripts/scipionapi uninstall --full
 ============================================================
 SUMMARY
 }
@@ -656,6 +673,7 @@ main() {
 
   extract_api "${api_zip}"
   run_provision "${web_zip}"
+  write_install_marker
   print_success_summary
 }
 

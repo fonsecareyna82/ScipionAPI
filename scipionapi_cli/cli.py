@@ -10,6 +10,12 @@ from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.doctor import doctorCommand
+from scipionapi_cli.release import (
+    DEFAULT_RELEASE_BASE_URL,
+    DEFAULT_RELEASE_LOGIN,
+    DEFAULT_RELEASE_REMOTE_DIR,
+    releaseUploadCommand,
+)
 from scipionapi_cli.update import updateCommand
 from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
 from scipionapi_cli.runtime import (
@@ -96,6 +102,7 @@ app = typer.Typer(
         "  scipionapi provision --user <name> --email <email> [--web-dist <dir|zip>]\n"
         "  scipionapi update\n"
         "  scipionapi update --version v4.0.0\n"
+        "  scipionapi release --upload --version v4.0.0 --downloads-dir <dir>\n"
         "  scipionapi start\n"
         "  scipionapi status\n"
         "  scipionapi logs\n"
@@ -104,6 +111,7 @@ app = typer.Typer(
         "[bold]Command groups[/bold]\n"
         "  [cyan]Setup[/cyan]: bootstrap, install, provision\n"
         "  [cyan]Update[/cyan]: update\n"
+        "  [cyan]Release[/cyan]: release\n"
         "  [cyan]Runtime[/cyan]: start, stop, restart, status, logs\n"
         "  [cyan]Diagnostics[/cyan]: doctor\n"
         "  [cyan]Info[/cyan]: version\n"
@@ -397,6 +405,111 @@ def update(
         webOnly=webOnly,
         dryRun=dryRun,
         noRestart=noRestart,
+        force=force,
+    )
+
+
+@app.command(
+    "release",
+    help=(
+        "Publish a paired ScipionAPI/ScipionWeb release to the ScipionWeb "
+        "download server using rsync + ssh."
+    ),
+)
+def release(
+    upload: bool = typer.Option(
+        False,
+        "--upload",
+        help="Upload the selected release to the configured remote server.",
+        show_default=True,
+    ),
+    version: str = typer.Option(
+        ...,
+        "--version",
+        help="Release version to publish, for example v4.0.0.",
+    ),
+    downloadsDir: str = typer.Option(
+        ".",
+        "--downloads-dir",
+        help="Directory containing the ScipionAPI and ScipionWeb release ZIPs.",
+        show_default=True,
+    ),
+    apiFile: Optional[str] = typer.Option(
+        None,
+        "--api-file",
+        help="Optional custom ScipionAPI ZIP path or filename.",
+        show_default=False,
+    ),
+    webFile: Optional[str] = typer.Option(
+        None,
+        "--web-file",
+        help="Optional custom ScipionWeb ZIP path or filename.",
+        show_default=False,
+    ),
+    login: str = typer.Option(
+        DEFAULT_RELEASE_LOGIN,
+        "--login",
+        envvar="SCIPIONWEB_RELEASE_LOGIN",
+        help="SSH login used to publish release files.",
+        show_default=True,
+    ),
+    remoteDir: str = typer.Option(
+        DEFAULT_RELEASE_REMOTE_DIR,
+        "--remote-dir",
+        envvar="SCIPIONWEB_RELEASE_REMOTE_DIR",
+        help="Remote directory corresponding to the public ScipionWeb download URL.",
+        show_default=True,
+    ),
+    baseUrl: str = typer.Option(
+        DEFAULT_RELEASE_BASE_URL,
+        "--base-url",
+        envvar="SCIPIONWEB_RELEASE_BASE_URL",
+        help="Public HTTP base URL used to verify the published manifest.",
+        show_default=True,
+    ),
+    setLatest: bool = typer.Option(
+        True,
+        "--latest/--no-latest",
+        help="Update manifest.json latest to this release.",
+        show_default=True,
+    ),
+    dryRun: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Resolve and validate the release plan without uploading files.",
+        show_default=True,
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Upload without interactive confirmation.",
+        show_default=True,
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Intentionally replace an already-published release version.",
+        show_default=True,
+    ),
+) -> None:
+    if not upload:
+        raise typer.BadParameter(
+            "No release action selected. Use --upload.",
+            param_hint="--upload",
+        )
+
+    releaseUploadCommand(
+        version=version,
+        downloadsDir=downloadsDir,
+        apiFile=apiFile,
+        webFile=webFile,
+        login=login,
+        remoteDir=remoteDir,
+        baseUrl=baseUrl,
+        setLatest=setLatest,
+        dryRun=dryRun,
+        yes=yes,
         force=force,
     )
 

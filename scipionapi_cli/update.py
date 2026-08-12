@@ -53,6 +53,7 @@ API_MANAGED_PATHS = [
     "requirements.txt",
     "README.rst",
     "LICENSE",
+    "install.sh",
 ]
 
 _UPDATE_STEP_INDEX = 0

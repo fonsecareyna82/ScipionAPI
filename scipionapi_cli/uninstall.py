@@ -27,12 +27,17 @@ from scipionapi_cli.shell import resolveRepoRoot
 
 console = Console()
 
+GUIDED_INSTALL_MARKER = ".scipionweb-installation"
+
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
-    help="Remove a ScipionWeb/ScipionAPI runtime installation without deleting the ScipionAPI repository.",
+    help=(
+        "Remove ScipionWeb/ScipionAPI runtime resources. A guided installation "
+        "can also be removed completely with --full."
+    ),
 )
 
 
@@ -89,6 +94,117 @@ def _readInstallationEnv(repoRoot: Path) -> Tuple[Path, Path, Dict[str, str]]:
     return scipionHome, envPath, env
 
 
+def _readGuidedInstallationMarker(repoRoot: Path) -> Tuple[Path, Dict[str, str]]:
+    markerPath = repoRoot / GUIDED_INSTALL_MARKER
+    if not markerPath.is_file():
+        raise RuntimeError(
+            "Full uninstall is only allowed for installations created by the "
+            f"guided installer. Missing guided installation marker: {markerPath}"
+        )
+
+    values: Dict[str, str] = {}
+    for rawLine in markerPath.read_text(encoding="utf-8").splitlines():
+        line = rawLine.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+
+    return markerPath, values
+
+
+def _validateGuidedInstallationMarker(repoRoot: Path) -> Path:
+    repoRoot = repoRoot.expanduser().resolve()
+    markerPath, marker = _readGuidedInstallationMarker(repoRoot)
+
+    if marker.get("FORMAT") != "1":
+        raise RuntimeError(
+            f"Unsupported guided installation marker format: {markerPath}"
+        )
+
+    if marker.get("INSTALL_TYPE") != "guided":
+        raise RuntimeError(
+            f"Invalid guided installation marker: {markerPath}"
+        )
+
+    configuredRoot = marker.get("INSTALL_ROOT")
+    if not configuredRoot:
+        raise RuntimeError(
+            f"Guided installation marker has no INSTALL_ROOT: {markerPath}"
+        )
+
+    markerRoot = Path(configuredRoot).expanduser().resolve()
+    if markerRoot != repoRoot:
+        raise RuntimeError(
+            "Guided installation marker root does not match the current "
+            f"repository root: {markerRoot} != {repoRoot}"
+        )
+
+    unsafeRoots = {
+        Path("/").resolve(),
+        Path.home().expanduser().resolve(),
+    }
+    if repoRoot in unsafeRoots:
+        raise RuntimeError(
+            f"Refusing unsafe full uninstall root: {repoRoot}"
+        )
+
+    return markerPath
+
+
+def _validateLegacyInstallationRoot(repoRoot: Path) -> None:
+    repoRoot = repoRoot.expanduser().resolve()
+
+    if (repoRoot / ".git").exists():
+        raise RuntimeError(
+            "Refusing legacy full uninstall for a Git checkout. "
+            "Use the regular uninstall and remove the repository manually if intended."
+        )
+
+    requiredPaths = [
+        repoRoot / "pyproject.toml",
+        repoRoot / "alembic.ini",
+        repoRoot / "scripts" / "scipionapi",
+        repoRoot / "scipion_home" / ".env",
+    ]
+    missing = [str(path) for path in requiredPaths if not path.exists()]
+    if missing:
+        raise RuntimeError(
+            "Legacy full uninstall could not verify the expected packaged "
+            "installation layout. Missing: " + ", ".join(missing)
+        )
+
+    unsafeRoots = {
+        Path("/").resolve(),
+        Path.home().expanduser().resolve(),
+    }
+    if repoRoot in unsafeRoots:
+        raise RuntimeError(
+            f"Refusing unsafe legacy full uninstall root: {repoRoot}"
+        )
+
+
+def _validateFullInstallationRoot(
+    repoRoot: Path,
+    legacyInstall: bool,
+) -> str:
+    markerPath = repoRoot / GUIDED_INSTALL_MARKER
+
+    if markerPath.is_file():
+        _validateGuidedInstallationMarker(repoRoot)
+        return "guided"
+
+    if not legacyInstall:
+        raise RuntimeError(
+            "This installation has no guided installation marker. If it is a "
+            "pre-marker ZIP/package installation (not a Git checkout), rerun "
+            "with --full --legacy-install."
+        )
+
+    _validateLegacyInstallationRoot(repoRoot)
+    return "legacy"
+
+
 def _confirmPlan(
     yes: bool,
     dryRun: bool,
@@ -97,18 +213,33 @@ def _confirmPlan(
     keepWebDist: bool,
     removeScipionHome: bool,
     keepCondaEnv: bool,
+    full: bool,
+    repoRoot: Path,
+    fullMode: str,
 ) -> None:
     if yes or dryRun:
         return
 
     console.print()
     console.print("[bold red]This command will remove installation resources.[/bold red]")
-    console.print("The ScipionAPI repository directory will not be removed.")
+
+    if full:
+        console.print(
+            "[bold red]The guided installation directory will also be removed "
+            "after runtime cleanup.[/bold red]"
+        )
+    else:
+        console.print("The ScipionAPI repository directory will not be removed.")
+
     console.print(f"Database removal: {'no' if keepDatabase else 'yes'}")
     console.print(f"Database role removal: {'no' if keepDatabase or keepDatabaseRole else 'yes'}")
     console.print(f"Web dist removal: {'no' if keepWebDist else 'yes'}")
     console.print(f"SCIPION_HOME removal: {'yes' if removeScipionHome else 'no'}")
-    console.print(f"Conda env removal by this Python phase: {'no' if keepCondaEnv else 'requested'}")
+    console.print(f"Conda env removal: {'no' if keepCondaEnv else 'yes'}")
+    console.print(f"Installation root removal: {'yes' if full else 'no'}")
+    if full:
+        console.print(f"Installation root: {repoRoot}")
+        console.print(f"Full uninstall mode: {fullMode}")
 
     if not Confirm.ask("Continue?", default=False):
         raise typer.Abort()
@@ -241,8 +372,25 @@ def uninstallWebCommand(
     keepWebDist: bool = False,
     removeScipionHome: bool = False,
     keepCondaEnv: bool = True,
+    full: bool = False,
+    legacyInstall: bool = False,
 ) -> None:
-    repoRoot = resolveRepoRoot()
+    repoRoot = resolveRepoRoot().expanduser().resolve()
+    fullMode = "none"
+
+    if full:
+        fullMode = _validateFullInstallationRoot(
+            repoRoot,
+            legacyInstall=legacyInstall,
+        )
+        if keepDatabase or keepDatabaseRole or keepWebDist:
+            raise RuntimeError(
+                "--full cannot be combined with --keep-database, "
+                "--keep-database-role, or --keep-web-dist."
+            )
+        removeScipionHome = True
+        keepCondaEnv = False
+
     scipionHome, envPath, env = _readInstallationEnv(repoRoot)
     condaEnv = os.environ.get("SCIPIONAPI_ENV_NAME") or os.environ.get("SCIPIONAPI_CONDA_ENV") or "scipion4Web"
 
@@ -257,6 +405,8 @@ def uninstallWebCommand(
             ("Database", env.get("DATABASE_NAME", "")),
             ("Database user", env.get("DATABASE_USER", "")),
             ("WEB_DIST_PATH", env.get("WEB_DIST_PATH", str(scipionHome / "web" / "dist"))),
+            ("Full uninstall", "yes" if full else "no"),
+            ("Full uninstall mode", fullMode),
         ],
     )
 
@@ -268,6 +418,9 @@ def uninstallWebCommand(
         keepWebDist=keepWebDist,
         removeScipionHome=removeScipionHome,
         keepCondaEnv=keepCondaEnv,
+        full=full,
+        repoRoot=repoRoot,
+        fullMode=fullMode,
     )
 
     _stopServices(dryRun=dryRun)
@@ -287,11 +440,35 @@ def uninstallWebCommand(
     if keepCondaEnv:
         _printInfo("Conda env removal is handled by the scripts/scipionapi wrapper after this phase.")
 
+    if full:
+        action = "Would remove" if dryRun else "Will remove"
+        _printInfo(
+            f"{action} installation root from the wrapper: {repoRoot}"
+        )
+
     _printSuccess("Uninstall cleanup phase completed.")
 
 
 @app.command("run")
 def run(
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help=(
+            "Completely remove an installation created by install.sh, including "
+            "SCIPION_HOME, the conda env, and the installation directory."
+        ),
+        show_default=True,
+    ),
+    legacyInstall: bool = typer.Option(
+        False,
+        "--legacy-install",
+        help=(
+            "Allow --full for a pre-marker packaged installation. Git checkouts "
+            "are always rejected."
+        ),
+        show_default=True,
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -344,6 +521,8 @@ def run(
         keepWebDist=keepWebDist,
         removeScipionHome=removeScipionHome,
         keepCondaEnv=keepCondaEnv,
+        full=full,
+        legacyInstall=legacyInstall,
     )
 
 
