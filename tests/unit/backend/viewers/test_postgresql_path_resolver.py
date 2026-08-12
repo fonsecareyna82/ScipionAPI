@@ -110,3 +110,45 @@ def test_PostgresqlProjectPathResolverDelegatesProjectLookup(monkeypatch, tmp_pa
 
     assert "getProjectNameByDatabase(" in source
     assert ".fetchOne(" not in source
+
+
+def test_PostgresqlProjectPathResolverResolvesHomeRelativePath(
+    monkeypatch,
+    tmp_path,
+):
+    homePath = tmp_path / "home" / "yunior"
+    filePath = (
+        homePath
+        / "Yunior"
+        / "Projects"
+        / "tmp"
+        / "nextpyp"
+        / "tilt10.mrc"
+    )
+
+    filePath.parent.mkdir(parents=True)
+    filePath.write_bytes(b"fake")
+
+    monkeypatch.setenv(
+        "HOME",
+        str(homePath),
+    )
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            return {
+                "name": str(
+                    tmp_path / "project"
+                )
+            }
+
+    resolver = PostgresqlProjectPathResolver(
+        db=FakeDb(),
+        projectId=1,
+    )
+
+    assert resolver.resolveExistingPath(
+        "Yunior/Projects/tmp/nextpyp/tilt10.mrc"
+    ) == str(filePath.resolve())
+
+

@@ -168,8 +168,9 @@ class RuntimeProjectImportService:
                 % targetPath
             )
 
-    @staticmethod
+    @classmethod
     def _materializeProject(
+            cls,
             *,
             sourcePath: Path,
             targetPath: Path,
@@ -184,6 +185,82 @@ class RuntimeProjectImportService:
             str(targetPath),
             symlinks=True,
         )
+
+        cls._rebaseCopiedRelativeSymlinks(
+            sourcePath=sourcePath,
+            targetPath=targetPath,
+        )
+
+    @staticmethod
+    def _rebaseCopiedRelativeSymlinks(
+            *,
+            sourcePath: Path,
+            targetPath: Path,
+    ) -> None:
+        sourcePath = Path(sourcePath).resolve()
+        targetPath = Path(targetPath).resolve()
+
+        for root, dirNames, fileNames in os.walk(
+                sourcePath,
+                followlinks=False,
+        ):
+            rootPath = Path(root)
+
+            for name in list(dirNames) + list(fileNames):
+                sourceLink = rootPath / name
+
+                if not sourceLink.is_symlink():
+                    continue
+
+                rawTarget = Path(
+                    os.readlink(sourceLink)
+                )
+
+                # Absolute symlinks are location-independent.
+                if rawTarget.is_absolute():
+                    continue
+
+                relativeLinkPath = sourceLink.relative_to(
+                    sourcePath
+                )
+
+                targetLink = (
+                        targetPath
+                        / relativeLinkPath
+                )
+
+                sourceTarget = (
+                        sourceLink.parent
+                        / rawTarget
+                ).resolve(strict=False)
+
+                try:
+                    internalTarget = sourceTarget.relative_to(
+                        sourcePath
+                    )
+
+                    desiredTarget = (
+                            targetPath
+                            / internalTarget
+                    )
+
+                except ValueError:
+                    # External target: keep pointing to the same
+                    # filesystem location as the original project.
+                    desiredTarget = sourceTarget
+
+                rebasedTarget = os.path.relpath(
+                    str(desiredTarget),
+                    start=str(targetLink.parent),
+                )
+
+                targetLink.unlink()
+
+                os.symlink(
+                    rebasedTarget,
+                    targetLink,
+                )
+
 
     @staticmethod
     def _removeTargetPath(targetPath: Path) -> None:

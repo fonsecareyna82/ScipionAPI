@@ -74,6 +74,10 @@ class PostgresqlProjectPathResolver:
             if projectPath is not None:
                 candidates.append(projectPath / path)
 
+            # Some legacy Scipion objects may store external files
+            # relative to the user's home directory.
+            candidates.append(Path.home() / path)
+
             candidates.append(path)
             candidates.append(Path.cwd() / path)
 

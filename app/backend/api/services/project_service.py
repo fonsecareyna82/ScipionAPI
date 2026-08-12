@@ -10626,8 +10626,16 @@ class ProjectService:
                             projectId=projectId,
                         ).resolveExistingPath(imagePath)
 
-                        if resolvedImagePath:
-                            imagePath = resolvedImagePath
+                        if resolvedImagePath is None:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=(
+                                    "TiltSeries image path could not be resolved from "
+                                    f"PostgreSQL metadata: {imagePath}"
+                                ),
+                            )
+
+                        imagePath = resolvedImagePath
 
                     cacheKey = self._buildTiltSeriesPreviewCacheKey(
                         projectId=projectId,
