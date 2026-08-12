@@ -33,6 +33,7 @@ from pyworkflow.object import (
     Set,
     String,
 )
+from pwem.objects import EMSet
 from app.backend.mapper.scipion_set_mapper import (
     ScipionSetPostgresqlMapper,
 )
@@ -3275,9 +3276,10 @@ def test_RuntimeSetLoadUsesFirstItemSamplingWhenSetPropertyIsMissing():
     assert runtimeSet.getSamplingRate() == 7.08
 
 
-
 def test_RuntimeSetCreateCopyUsesNativeSetClass(tmp_path):
-    class NativeCopySet(ExampleSet):
+    class NativeCopySet(EMSet):
+        ITEM_TYPE = ExampleItem
+
         @classmethod
         def create(
                 cls,
