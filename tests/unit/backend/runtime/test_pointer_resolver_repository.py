@@ -310,6 +310,84 @@ def test_BuildInputRefsUsesStrictResolvedScipionProtocolIdentity(
     ]
 
 
+def test_BuildInputRefsUsesCanonicalPersistedOutputName(monkeypatch):
+    resolver = RuntimePointerResolver()
+
+    class PointerParamStub:
+        pass
+
+    class ProtocolIdentityResolverStub:
+        def __init__(self, mapper, projectId):
+            assert mapper is not None
+            assert projectId == 399
+
+        def resolveScipionProtocolId(self, protocolId):
+            assert protocolId == "2"
+            return 2
+
+        def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
+            assert protocolId == 2
+            return 45325
+
+    class ProtocolGraphRepositoryStub:
+        def getPersistedOutputInfoForInputRef(
+                self,
+                mapper,
+                projectId,
+                parentProtocolDbId,
+                outputName,
+        ):
+            assert projectId == 399
+            assert parentProtocolDbId == 45325
+            assert outputName == "TiltSeries"
+
+            return {
+                "className": "SetOfTiltSeries",
+                "runtimeObjectId": 1000062,
+                "outputName": "tiltSeries",
+            }
+
+    monkeypatch.setattr(
+        pointerResolverModule,
+        "ProtocolIdentityResolver",
+        ProtocolIdentityResolverStub,
+    )
+
+    monkeypatch.setattr(
+        pointerResolverModule,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    result = resolver.buildInputRefsFromPointerParams(
+        mapper=object(),
+        projectId=399,
+        protocolDbId=45333,
+        protocolId=6,
+        params={
+            "inputSetOfTiltSeries": "2.TiltSeries",
+        },
+        getParamCallback=lambda inputName: PointerParamStub(),
+        isPointerParamCallback=lambda param: True,
+    )
+
+    assert result["parentProtocolDbIds"] == [45325]
+    assert result["parentProtocolIds"] == [2]
+
+    assert result["inputRefs"] == [{
+        "projectId": 399,
+        "protocolDbId": 45333,
+        "protocolId": "6",
+        "inputName": "inputSetOfTiltSeries",
+        "itemIndex": 0,
+        "parentProtocolDbId": 45325,
+        "parentProtocolId": "2",
+        "parentOutputName": "tiltSeries",
+        "objectClassName": "SetOfTiltSeries",
+        "objectId": 1000062,
+    }]
+
+
 def test_LoadInputRefsByInputNameDelegatesRepositoryRows(monkeypatch):
     mapper = MapperStub()
     resolver = RuntimePointerResolver()

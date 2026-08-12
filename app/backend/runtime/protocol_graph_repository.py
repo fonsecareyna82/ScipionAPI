@@ -82,6 +82,86 @@ class ProtocolGraphRepository:
 
         return None
 
+    def _getCaseInsensitiveRuntimeOutputRow(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        setRows = self._rowsToDicts(
+            mapper.db.fetchAll(
+                """
+                SELECT
+                    'set' AS kind,
+                    s.id AS "setId",
+                    s."objectId"::text AS "objectId",
+                    o."scipionObjId"::text AS "runtimeObjectId",
+                    s."outputName" AS "outputName",
+                    s."setClassName" AS "className",
+                    s."itemClassName" AS "itemClassName",
+                    s.properties AS properties
+                  FROM scipion_sets s
+             LEFT JOIN scipion_objects o
+                    ON o."projectId" = s."projectId"
+                   AND o.id = s."objectId"
+                 WHERE s."projectId" = %s
+                   AND s."protocolDbId" = %s
+                   AND LOWER(s."outputName") = LOWER(%s)
+                 ORDER BY s.id
+                 LIMIT 2
+                """,
+                (
+                    int(projectId),
+                    int(parentProtocolDbId),
+                    outputName,
+                ),
+            )
+        )
+
+        if len(setRows) == 1:
+            return setRows[0]
+
+        if len(setRows) > 1:
+            return None
+
+        objectRows = self._rowsToDicts(
+            mapper.db.fetchAll(
+                """
+                SELECT
+                    'object' AS kind,
+                    NULL AS "setId",
+                    o.id::text AS "objectId",
+                    o."scipionObjId"::text AS "runtimeObjectId",
+                    o.name AS "outputName",
+                    o."className" AS "className",
+                    NULL AS "itemClassName",
+                    o.metadata AS properties
+                  FROM scipion_objects o
+                 WHERE o."projectId" = %s
+                   AND o."protocolDbId" = %s
+                   AND o."parentObjectId" IS NULL
+                   AND (
+                       LOWER(o.path) = LOWER(%s)
+                       OR LOWER(o.name) = LOWER(%s)
+                   )
+                 ORDER BY o.id
+                 LIMIT 2
+                """,
+                (
+                    int(projectId),
+                    int(parentProtocolDbId),
+                    outputName,
+                    outputName,
+                ),
+            )
+        )
+
+        if len(objectRows) == 1:
+            return objectRows[0]
+
+        return None
+
     def getPersistedSetOutputRow(
             self,
             mapper,
@@ -687,7 +767,8 @@ class ProtocolGraphRepository:
             """
             SELECT
                 o."scipionObjId"::text AS "runtimeObjectId",
-                s."setClassName" AS "className"
+                s."setClassName" AS "className",
+                s."outputName" AS "outputName" 
               FROM scipion_sets s
          LEFT JOIN scipion_objects o
                 ON o."projectId" = s."projectId"
@@ -700,7 +781,8 @@ class ProtocolGraphRepository:
 
             SELECT
                 o."scipionObjId"::text AS "runtimeObjectId",
-                o."className" AS "className"
+                o."className" AS "className",
+                o.name AS "outputName" 
               FROM scipion_objects o
              WHERE o."projectId" = %s
                AND o."protocolDbId" = %s
@@ -721,14 +803,24 @@ class ProtocolGraphRepository:
         )
 
         if not row:
+            row = self._getCaseInsensitiveRuntimeOutputRow(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=parentProtocolDbId,
+                outputName=outputName,
+            )
+
+        if not row:
             return {
                 "runtimeObjectId": None,
                 "className": None,
+                "outputName": None,
             }
 
         return {
             "runtimeObjectId": row.get("runtimeObjectId"),
             "className": row.get("className"),
+            "outputName": row.get("outputName"),
         }
 
     def getPostgresqlRuntimeOutputInfo(
@@ -792,6 +884,14 @@ class ProtocolGraphRepository:
                 outputName,
             ),
         )
+
+        if not row:
+            row = self._getCaseInsensitiveRuntimeOutputRow(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=parentProtocolDbId,
+                outputName=outputName,
+            )
 
         if not row:
             return {

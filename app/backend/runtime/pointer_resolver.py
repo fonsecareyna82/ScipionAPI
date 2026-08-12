@@ -840,9 +840,7 @@ class RuntimePointerResolver:
                         outputName=outputName,
                     )
 
-                    parentOutputName = str(
-                        outputName
-                    )
+                    parentOutputName = str(outputInfo.get("outputName") or outputName)
 
                 else:
                     parentProtocolInfo = protocolGraphRepository.getProtocolRuntimeInfoByDbId(

@@ -45,10 +45,53 @@ class FakeMapper:
         self.db = RecordingDb(row)
 
 
+class CaseInsensitiveOutputDb:
+    def __init__(self):
+        self.fetchAllQueries = []
+        self.fetchAllParams = []
+
+    def fetchOne(self, query, params=None):
+        normalizedQuery = " ".join(str(query).split())
+
+        if "FROM scipion_set_items" in normalizedQuery:
+            return {"count": 3}
+
+        if "FROM scipion_set_tables" in normalizedQuery and "JOIN scipion_set_table_items" not in normalizedQuery:
+            return {"count": 0}
+
+        if "JOIN scipion_set_table_items" in normalizedQuery:
+            return {"count": 0}
+
+        return None
+
+    def fetchAll(self, query, params=None):
+        self.fetchAllQueries.append(" ".join(str(query).split()))
+        self.fetchAllParams.append(params)
+
+        return [{
+            "kind": "set",
+            "setId": 4728,
+            "objectId": "20670",
+            "runtimeObjectId": "1000062",
+            "outputName": "tiltSeries",
+            "className": "SetOfTiltSeries",
+            "itemClassName": "TiltSeries",
+            "properties": {
+                "itemsCount": 3,
+            },
+        }]
+
+
+class CaseInsensitiveOutputMapper:
+    def __init__(self):
+        self.db = CaseInsensitiveOutputDb()
+
+
 def test_InputRefOutputInfoReturnsRuntimeObjectId():
     mapper = FakeMapper({
         "runtimeObjectId": "245",
         "className": "SetOfParticles",
+        "outputName": "outputParticles",
     })
 
     result = ProtocolGraphRepository().getPersistedOutputInfoForInputRef(
@@ -61,6 +104,7 @@ def test_InputRefOutputInfoReturnsRuntimeObjectId():
     assert result == {
         "runtimeObjectId": "245",
         "className": "SetOfParticles",
+        "outputName": "outputParticles",
     }
 
     assert 'AS "runtimeObjectId"' in mapper.db.query
@@ -89,3 +133,30 @@ def test_RuntimeOutputInfoKeepsCanonicalAndRuntimeIdsSeparated():
     assert result["objectId"] == "9001"
     assert result["runtimeObjectId"] == "245"
     assert 'o.id::text AS "objectId"' in mapper.db.query
+
+
+def test_RuntimeOutputInfoResolvesUniqueCaseInsensitiveOutputName():
+    mapper = CaseInsensitiveOutputMapper()
+
+    result = ProtocolGraphRepository().getPostgresqlRuntimeOutputInfo(
+        mapper=mapper,
+        projectId=399,
+        parentProtocolDbId=45325,
+        outputName="TiltSeries",
+    )
+
+    assert result["exists"] is True
+    assert result["outputName"] == "tiltSeries"
+    assert result["runtimeObjectId"] == "1000062"
+    assert result["className"] == "SetOfTiltSeries"
+    assert result["itemsCount"] == 3
+
+    assert len(mapper.db.fetchAllQueries) == 1
+    assert 'LOWER(s."outputName") = LOWER(%s)' in mapper.db.fetchAllQueries[0]
+    assert mapper.db.fetchAllParams[0] == (
+        399,
+        45325,
+        "TiltSeries",
+    )
+
+

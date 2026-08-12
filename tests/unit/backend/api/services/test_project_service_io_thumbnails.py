@@ -102,6 +102,14 @@ class FakeDb:
 
         return None
 
+    def fetchAll(self, query, params=None):
+        self.fetchCalls.append({
+            "query": query,
+            "params": params,
+        })
+
+        return []
+
 
 class FakeMapper:
     def __init__(self, runtimeProtocolIdByDbId=None):
