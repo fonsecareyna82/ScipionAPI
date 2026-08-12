@@ -447,9 +447,9 @@ def uninstallWebCommand(
         )
 
     condaEnv = (
-            os.environ.get("SCIPIONAPI_ENV_NAME")
-            or os.environ.get("SCIPIONAPI_CONDA_ENV")
-            or "scipion4Web"
+        os.environ.get("SCIPIONAPI_ENV_NAME")
+        or os.environ.get("SCIPIONAPI_CONDA_ENV")
+        or "scipion4Web"
     )
 
     _printPanel("ScipionAPI web uninstall")

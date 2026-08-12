@@ -1,12 +1,5 @@
 from pathlib import Path
-
 import pytest
-
-from scipionapi_cli.uninstall import (
-    _validateFullInstallationRoot,
-    _validateGuidedInstallationMarker,
-    _validateLegacyInstallationRoot,
-)
 from scipionapi_cli.uninstall import (
     _validateFullInstallationRoot,
     _validateFullScipionHome,
