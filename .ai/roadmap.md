@@ -1,12 +1,13 @@
 # Roadmap — ScipionAPI
 
-**Status: draft, pending review with Yunior (repo co-owner).** Seeded from a rough team Google Doc plus findings surfaced while documenting this repo (2026-08-04). Treat as a starting point, not a committed plan.
+**Status: draft, pending review with Yunior (repo co-owner).** Seeded from a rough team Google Doc plus findings surfaced while documenting this repo (2026-08-04), refreshed 2026-08-12. Treat as a starting point, not a committed plan.
 
 ## This repo specifically
 
-- Consolidate `requirements.txt` into `pyproject.toml` (same pattern as the 3 core repos) — see `.ai/tech-debt.md`.
-- Bump `actions/checkout`/`actions/setup-python` to `@v7` in `.github/workflows/tests.yml`.
-- Consider a real refactor plan for `app/backend/api/services/project_service.py` (15176 lines) - this is the single largest tech-debt item across all 5 repos by size alone.
+- Consolidate `requirements.txt` into `pyproject.toml` (same pattern as the 3 core repos) — see `.ai/tech-debt.md`. Still open.
+- Consider a real refactor plan for `app/backend/api/services/project_service.py` (15062 lines) - this is the single largest tech-debt item across all 5 repos by size alone. Still open; the file has stayed roughly flat in size despite heavy runtime work landing elsewhere.
+- ~~Bump `actions/checkout`/`actions/setup-python` to `@v7`~~ — done (`960c5dd`).
+- ~~Get `tests/integration/` running in CI against real Postgres/Redis~~ — done: `backend-tests` now provisions `postgres:16`/`redis:7` service containers and runs the full suite (`1d296a4` and follow-ups). Possible next step: extend that same real-infra coverage to load/performance scenarios beyond the current benchmarks in `tests/integration/db/test_postgresql_observability.py`, if that's a priority.
 
 ## For right after the fork merges back upstream
 

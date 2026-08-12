@@ -30,6 +30,12 @@ ScipionWeb (React/Vite) bundle in integrated mode.
 * Scipion integration:
   - Initializes Scipion variables and sets Pyworkflow domain ("pwem")
   - Runs in the same Python environment where Scipion is importable
+  - PostgreSQL is the sole runtime source of truth for protocol Sets/outputs
+    (no per-project ``project.sqlite``/``run.db`` for projects created under
+    this backend); a temporary SQLite snapshot may appear under ``/tmp`` only
+    as a compatibility shim for legacy code paths, never as persistent
+    storage. See ``AGENTS.md`` / ``.ai/postgresql-runtime-compatibility.md``
+    if you're contributing code that touches runtime Sets.
 
 * Output preview pipeline:
   - Volume slices and downsampled 3D data
@@ -228,26 +234,35 @@ Important:
         main.py
         bootstrap.py                     # loads ${SCIPION_HOME}/.env at runtime
         database.py
+        worker.py
         api/
           dependencies.py
           routers/
           schemas/
           services/
-        mapper/
-        models/
+        mapper/                          # PostgreSQL runtime mapper, SQLAlchemy models
+        models/                          # Pydantic request/response schemas
+        project/                         # PostgreSQL-backed Scipion project loading
+        runtime/                         # protocol execution engine (PostgreSQL-only)
+        viewers/                         # output preview/metadata readers
         utils/
-      celeryconfig.py
-      celery_worker.py
       workers/
-      services/
+        celeryconfig.py
+        celery_worker.py
       utils/
 
     scipionapi_cli/
       cli.py                             # Typer CLI (scipionapi ...)
+      bootstrap.py                       # conda env / requirements bootstrap
       install.py                         # creates .env, DB/user, migrations, admin
-      provision.py                       # optional web deploy + start services
+      provision.py                       # one-shot install + start (optional web deploy)
+      update.py                          # update an existing install from release ZIPs
       runtime.py                         # start/stop/status/logs (uvicorn + celery)
       db.py                              # local Postgres bootstrap + alembic upgrade
+      doctor.py                          # read-only repo/env/DB/broker diagnostics
+      admin.py
+      uninstall.py
+      version.py
       envfile.py
       shell.py
 
@@ -385,6 +400,35 @@ Provision with integrated web:
       --pass "changeMe" \
       --web-dist /path/to/ScipionWeb-dist.zip \
       --api-mount-path /api
+
+Update an existing installation from published release ZIPs (preserves
+``SCIPION_HOME``, ``.env``, projects, logs, and database data):
+
+::
+
+    ./scripts/scipionapi update --version latest
+
+Options include ``--api-only``/``--web-only`` to update a single side,
+``--dry-run`` to print the resolved plan without changing files, and
+``--no-restart``/``--force`` for finer control. See ``update --help`` for
+the full list (including ``--base-url``/``--api-zip-url``/``--web-zip-url``
+for custom release sources).
+
+Read-only diagnostics (repository, environment, database, broker, imports,
+runtime services):
+
+::
+
+    ./scripts/scipionapi doctor
+
+Use ``--strict`` to exit with code 1 when failures are detected, or
+``--quick`` to skip heavier checks (importing the FastAPI app, Alembic).
+
+Show the installed CLI version:
+
+::
+
+    ./scripts/scipionapi version
 
 ----------------------------------------------------------
 9. Configuration and Runtime Workspace (SCIPION_HOME)
