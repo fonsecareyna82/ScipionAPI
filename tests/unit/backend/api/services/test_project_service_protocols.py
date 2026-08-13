@@ -2484,6 +2484,7 @@ def test_ResetProtocolFromUsesPostgresqlRuntimeService(
     assert resetCall["projectId"] == 1
     assert resetCall["protocolId"] == 500
     assert resetCall["currentProject"] is service.currentProject
+    assert resetCall["includeRoot"] is True
 
     assert set(resetCall) == {
         "mapper",
@@ -2495,6 +2496,7 @@ def test_ResetProtocolFromUsesPostgresqlRuntimeService(
         "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
         "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
         "buildProtocolMutationResultCallback",
+        "includeRoot",
     }
 
 
