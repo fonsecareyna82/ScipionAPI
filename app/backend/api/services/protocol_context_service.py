@@ -25,11 +25,12 @@
 # ******************************************************************************
 from typing import Any, Callable, Dict
 
-from pyworkflow.protocol import (
-    STATUS_LAUNCHED,
-    STATUS_RUNNING,
-    STATUS_SCHEDULED,
-)
+from pyworkflow.protocol import (STATUS_ABORTED,
+                                 STATUS_FAILED,
+                                 STATUS_FINISHED,
+                                 STATUS_LAUNCHED,
+                                 STATUS_RUNNING,
+                                 STATUS_SCHEDULED)
 
 from app.backend.api.services.protocol_form_serializer import (
     ProtocolFormSerializer,
@@ -293,22 +294,29 @@ class ProtocolContextService:
             protocol
         )
 
-        info["executeMode"] = {
-            "launch": {
-                "label": "Launch",
-                "help": (
-                    "Start the protocol from its "
-                    "current configuration"
-                ),
-            },
-            "restart": {
-                "label": "Restart",
-                "help": (
-                    "Restart the protocol execution from scratch "
-                    "(keeps current params)."
-                ),
-            },
-        }
+        protocolStatusText = str(protocolStatus or "").strip().lower()
+        failedStatusTexts = {str(STATUS_FAILED).strip().lower(), str(STATUS_ABORTED).strip().lower()}
+        finishedStatusText = str(STATUS_FINISHED).strip().lower()
+        isStreaming = bool(protocol.worksInStreaming())
+
+        if protocolStatusText in failedStatusTexts or (protocolStatusText == finishedStatusText and isStreaming):
+            info["executeMode"] = {
+                "continue": {"label": "Continue",
+                             "help": "Continue the protocol execution preserving the existing execution state when possible."},
+                "restart": {"label": "Restart",
+                            "help": "Restart the protocol execution from scratch (keeps current params)."},
+            }
+        elif protocolStatusText == finishedStatusText:
+            info["executeMode"] = {
+                "restart": {"label": "Restart",
+                            "help": "Restart the protocol execution from scratch (keeps current params)."},
+            }
+        else:
+            info["executeMode"] = {
+                "launch": {"label": "Launch", "help": "Start the protocol from its current configuration"},
+                "restart": {"label": "Restart",
+                            "help": "Restart the protocol execution from scratch (keeps current params)."},
+            }
 
         emptyInput, openSetPointer, emptyPointers = protocol.getInputStatus()
 

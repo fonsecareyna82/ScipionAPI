@@ -37,6 +37,7 @@ import sqlite3
 
 import numpy as np
 
+from app.backend.runtime.protocol_workflow_execution_service import RuntimeProtocolWorkflowExecutionService
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 from starlette.responses import JSONResponse
@@ -6473,6 +6474,44 @@ class ProjectService:
 
         )
 
+    def getProtocolWorkflowExecutionPreflight(self, mapper, projectId: int, protocolId, mode):
+        runtimeProtocolWorkflowExecutionService = RuntimeProtocolWorkflowExecutionService()
+        return runtimeProtocolWorkflowExecutionService.buildPreflight(mapper=mapper, projectId=projectId,
+                                                                      protocolId=protocolId, mode=mode,
+                                                                      getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow)
+
+    def _prepareProtocolWorkflowRoot(self, mapper, projectId: int, protocolId, protocolClassName: str, params,
+                                     persist=False):
+        protocol, errors = self.saveProtocol(mapper, projectId, protocolId, protocolClassName, params, setToSave=False)
+
+        if errors:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=errors)
+
+        if protocol.useQueue():
+            protocol.setQueueParams([params.get("_queueName"), params.get("_queueParams")])
+
+        if persist:
+            self.currentProject._storeProtocol(protocol)
+
+        return {"protocolId": str(protocol.getObjId()), "persisted": bool(persist)}
+
+    def _executeProtocolWorkflowAll(self, mapper, projectId: int, protocolId, mode):
+        if mode == "continue":
+            return self.continueProtocolAll(mapper, projectId, protocolId)
+
+        return self.restartProtocolAll(mapper, projectId, protocolId)
+
+    def executeProtocolWorkflow(self, mapper, projectId: int, protocolId, protocolClassName: str, params, mode, scope):
+        runtimeProtocolWorkflowExecutionService = RuntimeProtocolWorkflowExecutionService()
+        return runtimeProtocolWorkflowExecutionService.executeWorkflow(mapper=mapper, projectId=projectId,
+                                                                       protocolId=protocolId,
+                                                                       protocolClassName=protocolClassName,
+                                                                       params=params, mode=mode, scope=scope,
+                                                                       prepareRootProtocolCallback=self._prepareProtocolWorkflowRoot,
+                                                                       resetDescendantsCallback=self.resetProtocolFrom,
+                                                                       executeSingleCallback=self.launchProtocol,
+                                                                       executeAllCallback=self._executeProtocolWorkflowAll)
+
     def restartProtocolAll(
             self,
             mapper,
@@ -6498,13 +6537,11 @@ class ProjectService:
             stopPostgresqlProtocolsCallback=self.stopProtocol,
         )
 
-    def continueProtocolAll(
-            self,
-            mapper,
-            projectId,
-            protocolId,
-            currentUser,
-    ):
+    def continueProtocolAll(self,
+                            mapper,
+                            projectId,
+                            protocolId,
+                            currentUser=None):
         runtimeProtocolContinueService = RuntimeProtocolContinueService()
 
         return (
@@ -6528,6 +6565,7 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolId,
+            includeRoot=True
     ):
         runtimeProtocolResetService = RuntimeProtocolResetService()
 
@@ -6545,6 +6583,7 @@ class ProjectService:
                 self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
             ),
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            includeRoot=includeRoot,
         )
 
     def stopProtocol(

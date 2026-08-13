@@ -39,10 +39,17 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.backend.database import Base
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Literal
 from app.backend.models.project_model import Project
 
 # ------------------------ SQLAlchemy model ------------------------
+
+
+class ProtocolWorkflowExecutionRequest(BaseModel):
+    protocolClassName: str
+    params: Any
+    mode: Literal["continue", "restart"]
+    scope: Literal["single", "all"]
 
 
 class Protocol(Base):

@@ -39,7 +39,7 @@ from app.backend.models.protocol_model import (
     ProtocolRequest,
     ProtocolRenameIn,
     DuplicatePayload,
-    DeletePayload, ProtocolOutputThumbnailsRequest,
+    DeletePayload, ProtocolOutputThumbnailsRequest, ProtocolWorkflowExecutionRequest,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -982,6 +982,34 @@ def deleteProtocol(
             },
         )
 
+
+@router.get("/{projectId}/protocols/{protocolId}/workflow-execution/preflight", response_model=Any, status_code=status.HTTP_200_OK)
+def protocolWorkflowExecutionPreflight(projectId: int, protocolId: int, mode: Literal["continue", "restart"] = Query(...), currentUser=Depends(getCurrentUser), mapper: PostgresqlFlatMapper = Depends(getMapper), service: ProjectService = Depends(getProjectService)):
+    project = service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId, currentUser=currentUser)
+
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    return service.getProtocolWorkflowExecutionPreflight(mapper=mapper, projectId=projectId, protocolId=protocolId, mode=mode)
+
+
+@router.post("/{projectId}/protocols/{protocolId}/workflow-execution", response_model=Any, status_code=status.HTTP_200_OK)
+def executeProtocolWorkflow(projectId: int, protocolId: int, payload: ProtocolWorkflowExecutionRequest, currentUser=Depends(getCurrentUser), mapper: PostgresqlFlatMapper = Depends(getMapper), service: ProjectService = Depends(getProjectService)):
+    project = service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId, currentUser=currentUser)
+
+    if not project:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"status": 1, "errors": ["Project not found"], "workflow": []})
+
+    try:
+        result = service.executeProtocolWorkflow(mapper=mapper, projectId=projectId, protocolId=protocolId, protocolClassName=payload.protocolClassName, params=payload.params, mode=payload.mode, scope=payload.scope) or {}
+        refreshedProject = service.getProjectById(mapper, projectId, currentUser)
+        workflow = refreshedProject.get("protocols", []) if refreshedProject else []
+        return {"status": result.get("status", 0), "errors": result.get("errors", []), "workflow": workflow, "workflowExecution": result.get("workflowExecution")}
+    except HTTPException as error:
+        return JSONResponse(status_code=error.status_code, content={"status": 1, "errors": _normalizeErrors(error.detail), "workflow": []})
+    except Exception as error:
+        logger.exception("Failed to execute protocol workflow. projectId=%s protocolId=%s", projectId, protocolId)
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": 1, "errors": [str(error)], "workflow": []})
 
 @router.post(
     "/{projectId}/protocols/{protocolId}/restart-all",

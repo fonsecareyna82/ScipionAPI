@@ -712,6 +712,7 @@ class RuntimeProtocolResetService:
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
+            includeRoot: bool = True,
     ) -> Dict[str, Any]:
         try:
             workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(
@@ -731,6 +732,17 @@ class RuntimeProtocolResetService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to resolve protocol subworkflow: %s" % error,
             ) from error
+
+        if not includeRoot:
+            rootProtocolId = str(protocolId)
+            workflowProtocolMap = {key: value for key, value in workflowProtocolMap.items() if
+                                   str(getattr(value[0] if isinstance(value, (tuple, list)) and value else value,
+                                               "getObjId", lambda: None)()) != rootProtocolId}
+
+            if not workflowProtocolMap:
+                return buildProtocolMutationResultCallback("No descendant protocols require reset", protocolsCount=0,
+                                                           dependenciesCount=0, postgresqlRuntimeReset=True,
+                                                           parentProtocolsModified=False)
 
         return self._resetPostgresqlSubworkflow(
             mapper=mapper,
