@@ -6603,8 +6603,14 @@ class ProjectService:
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         )
 
+    _UNSAVED_FS_PROTOCOL_ID = "fake-protocol-id-for-browser-paths-resolution"
+
     def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
         return str(protocolId).strip() == "-1"
+
+    def _isUnpersistedFsBrowserMode(self, protocolId) -> bool:
+        protocolToken = "" if protocolId is None else str(protocolId).strip().lower()
+        return protocolToken in {"", "none", "null", "undefined", self._UNSAVED_FS_PROTOCOL_ID}
 
     def _getGlobalFsBrowserRoot(self) -> Path:
         raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
@@ -7297,19 +7303,13 @@ class ProjectService:
                 "startPath": "",
             }
 
-        fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
-
-        if protocolId != fakeProtocolId:
-            protocol = self._getScipionProtocolForRuntime(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-            protocolAbsPath = os.path.abspath(protocol.getPath())
-            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
-        else:
+        if self._isUnpersistedFsBrowserMode(protocolId):
             projectPath = self.currentProject.getPath()
             protocolAbsPath = os.path.abspath(projectPath)
+            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+        else:
+            protocol = self._getScipionProtocolForRuntime(mapper=mapper, projectId=projectId, protocolId=protocolId)
+            protocolAbsPath = os.path.abspath(protocol.getPath())
             rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
 
         rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
@@ -7400,11 +7400,10 @@ class ProjectService:
         if self._isGlobalFsBrowserMode(protocolId):
             return str(protocolId)
 
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if self._isUnpersistedFsBrowserMode(protocolId):
+            return self._UNSAVED_FS_PROTOCOL_ID
+
+        scipionProtocolId = self._resolveScipionProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
 
         return str(scipionProtocolId)
 

@@ -400,6 +400,42 @@ def test_GetProtocolPathReturnsProtocolRelativePayload(service, tmp_path):
     }
 
 
+@pytest.mark.parametrize("protocolId", [None, "", "None", "none", "null", "undefined", "fake-protocol-id-for-browser-paths-resolution"])
+def test_GetProtocolPathReturnsProjectRootForUnpersistedProtocol(service, protocolId):
+    projectRoot = Path(service.currentProject.getPath()).resolve()
+    result = service.getProtocolPath(protocolId)
+
+    assert result == {
+        "rootAbs": str(projectRoot),
+        "startPath": "",
+        "protocolRoot": "",
+    }
+
+
+def test_ListProtocolDirUsesProjectRootForUnpersistedProtocol(service):
+    projectRoot = Path(service.currentProject.getPath()).resolve()
+    inputDir = projectRoot / "input"
+    inputDir.mkdir()
+
+    result = service.listProtocolDir(protocolId="None", path="")
+
+    assert len(result) == 1
+    assert result[0]["name"] == "input"
+    assert result[0]["path"] == "input"
+    assert result[0]["isDir"] is True
+
+
+def test_PreviewRemoteEntryUsesProjectRootForUnpersistedProtocol(service):
+    projectRoot = Path(service.currentProject.getPath()).resolve()
+    inputFile = projectRoot / "movies.txt"
+    inputFile.write_text("movie_001.mrc", encoding="utf-8")
+
+    response = service.previewRemoteEntry(protocolId="None", path="movies.txt")
+
+    assert response.status_code == 200
+    assert response.body.decode("utf-8") == "movie_001.mrc"
+
+
 def test_InferProjectRootAbsUsesRunsMarker(service, tmp_path):
     protocolPath = tmp_path / "DemoProject" / "Runs" / "000010_ProtImport" / "extra"
 
