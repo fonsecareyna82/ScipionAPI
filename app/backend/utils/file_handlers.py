@@ -78,13 +78,14 @@ class FileHandlers:
           - path: legacy absolute protocol path (backward compatibility)
         """
         fakeProtocolId = 'fake-protocol-id-for-browser-paths-resolution'
+
         if str(protocolId).strip() != fakeProtocolId:
             protocol = self.currentProject.getProtocol(int(protocolId))
             protocolAbsPath = os.path.abspath(protocol.getPath())
+            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         else:
-            protocolAbsPath = os.path.abspath(self.currentProject.getPath())
-
-        rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+            protocolAbsPath = os.path.abspath(os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home"))
+            rootAbsPath = protocolAbsPath
         rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
 
         startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)

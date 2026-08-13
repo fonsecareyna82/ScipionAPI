@@ -401,22 +401,25 @@ def test_GetProtocolPathReturnsProtocolRelativePayload(service, tmp_path):
 
 
 @pytest.mark.parametrize("protocolId", [None, "", "None", "none", "null", "undefined", "fake-protocol-id-for-browser-paths-resolution"])
-def test_GetProtocolPathReturnsProjectRootForUnpersistedProtocol(service, protocolId):
-    projectRoot = Path(service.currentProject.getPath()).resolve()
+def test_GetProtocolPathReturnsImportBrowserRootForUnpersistedProtocol(service, monkeypatch, tmp_path, protocolId):
+    browserRoot = tmp_path / "home"
+    browserRoot.mkdir()
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
     result = service.getProtocolPath(protocolId)
 
     assert result == {
-        "rootAbs": str(projectRoot),
+        "rootAbs": str(browserRoot.resolve()),
         "startPath": "",
         "protocolRoot": "",
     }
 
 
-def test_ListProtocolDirUsesProjectRootForUnpersistedProtocol(service):
-    projectRoot = Path(service.currentProject.getPath()).resolve()
-    inputDir = projectRoot / "input"
+def test_ListProtocolDirUsesImportBrowserRootForUnpersistedProtocol(service, monkeypatch, tmp_path):
+    browserRoot = tmp_path / "home"
+    browserRoot.mkdir()
+    inputDir = browserRoot / "input"
     inputDir.mkdir()
-
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
     result = service.listProtocolDir(protocolId="None", path="")
 
     assert len(result) == 1
@@ -425,11 +428,12 @@ def test_ListProtocolDirUsesProjectRootForUnpersistedProtocol(service):
     assert result[0]["isDir"] is True
 
 
-def test_PreviewRemoteEntryUsesProjectRootForUnpersistedProtocol(service):
-    projectRoot = Path(service.currentProject.getPath()).resolve()
-    inputFile = projectRoot / "movies.txt"
+def test_PreviewRemoteEntryUsesImportBrowserRootForUnpersistedProtocol(service, monkeypatch, tmp_path):
+    browserRoot = tmp_path / "home"
+    browserRoot.mkdir()
+    inputFile = browserRoot / "movies.txt"
     inputFile.write_text("movie_001.mrc", encoding="utf-8")
-
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
     response = service.previewRemoteEntry(protocolId="None", path="movies.txt")
 
     assert response.status_code == 200
@@ -950,3 +954,16 @@ def test_PostgresqlProtocolLogsDoNotFallbackToRuntimeWhenFilesAreMissing(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "No logs found"
+
+
+def test_GetProtocolPathUsesImportBrowserRootForUnpersistedProtocol(handlers, monkeypatch, tmp_path):
+    browserRoot = tmp_path / "home"
+    browserRoot.mkdir()
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+    result = handlers.getProtocolPath("fake-protocol-id-for-browser-paths-resolution")
+
+    assert result["rootAbs"] == str(browserRoot.resolve())
+    assert result["startPath"] == ""
+    assert result["protocolRoot"] == ""
+    assert result["path"] == str(browserRoot.resolve())
+

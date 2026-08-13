@@ -7304,9 +7304,8 @@ class ProjectService:
             }
 
         if self._isUnpersistedFsBrowserMode(protocolId):
-            projectPath = self.currentProject.getPath()
-            protocolAbsPath = os.path.abspath(projectPath)
-            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+            rootAbsPath = str(self._getGlobalFsBrowserRoot())
+            protocolAbsPath = rootAbsPath
         else:
             protocol = self._getScipionProtocolForRuntime(mapper=mapper, projectId=projectId, protocolId=protocolId)
             protocolAbsPath = os.path.abspath(protocol.getPath())
