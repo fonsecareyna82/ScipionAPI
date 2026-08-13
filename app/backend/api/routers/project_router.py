@@ -550,14 +550,18 @@ def launchProtocol(
         return _appendProtocolSyncCounts(response, result)
 
     except HTTPException as e:
-        return JSONResponse(
-            status_code=e.status_code,
-            content={
-                "status": 1,
-                "errors": _normalizeErrors(e.detail),
-                "workflow": [],
-            },
-        )
+        errorDetail = e.detail
+        responseProtocolId = errorDetail.get("protocolId") if isinstance(errorDetail, dict) else None
+        normalizedDetail = errorDetail.get("errors") if isinstance(errorDetail,
+                                                                   dict) and "errors" in errorDetail else errorDetail
+
+        content = {"status": 1, "errors": _normalizeErrors(normalizedDetail), "workflow": []}
+
+        if responseProtocolId not in (None, ""):
+            content["protocolId"] = str(responseProtocolId)
+
+        return JSONResponse(status_code=e.status_code, content=content)
+
     except Exception:
         logger.exception("Unexpected error while launching protocol")
         return JSONResponse(

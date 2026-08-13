@@ -81,6 +81,8 @@ class RuntimeProtocolLaunchService:
 
         executeMode = modeAliases.get(executeMode, executeMode)
         params = params or {}
+        protocolIdToken = "" if protocolId is None else str(protocolId).strip().lower()
+        isNewProtocolRequest = protocolIdToken in {"", "none", "null", "undefined"}
 
         allowedModes = {"launch", "restart", "schedule", "stop"}
 
@@ -125,62 +127,48 @@ class RuntimeProtocolLaunchService:
                 detail=errors,
             )
 
-        postgresqlLaunchPointerReport = preparePostgresqlRuntimePointerOutputsForLaunchCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocol=protocol,
-            allowMissingParentOutputs=False,
-        )
+        createdProtocolId = getattr(protocol, "getObjId", lambda: None)()
 
-        if postgresqlLaunchPointerReport.get("errors"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    "Failed to prepare PostgreSQL runtime pointer outputs for launch: %s"
-                    % postgresqlLaunchPointerReport.get("errors")
-                ),
-            )
+        try:
+            postgresqlLaunchPointerReport = preparePostgresqlRuntimePointerOutputsForLaunchCallback(mapper=mapper,
+                                                                                                    projectId=projectId,
+                                                                                                    protocol=protocol,
+                                                                                                    allowMissingParentOutputs=False)
 
-        if postgresqlLaunchPointerReport.get("skipped"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "message": (
-                        "PostgreSQL runtime pointer preparation was skipped. "
-                        "The protocol cannot be launched safely because its "
-                        "runtime inputs may not be restored in the execution DB."
-                    ),
-                    "report": postgresqlLaunchPointerReport,
-                },
-            )
+            if postgresqlLaunchPointerReport.get("errors"):
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail="Failed to prepare PostgreSQL runtime pointer outputs for launch: %s" % postgresqlLaunchPointerReport.get(
+                                        "errors"))
 
-        if protocol.useQueue():
-            queueName = params.get("_queueName")
-            queueParams = params.get("_queueParams")
-            protocol.setQueueParams([queueName, queueParams])
+            if postgresqlLaunchPointerReport.get("skipped"):
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail={
+                    "message": "PostgreSQL runtime pointer preparation was skipped. The protocol cannot be launched safely because its runtime inputs may not be restored in the execution DB.",
+                    "report": postgresqlLaunchPointerReport})
 
-        postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
-        postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
+            if protocol.useQueue():
+                queueName = params.get("_queueName")
+                queueParams = params.get("_queueParams")
+                protocol.setQueueParams([queueName, queueParams])
 
-        self._validateProtocol(
-            protocol=protocol,
-            errors=errors,
-        )
+            postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
+            postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
 
-        return self._executeProtocol(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            protocol=protocol,
-            executeMode=executeMode,
-            elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,
-            currentProject=currentProject,
-            postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback
-            ),
-            syncPostgresqlRuntimeProtocolCallback=syncPostgresqlRuntimeProtocolCallback,
-        )
+            self._validateProtocol(protocol=protocol, errors=errors)
+
+            return self._executeProtocol(mapper=mapper, projectId=projectId, protocolId=protocolId, protocol=protocol,
+                                         executeMode=executeMode, elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,
+                                         currentProject=currentProject,
+                                         postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
+                                         deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+                                         syncPostgresqlRuntimeProtocolCallback=syncPostgresqlRuntimeProtocolCallback)
+
+        except HTTPException as error:
+            if isNewProtocolRequest and createdProtocolId not in (None, ""):
+                errorItems = error.detail if isinstance(error.detail, list) else [error.detail]
+                raise HTTPException(status_code=error.status_code,
+                                    detail={"errors": errorItems, "protocolId": str(createdProtocolId)}) from error
+
+            raise
 
     def _stopProtocol(
             self,
