@@ -3606,6 +3606,9 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
 
 def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServiceModule, monkeypatch):
     class FakeProtocol:
+        def getObjId(self):
+            return 12
+
         def getStatus(self):
             return "running"
 
@@ -3636,7 +3639,10 @@ def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServi
     service.currentProject = object()
     service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
     service._getScipionProtocolByRuntimeId = lambda protocolId: protocol
-    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId, "values": {}, "info": {"protocolId": protocolId, "status": protocol.getStatus()}}
+    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId,
+                                                                         "values": {},
+                                                                         "info": {"protocolId": protocol.getObjId(),
+                                                                                  "status": protocol.getStatus()}}
 
     monkeypatch.setattr(projectServiceModule, "RuntimeProtocolStepPersistenceService", FakeStepPersistenceService)
     monkeypatch.setattr(projectServiceModule, "RuntimeProtocolOutputPersistenceService", FakeOutputPersistenceService)
