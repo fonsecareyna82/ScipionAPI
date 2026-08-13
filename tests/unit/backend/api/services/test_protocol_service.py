@@ -274,13 +274,12 @@ def test_GetProtocolParamsReturnsPostgresqlRuntimeContext(
     )
 
     assert result is expectedContext
-    assert syncCalls == [{
-        "mapper": "mapper",
-        "projectId": 344,
-        "protocolId": 500,
-        "registerOutputs": False,
-        "syncRelations": False,
-        "returnProtocolContext": True,
-    }]
+    assert syncCalls == [{"mapper": "mapper",
+                          "projectId": 344,
+                          "protocolId": 500,
+                          "registerOutputs": False,
+                          "syncRelations": False,
+                          "returnProtocolContext": True,
+                          "persistRuntimeState": False}]
 
 

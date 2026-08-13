@@ -235,14 +235,13 @@ class ProtocolService:
         The protocol is reconstructed from PostgreSQL and the context produced
         during that reconstruction is returned directly.
         """
-        syncResult = syncPostgresqlRuntimeProtocolCallback(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            registerOutputs=False,
-            syncRelations=False,
-            returnProtocolContext=True,
-        )
+        syncResult = syncPostgresqlRuntimeProtocolCallback(mapper=mapper,
+                                                           projectId=projectId,
+                                                           protocolId=protocolId,
+                                                           registerOutputs=False,
+                                                           syncRelations=False,
+                                                           returnProtocolContext=True,
+                                                           persistRuntimeState=False)
 
         protocolContext = (syncResult or {}).get(
             "protocolContext"

@@ -3602,3 +3602,50 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
         "300002.outputVolume",
         "300003.outputVolume",
     ]
+
+
+def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServiceModule, monkeypatch):
+    class FakeProtocol:
+        def getStatus(self):
+            return "running"
+
+    class FakeMapper:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return {"id": 71, "projectId": projectId, "protocolId": str(protocolId), "status": "saved", "params": {}}
+
+        def saveProtocol(self, protocolContext):
+            raise AssertionError("Read-only protocol context must not persist protocol state")
+
+        def replaceProtocolSteps(self, **kwargs):
+            raise AssertionError("Read-only protocol context must not persist protocol steps")
+
+    class FakeStepPersistenceService:
+        def buildProtocolStepsForPostgresql(self, protocol):
+            return []
+
+    class FakeOutputPersistenceService:
+        def shouldSyncProtocolOutputs(self, protocol):
+            return False
+
+        def countRuntimeOutputKinds(self, outputs):
+            return {}
+
+    protocol = FakeProtocol()
+    mapper = FakeMapper()
+    service = object.__new__(projectServiceModule.ProjectService)
+    service.currentProject = object()
+    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
+    service._getScipionProtocolByRuntimeId = lambda protocolId: protocol
+    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId, "values": {}, "info": {"protocolId": protocolId, "status": protocol.getStatus()}}
+
+    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolStepPersistenceService", FakeStepPersistenceService)
+    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolOutputPersistenceService", FakeOutputPersistenceService)
+    monkeypatch.setattr(projectServiceModule.logger, "isEnabledFor", lambda level: False)
+
+    result = service.syncPostgresqlRuntimeProtocol(mapper=mapper, projectId=3, protocolId=12, protocol=protocol, registerOutputs=False, syncRelations=False, returnProtocolContext=True, persistRuntimeState=False)
+
+    assert result["readOnly"] is True
+    assert result["protocolStatus"] == "saved"
+    assert result["protocolContext"]["info"]["status"] == "saved"
+
+

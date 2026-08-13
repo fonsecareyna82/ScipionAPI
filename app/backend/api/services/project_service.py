@@ -1606,6 +1606,7 @@ class ProjectService:
             returnProtocolContext: bool = False,
             protocol=None,
             authoritativeProtocolState: bool = False,
+            persistRuntimeState: bool = True,
     ) -> Dict[str, Any]:
         """
         Persist one protocol state into PostgreSQL without opening a runtime SQLite database.
@@ -1667,28 +1668,28 @@ class ProjectService:
             "status"
         )
 
-        if authoritativeProtocolState:
+        if not persistRuntimeState:
+            persistedStatus = storedStatus if storedStatus not in (None, "") else runtimeStatus
+        elif authoritativeProtocolState:
             persistedStatus = runtimeStatus
         else:
-            runtimeProtocolStatusSyncService = (
-                RuntimeProtocolStatusSyncService()
-            )
+            runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
+            persistedStatus = runtimeProtocolStatusSyncService.mergeRuntimeProtocolStatus(storedStatus=storedStatus,
+                                                                                          runtimeStatus=runtimeStatus)
 
-            persistedStatus = (
-                runtimeProtocolStatusSyncService
-                .mergeRuntimeProtocolStatus(
-                    storedStatus=storedStatus,
-                    runtimeStatus=runtimeStatus,
-                )
-            )
+        protocolInfo["status"] = persistedStatus
 
-        protocolInfo["status"] = (
-            persistedStatus
-        )
+        if not persistRuntimeState:
+            protocolDbId = int(storedRow["id"]) if storedRow and storedRow.get("id") not in (None, "") else None
+            syncResult = {"protocolId": str(scipionProtocolId), "protocolDbId": protocolDbId,
+                          "protocolStatus": persistedStatus, "postgresqlRuntimeSync": False, "readOnly": True}
 
-        protocolDbId = mapper.saveProtocol(
-            protocolContext
-        )
+            if returnProtocolContext:
+                syncResult["protocolContext"] = protocolContext
+
+            return syncResult
+
+        protocolDbId = mapper.saveProtocol(protocolContext)
 
         runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
 
