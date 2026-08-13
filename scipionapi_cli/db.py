@@ -279,6 +279,20 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
             "this installation to adopt them."
         )
 
+    if roleExists != "1":
+        _printInfo(f"Creating PostgreSQL role '{dbUser}'")
+        _runPsqlExec(psqlBase, commandEnv, f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}';", psqlTimeoutSec)
+    else:
+        _printInfo(f"Role '{dbUser}' already exists")
+        _printInfo(f"Ensuring PostgreSQL role '{dbUser}' has the configured password")
+        _runPsqlExec(psqlBase, commandEnv, f"ALTER ROLE {dbUser} WITH LOGIN PASSWORD '{safeDbPass}';", psqlTimeoutSec)
+
+    if dbExists != "1":
+        _printInfo(f"Creating PostgreSQL database '{dbName}'")
+        _runPsqlExec(psqlBase, commandEnv, f"CREATE DATABASE {dbName} OWNER {dbUser};", psqlTimeoutSec)
+    else:
+        _printInfo(f"Database '{dbName}' already exists")
+
     _printInfo(f"Ensuring owner and database privileges for '{dbName}'")
     _runPsqlExec(psqlBase, commandEnv, f"ALTER DATABASE {dbName} OWNER TO {dbUser};", psqlTimeoutSec)
     _runPsqlExec(psqlBase, commandEnv, f"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO {dbUser};", psqlTimeoutSec)
