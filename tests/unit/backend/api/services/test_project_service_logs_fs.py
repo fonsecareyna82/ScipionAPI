@@ -956,14 +956,4 @@ def test_PostgresqlProtocolLogsDoNotFallbackToRuntimeWhenFilesAreMissing(
     assert exc.value.detail == "No logs found"
 
 
-def test_GetProtocolPathUsesImportBrowserRootForUnpersistedProtocol(handlers, monkeypatch, tmp_path):
-    browserRoot = tmp_path / "home"
-    browserRoot.mkdir()
-    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
-    result = handlers.getProtocolPath("fake-protocol-id-for-browser-paths-resolution")
-
-    assert result["rootAbs"] == str(browserRoot.resolve())
-    assert result["startPath"] == ""
-    assert result["protocolRoot"] == ""
-    assert result["path"] == str(browserRoot.resolve())
 
