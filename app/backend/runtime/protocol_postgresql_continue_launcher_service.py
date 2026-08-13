@@ -253,10 +253,7 @@ class RuntimePostgresqlContinueLauncherService:
                     ),
                     "status": protocolStatus,
                     "error": (
-                        "Active protocols cannot "
-                        "be continued until the "
-                        "PostgreSQL-native stop "
-                        "operation is available"
+                        "Protocol remained active after the PostgreSQL-native stop phase"
                     ),
                 })
 

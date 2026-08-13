@@ -6495,6 +6495,7 @@ class ProjectService:
             validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
             launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            stopPostgresqlProtocolsCallback=self.stopProtocol,
         )
 
     def continueProtocolAll(
@@ -6518,6 +6519,7 @@ class ProjectService:
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
                 buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+                stopPostgresqlProtocolsCallback=self.stopProtocol,
             )
         )
 

@@ -27,7 +27,7 @@ import logging
 from typing import Any, Callable, Dict
 
 from fastapi import HTTPException, status
-
+from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,23 @@ logger = logging.getLogger(__name__)
 class RuntimeProtocolRestartService:
     """Orchestrate a protocol-subworkflow restart."""
 
+    @staticmethod
+    def _getActiveProtocolIds(workflowProtocolMap):
+        activeProtocolIds = []
+        values = workflowProtocolMap.values() if isinstance(workflowProtocolMap, dict) else workflowProtocolMap or []
+
+        for value in values:
+            protocol = value[0] if isinstance(value, (tuple, list)) and value else value
+
+            if protocol is None:
+                continue
+
+            protocolStatus = str(protocol.getStatus() or "").strip().lower()
+
+            if protocolStatus in RuntimeProtocolStatusSyncService.ACTIVE_STATUS_TEXTS:
+                activeProtocolIds.append(str(protocol.getObjId()))
+
+        return activeProtocolIds
 
     def restartProtocolSubworkflow(
             self,
@@ -48,6 +65,7 @@ class RuntimeProtocolRestartService:
             validatePostgresqlRestartSubworkflowCallback: Callable,
             launchPostgresqlRestartSubworkflowCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
+            stopPostgresqlProtocolsCallback: Callable,
     ) -> Dict[str, Any]:
         try:
             workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(
@@ -75,6 +93,20 @@ class RuntimeProtocolRestartService:
             projectId=projectId,
             workflowProtocolMap=workflowProtocolMap,
         )
+
+        activeProtocolIds = self._getActiveProtocolIds(workflowProtocolMap)
+        stopInfo = None
+
+        if activeProtocolIds:
+            stopInfo = stopPostgresqlProtocolsCallback(mapper=mapper, projectId=projectId,
+                                                       protocolIds=activeProtocolIds)
+            stopErrors = list((stopInfo or {}).get("errors") or [])
+
+            if stopErrors:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=stopErrors)
+
+            workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(mapper=mapper, projectId=projectId,
+                                                                          protocolId=protocolId)
 
         if validationInfo.get("errors"):
             raise HTTPException(
@@ -109,4 +141,5 @@ class RuntimeProtocolRestartService:
             postgresqlInputValidation=validationInfo,
             postgresqlWorkerLaunch=launchInfo,
             postgresqlRuntimeRestart=True,
+            postgresqlStop=stopInfo,
         )

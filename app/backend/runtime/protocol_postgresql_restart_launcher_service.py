@@ -178,10 +178,7 @@ class RuntimePostgresqlRestartLauncherService:
                     ),
                     "status": protocolStatus,
                     "error": (
-                        "Active protocols cannot "
-                        "be restarted until the "
-                        "PostgreSQL-native stop "
-                        "operation is available"
+                        "Protocol remained active after the PostgreSQL-native stop phase"
                     ),
                 })
 

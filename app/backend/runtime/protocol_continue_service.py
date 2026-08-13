@@ -3,12 +3,32 @@ from typing import Any, Callable, Dict
 
 from fastapi import HTTPException, status
 
+from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeProtocolContinueService:
     """Orchestrate continuation of a protocol subworkflow."""
+
+    @staticmethod
+    def _getActiveProtocolIds(workflowProtocolMap):
+        activeProtocolIds = []
+        values = workflowProtocolMap.values() if isinstance(workflowProtocolMap, dict) else workflowProtocolMap or []
+
+        for value in values:
+            protocol = value[0] if isinstance(value, (tuple, list)) and value else value
+
+            if protocol is None:
+                continue
+
+            protocolStatus = str(protocol.getStatus() or "").strip().lower()
+
+            if protocolStatus in RuntimeProtocolStatusSyncService.ACTIVE_STATUS_TEXTS:
+                activeProtocolIds.append(str(protocol.getObjId()))
+
+        return activeProtocolIds
 
     def continueProtocolSubworkflow(
             self,
@@ -22,6 +42,7 @@ class RuntimeProtocolContinueService:
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
+            stopPostgresqlProtocolsCallback: Callable,
     ) -> Dict[str, Any]:
         """
         Continue the selected downstream workflow.
@@ -64,6 +85,20 @@ class RuntimeProtocolContinueService:
                     % error
                 ),
             )
+
+        activeProtocolIds = self._getActiveProtocolIds(workflowProtocolMap)
+        stopInfo = None
+
+        if activeProtocolIds:
+            stopInfo = stopPostgresqlProtocolsCallback(mapper=mapper, projectId=projectId,
+                                                       protocolIds=activeProtocolIds)
+            stopErrors = list((stopInfo or {}).get("errors") or [])
+
+            if stopErrors:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=stopErrors)
+
+            workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(mapper=mapper, projectId=projectId,
+                                                                          protocolId=protocolId)
 
         continuePlan = (
             buildPostgresqlContinuePlanCallback(
@@ -117,6 +152,7 @@ class RuntimeProtocolContinueService:
                         planSummary
                     ),
                     postgresqlRuntimeContinue=True,
+                    postgresqlStop=stopInfo,
                 )
             )
 
