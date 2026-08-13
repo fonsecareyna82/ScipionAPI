@@ -74,6 +74,7 @@ class RuntimePostgresqlContinueLauncherService:
             projectId: int,
             workflowProtocolMap,
             currentProject,
+            forceRestartProtocolIds=None,
     ) -> Dict[str, Any]:
         runtimeMapper = currentProject.getPostgresqlRuntimeMapper() if currentProject is not None else None
 
@@ -92,6 +93,8 @@ class RuntimePostgresqlContinueLauncherService:
                     "parentProtocolsModified": False,
                 },
             }
+
+        forceRestartProtocolIds = {str(protocolId) for protocolId in (forceRestartProtocolIds or [])}
 
         items = (
             self.restartLauncher
@@ -259,26 +262,15 @@ class RuntimePostgresqlContinueLauncherService:
 
                 continue
 
-            if (
-                    entry["streaming"]
-                    and not entry["saved"]
-            ):
-                entry["action"] = (
-                    CONTINUE_ACTION_RESUME
-                )
-
-                entry["reason"] = (
-                    "streaming_execution_exists"
-                )
-
+            if str(protocolId) in forceRestartProtocolIds:
+                entry["action"] = CONTINUE_ACTION_RESTART
+                entry["reason"] = "active_protocol_stopped_for_continue"
+            elif entry["streaming"] and not entry["saved"]:
+                entry["action"] = CONTINUE_ACTION_RESUME
+                entry["reason"] = "streaming_execution_exists"
             else:
-                entry["action"] = (
-                    CONTINUE_ACTION_RESTART
-                )
-
-                entry["reason"] = (
-                    "native_continue_requires_restart"
-                )
+                entry["action"] = CONTINUE_ACTION_RESTART
+                entry["reason"] = "native_continue_requires_restart"
 
         for entry in entries:
             if entry["action"] != CONTINUE_ACTION_RESTART:

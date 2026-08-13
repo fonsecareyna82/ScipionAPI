@@ -1487,3 +1487,17 @@ def test_RestartLaunchStopsSpawnedWorkerWhenPersistenceFails(
     assert len(result["errors"]) == 1
 
 
+def test_ContinuePlanRestartsStreamingProtocolStoppedDuringContinue(monkeypatch):
+    installPlanStubs(monkeypatch)
+    protocol = ProtocolStub(1, status="aborted", streaming=True)
+    workflow = {"1": (protocol, 0)}
+    plan = RuntimePostgresqlContinueLauncherService().buildContinuePlan(mapper=SimpleNamespace(), projectId=7, workflowProtocolMap=workflow, currentProject=SimpleNamespace(getPostgresqlRuntimeMapper=lambda: object()), forceRestartProtocolIds=["1"])
+    entry = plan["entries"][0]
+
+    assert plan["errors"] == []
+    assert entry["action"] == CONTINUE_ACTION_RESTART
+    assert entry["reason"] == "active_protocol_stopped_for_continue"
+    assert plan["summary"]["restartProtocolIds"] == ["1"]
+    assert plan["summary"]["resumeProtocolIds"] == []
+
+

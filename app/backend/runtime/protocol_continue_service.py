@@ -88,6 +88,7 @@ class RuntimeProtocolContinueService:
 
         activeProtocolIds = self._getActiveProtocolIds(workflowProtocolMap)
         stopInfo = None
+        stoppedProtocolIds = []
 
         if activeProtocolIds:
             stopInfo = stopPostgresqlProtocolsCallback(mapper=mapper, projectId=projectId,
@@ -97,18 +98,15 @@ class RuntimeProtocolContinueService:
             if stopErrors:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=stopErrors)
 
+            stoppedProtocolIds = [str(item.get("protocolId")) for item in ((stopInfo or {}).get("stopped") or []) if
+                                  item.get("protocolId") not in (None, "")]
             workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(mapper=mapper, projectId=projectId,
                                                                           protocolId=protocolId)
 
-        continuePlan = (
-            buildPostgresqlContinuePlanCallback(
-                mapper=mapper,
-                projectId=projectId,
-                workflowProtocolMap=(
-                    workflowProtocolMap
-                ),
-            )
-        )
+        continuePlan = buildPostgresqlContinuePlanCallback(mapper=mapper,
+                                                           projectId=projectId,
+                                                           workflowProtocolMap=workflowProtocolMap,
+                                                           forceRestartProtocolIds=stoppedProtocolIds)
 
         if continuePlan.get("errors"):
             raise HTTPException(
