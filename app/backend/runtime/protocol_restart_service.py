@@ -108,11 +108,11 @@ class RuntimeProtocolRestartService:
             workflowProtocolMap = getPostgresqlRuntimeSubworkflowCallback(mapper=mapper, projectId=projectId,
                                                                           protocolId=protocolId)
 
+        validationInfo = validatePostgresqlRestartSubworkflowCallback(mapper=mapper, projectId=projectId,
+                                                                      workflowProtocolMap=workflowProtocolMap)
+
         if validationInfo.get("errors"):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=validationInfo["errors"],
-            )
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=validationInfo["errors"])
 
         launchInfo = launchPostgresqlRestartSubworkflowCallback(
             mapper=mapper,

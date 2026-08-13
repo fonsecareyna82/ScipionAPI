@@ -177,6 +177,7 @@ def test_PostgresqlContinueValidatesBeforeCleanupAndLaunch():
             buildProtocolMutationResultCallback=(
                 buildResult
             ),
+            stopPostgresqlProtocolsCallback=lambda **kwargs: {"errors": []},
         )
     )
 
@@ -266,6 +267,7 @@ def test_InvalidPostgresqlContinuePlanDoesNotCleanup():
                 buildProtocolMutationResultCallback=(
                     buildResult
                 ),
+                stopPostgresqlProtocolsCallback=lambda **kwargs: {"errors": []},
             )
         )
 

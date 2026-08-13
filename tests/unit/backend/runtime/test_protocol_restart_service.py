@@ -146,6 +146,7 @@ def test_PostgresqlRestartValidatesBeforeCleanupAndLaunch():
         validatePostgresqlRestartSubworkflowCallback=validate,
         launchPostgresqlRestartSubworkflowCallback=launch,
         buildProtocolMutationResultCallback=buildResult,
+        stopPostgresqlProtocolsCallback=lambda **kwargs: {"errors": []},
     )
 
     assert operations == [
@@ -233,6 +234,7 @@ def test_InvalidPostgresqlRestartDoesNotCleanupOrLaunch():
             validatePostgresqlRestartSubworkflowCallback=validate,
             launchPostgresqlRestartSubworkflowCallback=unexpected,
             buildProtocolMutationResultCallback=buildResult,
+            stopPostgresqlProtocolsCallback=lambda **kwargs: {"errors": []},
         )
 
     assert errorInfo.value.status_code == 422

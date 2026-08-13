@@ -202,5 +202,6 @@ class RuntimeProtocolContinueService:
                     launchInfo
                 ),
                 postgresqlRuntimeContinue=True,
+                postgresqlStop=stopInfo,
             )
         )

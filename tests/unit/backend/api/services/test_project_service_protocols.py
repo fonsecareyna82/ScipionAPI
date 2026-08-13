@@ -2361,6 +2361,7 @@ def test_RestartProtocolAllUsesPostgresqlRuntimeService(
     assert restartCall["mapper"] is mapper
     assert restartCall["projectId"] == 1
     assert restartCall["protocolId"] == 500
+    assert restartCall["stopPostgresqlProtocolsCallback"] == service.stopProtocol
 
     assert set(restartCall) == {
         "mapper",
@@ -2372,6 +2373,7 @@ def test_RestartProtocolAllUsesPostgresqlRuntimeService(
         "validatePostgresqlRestartSubworkflowCallback",
         "launchPostgresqlRestartSubworkflowCallback",
         "buildProtocolMutationResultCallback",
+        "stopPostgresqlProtocolsCallback",
     }
 
 
@@ -2422,6 +2424,8 @@ def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
     assert continueCall["mapper"] is mapper
     assert continueCall["projectId"] == 1
     assert continueCall["protocolId"] == 500
+    assert continueCall["stopPostgresqlProtocolsCallback"] == service.stopProtocol
+
 
     assert set(continueCall) == {
         "mapper",
@@ -2433,6 +2437,7 @@ def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
         "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
         "clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback",
         "buildProtocolMutationResultCallback",
+        "stopPostgresqlProtocolsCallback",
     }
 
 
