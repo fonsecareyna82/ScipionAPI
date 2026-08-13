@@ -88,12 +88,6 @@ class RuntimeProtocolRestartService:
                 detail="Failed to resolve protocol subworkflow: %s" % error,
             )
 
-        validationInfo = validatePostgresqlRestartSubworkflowCallback(
-            mapper=mapper,
-            projectId=projectId,
-            workflowProtocolMap=workflowProtocolMap,
-        )
-
         activeProtocolIds = self._getActiveProtocolIds(workflowProtocolMap)
         stopInfo = None
 

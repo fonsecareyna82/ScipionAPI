@@ -34,11 +34,15 @@ from app.backend.runtime.protocol_continue_service import (
 
 
 class ProtocolStub:
-    def __init__(self, protocolId):
+    def __init__(self, protocolId, status="finished"):
         self.protocolId = protocolId
+        self.status = status
 
     def getObjId(self):
         return self.protocolId
+
+    def getStatus(self):
+        return self.status
 
 
 def buildResult(
