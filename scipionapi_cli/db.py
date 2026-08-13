@@ -201,37 +201,83 @@ def ensureDatabaseAndRole(env: Dict[str, str]) -> None:
         psqlTimeoutSec,
     )
 
-    if roleExists != "1":
-        _printInfo(f"Creating PostgreSQL role '{dbUser}'")
-        _runPsqlExec(
-            psqlBase,
-            commandEnv,
-            f"CREATE ROLE {dbUser} LOGIN PASSWORD '{safeDbPass}';",
-            psqlTimeoutSec,
-        )
-    else:
-        _printInfo(f"Role '{dbUser}' already exists")
-        _printInfo(f"Ensuring PostgreSQL role '{dbUser}' has the configured password")
-        _runPsqlExec(
-            psqlBase,
-            commandEnv,
-            f"ALTER ROLE {dbUser} WITH LOGIN PASSWORD '{safeDbPass}';",
-            psqlTimeoutSec,
-        )
+    managedDatabase = (
+        env.get("SCIPIONAPI_MANAGED_DATABASE")
+        or ""
+    ).strip() == "1"
 
-    _printInfo(f"Checking PostgreSQL database '{dbName}'")
+    allowExistingDatabase = (
+        env.get("DATABASE_ALLOW_EXISTING")
+        or ""
+    ).strip() == "1"
+
+    _printInfo(
+        f"Checking PostgreSQL database '{dbName}'"
+    )
+
     dbExists = _runPsqlScalar(
         psqlBase,
         commandEnv,
-        f"SELECT 1 FROM pg_database WHERE datname='{safeDbName}'",
+        (
+            "SELECT 1 FROM pg_database "
+            f"WHERE datname='{safeDbName}'"
+        ),
         psqlTimeoutSec,
     )
 
-    if dbExists != "1":
-        _printInfo(f"Creating PostgreSQL database '{dbName}'")
-        _runPsqlExec(psqlBase, commandEnv, f"CREATE DATABASE {dbName} OWNER {dbUser};", psqlTimeoutSec)
-    else:
-        _printInfo(f"Database '{dbName}' already exists")
+    _printInfo(
+        f"Checking PostgreSQL role '{dbUser}'"
+    )
+
+    roleExists = _runPsqlScalar(
+        psqlBase,
+        commandEnv,
+        (
+            "SELECT 1 FROM pg_roles "
+            f"WHERE rolname='{safeDbUser}'"
+        ),
+        psqlTimeoutSec,
+    )
+
+    databaseCollision = dbExists == "1"
+    roleCollision = roleExists == "1"
+
+    if (
+        not managedDatabase
+        and not allowExistingDatabase
+        and (
+            databaseCollision
+            or roleCollision
+        )
+    ):
+        collisions = []
+
+        if databaseCollision:
+            collisions.append(
+                f"database '{dbName}'"
+            )
+
+        if roleCollision:
+            collisions.append(
+                f"role '{dbUser}'"
+            )
+
+        collisionText = " and ".join(
+            collisions
+        )
+
+        raise RuntimeError(
+            "PostgreSQL bootstrap stopped for safety.\n"
+            f"An existing {collisionText} was found, "
+            "but it is not registered as belonging to "
+            "this ScipionAPI installation.\n\n"
+            "ScipionAPI will not modify existing "
+            "PostgreSQL resources automatically.\n"
+            "Use different DATABASE_NAME / DATABASE_USER "
+            "values, or explicitly set "
+            "DATABASE_ALLOW_EXISTING=1 if you really want "
+            "this installation to adopt them."
+        )
 
     _printInfo(f"Ensuring owner and database privileges for '{dbName}'")
     _runPsqlExec(psqlBase, commandEnv, f"ALTER DATABASE {dbName} OWNER TO {dbUser};", psqlTimeoutSec)

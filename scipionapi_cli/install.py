@@ -369,8 +369,9 @@ def installCommand(
 
     secretKey = existing.get("SECRET_KEY") or secrets.token_urlsafe(48)
 
-    dbName = existing.get("DATABASE_NAME") or "scipion_db"
-    dbUser = existing.get("DATABASE_USER") or "scipion_user"
+    installId = existing.get("SCIPION_INSTALL_ID")  or secrets.token_hex(4)
+    dbName = existing.get("DATABASE_NAME") or f"scipion_db_{installId}"
+    dbUser = existing.get("DATABASE_USER") or f"scipion_user_{installId}"
     dbPass = existing.get("DATABASE_PASS") or secrets.token_urlsafe(32)
     dbHost = existing.get("POSTGRES_HOST") or "localhost"
     dbPort = existing.get("POSTGRES_PORT") or "5432"
@@ -436,6 +437,7 @@ def installCommand(
 
     updates: Dict[str, str] = {
         "SCIPION_HOME": str(scipionHome),
+        "SCIPION_INSTALL_ID": installId,
         "DATABASE_URL": databaseUrl,
         "DATABASE_NAME": dbName,
         "DATABASE_USER": dbUser,
@@ -480,7 +482,11 @@ def installCommand(
     _printInfo("Install will now configure PostgreSQL, run Alembic, and ensure the admin user.")
     _printStep("Ensuring PostgreSQL database and role")
     ensureDatabaseAndRole(env)
-    _printSuccess("Database and role are ready")
+    if env.get("SCIPIONAPI_MANAGED_DATABASE") != "1":
+        writeEnvFile(envPath,{"SCIPIONAPI_MANAGED_DATABASE": "1",},)
+        exportEnvToOs(envPath)
+        env["SCIPIONAPI_MANAGED_DATABASE"] = "1"
+        _printSuccess("Database and role are ready")
 
     _printStep("Running Alembic migrations")
     runAlembicUpgrade(repoRoot)
