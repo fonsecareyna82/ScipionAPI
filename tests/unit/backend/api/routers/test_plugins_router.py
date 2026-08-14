@@ -120,6 +120,51 @@ class FakeCeleryTask:
         })
 
 
+class FakeSystemTaskService:
+    def __init__(self):
+        self.createCalls = []
+        self.updateCalls = []
+        self.listCalls = []
+        self.acknowledgeCalls = []
+
+    def createTask(self, **kwargs):
+        self.createCalls.append(kwargs)
+
+        return {
+            "id": len(self.createCalls),
+            "taskId": kwargs["taskId"],
+            "taskType": kwargs["taskType"],
+            "operation": kwargs["operation"],
+            "subject": kwargs["subject"],
+            "subjectLabel": kwargs.get("subjectLabel"),
+            "status": kwargs.get("status", "PENDING"),
+            "step": None,
+            "error": None,
+            "result": None,
+            "meta": None,
+            "payload": kwargs.get("payload", {}),
+            "backend": kwargs["backend"],
+            "acknowledged": False,
+            "retryOfTaskId": kwargs.get("retryOfTaskId"),
+            "createdAt": None,
+            "startedAt": None,
+            "finishedAt": None,
+            "updatedAt": None,
+        }
+
+    def updateTask(self, **kwargs):
+        self.updateCalls.append(kwargs)
+        return None
+
+    def listTasks(self, **kwargs):
+        self.listCalls.append(kwargs)
+        return []
+
+    def acknowledgeTask(self, taskId):
+        self.acknowledgeCalls.append(taskId)
+        return None
+
+
 @pytest.fixture
 def pluginRouterModule(monkeypatch):
     # pluginRouterModule
@@ -155,9 +200,24 @@ def fakePluginService():
 
 
 @pytest.fixture
-def pluginClient(pluginRouterModule, fakePluginService, monkeypatch):
+def fakeSystemTaskService():
+    return FakeSystemTaskService()
+
+
+@pytest.fixture
+def pluginClient(
+        pluginRouterModule,
+        fakePluginService,
+        fakeSystemTaskService,
+        monkeypatch,
+):
     # pluginClient
     monkeypatch.setattr(pluginRouterModule, "service", fakePluginService)
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "systemTaskService",
+        fakeSystemTaskService,
+    )
     monkeypatch.setattr(pluginRouterModule, "_inProcessResults", {})
     monkeypatch.setattr(pluginRouterModule, "_inProcessTasks", {})
     monkeypatch.setattr(pluginRouterModule, "_refreshedTerminalTaskIds", set())
@@ -296,7 +356,12 @@ def test_UninstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, plug
     assert captured["taskKwargs"] == {}
 
 
-def test_InstallPluginUsesCeleryWhenAvailable(pluginClient, pluginRouterModule, monkeypatch):
+def test_InstallPluginUsesCeleryWhenAvailable(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
     fakeTask = FakeCeleryTask()
     initializeCalls = []
 
@@ -328,6 +393,21 @@ def test_InstallPluginUsesCeleryWhenAvailable(pluginClient, pluginRouterModule, 
     assert len(fakeTask.calls) == 1
     assert fakeTask.calls[0]["args"] == ["scipion-em-relion", False]
     assert fakeTask.calls[0]["task_id"] == body["taskId"]
+
+    assert len(fakeSystemTaskService.createCalls) == 1
+
+    createdTask = fakeSystemTaskService.createCalls[0]
+
+    assert createdTask["taskId"] == body["taskId"]
+    assert createdTask["taskType"] == "plugin"
+    assert createdTask["operation"] == "install"
+    assert createdTask["subject"] == "scipion-em-relion"
+    assert createdTask["backend"] == "celery"
+    assert createdTask["status"] == "PENDING"
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-relion",
+        "skipBinaries": False,
+    }
 
 
 def test_InstallPluginPassesSkipBinariesToCelery(pluginClient, pluginRouterModule, monkeypatch):
@@ -362,6 +442,15 @@ def test_InstallPluginPassesSkipBinariesToCelery(pluginClient, pluginRouterModul
     assert len(fakeTask.calls) == 1
     assert fakeTask.calls[0]["args"] == ["scipion-em-relion", True]
     assert fakeTask.calls[0]["task_id"] == body["taskId"]
+
+    assert len(fakeSystemTaskService.createCalls) == 1
+
+    createdTask = fakeSystemTaskService.createCalls[0]
+
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-relion",
+        "skipBinaries": True,
+    }
 
 
 def test_GetTaskStatusReturns404ForUnknownLocalTask(pluginClient):

@@ -1,6 +1,8 @@
 import asyncio
 import importlib
 import logging
+from datetime import datetime
+
 from typing import Any, Dict, Optional, Literal, Set, List
 from uuid import uuid4
 
@@ -107,7 +109,6 @@ class InstallPluginsBatchRequest(BaseModel):
     skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
 
 
-from datetime import datetime
 class SystemTaskResponse(BaseModel):
     id: int
     taskId: str
@@ -201,19 +202,65 @@ def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative 
 async def installDevelPlugin(payload: InstallDevelPluginRequest):
     try:
         validation = develService.validateDevelPluginPath(payload.path)
+
         if not validation.get("valid"):
             raise HTTPException(status_code=400, detail=validation)
 
-        pluginLabel = str(validation.get("pipName") or validation.get("path") or "devel-plugin")
+        pluginLabel = str(
+            validation.get("pipName")
+            or validation.get("path")
+            or "devel-plugin"
+        )
 
-        if _celeryAppAvailable and _celeryInstallDevelAvailable and installDevelPluginTask is not None:
+        if (
+                _celeryAppAvailable
+                and _celeryInstallDevelAvailable
+                and installDevelPluginTask is not None
+        ):
             taskId = uuid4().hex
-            initializePluginTaskLog(taskId, pluginLabel, "install-devel")
-            installDevelPluginTask.apply_async(
-                args=[payload.path, payload.skipBinaries, payload.force],
-                task_id=taskId,
+            logPath = initializePluginTaskLog(
+                taskId,
+                pluginLabel,
+                "install-devel",
             )
-            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
+
+            systemTaskService.createTask(
+                taskId=taskId,
+                taskType="plugin",
+                operation="install-devel",
+                subject=pluginLabel,
+                backend="celery",
+                status="PENDING",
+                payload={
+                    "path": payload.path,
+                    "skipBinaries": bool(payload.skipBinaries),
+                    "force": bool(payload.force),
+                },
+                logPath=str(logPath),
+            )
+
+            try:
+                installDevelPluginTask.apply_async(
+                    args=[
+                        payload.path,
+                        payload.skipBinaries,
+                        payload.force,
+                    ],
+                    task_id=taskId,
+                )
+            except Exception as error:
+                systemTaskService.updateTask(
+                    taskId=taskId,
+                    status="FAILURE",
+                    error=str(error),
+                )
+                raise
+
+            return TaskStartResponse(
+                taskId=taskId,
+                status="PENDING",
+                backend="celery",
+            )
 
         return await _startInProcessTask(
             develService.installDevelPlugin,
@@ -222,10 +269,14 @@ async def installDevelPlugin(payload: InstallDevelPluginRequest):
             skipBinaries=payload.skipBinaries,
             force=payload.force,
         )
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
 
 
 @router.get("/tasks", response_model=List[SystemTaskResponse])
@@ -325,24 +376,71 @@ async def installPluginsBatch(payload: InstallPluginsBatchRequest):
     try:
         plugins = []
         seen = set()
+
         for pluginName in payload.plugins:
             cleanPluginName = str(pluginName or "").strip()
+
             if not cleanPluginName or cleanPluginName in seen:
                 continue
+
             seen.add(cleanPluginName)
             plugins.append(cleanPluginName)
 
         if not plugins:
-            raise HTTPException(status_code=400, detail="No plugins selected")
-
-        if _celeryAppAvailable and _celeryInstallBatchAvailable and installPluginsBatchTask is not None:
-            taskId = uuid4().hex
-            initializePluginTaskLog(taskId, f"batch:{len(plugins)}", "install-batch")
-            installPluginsBatchTask.apply_async(
-                args=[plugins, payload.skipBinaries],
-                task_id=taskId,
+            raise HTTPException(
+                status_code=400,
+                detail="No plugins selected",
             )
-            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
+
+        if (
+                _celeryAppAvailable
+                and _celeryInstallBatchAvailable
+                and installPluginsBatchTask is not None
+        ):
+            taskId = uuid4().hex
+            taskLabel = f"batch:{len(plugins)}"
+
+            logPath = initializePluginTaskLog(
+                taskId,
+                taskLabel,
+                "install-batch",
+            )
+
+            systemTaskService.createTask(
+                taskId=taskId,
+                taskType="plugin",
+                operation="install-batch",
+                subject=taskLabel,
+                backend="celery",
+                status="PENDING",
+                payload={
+                    "plugins": plugins,
+                    "skipBinaries": bool(payload.skipBinaries),
+                },
+                logPath=str(logPath),
+            )
+
+            try:
+                installPluginsBatchTask.apply_async(
+                    args=[
+                        plugins,
+                        payload.skipBinaries,
+                    ],
+                    task_id=taskId,
+                )
+            except Exception as error:
+                systemTaskService.updateTask(
+                    taskId=taskId,
+                    status="FAILURE",
+                    error=str(error),
+                )
+                raise
+
+            return TaskStartResponse(
+                taskId=taskId,
+                status="PENDING",
+                backend="celery",
+            )
 
         if len(plugins) == 1:
             return await _startInProcessTask(
@@ -352,11 +450,18 @@ async def installPluginsBatch(payload: InstallPluginsBatchRequest):
                 skipBinaries=payload.skipBinaries,
             )
 
-        raise HTTPException(status_code=503, detail="Batch plugin install requires Celery")
+        raise HTTPException(
+            status_code=503,
+            detail="Batch plugin install requires Celery",
+        )
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
@@ -412,15 +517,62 @@ async def installPlugin(pluginName: str, skipBinaries: bool = False):
 @router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
 async def uninstallPlugin(pluginName: str):
     try:
-        if _celeryAppAvailable and _celeryUninstallAvailable and uninstallPluginTask is not None:
+        if (
+                _celeryAppAvailable
+                and _celeryUninstallAvailable
+                and uninstallPluginTask is not None
+        ):
             taskId = uuid4().hex
-            initializePluginTaskLog(taskId, pluginName, "uninstall")
-            uninstallPluginTask.apply_async(args=[pluginName], task_id=taskId)
-            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
 
-        return await _startInProcessTask(service.uninstallPlugin, pluginName, "uninstall")
+            logPath = initializePluginTaskLog(
+                taskId,
+                pluginName,
+                "uninstall",
+            )
+
+            systemTaskService.createTask(
+                taskId=taskId,
+                taskType="plugin",
+                operation="uninstall",
+                subject=pluginName,
+                backend="celery",
+                status="PENDING",
+                payload={
+                    "pluginName": pluginName,
+                },
+                logPath=str(logPath),
+            )
+
+            try:
+                uninstallPluginTask.apply_async(
+                    args=[pluginName],
+                    task_id=taskId,
+                )
+            except Exception as error:
+                systemTaskService.updateTask(
+                    taskId=taskId,
+                    status="FAILURE",
+                    error=str(error),
+                )
+                raise
+
+            return TaskStartResponse(
+                taskId=taskId,
+                status="PENDING",
+                backend="celery",
+            )
+
+        return await _startInProcessTask(
+            service.uninstallPlugin,
+            pluginName,
+            "uninstall",
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
 
 
 @router.get("/tasks/{taskId}", response_model=TaskStatusResponse)
