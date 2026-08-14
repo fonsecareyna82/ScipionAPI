@@ -2858,14 +2858,9 @@ class RuntimePostgresqlProtocolWorker:
 
             reopened = False
 
-            if isinstance(
-                    outputObject,
-                    Set,
-            ):
-                outputObject.setStreamState(
-                    Set.STREAM_OPEN
-                )
-
+            if isinstance(outputObject, Set):
+                outputObject.setStreamState(Set.STREAM_OPEN)
+                outputObject.write()
                 reopened = True
 
             restoredOutputNames.add(

@@ -382,6 +382,23 @@ class ResumeOutputProtocolStub:
         )
 
 
+class ResumeWritableOutputSet(Set):
+    def __init__(self):
+        super().__init__()
+        self.nativeWriteEnabled = False
+        self.writeCalls = 0
+
+    def supportsPostgresqlNativeWrite(self):
+        return True
+
+    def enablePostgresqlWrite(self):
+        self.nativeWriteEnabled = True
+        return self
+
+    def write(self, properties=True):
+        self.writeCalls += 1
+
+
 def test_ResumeRejectsSetWithoutNativePostgresqlWriteSupport():
     worker = RuntimePostgresqlProtocolWorker(
         projectId=7,
@@ -439,6 +456,56 @@ def test_ResumeRejectsSetWithoutNativePostgresqlWriteSupport():
     assert "outputSet" not in protocol._outputs
     assert protocol._useOutputList.get() is False
     assert report["parentProtocolsModified"] is False
+
+
+def test_ResumeWritesReopenedPostgresqlOutputSet():
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=7,
+        protocolId=10,
+        runMode=POSTGRESQL_RUN_MODE_RESUME,
+    )
+
+    protocol = ResumeOutputProtocolStub()
+
+    outputSet = ResumeWritableOutputSet()
+    outputSet.setObjId(500)
+    outputSet.setStreamState(Set.STREAM_CLOSED)
+
+    objectMapper = SimpleNamespace(
+        listProtocolStoredObjects=lambda **kwargs: [
+            {
+                "protocolDbId": 110,
+                "scipionObjId": 500,
+                "parentObjectId": None,
+                "name": "outputSet",
+                "path": "outputSet",
+                "className": "Set",
+            },
+        ]
+    )
+
+    worker.protocol = protocol
+
+    worker.runtimeMapper = SimpleNamespace(
+        objectMapper=objectMapper,
+        selectRuntimeInputObjectById=lambda runtimeObjectId: (
+            outputSet
+            if runtimeObjectId == 500
+            else None
+        ),
+    )
+
+    worker.getProtocolDbId = lambda: 110
+
+    report = worker.restoreResumeOutputs()
+
+    assert report["errors"] == []
+    assert report["restored"] == 1
+    assert protocol.outputSet is outputSet
+    assert outputSet.nativeWriteEnabled is True
+    assert outputSet.isStreamOpen()
+    assert outputSet.writeCalls == 1
+    assert "outputSet" in protocol._outputs
 
 
 def test_RestartDoesNotRestorePreviousOutputs():
