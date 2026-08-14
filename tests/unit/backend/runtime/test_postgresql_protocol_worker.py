@@ -1381,8 +1381,8 @@ class ResumeSetStub(Set):
 
     def __init__(self):
         super().__init__()
-
         self.enablePostgresqlWriteCalls = 0
+        self.writeCalls = 0
 
     def supportsPostgresqlNativeWrite(self):
         return True
@@ -1390,6 +1390,9 @@ class ResumeSetStub(Set):
     def enablePostgresqlWrite(self):
         self.enablePostgresqlWriteCalls += 1
         return self
+
+    def write(self, properties=True):
+        self.writeCalls += 1
 
 
 class ForbiddenSqliteMaterializer:
@@ -1484,6 +1487,8 @@ def test_ResumeUsesNativePostgresqlWritableSet():
         .enablePostgresqlWriteCalls
         == 1
     )
+
+    assert outputSet.writeCalls == 1
 
     assert (
         worker.protocol.outputParticles
