@@ -28,7 +28,6 @@ from typing import Any, Dict
 
 from pyworkflow.protocol import (
     MODE_RESUME,
-    STATUS_SAVED,
     STATUS_SCHEDULED,
 )
 
@@ -543,8 +542,7 @@ class RuntimePostgresqlContinueLauncherService:
             synchronized=False,
         )
 
-        stepsPrepared = len(mapper.listProtocolSteps(projectId=projectId,
-                                                     protocolId=protocolId,) or [])
+        stepsPrepared = len(mapper.listProtocolSteps(projectId=projectId, protocolId=protocolId) or [])
 
         protocol.runMode.set(
             MODE_RESUME

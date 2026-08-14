@@ -209,6 +209,8 @@ class MapperStub:
     def __init__(self):
         self.prepareContinueCalls = []
         self.prepareContinueError = None
+        self.listProtocolStepsCalls = []
+        self.listProtocolStepsError = None
 
     def prepareProtocolStepsForContinue(
             self,
@@ -228,12 +230,19 @@ class MapperStub:
             projectId,
             protocolId,
     ):
+        self.listProtocolStepsCalls.append({
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+
+        if self.listProtocolStepsError is not None:
+            raise self.listProtocolStepsError
+
         return [
             {"index": 0, "status": "finished"},
             {"index": 1, "status": "finished"},
             {"index": 2, "status": "aborted"},
         ]
-
 
 class RuntimeMapperStub:
     def __init__(self):
@@ -1021,6 +1030,11 @@ def test_ResumePreparationPreservesOutputsAndCpuTime(
 
     assert mapper.prepareContinueCalls == []
 
+    assert mapper.listProtocolStepsCalls == [{
+        "projectId": 7,
+        "protocolId": 1,
+    }]
+
     assert graphRepository.relationSyncCalls == [
         {
             "mapper": mapper,
@@ -1097,7 +1111,7 @@ def test_ResumePreparationDoesNotScheduleProtocolWhenRelationInvalidationFails(
     }]
 
 
-def test_ResumePreparationDoesNotScheduleProtocolWhenStepPreparationFails(
+def test_ResumePreparationDoesNotScheduleProtocolWhenStepLoadingFails(
         monkeypatch,
 ):
     graphRepository = installPlanStubs(
@@ -1113,8 +1127,8 @@ def test_ResumePreparationDoesNotScheduleProtocolWhenStepPreparationFails(
     protocol._jobId = [77]
 
     mapper = MapperStub()
-    mapper.prepareContinueError = RuntimeError(
-        "step preparation failed"
+    mapper.listProtocolStepsError = RuntimeError(
+        "step loading failed"
     )
 
     runtimeMapper = RuntimeMapperStub()
@@ -1131,7 +1145,7 @@ def test_ResumePreparationDoesNotScheduleProtocolWhenStepPreparationFails(
 
     with pytest.raises(
             RuntimeError,
-            match="step preparation failed",
+            match="step loading failed",
     ):
         service._prepareResumeProtocol(
             mapper=mapper,
@@ -1161,12 +1175,12 @@ def test_ResumePreparationDoesNotScheduleProtocolWhenStepPreparationFails(
         "synchronized": False,
     }]
 
-    assert mapper.prepareContinueCalls == [{
+    assert mapper.listProtocolStepsCalls == [{
         "projectId": 7,
         "protocolId": 1,
-        "statusValue": STATUS_SAVED,
-        "event": "continue_resume",
     }]
+
+    assert mapper.prepareContinueCalls == []
 
 
 def test_ContinueLaunchDoesNotPrecleanLaterRestartAfterPreparationFailure(
