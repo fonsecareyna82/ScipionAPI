@@ -125,12 +125,14 @@ class FakeSystemTaskService:
         self.createCalls = []
         self.updateCalls = []
         self.listCalls = []
+        self.getCalls = []
         self.acknowledgeCalls = []
+        self.tasksById = {}
 
     def createTask(self, **kwargs):
         self.createCalls.append(kwargs)
 
-        return {
+        task = {
             "id": len(self.createCalls),
             "taskId": kwargs["taskId"],
             "taskType": kwargs["taskType"],
@@ -152,17 +154,74 @@ class FakeSystemTaskService:
             "updatedAt": None,
         }
 
+        self.tasksById[task["taskId"]] = task
+
+        return dict(task)
+
     def updateTask(self, **kwargs):
         self.updateCalls.append(kwargs)
-        return None
+
+        taskId = kwargs["taskId"]
+        task = self.tasksById.get(taskId)
+
+        if task is None:
+            return None
+
+        for key in (
+            "status",
+            "step",
+            "error",
+            "result",
+            "meta",
+        ):
+            if key in kwargs:
+                task[key] = kwargs[key]
+
+        return dict(task)
+
+    def getTask(self, taskId):
+        self.getCalls.append(taskId)
+
+        task = self.tasksById.get(taskId)
+
+        return None if task is None else dict(task)
 
     def listTasks(self, **kwargs):
         self.listCalls.append(kwargs)
-        return []
+
+        tasks = [
+            dict(task)
+            for task in self.tasksById.values()
+        ]
+
+        requestedStatus = kwargs.get("status")
+
+        if requestedStatus:
+            normalizedStatus = str(
+                requestedStatus
+            ).strip().upper()
+
+            tasks = [
+                task
+                for task in tasks
+                if str(
+                    task.get("status") or ""
+                ).strip().upper() == normalizedStatus
+            ]
+
+        return tasks
 
     def acknowledgeTask(self, taskId):
         self.acknowledgeCalls.append(taskId)
-        return None
+
+        task = self.tasksById.get(taskId)
+
+        if task is None:
+            return None
+
+        task["acknowledged"] = True
+
+        return dict(task)
 
 
 @pytest.fixture
@@ -456,6 +515,119 @@ def test_InstallPluginPassesSkipBinariesToCelery(
         "pluginName": "scipion-em-relion",
         "skipBinaries": True,
     }
+
+
+def test_ListPluginTasksReconcilesStaleCelerySuccess(
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeSystemTaskService.tasksById["stale-task"] = {
+        "taskId": "stale-task",
+        "backend": "celery",
+        "status": "PENDING",
+        "step": None,
+        "error": None,
+        "result": None,
+        "meta": None,
+    }
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "systemTaskService",
+        fakeSystemTaskService,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "celeryApp",
+        FakeCeleryApp({
+            "stale-task": FakeCeleryResult(
+                status="SUCCESS",
+                result="Plugin installed successfully!",
+                info={"step": "Completed"},
+            ),
+        }),
+    )
+
+    tasks = pluginRouterModule.listPluginTasks()
+
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "SUCCESS"
+    assert tasks[0]["step"] == "Completed"
+    assert tasks[0]["result"] == "Plugin installed successfully!"
+    assert tasks[0]["error"] is None
+
+    assert fakeSystemTaskService.updateCalls == [{
+        "taskId": "stale-task",
+        "status": "SUCCESS",
+        "meta": {"step": "Completed"},
+        "step": "Completed",
+        "result": "Plugin installed successfully!",
+        "error": None,
+    }]
+
+
+def test_GetTaskStatusDoesNotRegressPersistedProgressToCeleryPending(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeSystemTaskService.tasksById["progress-task"] = {
+        "taskId": "progress-task",
+        "backend": "celery",
+        "status": "PROGRESS",
+        "step": "Installing binaries...",
+        "error": None,
+        "result": None,
+        "meta": {
+            "step": "Installing binaries...",
+        },
+    }
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "celeryApp",
+        FakeCeleryApp({
+            "progress-task": FakeCeleryResult(
+                status="PENDING",
+                result=None,
+                info=None,
+            ),
+        }),
+    )
+
+    response = pluginClient.get(
+        "/plugins/tasks/progress-task"
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "taskId": "progress-task",
+        "status": "PROGRESS",
+        "backend": "celery",
+        "result": None,
+        "error": None,
+        "meta": {
+            "step": "Installing binaries...",
+        },
+    }
+
+    assert fakeSystemTaskService.updateCalls == []
 
 
 def test_GetTaskStatusReturns404ForUnknownLocalTask(pluginClient):

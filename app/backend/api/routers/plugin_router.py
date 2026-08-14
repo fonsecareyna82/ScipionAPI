@@ -135,6 +135,113 @@ def _isTerminalTaskStatus(status: Optional[str]) -> bool:
     return str(status or "").upper() in {"SUCCESS", "FAILURE"}
 
 
+def _getStoredSystemTask(taskId: str) -> Optional[Dict[str, Any]]:
+    try:
+        return systemTaskService.getTask(taskId)
+    except Exception:
+        logger.debug(
+            "Could not load persisted system task. taskId=%s",
+            taskId,
+            exc_info=True,
+        )
+        return None
+
+
+def _reconcileSystemTaskFromCelery(
+        systemTask: Optional[Dict[str, Any]],
+        celeryTask,
+) -> Optional[Dict[str, Any]]:
+    if systemTask is None:
+        return None
+
+    if str(systemTask.get("backend") or "").strip().lower() != "celery":
+        return systemTask
+
+    storedStatus = str(systemTask.get("status") or "").strip().upper()
+
+    if storedStatus in {"SUCCESS", "FAILURE", "CANCELLED"}:
+        return systemTask
+
+    celeryStatus = str(getattr(celeryTask, "status", "") or "").strip().upper()
+
+    if not celeryStatus:
+        return systemTask
+
+    # Celery uses PENDING both for genuinely pending tasks and for task ids
+    # whose result is no longer available. Never use it to regress PostgreSQL.
+    if celeryStatus == "PENDING":
+        return systemTask
+
+    normalizedStatus = (
+        "CANCELLED"
+        if celeryStatus == "REVOKED"
+        else celeryStatus
+    )
+
+    if normalizedStatus not in {
+        "STARTED",
+        "PROGRESS",
+        "RETRY",
+        "SUCCESS",
+        "FAILURE",
+        "CANCELLED",
+    }:
+        return systemTask
+
+    try:
+        meta = celeryTask.info
+    except Exception:
+        meta = None
+
+    step = None
+
+    if isinstance(meta, dict):
+        step = meta.get("step")
+
+    updateKwargs = {
+        "taskId": str(systemTask["taskId"]),
+        "status": normalizedStatus,
+        "meta": meta,
+    }
+
+    if step:
+        updateKwargs["step"] = str(step)
+
+    if normalizedStatus == "SUCCESS":
+        updateKwargs["step"] = "Completed"
+        updateKwargs["result"] = getattr(celeryTask, "result", None)
+        updateKwargs["error"] = None
+
+    elif normalizedStatus == "FAILURE":
+        updateKwargs["error"] = str(
+            getattr(celeryTask, "result", None)
+            or "Task failed"
+        )
+
+    elif normalizedStatus == "RETRY":
+        retryError = getattr(celeryTask, "result", None)
+
+        if retryError is not None:
+            updateKwargs["error"] = str(retryError)
+
+    elif normalizedStatus == "CANCELLED":
+        updateKwargs["step"] = "Cancelled"
+        updateKwargs["error"] = None
+
+    try:
+        updatedTask = systemTaskService.updateTask(**updateKwargs)
+        return updatedTask or systemTask
+
+    except Exception:
+        logger.debug(
+            "Could not reconcile persisted system task from Celery. taskId=%s celeryStatus=%s",
+            systemTask.get("taskId"),
+            celeryStatus,
+            exc_info=True,
+        )
+        return systemTask
+
+
 def _refreshPluginCatalogAfterTask(taskId: str, status: Optional[str]) -> None:
     if not _isTerminalTaskStatus(status):
         return
@@ -285,12 +392,63 @@ def listPluginTasks(
         includeAcknowledged: bool = False,
         limit: int = 100,
 ):
-    return systemTaskService.listTasks(
+    tasks = systemTaskService.listTasks(
         taskType="plugin",
         status=status,
         includeAcknowledged=includeAcknowledged,
         limit=limit,
     )
+
+    if not _celeryAppAvailable or celeryApp is None:
+        return tasks
+
+    reconciledTasks = []
+
+    for task in tasks:
+        backend = str(task.get("backend") or "").strip().lower()
+        storedStatus = str(task.get("status") or "").strip().upper()
+
+        if backend != "celery":
+            reconciledTasks.append(task)
+            continue
+
+        if storedStatus in {"SUCCESS", "FAILURE", "CANCELLED"}:
+            reconciledTasks.append(task)
+            continue
+
+        try:
+            celeryTask = celeryApp.AsyncResult(
+                str(task["taskId"])
+            )
+
+            reconciledTask = _reconcileSystemTaskFromCelery(
+                systemTask=task,
+                celeryTask=celeryTask,
+            )
+
+            reconciledTasks.append(
+                reconciledTask or task
+            )
+
+        except Exception:
+            logger.debug(
+                "Could not inspect Celery task while listing plugin tasks. taskId=%s",
+                task.get("taskId"),
+                exc_info=True,
+            )
+
+            reconciledTasks.append(task)
+
+    if status:
+        requestedStatus = str(status).strip().upper()
+
+        reconciledTasks = [
+            task
+            for task in reconciledTasks
+            if str(task.get("status") or "").strip().upper() == requestedStatus
+        ]
+
+    return reconciledTasks
 
 @router.post(
     "/tasks/{taskId}/acknowledge",
@@ -577,17 +735,90 @@ async def uninstallPlugin(pluginName: str):
 
 @router.get("/tasks/{taskId}", response_model=TaskStatusResponse)
 async def getTaskStatus(taskId: str):
+    storedTask = _getStoredSystemTask(taskId)
+
+    if storedTask is not None:
+        storedBackend = str(
+            storedTask.get("backend") or ""
+        ).strip().lower()
+
+        storedStatus = str(
+            storedTask.get("status") or ""
+        ).strip().upper()
+
+        if (
+                storedBackend == "celery"
+                and storedStatus in {
+                    "SUCCESS",
+                    "FAILURE",
+                    "CANCELLED",
+                }
+        ):
+            _refreshPluginCatalogAfterTask(
+                taskId,
+                storedStatus,
+            )
+
+            return TaskStatusResponse(
+                taskId=taskId,
+                status=storedStatus,
+                backend="celery",
+                result=(
+                    storedTask.get("result")
+                    if storedStatus == "SUCCESS"
+                    else None
+                ),
+                error=storedTask.get("error"),
+                meta=storedTask.get("meta"),
+            )
+
     if _celeryAppAvailable and celeryApp is not None:
         task = celeryApp.AsyncResult(taskId)
-        status = task.status
+        status = str(task.status or "").strip().upper()
 
         meta = None
+
         try:
             meta = task.info
         except Exception:
             meta = None
 
-        _refreshPluginCatalogAfterTask(taskId, status)
+        reconciledTask = _reconcileSystemTaskFromCelery(
+            systemTask=storedTask,
+            celeryTask=task,
+        )
+
+        if (
+                status == "PENDING"
+                and reconciledTask is not None
+        ):
+            reconciledStatus = str(
+                reconciledTask.get("status") or ""
+            ).strip().upper()
+
+            if reconciledStatus != "PENDING":
+                _refreshPluginCatalogAfterTask(
+                    taskId,
+                    reconciledStatus,
+                )
+
+                return TaskStatusResponse(
+                    taskId=taskId,
+                    status=reconciledStatus,
+                    backend="celery",
+                    result=(
+                        reconciledTask.get("result")
+                        if reconciledStatus == "SUCCESS"
+                        else None
+                    ),
+                    error=reconciledTask.get("error"),
+                    meta=reconciledTask.get("meta"),
+                )
+
+        _refreshPluginCatalogAfterTask(
+            taskId,
+            status,
+        )
 
         if status == "SUCCESS":
             return TaskStatusResponse(
@@ -598,6 +829,7 @@ async def getTaskStatus(taskId: str):
                 error=None,
                 meta=meta,
             )
+
         if status == "FAILURE":
             return TaskStatusResponse(
                 taskId=taskId,
@@ -618,11 +850,21 @@ async def getTaskStatus(taskId: str):
         )
 
     local = _inProcessResults.get(taskId)
-    if local is None:
-        raise HTTPException(status_code=404, detail="Task not found")
 
-    status = str(local.get("status", "UNKNOWN"))
-    _refreshPluginCatalogAfterTask(taskId, status)
+    if local is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    status = str(
+        local.get("status", "UNKNOWN")
+    )
+
+    _refreshPluginCatalogAfterTask(
+        taskId,
+        status,
+    )
 
     return TaskStatusResponse(
         taskId=taskId,
