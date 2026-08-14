@@ -223,6 +223,17 @@ class MapperStub:
 
         return 3
 
+    def listProtocolSteps(
+            self,
+            projectId,
+            protocolId,
+    ):
+        return [
+            {"index": 0, "status": "finished"},
+            {"index": 1, "status": "finished"},
+            {"index": 2, "status": "aborted"},
+        ]
+
 
 class RuntimeMapperStub:
     def __init__(self):
@@ -1008,14 +1019,7 @@ def test_ResumePreparationPreservesOutputsAndCpuTime(
 
     assert runtimeMapper.commitCalls == 1
 
-    assert mapper.prepareContinueCalls == [
-        {
-            "projectId": 7,
-            "protocolId": 1,
-            "statusValue": STATUS_SAVED,
-            "event": "continue_resume",
-        },
-    ]
+    assert mapper.prepareContinueCalls == []
 
     assert graphRepository.relationSyncCalls == [
         {

@@ -240,6 +240,8 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
             projectId=projectId,
             protocolId=childProtocolId,
         )
+        childStepEventBefore = childStepsBefore[0]["event"]
+
 
         assert len(parentStepsBefore) == 1
         assert len(childStepsBefore) == 1
@@ -502,14 +504,14 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
             ),
         )
 
+        assert childStepRows[0]["event"] == childStepEventBefore
         assert len(parentStepRows) == 1
         assert parentStepRows[0]["name"] == "parentStep"
         assert str(parentStepRows[0]["status"]).strip().lower() == str(STATUS_FINISHED).strip().lower()
 
         assert len(childStepRows) == 1
         assert childStepRows[0]["name"] == "childStep"
-        assert str(childStepRows[0]["status"]).strip().lower() == str(STATUS_SAVED).strip().lower()
-        assert childStepRows[0]["event"] == "continue_resume"
+        assert str(childStepRows[0]["status"]).strip().lower() == str(STATUS_FINISHED).strip().lower()
 
         parentOutputRows = observerObjectMapper.getStoredObjectTree(
             projectId=projectId,

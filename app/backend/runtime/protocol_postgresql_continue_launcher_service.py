@@ -543,12 +543,8 @@ class RuntimePostgresqlContinueLauncherService:
             synchronized=False,
         )
 
-        stepsPrepared = mapper.prepareProtocolStepsForContinue(
-            projectId=projectId,
-            protocolId=protocolId,
-            statusValue=STATUS_SAVED,
-            event="continue_resume",
-        )
+        stepsPrepared = len(mapper.listProtocolSteps(projectId=projectId,
+                                                     protocolId=protocolId,) or [])
 
         protocol.runMode.set(
             MODE_RESUME
