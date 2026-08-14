@@ -7,10 +7,20 @@ from pathlib import Path
 from typing import Iterator, Tuple
 
 
+def _getDefaultPluginTaskLogDir() -> Path:
+    scipionHome = (os.environ.get("SCIPION_HOME") or "").strip()
+
+    if scipionHome:
+        return Path(scipionHome) / "logs" / "plugin-tasks"
+
+    return Path("/tmp/scipion-plugin-task-logs")
+
+
 _PLUGIN_TASK_LOG_DIR = Path(
-    os.environ.get("SCIPION_PLUGIN_TASK_LOG_DIR", "/tmp/scipion-plugin-task-logs")
+    os.environ.get("SCIPION_PLUGIN_TASK_LOG_DIR") or _getDefaultPluginTaskLogDir()
 )
 
+logger = logging.getLogger(__name__)
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -50,6 +60,22 @@ def appendPluginTaskLog(taskId: str, text: str) -> None:
 
 def writePluginTaskStep(taskId: str, step: str) -> None:
     appendPluginTaskLog(taskId, f"[{_timestamp()}] {step}")
+
+    try:
+        from app.backend.api.services.system_task_service import SystemTaskService
+
+        SystemTaskService().updateTask(
+            taskId=taskId,
+            status="PROGRESS",
+            step=step,
+        )
+    except Exception:
+        logger.debug(
+            "Could not persist plugin task progress. taskId=%s step=%s",
+            taskId,
+            step,
+            exc_info=True,
+        )
 
 
 def readPluginTaskLog(taskId: str, offset: int = 0, limit: int = 65536) -> Tuple[str, int]:

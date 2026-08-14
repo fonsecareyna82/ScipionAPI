@@ -20,10 +20,12 @@ from app.backend.api.services.plugin_task_log import (
 )
 from app.backend.api.services.plugins_revision import bumpPluginsRevision
 from app.backend.api.services.reload_trigger import triggerBackendReloadIfEnabled
+from app.backend.api.services.system_task_service import SystemTaskService
 
 celeryApp = Celery("scipionweb")
 celeryApp.config_from_object("app.workers.celeryconfig")
 logger = logging.getLogger(__name__)
+systemTaskService = SystemTaskService()
 
 logger.debug(
     "celeryEnvLoaded dotEnvPath=%s scipionHome=%s",
@@ -49,17 +51,34 @@ class InstallPluginTask(Task):
     def on_retry(self, exc, task_id, args, kwargs, einfo):
         logger.warning("Task %s retrying: %s", task_id, exc)
         appendPluginTaskLog(str(task_id), ansi(f"[retry] {str(exc)}", ANSI_YELLOW, bold=True))
+        systemTaskService.updateTask(
+            taskId=str(task_id),
+            status="RETRY",
+            error=str(exc),
+        )
         super().on_retry(exc, task_id, args, kwargs, einfo)
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         logger.error("Task %s failed: %s", task_id, exc)
         appendPluginTaskLog(str(task_id), ansi(f"[failure] {str(exc)}", ANSI_RED, bold=True))
+        systemTaskService.updateTask(
+            taskId=str(task_id),
+            status="FAILURE",
+            error=str(exc),
+        )
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
     def on_success(self, retval, task_id, args, kwargs):
         appendPluginTaskLog(
             str(task_id),
             ansi("[success] Task completed successfully", ANSI_GREEN, bold=True),
+        )
+        systemTaskService.updateTask(
+            taskId=str(task_id),
+            status="SUCCESS",
+            step="Completed",
+            result=retval,
+            error=None,
         )
         super().on_success(retval, task_id, args, kwargs)
 

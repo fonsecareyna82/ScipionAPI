@@ -16,12 +16,14 @@ from app.backend.api.services.plugin_task_log import (
     readPluginTaskLog,
     writePluginTaskStep,
 )
+from app.backend.api.services.system_task_service import SystemTaskService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plugins", tags=["Plugins"])
 service = PluginService()
 develService = PluginDevelService()
+systemTaskService = SystemTaskService()
 
 try:
     from app.workers.task_queue import celeryApp  # type: ignore
@@ -103,6 +105,29 @@ class InstallDevelPluginRequest(BaseModel):
 class InstallPluginsBatchRequest(BaseModel):
     plugins: List[str] = Field(..., description="Plugin pip names to install or update")
     skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
+
+
+from datetime import datetime
+class SystemTaskResponse(BaseModel):
+    id: int
+    taskId: str
+    taskType: str
+    operation: str
+    subject: str
+    subjectLabel: Optional[str] = None
+    status: str
+    step: Optional[str] = None
+    error: Optional[str] = None
+    result: Optional[Any] = None
+    meta: Optional[Any] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    backend: str
+    acknowledged: bool
+    retryOfTaskId: Optional[str] = None
+    createdAt: datetime
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    updatedAt: datetime
 
 
 def _isTerminalTaskStatus(status: Optional[str]) -> bool:
@@ -203,6 +228,35 @@ async def installDevelPlugin(payload: InstallDevelPluginRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/tasks", response_model=List[SystemTaskResponse])
+def listPluginTasks(
+        status: Optional[str] = None,
+        includeAcknowledged: bool = False,
+        limit: int = 100,
+):
+    return systemTaskService.listTasks(
+        taskType="plugin",
+        status=status,
+        includeAcknowledged=includeAcknowledged,
+        limit=limit,
+    )
+
+@router.post(
+    "/tasks/{taskId}/acknowledge",
+    response_model=SystemTaskResponse,
+)
+def acknowledgePluginTask(taskId: str):
+    task = systemTaskService.acknowledgeTask(taskId)
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    return task
+
+
 @router.get("/{pluginName}", response_model=Any)
 def loadPlugin(pluginName: str):
     plugin = service.getPlugin(pluginName)
@@ -213,7 +267,28 @@ def loadPlugin(pluginName: str):
 
 async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwargs) -> TaskStartResponse:
     taskId = uuid4().hex
-    initializePluginTaskLog(taskId, pluginName, operation)
+    logPath = initializePluginTaskLog(taskId, pluginName, operation)
+
+    taskPayload = {
+        "pluginName": pluginName,
+        **taskKwargs,
+    }
+
+    if operation == "install-devel":
+        taskPayload.pop("pluginName", None)
+        taskPayload["path"] = pluginName
+
+    systemTaskService.createTask(
+        taskId=taskId,
+        taskType="plugin",
+        operation=operation,
+        subject=pluginName,
+        backend="local",
+        status="STARTED",
+        payload=taskPayload,
+        logPath=str(logPath),
+    )
+
     loop = asyncio.get_running_loop()
 
     async def runner():
@@ -223,10 +298,22 @@ async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwa
                 result = await loop.run_in_executor(None, lambda: taskFn(pluginName, taskId, **taskKwargs))
             writePluginTaskStep(taskId, "In-process task completed.")
             _inProcessResults[taskId] = {"status": "SUCCESS", "result": result, "error": None}
+            systemTaskService.updateTask(
+                taskId=taskId,
+                status="SUCCESS",
+                step="Completed",
+                result=result,
+                error=None,
+            )
         except Exception as e:
             logger.exception("In-process task failed.")
             appendPluginTaskLog(taskId, f"[error] {str(e)}")
             _inProcessResults[taskId] = {"status": "FAILURE", "result": None, "error": str(e)}
+            systemTaskService.updateTask(
+                taskId=taskId,
+                status="FAILURE",
+                error=str(e),
+            )
 
     _inProcessTasks[taskId] = asyncio.create_task(runner())
     _inProcessResults[taskId] = {"status": "STARTED", "result": None, "error": None}
@@ -277,9 +364,40 @@ async def installPlugin(pluginName: str, skipBinaries: bool = False):
     try:
         if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
             taskId = uuid4().hex
-            initializePluginTaskLog(taskId, pluginName, "install")
-            installPluginTask.apply_async(args=[pluginName, skipBinaries], task_id=taskId)
-            return TaskStartResponse(taskId=taskId, status="PENDING", backend="celery")
+            logPath = initializePluginTaskLog(taskId, pluginName, "install")
+
+            systemTaskService.createTask(
+                taskId=taskId,
+                taskType="plugin",
+                operation="install",
+                subject=pluginName,
+                backend="celery",
+                status="PENDING",
+                payload={
+                    "pluginName": pluginName,
+                    "skipBinaries": bool(skipBinaries),
+                },
+                logPath=str(logPath),
+            )
+
+            try:
+                installPluginTask.apply_async(
+                    args=[pluginName, skipBinaries],
+                    task_id=taskId,
+                )
+            except Exception as error:
+                systemTaskService.updateTask(
+                    taskId=taskId,
+                    status="FAILURE",
+                    error=str(error),
+                )
+                raise
+
+            return TaskStartResponse(
+                taskId=taskId,
+                status="PENDING",
+                backend="celery",
+            )
 
         return await _startInProcessTask(
             service.installPlugin,
