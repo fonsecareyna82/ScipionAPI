@@ -58,8 +58,18 @@ def appendPluginTaskLog(taskId: str, text: str) -> None:
             fh.write("\n")
 
 
+def writePluginTaskMessage(taskId: str, message: str) -> None:
+    appendPluginTaskLog(
+        taskId,
+        f"[{_timestamp()}] {message}",
+    )
+
+
 def writePluginTaskStep(taskId: str, step: str) -> None:
-    appendPluginTaskLog(taskId, f"[{_timestamp()}] {step}")
+    writePluginTaskMessage(
+        taskId,
+        step,
+    )
 
     try:
         from app.backend.api.services.system_task_service import SystemTaskService

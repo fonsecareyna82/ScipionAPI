@@ -518,3 +518,116 @@ def test_load_raw_plugins_falls_back_to_cached_catalog(tmp_path):
 
 
 
+class DummyInstallPlugin:
+    def __init__(self):
+        self.installPipCalls = 0
+        self.installBinCalls = []
+        self.uninstallBinsCalls = 0
+        self.uninstallPipCalls = 0
+
+    def installPipModule(self):
+        self.installPipCalls += 1
+        return True
+
+    def installBin(self, args):
+        self.installBinCalls.append(args)
+
+    def uninstallBins(self):
+        self.uninstallBinsCalls += 1
+
+    def uninstallPip(self):
+        self.uninstallPipCalls += 1
+
+
+def test_install_plugin_reports_detailed_task_progress(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+
+    plugin = DummyInstallPlugin()
+
+    taskSteps = []
+    taskMessages = []
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "writePluginTaskStep",
+        lambda taskId, step: taskSteps.append(step),
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "writePluginTaskMessage",
+        lambda taskId, message: taskMessages.append(message),
+    )
+
+    result = service.installPlugin(
+        "scipion-em-test",
+        taskId="task-1",
+        skipBinaries=False,
+    )
+
+    assert result == {
+        "installed": "SUCCESS",
+        "skipBinaries": False,
+    }
+
+    assert plugin.installPipCalls == 1
+
+    assert plugin.installBinCalls == [{
+        "args": [
+            "-j",
+            "3",
+        ]
+    }]
+
+    assert taskSteps == [
+        "Resolving plugin...",
+        "Installing pip module...",
+        "Installing binaries...",
+        "Refreshing plugin catalog...",
+        "Plugin installed successfully.",
+    ]
+
+    assert any(
+        message.startswith(
+            "Installation requested:"
+        )
+        for message in taskMessages
+    )
+
+    assert any(
+        message.startswith(
+            "Pip installation stage completed in "
+        )
+        for message in taskMessages
+    )
+
+    assert any(
+        message.startswith(
+            "Binaries installation completed in "
+        )
+        for message in taskMessages
+    )
+
+    assert any(
+        message.startswith(
+            "Installation completed successfully in "
+        )
+        for message in taskMessages
+    )

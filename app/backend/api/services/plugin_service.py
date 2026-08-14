@@ -4,6 +4,7 @@ import logging
 import re
 import traceback
 from pathlib import Path
+from time import monotonic
 from threading import Lock
 from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
@@ -14,7 +15,11 @@ from pyworkflow.config import Config
 from scipion.install.plugin_funcs import PluginRepository
 
 from app.backend.api.services.plugin_devel_service import PluginDevelService
-from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
+from app.backend.api.services.plugin_task_log import (
+    appendPluginTaskLog,
+    writePluginTaskMessage,
+    writePluginTaskStep,
+)
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomain
 from app.utils.scipion_helper import serializeToJson
@@ -543,69 +548,235 @@ class PluginService:
         return None
 
     def installPlugin(
-        self,
-        pluginName: str,
-        taskId: Optional[str] = None,
-        skipBinaries: bool = False,
+            self,
+            pluginName: str,
+            taskId: Optional[str] = None,
+            skipBinaries: bool = False,
     ) -> Dict[str, Any]:
         plugin: Optional[Any] = None
+        startedAt = monotonic()
 
         try:
             if taskId:
-                writePluginTaskStep(taskId, "Resolving plugin...")
+                writePluginTaskMessage(
+                    taskId,
+                    (
+                        f"Installation requested: plugin={pluginName} "
+                        f"skipBinaries={bool(skipBinaries)}"
+                    ),
+                )
+
+                writePluginTaskStep(
+                    taskId,
+                    "Resolving plugin...",
+                )
 
             rawPlugins = self._loadRawPlugins(
                 forceRefresh=True
             )
-            resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
+
+            resolvedKey = self._resolvePluginKeyByPipName(
+                pluginName,
+                rawPlugins,
+            )
+
             plugin = rawPlugins[resolvedKey]
 
             if taskId:
-                writePluginTaskStep(taskId, "Installing pip module...")
+                writePluginTaskMessage(
+                    taskId,
+                    f"Plugin resolved: key={resolvedKey}",
+                )
+
+                writePluginTaskStep(
+                    taskId,
+                    "Installing pip module...",
+                )
+
+            pipStartedAt = monotonic()
 
             installed = plugin.installPipModule()
+
+            pipElapsed = monotonic() - pipStartedAt
+
+            if taskId:
+                writePluginTaskMessage(
+                    taskId,
+                    (
+                        "Pip installation stage completed "
+                        f"in {pipElapsed:.2f}s "
+                        f"(installationAction={bool(installed)})."
+                    ),
+                )
 
             if installed:
                 if skipBinaries:
                     if taskId:
-                        writePluginTaskStep(taskId, "Skipping binaries installation.")
+                        writePluginTaskStep(
+                            taskId,
+                            "Skipping binaries installation.",
+                        )
+
+                        writePluginTaskMessage(
+                            taskId,
+                            "Binary installation was disabled for this task.",
+                        )
+
                 else:
                     if taskId:
-                        writePluginTaskStep(taskId, "Installing binaries...")
-                    plugin.installBin({"args": ["-j", "3"]})
+                        writePluginTaskStep(
+                            taskId,
+                            "Installing binaries...",
+                        )
+
+                        writePluginTaskMessage(
+                            taskId,
+                            "Starting plugin binary installation with 3 parallel jobs.",
+                        )
+
+                    binariesStartedAt = monotonic()
+
+                    plugin.installBin({
+                        "args": [
+                            "-j",
+                            "3",
+                        ]
+                    })
+
+                    binariesElapsed = (
+                            monotonic()
+                            - binariesStartedAt
+                    )
+
+                    if taskId:
+                        writePluginTaskMessage(
+                            taskId,
+                            (
+                                "Binaries installation completed "
+                                f"in {binariesElapsed:.2f}s."
+                            ),
+                        )
+
             else:
                 if taskId:
-                    writePluginTaskStep(taskId, "Pip module reported no installation action.")
+                    writePluginTaskMessage(
+                        taskId,
+                        "Pip module reported no installation action.",
+                    )
+
+            if taskId:
+                writePluginTaskStep(
+                    taskId,
+                    "Refreshing plugin catalog...",
+                )
 
             self.clearCache()
 
-            if taskId:
-                writePluginTaskStep(taskId, "Plugin installed successfully.")
-
-            return {"installed": "SUCCESS", "skipBinaries": bool(skipBinaries)}
-
-        except Exception:
-            logger.exception("Error installing the plugin.")
+            totalElapsed = (
+                    monotonic()
+                    - startedAt
+            )
 
             if taskId:
-                appendPluginTaskLog(taskId, traceback.format_exc())
-                writePluginTaskStep(taskId, "Rolling back installation...")
+                writePluginTaskStep(
+                    taskId,
+                    "Plugin installed successfully.",
+                )
+
+                writePluginTaskMessage(
+                    taskId,
+                    (
+                        f"Installation completed successfully "
+                        f"in {totalElapsed:.2f}s."
+                    ),
+                )
+
+            return {
+                "installed": "SUCCESS",
+                "skipBinaries": bool(skipBinaries),
+            }
+
+        except Exception as error:
+            totalElapsed = (
+                    monotonic()
+                    - startedAt
+            )
+
+            logger.exception(
+                "Error installing the plugin."
+            )
+
+            if taskId:
+                writePluginTaskMessage(
+                    taskId,
+                    (
+                        f"Installation failed after "
+                        f"{totalElapsed:.2f}s: "
+                        f"{error.__class__.__name__}: {error}"
+                    ),
+                )
+
+                appendPluginTaskLog(
+                    taskId,
+                    traceback.format_exc(),
+                )
+
+                writePluginTaskStep(
+                    taskId,
+                    "Rolling back installation...",
+                )
 
             if plugin is not None:
                 if not skipBinaries:
                     try:
                         plugin.uninstallBins()
-                    except Exception:
-                        logger.exception("Error uninstalling binaries during install rollback.")
+
                         if taskId:
-                            appendPluginTaskLog(taskId, traceback.format_exc())
+                            writePluginTaskMessage(
+                                taskId,
+                                "Binary rollback completed.",
+                            )
+
+                    except Exception:
+                        logger.exception(
+                            "Error uninstalling binaries during install rollback."
+                        )
+
+                        if taskId:
+                            writePluginTaskMessage(
+                                taskId,
+                                "Binary rollback failed.",
+                            )
+
+                            appendPluginTaskLog(
+                                taskId,
+                                traceback.format_exc(),
+                            )
 
                 try:
                     plugin.uninstallPip()
-                except Exception:
-                    logger.exception("Error uninstalling pip module during install rollback.")
+
                     if taskId:
-                        appendPluginTaskLog(taskId, traceback.format_exc())
+                        writePluginTaskMessage(
+                            taskId,
+                            "Pip rollback completed.",
+                        )
+
+                except Exception:
+                    logger.exception(
+                        "Error uninstalling pip module during install rollback."
+                    )
+
+                    if taskId:
+                        writePluginTaskMessage(
+                            taskId,
+                            "Pip rollback failed.",
+                        )
+
+                        appendPluginTaskLog(
+                            taskId,
+                            traceback.format_exc(),
+                        )
 
             raise
 
