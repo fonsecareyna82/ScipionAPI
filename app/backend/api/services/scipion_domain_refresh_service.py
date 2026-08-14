@@ -48,54 +48,51 @@ _lastDomainRevision = _readPluginsRevision()
 
 
 def _resetScipionDomainCaches(domain) -> None:
+    domain._pluginsLoaded = False
     domain._plugins = {}
     domain._protocols = {}
     domain._objects = {}
     domain._viewers = {}
     domain._wizards = {}
-    domain._pluginsLoaded = False
     domain._preferred_viewers = None
-
-    setattr(
-        domain,
-        "_Domain__mapperDict",
-        None,
-    )
+    setattr(domain, "_Domain__mapperDict", None)
 
 
-def refreshScipionDomain(force: bool = False) -> bool:
+def _refreshScipionDomainLocked(force: bool = False) -> bool:
     global _lastDomainRevision
 
     revision = _readPluginsRevision()
 
+    if not force and revision == _lastDomainRevision:
+        return False
+
+    importlib.invalidate_caches()
+    Config.setDomain("pwem")
+    domain = Config.getDomain()
+
+    _resetScipionDomainCaches(domain)
+
+    domain.getPlugins()
+    domain.getProtocols()
+
+    _lastDomainRevision = revision
+
+    logger.info("Refreshed Scipion domain after plugin change. pluginsRevision=%s protocols=%s", revision, len(domain._protocols))
+
+    return True
+
+
+def refreshScipionDomain(force: bool = False) -> bool:
     with _domainRefreshLock:
-        if not force and revision == _lastDomainRevision:
-            return False
-
-        importlib.invalidate_caches()
-
-        Config.setDomain("pwem")
-        domain = Config.getDomain()
-
-        _resetScipionDomainCaches(
-            domain
-        )
-
-        # Discover plugin entry-points immediately. Protocols, objects,
-        # viewers and wizards remain lazy and will rebuild on first use.
-        domain.getPlugins()
-
-        _lastDomainRevision = revision
-
-        logger.info(
-            "Refreshed Scipion domain after plugin change. pluginsRevision=%s",
-            revision,
-        )
-
-        return True
+        return _refreshScipionDomainLocked(force=force)
 
 
 def refreshScipionDomainIfNeeded() -> bool:
-    return refreshScipionDomain(
-        force=False
-    )
+    return refreshScipionDomain(force=False)
+
+
+def getScipionProtocolsSnapshot() -> dict:
+    with _domainRefreshLock:
+        _refreshScipionDomainLocked(force=False)
+        domain = Config.getDomain()
+        return dict(domain.getProtocols())

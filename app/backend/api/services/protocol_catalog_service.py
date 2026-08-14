@@ -28,10 +28,9 @@ import logging
 import threading
 from typing import Any, Dict
 
-from pyworkflow.config import Config
-
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
+from app.backend.api.services.scipion_domain_refresh_service import getScipionProtocolsSnapshot
 
 
 logger = logging.getLogger(__name__)
@@ -57,13 +56,9 @@ def _invalidateProtocolsTreeCacheIfNeeded() -> int:
 class ProtocolCatalogService:
     """Build and cache the available Scipion protocols catalog."""
 
-    def getProtocols(
-            self,
-            *,
-            currentProject,
-    ) -> dict:
+    def getProtocols(self, *, currentProject) -> dict:
         _invalidateProtocolsTreeCacheIfNeeded()
-
+        protocolClasses = getScipionProtocolsSnapshot()
         cacheKey = "protocolsTree"
 
         with _protocolsTreeLock:
@@ -71,10 +66,7 @@ class ProtocolCatalogService:
 
             if cached is not None:
                 protocolsTree = copy.deepcopy(cached)
-                self._walkAndReplaceProtocols(
-                    protocolsTree,
-                    currentProject,
-                )
+                self._walkAndReplaceProtocols(protocolsTree, protocolClasses)
                 return protocolsTree
 
         protocolsTree = self._buildProtocolsTreeInSubprocess()
@@ -83,11 +75,7 @@ class ProtocolCatalogService:
             _protocolsTreeCache[cacheKey] = protocolsTree
 
         protocolsTree = copy.deepcopy(protocolsTree)
-
-        self._walkAndReplaceProtocols(
-            protocolsTree,
-            currentProject,
-        )
+        self._walkAndReplaceProtocols(protocolsTree, protocolClasses)
 
         return protocolsTree
 
@@ -127,55 +115,33 @@ class ProtocolCatalogService:
             operationName="Build protocols tree",
         )
 
-    def _walkAndReplaceProtocols(
-            self,
-            data,
-            currentProject,
-    ) -> None:
+    def _walkAndReplaceProtocols(self, data, protocolClasses) -> None:
         if isinstance(data, dict):
             for value in data.values():
                 if isinstance(value, dict):
-                    self._replaceDefaultProtocolText(
-                        value,
-                        currentProject,
-                    )
-
+                    self._replaceDefaultProtocolText(value, protocolClasses)
                 elif isinstance(value, list):
                     for item in value:
                         if isinstance(item, dict):
-                            self._replaceDefaultProtocolText(
-                                item,
-                                currentProject,
-                            )
+                            self._replaceDefaultProtocolText(item, protocolClasses)
 
         elif isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
-                    self._replaceDefaultProtocolText(
-                        item,
-                        currentProject,
-                    )
+                    self._replaceDefaultProtocolText(item, protocolClasses)
 
-    def _replaceDefaultProtocolText(
-            self,
-            node: dict,
-            currentProject,
-    ) -> None:
+    def _replaceDefaultProtocolText(self, node: dict, protocolClasses) -> None:
         if isinstance(node, dict):
             text = node.get("text")
             tag = node.get("tag")
             children = node.get("childs", [])
-
         else:
             text = getattr(node, "text", None)
             tag = getattr(node, "tag", None)
             children = getattr(node, "childs", [])
 
         if text == "default" and tag == "protocol":
-            newText = self._getProtocolName(
-                node,
-                currentProject,
-            )
+            newText = self._getProtocolName(node, protocolClasses)
 
             if newText:
                 if isinstance(node, dict):
@@ -184,73 +150,22 @@ class ProtocolCatalogService:
                     setattr(node, "text", newText)
 
         for child in children:
-            self._replaceDefaultProtocolText(
-                child,
-                currentProject,
-            )
+            self._replaceDefaultProtocolText(child, protocolClasses)
 
-    def _getProtocolName(
-            self,
-            node,
-            currentProject,
-    ):
+    def _getProtocolName(self, node, protocolClasses):
         text = node.get("text")
 
         if text:
             value = node.get("value") if node.get("value") is not None else text
             protocolClassName = value.split(".")[-1]
-
-            protocolClass = self._getProtocolClassForTreeLabel(
-                currentProject,
-                protocolClassName,
-            )
+            protocolClass = protocolClasses.get(protocolClassName)
 
             if node.get("tag") == "protocol" and text == "default":
                 if protocolClass is None:
-                    logger.warning(
-                        "Protocol className '%s' not found!!!.\n"
-                        "Fix your config/protocols.conf configuration.",
-                        protocolClassName,
-                    )
-                    return
+                    logger.warning("Protocol className '%s' not found while resolving protocol tree label.",
+                                   protocolClassName)
+                    return None
 
                 return protocolClass.getClassLabel()
 
-        return "default"
-
-    def _getProtocolClassForTreeLabel(
-            self,
-            currentProject,
-            protocolClassName: str,
-    ):
-        try:
-            if currentProject is not None:
-                protocolClass = (
-                    currentProject
-                    .getDomain()
-                    .getProtocols()
-                    .get(protocolClassName, None)
-                )
-
-                if protocolClass is not None:
-                    return protocolClass
-
-        except Exception:
-            pass
-
-        try:
-            return (
-                Config
-                .getDomain()
-                .getProtocols()
-                .get(protocolClassName, None)
-            )
-
-        except Exception:
-            logger.warning(
-                "Protocol className '%s' not found while resolving "
-                "protocol tree label.",
-                protocolClassName,
-            )
-
-            return None
+        return None

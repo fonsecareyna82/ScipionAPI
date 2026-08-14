@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import threading
 import app.backend.api.services.scipion_domain_refresh_service as domainRefreshModule
 
 
@@ -60,6 +61,8 @@ class DomainStub:
     }
 
     getPluginsCalls = 0
+    getProtocolsCalls = 0
+    newProtocol = object()
 
     @classmethod
     def getPlugins(cls):
@@ -74,6 +77,12 @@ class DomainStub:
         return dict(
             cls._plugins
         )
+
+    @classmethod
+    def getProtocols(cls):
+        cls.getProtocolsCalls += 1
+        cls._protocols = {"NewProtocol": cls.newProtocol}
+        return dict(cls._protocols)
 
 
 def test_RefreshScipionDomainClearsCachedRegistries(monkeypatch):
@@ -125,13 +134,87 @@ def test_RefreshScipionDomainClearsCachedRegistries(monkeypatch):
         "newPlugin",
     ]
 
-    assert DomainStub._protocols == {}
+    assert DomainStub._protocols == {"NewProtocol": DomainStub.newProtocol}
     assert DomainStub._objects == {}
     assert DomainStub._viewers == {}
     assert DomainStub._wizards == {}
     assert DomainStub._preferred_viewers is None
     assert DomainStub._Domain__mapperDict is None
     assert DomainStub.getPluginsCalls == 1
+    assert DomainStub.getProtocolsCalls == 1
+
+
+def test_GetScipionProtocolsSnapshotWaitsForConcurrentRefresh(monkeypatch):
+    resetStarted = threading.Event()
+    allowRefresh = threading.Event()
+    snapshotFinished = threading.Event()
+    newProtocol = object()
+    refreshErrors = []
+    snapshot = {}
+
+    class ConcurrentDomainStub:
+        _plugins = {"oldPlugin": object()}
+        _protocols = {"OldProtocol": object()}
+        _objects = {}
+        _viewers = {}
+        _wizards = {}
+        _pluginsLoaded = True
+        _preferred_viewers = None
+        _Domain__mapperDict = None
+
+        @classmethod
+        def getPlugins(cls):
+            cls._plugins = {"newPlugin": object()}
+            cls._pluginsLoaded = True
+            return dict(cls._plugins)
+
+        @classmethod
+        def getProtocols(cls):
+            if not cls._protocols:
+                cls._protocols = {"NewProtocol": newProtocol}
+            return dict(cls._protocols)
+
+    originalReset = domainRefreshModule._resetScipionDomainCaches
+
+    def pausedReset(domain):
+        originalReset(domain)
+        resetStarted.set()
+        assert allowRefresh.wait(timeout=2)
+
+    def runRefresh():
+        try:
+            domainRefreshModule.refreshScipionDomain()
+        except Exception as exc:
+            refreshErrors.append(exc)
+
+    def readSnapshot():
+        snapshot.update(domainRefreshModule.getScipionProtocolsSnapshot())
+        snapshotFinished.set()
+
+    monkeypatch.setattr(domainRefreshModule, "_lastDomainRevision", 3)
+    monkeypatch.setattr(domainRefreshModule, "getPluginsRevision", lambda: 4)
+    monkeypatch.setattr(domainRefreshModule.importlib, "invalidate_caches", lambda: None)
+    monkeypatch.setattr(domainRefreshModule.Config, "setDomain", lambda value: None)
+    monkeypatch.setattr(domainRefreshModule.Config, "getDomain", lambda: ConcurrentDomainStub)
+    monkeypatch.setattr(domainRefreshModule, "_resetScipionDomainCaches", pausedReset)
+
+    refreshThread = threading.Thread(target=runRefresh)
+    refreshThread.start()
+
+    assert resetStarted.wait(timeout=2)
+
+    snapshotThread = threading.Thread(target=readSnapshot)
+    snapshotThread.start()
+
+    assert snapshotFinished.wait(timeout=0.05) is False
+
+    allowRefresh.set()
+    refreshThread.join(timeout=2)
+    snapshotThread.join(timeout=2)
+
+    assert refreshErrors == []
+    assert snapshotFinished.is_set()
+    assert snapshot == {"NewProtocol": newProtocol}
 
 
 def test_RefreshScipionDomainSkipsUnchangedRevision(monkeypatch):
