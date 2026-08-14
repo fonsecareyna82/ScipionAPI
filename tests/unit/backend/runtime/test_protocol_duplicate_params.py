@@ -152,12 +152,16 @@ def test_DuplicateRuntimeProtocolsUsesStrictScipionProtocolIdentity(
             self.value = value
 
     class ProtocolStub:
-        def __init__(self, protocolId):
+        def __init__(self, protocolId, runName="Example protocol"):
             self.protocolId = protocolId
+            self.runName = runName
             self.runMode = ValueHolder()
 
         def getObjId(self):
             return self.protocolId
+
+        def getRunName(self):
+            return self.runName
 
         def getParam(self, key):
             return None
