@@ -33,8 +33,20 @@ from app.backend.runtime.protocol_duplicate_service import (
 
 
 class FakeSourceProtocol:
+    def __init__(self, runName="Union sets"):
+        self.runName = runName
+
     def getParam(self, key):
         return None
+
+    def getRunName(self):
+        return self.runName
+
+
+class MapperStub:
+    def getProtocols(self, projectId):
+        assert projectId == 7
+        return []
 
 
 def test_BuildDuplicatedProtocolParamsDropsObjectMetadata():
@@ -53,9 +65,31 @@ def test_BuildDuplicatedProtocolParamsDropsObjectMetadata():
     )
 
     assert result == {
-        "runName": "Union sets copy",
+        "runName": "Union sets (copy)",
         "ignoreDuplicates": True,
     }
+
+
+def test_BuildDuplicatedProtocolParamsUsesNextScipionCopySuffix():
+    service = RuntimeProtocolDuplicateService()
+    result = service.buildDuplicatedProtocolParams(sourceProtocol=FakeSourceProtocol("Fiducial model"), sourceParams={"runName": "Fiducial model"}, existingRunNames=["Fiducial model", "Fiducial model (copy)", "Fiducial model (copy 2)"])
+
+    assert result["runName"] == "Fiducial model (copy 3)"
+
+
+def test_BuildDuplicatedProtocolParamsContinuesCopySeriesWhenDuplicatingACopy():
+    service = RuntimeProtocolDuplicateService()
+    result = service.buildDuplicatedProtocolParams(sourceProtocol=FakeSourceProtocol("Fiducial model (copy 2)"), sourceParams={"runName": "Fiducial model (copy 2)"}, existingRunNames=["Fiducial model", "Fiducial model (copy)", "Fiducial model (copy 2)", "Fiducial model (copy 3)"])
+
+    assert result["runName"] == "Fiducial model (copy 4)"
+
+
+def test_BuildDuplicatedProtocolParamsPreservesStructuredRunName():
+    service = RuntimeProtocolDuplicateService()
+    result = service.buildDuplicatedProtocolParams(sourceProtocol=FakeSourceProtocol("Fiducial model"), sourceParams={"runName": {"value": "Fiducial model", "editableValue": "Fiducial model"}}, existingRunNames=["Fiducial model", "Fiducial model (copy)"])
+
+    assert result["runName"]["value"] == "Fiducial model (copy 2)"
+    assert result["runName"]["editableValue"] == "Fiducial model (copy 2)"
 
 
 def test_LegacyProtocolDuplicationCompatibilityIsRemoved():
@@ -165,7 +199,7 @@ def test_DuplicateRuntimeProtocolsUsesStrictScipionProtocolIdentity(
     duplicatedProtocol = ProtocolStub(29)
 
     result = service.duplicatePostgresqlRuntimeProtocols(
-        mapper=object(),
+        mapper=MapperStub(),
         projectId=7,
         protocols=[
             SimpleNamespace(id=500),
@@ -288,7 +322,7 @@ def test_CopyInputRefsUsesStrictScipionProtocolIdentity(
 
     report = service.copyPostgresqlInputRefsForDuplicatedProtocol(
         state=state,
-        mapper=object(),
+        mapper=MapperStub(),
         projectId=7,
         sourceProtocolId=19,
         duplicatedProtocolId=29,
@@ -472,7 +506,7 @@ def test_RestorePointerInputsUsesStrictParentScipionIdentity(
         return None
 
     report = RuntimeProtocolDuplicateService().restorePostgresqlPointerInputsBeforeCopy(
-        mapper=object(),
+        mapper=MapperStub(),
         projectId=7,
         protocol=ProtocolStub(),
         getScipionProtocolByRuntimeIdCallback=getScipionProtocolByRuntimeId,

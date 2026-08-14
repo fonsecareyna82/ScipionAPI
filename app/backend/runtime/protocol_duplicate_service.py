@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import copy
+import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -36,6 +37,7 @@ from pyworkflow.protocol.params import (
 )
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import MODE_RESTART
+from pyworkflow.project.project import REGEX_NUMBER_ENDING_CP
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
@@ -98,11 +100,8 @@ class RuntimeProtocolDuplicateService:
         # protocol rows, without copying refs yet.
         # ------------------------------------------------------------------
         protocolGraphRepository = ProtocolGraphRepository()
-
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        )
+        protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
+        existingRunNames = self._getProjectProtocolRunNames(mapper=mapper, projectId=projectId)
 
         for item in protocols or []:
             sourceProtocolId = getattr(item, "id", None)
@@ -149,10 +148,9 @@ class RuntimeProtocolDuplicateService:
             )
             sourceParams = sourceRow.get("params") or {}
 
-            params = self.buildDuplicatedProtocolParams(
-                sourceProtocol=sourceProtocol,
-                sourceParams=sourceParams,
-            )
+            params = self.buildDuplicatedProtocolParams(sourceProtocol=sourceProtocol,
+                                                        sourceParams=sourceParams,
+                                                        existingRunNames=existingRunNames)
 
             newProtocol, saveErrors = saveProtocolCallback(
                 mapper=mapper,
@@ -168,6 +166,11 @@ class RuntimeProtocolDuplicateService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=saveErrors,
                 )
+
+            duplicatedRunName = self._extractRunNameFromParams(params)
+
+            if duplicatedRunName:
+                existingRunNames.append(duplicatedRunName)
 
             newProtocol.setSaved()
             newProtocol.runMode.set(MODE_RESTART)
@@ -508,18 +511,9 @@ class RuntimeProtocolDuplicateService:
             "errors": errors,
         }
 
-    def buildDuplicatedProtocolParams(
-            self,
-            sourceProtocol,
-            sourceParams: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Build params for a duplicated protocol.
-
-        Duplicates must keep configuration params, but must not carry runtime
-        state, output attrs or pointer values. Pointers are restored later from
-        protocol_input_refs.
-        """
+    def buildDuplicatedProtocolParams(self, sourceProtocol, sourceParams: Dict[str, Any],
+                                      existingRunNames: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Build params for a duplicated protocol."""
         params = copy.deepcopy(sourceParams or {})
 
         for key in list(params.keys()):
@@ -543,27 +537,114 @@ class RuntimeProtocolDuplicateService:
             if key in self.runtimeParamKeysToDrop:
                 params.pop(key, None)
 
-        self._markRunNameAsCopy(params)
+        self._setScipionCopyRunName(params=params, sourceProtocol=sourceProtocol,
+                                    existingRunNames=existingRunNames or [])
 
         return params
 
     @staticmethod
-    def _markRunNameAsCopy(params: Dict[str, Any]) -> None:
-        try:
-            runName = params.get("runName")
+    def _extractRunNameFromParams(params: Dict[str, Any]) -> str:
+        if not isinstance(params, dict):
+            return ""
 
-            if isinstance(runName, dict):
-                oldValue = runName.get("value") or runName.get("editableValue")
+        runName = params.get("runName")
 
-                if oldValue:
-                    runName["value"] = "%s copy" % oldValue
-                    runName["editableValue"] = "%s copy" % oldValue
+        if isinstance(runName, dict):
+            for key in ("value", "editableValue", "default", "objValue", "_value"):
+                value = runName.get(key)
 
-            elif runName:
-                params["runName"] = "%s copy" % runName
+                if value not in (None, ""):
+                    return str(value).strip()
 
-        except Exception:
-            pass
+            return ""
+
+        return str(runName or "").strip()
+
+    def _getProjectProtocolRunNames(self, mapper, projectId: int) -> List[str]:
+        rows = mapper.getProtocols(projectId) or []
+        runNames = []
+
+        for row in rows:
+            params = row.get("params") or {}
+
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except Exception:
+                    params = {}
+
+            runName = self._extractRunNameFromParams(params)
+
+            if runName:
+                runNames.append(runName)
+
+        return runNames
+
+    @staticmethod
+    def _buildScipionCopyRunName(sourceRunName: str, existingRunNames: List[str]) -> str:
+        oldProtName = str(sourceRunName or "").strip()
+
+        if not oldProtName:
+            return ""
+
+        maxSuffix = 0
+        oldMatch = REGEX_NUMBER_ENDING_CP.match(oldProtName)
+
+        if oldMatch:
+            newProtPrefix = oldMatch.groupdict()["prefix"]
+            oldSuffix = oldMatch.groupdict()["number"]
+
+            try:
+                oldNumber = 1 if oldSuffix == "" else int(oldSuffix)
+            except (TypeError, ValueError):
+                newProtPrefix = oldProtName + " (copy"
+                oldNumber = 0
+        else:
+            newProtPrefix = oldProtName + " (copy"
+            oldNumber = 0
+
+        newNumber = oldNumber + 1
+
+        for otherProtLabel in existingRunNames or []:
+            otherMatch = REGEX_NUMBER_ENDING_CP.match(str(otherProtLabel or "").strip())
+
+            if not otherMatch or otherMatch.groupdict()["prefix"] != newProtPrefix:
+                continue
+
+            stringSuffix = otherMatch.groupdict()["number"]
+
+            if stringSuffix == "":
+                stringSuffix = 1
+
+            try:
+                suffixNumber = int(stringSuffix)
+            except (TypeError, ValueError):
+                continue
+
+            maxSuffix = max(maxSuffix, suffixNumber)
+
+            if newNumber <= maxSuffix:
+                newNumber = maxSuffix + 1
+
+        if newNumber == 1:
+            return newProtPrefix + ")"
+
+        return "%s %d)" % (newProtPrefix, newNumber)
+
+    def _setScipionCopyRunName(self, params: Dict[str, Any], sourceProtocol, existingRunNames: List[str]) -> None:
+        sourceRunName = sourceProtocol.getRunName()
+        newRunName = self._buildScipionCopyRunName(sourceRunName=sourceRunName, existingRunNames=existingRunNames)
+
+        if not newRunName:
+            return
+
+        runName = params.get("runName")
+
+        if isinstance(runName, dict):
+            runName["value"] = newRunName
+            runName["editableValue"] = newRunName
+        else:
+            params["runName"] = newRunName
 
     def buildPostgresqlRuntimeDuplicateResultPayload(
             self,
