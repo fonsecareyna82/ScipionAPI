@@ -410,7 +410,12 @@ def test_InstallPluginUsesCeleryWhenAvailable(
     }
 
 
-def test_InstallPluginPassesSkipBinariesToCelery(pluginClient, pluginRouterModule, monkeypatch):
+def test_InstallPluginPassesSkipBinariesToCelery(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
     fakeTask = FakeCeleryTask()
     initializeCalls = []
 
