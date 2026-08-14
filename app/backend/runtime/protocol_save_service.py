@@ -75,6 +75,7 @@ class RuntimeProtocolSaveService:
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback: Callable,
+            validateParams: bool = True,
     ) -> Tuple[Any, List[str]]:
         params = params or {}
         errorList: List[str] = []
@@ -103,12 +104,9 @@ class RuntimeProtocolSaveService:
             params=params,
         )
 
-        errorList.extend(
-            self._applyScalarParams(
-                protocol=protocol,
-                params=params,
-            )
-        )
+        errorList.extend(self._applyScalarParams(protocol=protocol,
+                                                 params=params,
+                                                 validateParams=validateParams))
 
         errorList.extend(
             self.applyPointerParamsToProtocol(
@@ -219,6 +217,7 @@ class RuntimeProtocolSaveService:
             *,
             protocol,
             params: Dict[str, Any],
+            validateParams: bool = True
     ) -> List[str]:
         errorList: List[str] = []
 
@@ -237,7 +236,7 @@ class RuntimeProtocolSaveService:
 
             try:
                 castedValue = castProtocolParamValue(param, value)
-                errors = param.validate(castedValue) if hasattr(param, "validate") else []
+                errors = param.validate(castedValue) if validateParams and hasattr(param, "validate") else []
 
                 if errors:
                     errorList += [

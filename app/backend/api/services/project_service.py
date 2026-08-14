@@ -5498,7 +5498,7 @@ class ProjectService:
             "outputInfo": outputInfo,
         }
 
-    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True):
+    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True, validateParams=True):
         runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
         return runtimeProtocolSaveService.saveProtocol(
@@ -5512,9 +5512,8 @@ class ProjectService:
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
-            syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=(
-                self.syncPostgresqlRuntimeProtocolInputsAndDependencies
-            ),
+            syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=self.syncPostgresqlRuntimeProtocolInputsAndDependencies,
+            validateParams=validateParams,
         )
 
     def listProtocolStepsService(

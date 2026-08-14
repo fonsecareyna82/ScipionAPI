@@ -152,14 +152,13 @@ class RuntimeProtocolDuplicateService:
                                                         sourceParams=sourceParams,
                                                         existingRunNames=existingRunNames)
 
-            newProtocol, saveErrors = saveProtocolCallback(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=None,
-                protocolClassName=protocolClassName,
-                params=params,
-                setToSave=False,
-            )
+            newProtocol, saveErrors = saveProtocolCallback(mapper=mapper,
+                                                           projectId=projectId,
+                                                           protocolId=None,
+                                                           protocolClassName=protocolClassName,
+                                                           params=params,
+                                                           setToSave=False,
+                                                           validateParams=False)
 
             if saveErrors:
                 raise HTTPException(

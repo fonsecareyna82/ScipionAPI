@@ -1748,6 +1748,26 @@ def test_SaveProtocolAggregatesValidationAndPointerErrors(
     assert syncCalls[0]["params"] is params
 
 
+def test_SaveProtocolCanSkipParameterValidation(service, mapper, monkeypatch):
+    patchRuntimeParamCasting(monkeypatch)
+    syncCalls = patchPostgresqlSaveRuntime(monkeypatch, service)
+    protocol = FakeProtocol(objId=10, className="ProtClass")
+    protocol.addParam("iterations", FakeIntParam(label="Iterations", validationErrors=["must be greater than zero"]))
+    service.currentProject.protocols[10] = protocol
+    mapper.dbProtocolsByProtocolId[(10, 1)] = {"id": 500, "protocolId": 10}
+    params = {"iterations": "3"}
+
+    savedProtocol, errors = service.saveProtocol(mapper=mapper, projectId=1, protocolId=10, protocolClassName="ProtClass", params=params, validateParams=False)
+
+    assert savedProtocol is protocol
+    assert errors == []
+    assert protocol.attributeValues["iterations"] == 3
+    assert service.currentProject.storedProtocols == [protocol]
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocol"] is protocol
+    assert syncCalls[0]["params"] is params
+
+
 def test_SaveProtocolUsesPostgresqlRuntimeService(
         projectServiceModule,
         service,
@@ -1800,6 +1820,7 @@ def test_SaveProtocolUsesPostgresqlRuntimeService(
     assert saveCall["protocolClassName"] == "ProtClass"
     assert saveCall["params"] is params
     assert saveCall["setToSave"] is True
+    assert saveCall["validateParams"] is True
     assert saveCall["currentProject"] is service.currentProject
 
     assert set(saveCall) == {
@@ -1809,6 +1830,7 @@ def test_SaveProtocolUsesPostgresqlRuntimeService(
         "protocolClassName",
         "params",
         "setToSave",
+        "validateParams",
         "currentProject",
         "getScipionProtocolForRuntimeCallback",
         "resolvePointerParentProtocolCallback",
