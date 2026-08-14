@@ -802,48 +802,48 @@ def test_StopRejectsEmptyProtocolList():
     assert error.value.status_code == 422
 
 
-def test_StopDoesNotAbortWhenStoredPidIsDead(
-        monkeypatch,
-):
-    protocol = FakeProtocol(
-        protocolId=10,
-        protocolStatus="scheduled",
-        pid=1234,
-    )
+def test_StopRecoversOrphanedProtocolWhenStoredPidIsDead(monkeypatch):
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
 
-    service = (
-        RuntimeProtocolStopService()
-    )
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
 
-    monkeypatch.setattr(
-        service,
-        "_isPidAlive",
-        lambda pid: False,
-    )
+    monkeypatch.setattr(service, "_isPidAlive", lambda pid: False)
+    monkeypatch.setattr(service, "_isProcessGroupAlive", lambda processGroupId: False)
 
-    with pytest.raises(
-            HTTPException
-    ) as error:
-        service.stopProtocols(
-            mapper=FakeMapper(),
-            projectId=1,
-            protocolIds=["10"],
-            currentProject=(
-                FakeCurrentProject()
-            ),
-            getScipionProtocolForRuntimeCallback=(
-                lambda **kwargs: protocol
-            ),
-            buildProtocolMutationResultCallback=(
-                buildResult
-            ),
-        )
+    result = service.stopProtocols(mapper=mapper, projectId=1, protocolIds=["10"], currentProject=currentProject, getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol, buildProtocolMutationResultCallback=buildResult)
 
-    assert error.value.status_code == 500
+    assert result["status"] == 0
+    assert result["protocolsCount"] == 1
+    assert protocol.getStatus() == STATUS_ABORTED
+    assert protocol.getPid() == 0
+    assert protocol.getJobIds() == []
+    assert currentProject.runtimeMapper.stored == [protocol]
+    assert currentProject.runtimeMapper.commits == 1
+    assert result["localStopped"] == [{
+        "protocolId": "10",
+        "protocolDbId": 50,
+        "pid": 1234,
+        "processGroupId": 1234,
+        "terminated": True,
+        "alreadyStopped": True,
+        "signal": None,
+        "verified": False,
+        "reason": "stored_pid_not_alive",
+    }]
 
-    assert protocol.getStatus() == (
-        "scheduled"
-    )
+
+def test_StopRefusesOrphanRecoveryWhenStoredProcessGroupStillExists(monkeypatch):
+    service = RuntimeProtocolStopService()
+
+    monkeypatch.setattr(service, "_isPidAlive", lambda pid: False)
+    monkeypatch.setattr(service, "_isProcessGroupAlive", lambda processGroupId: True)
+
+    with pytest.raises(RuntimeError, match="process group 1234 still exists"):
+        service._killProcessGroup(pid=1234, projectId=1, protocolId=10)
+
 
 def test_ProcessGroupWithOnlyZombieIsNotAlive(
         monkeypatch,

@@ -551,6 +551,20 @@ class RuntimeProtocolStopService:
             "commandLine": commandLine,
         }
 
+    @staticmethod
+    def _buildAlreadyStoppedProcessReport(*, pid: int, processGroupId=None, reason: str) -> Dict[str, Any]:
+        resolvedProcessGroupId = pid if processGroupId is None else processGroupId
+
+        return {
+            "pid": int(pid),
+            "processGroupId": int(resolvedProcessGroupId),
+            "terminated": True,
+            "alreadyStopped": True,
+            "signal": None,
+            "verified": False,
+            "reason": reason,
+        }
+
     def _killProcessGroup(
             self,
             *,
@@ -558,63 +572,39 @@ class RuntimeProtocolStopService:
             projectId: int,
             protocolId: int,
     ) -> Dict[str, Any]:
-        if not self._isPidAlive(
-                pid
-        ):
-            raise RuntimeError(
-                "Cannot stop active PostgreSQL protocol "
-                "projectId=%s protocolId=%s because its "
-                "stored pid=%s is not alive. The protocol "
-                "state will not be changed."
-                % (
-                    projectId,
-                    protocolId,
-                    pid,
-                )
-            )
+        if not self._isPidAlive(pid):
+            if self._isProcessGroupAlive(pid):
+                raise RuntimeError(
+                    "Cannot safely recover PostgreSQL protocol projectId=%s protocolId=%s because stored pid=%s is not alive but process group %s still exists." % (
+                        projectId, protocolId, pid, pid))
 
-        verification = (
-            self._assertProtocolWorkerPid(
-                pid=int(pid),
-                projectId=int(projectId),
-                protocolId=int(protocolId),
-            )
-        )
+            logger.warning(
+                "Recovering orphaned PostgreSQL protocol projectId=%s protocolId=%s because stored pid=%s and its process group are no longer alive.",
+                projectId, protocolId, pid)
 
-        if verification.get(
-                "processMissing"
-        ):
-            raise RuntimeError(
-                "Cannot stop PostgreSQL protocol "
-                "projectId=%s protocolId=%s because "
-                "pid=%s disappeared before a stop "
-                "signal could be sent. The protocol "
-                "state will not be changed."
-                % (
-                    projectId,
-                    protocolId,
-                    pid,
-                )
-            )
+            return self._buildAlreadyStoppedProcessReport(pid=pid, processGroupId=pid, reason="stored_pid_not_alive")
+
+        verification = self._assertProtocolWorkerPid(pid=int(pid), projectId=int(projectId), protocolId=int(protocolId))
+
+        if verification.get("processMissing"):
+            if self._isProcessGroupAlive(pid):
+                raise RuntimeError(
+                    "Cannot safely recover PostgreSQL protocol projectId=%s protocolId=%s because pid=%s disappeared but process group %s still exists." % (
+                        projectId, protocolId, pid, pid))
+
+            return self._buildAlreadyStoppedProcessReport(pid=pid, processGroupId=pid,
+                                                          reason="worker_disappeared_before_verification")
 
         try:
-            processGroupId = os.getpgid(
-                int(pid)
-            )
+            processGroupId = os.getpgid(int(pid))
+        except ProcessLookupError:
+            if self._isProcessGroupAlive(pid):
+                raise RuntimeError(
+                    "Cannot safely recover PostgreSQL protocol projectId=%s protocolId=%s because pid=%s disappeared while process group %s still exists." % (
+                        projectId, protocolId, pid, pid))
 
-        except ProcessLookupError as error:
-            raise RuntimeError(
-                "Cannot stop PostgreSQL protocol "
-                "projectId=%s protocolId=%s because "
-                "pid=%s disappeared before its process "
-                "group could be resolved. The protocol "
-                "state will not be changed."
-                % (
-                    projectId,
-                    protocolId,
-                    pid,
-                )
-            ) from error
+            return self._buildAlreadyStoppedProcessReport(pid=pid, processGroupId=pid,
+                                                          reason="worker_disappeared_before_group_resolution")
 
         currentProcessGroupId = (
             os.getpgrp()
@@ -637,19 +627,9 @@ class RuntimeProtocolStopService:
                 signal.SIGTERM,
             )
 
-        except ProcessLookupError as error:
-            raise RuntimeError(
-                "Cannot confirm the stop of PostgreSQL "
-                "protocol projectId=%s protocolId=%s. "
-                "Process group %s disappeared before "
-                "SIGTERM could be delivered, so the "
-                "protocol state will not be changed."
-                % (
-                    projectId,
-                    protocolId,
-                    processGroupId,
-                )
-            ) from error
+        except ProcessLookupError:
+            return self._buildAlreadyStoppedProcessReport(pid=pid, processGroupId=processGroupId,
+                                                          reason="process_group_disappeared_before_sigterm")
 
         except Exception as error:
             raise RuntimeError(
