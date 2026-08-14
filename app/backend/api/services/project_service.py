@@ -9979,25 +9979,28 @@ class ProjectService:
         step = max(1, int(np.ceil(largestDim / float(maxDim))))
         return volume[::step, ::step, ::step].astype(np.float32, copy=False)
 
-    def _downsampleVolumeForSurface(
-            self,
-            volume: np.ndarray,
-            *,
-            maxDim: int,
-            method: str,
-    ) -> np.ndarray:
-        methodLower = (method or "stride").lower()
+    def _downsampleVolumeForSurface(self, volume: np.ndarray, *, maxDim: int, method: str) -> np.ndarray:
+        if volume is None or volume.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
 
-        if methodLower == "none":
+        methodLower = (method or "stride").lower()
+        requestedMaxDim = max(32, int(maxDim or 192))
+        largestDim = max(int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2]))
+        voxelCount = int(volume.size)
+        maxInteractiveVoxels = 8_000_000
+        effectiveMaxDim = requestedMaxDim
+
+        if voxelCount > maxInteractiveVoxels:
+            budgetScale = (maxInteractiveVoxels / float(voxelCount)) ** (1.0 / 3.0)
+            effectiveMaxDim = min(effectiveMaxDim, max(32, int(np.floor(largestDim * budgetScale))))
+
+        if largestDim <= effectiveMaxDim:
             return volume.astype(np.float32, copy=False)
 
-        if methodLower == "stride":
-            return self._strideDownsampleVolume(volume,
-                                                maxDim=maxDim)
+        if methodLower in ("none", "stride"):
+            return self._strideDownsampleVolume(volume, maxDim=effectiveMaxDim)
 
-        return self._downsampleVolumePreview(volume,
-                                             maxDim=maxDim,
-                                             method=methodLower)
+        return self._downsampleVolumePreview(volume, maxDim=effectiveMaxDim, method=methodLower)
 
     def getVolumeSurfaceMesh(
             self,
@@ -10012,6 +10015,8 @@ class ProjectService:
             currentUser,
             mapper=None,
     ):
+        effectiveMaxTriangles = min(250000, max(1000, int(maxTriangles or 220000)))
+
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
@@ -10023,21 +10028,18 @@ class ProjectService:
             result = pgReader.getVolumeArray(volumeId)
             if result is not None:
                 volume, _props, _info = result
-                volumeSmall = self._downsampleVolumeForSurface(
-                    np.asarray(volume, dtype=np.float32),
-                    maxDim=maxDim,
-                    method=method,
-                )
-
-                mesh = buildVolumeSurfaceMesh(
-                    volumeSmall,
-                    level=level,
-                    maxTriangles=maxTriangles,
-                )
+                volumeSmall = self._downsampleVolumeForSurface(volume,
+                                                               maxDim=maxDim,
+                                                               method=method)
+                mesh = buildVolumeSurfaceMesh(volumeSmall,
+                                              level=level,
+                                              maxTriangles=effectiveMaxTriangles)
 
                 mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
                 mesh["maxDim"] = int(maxDim)
                 mesh["method"] = method
+                mesh["maxTriangles"] = effectiveMaxTriangles
+                mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
                 mesh["volumeId"] = str(volumeId)
                 mesh["outputName"] = outputName
 
@@ -10081,15 +10083,15 @@ class ProjectService:
             method=method,
         )
 
-        mesh = buildVolumeSurfaceMesh(
-            volumeSmall,
-            level=level,
-            maxTriangles=maxTriangles,
-        )
+        mesh = buildVolumeSurfaceMesh(volumeSmall,
+                                      level=level,
+                                      maxTriangles=effectiveMaxTriangles)
 
         mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
         mesh["maxDim"] = int(maxDim)
         mesh["method"] = method
+        mesh["maxTriangles"] = effectiveMaxTriangles
+        mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
         mesh["volumeId"] = str(volumeId)
         mesh["outputName"] = outputName
 

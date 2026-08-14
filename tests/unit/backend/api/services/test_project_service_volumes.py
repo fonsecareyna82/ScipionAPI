@@ -174,6 +174,7 @@ def test_ResolveOutputForVolumesReturnsExactOutput(service):
     assert resolvedProtocol is protocol
     assert resolvedOutput is volume
 
+
 def test_GetPostgresqlVolumeReaderIfAvailableUsesResolvedProtocolDbId(
     service,
     monkeypatch,
@@ -659,6 +660,15 @@ def test_GetVolumeData3dServiceReturns404WhenFileMissing(projectServiceModule, s
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Volume file not found on disk"
+
+
+def test_DownsampleVolumeForSurfaceEnforcesInteractiveLimitForNone(service):
+    volume = np.zeros((96, 80, 64), dtype=np.float32)
+
+    result = service._downsampleVolumeForSurface(volume, maxDim=48, method="none")
+
+    assert result.shape == (48, 40, 32)
+    assert result.dtype == np.float32
 
 
 def test_BinVolumeAveragesBlocks(service):

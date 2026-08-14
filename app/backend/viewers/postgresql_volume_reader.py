@@ -137,8 +137,7 @@ class PostgresqlVolumeReader:
             return None
 
         array, _props, _info = result
-        cleanArray = np.asarray(array, dtype=np.float32)
-        cleanArray = cleanArray[np.isfinite(cleanArray)]
+        cleanArray = self._sampleFiniteVolumeValues(array)
 
         if cleanArray.size == 0:
             return {
@@ -349,6 +348,19 @@ class PostgresqlVolumeReader:
 
         return None
 
+    @staticmethod
+    def _sampleFiniteVolumeValues(array, maxSamples: int = 1_000_000) -> np.ndarray:
+        volume = np.asarray(array)
+
+        if volume.size == 0:
+            return np.empty(0, dtype=np.float32)
+
+        flat = volume.reshape(-1)
+        step = max(1, int(np.ceil(flat.size / float(max(1, int(maxSamples))))))
+        sampled = np.asarray(flat[::step], dtype=np.float32)
+
+        return sampled[np.isfinite(sampled)]
+
     def _ensureVolumeInfoFromFile(self, volume: Dict[str, Any]) -> None:
         fileName = volume.get("fileName") or volume.get("path")
         if not fileName:
@@ -377,8 +389,8 @@ class PostgresqlVolumeReader:
                 self._attachSamplingRate(volume, samplingRate)
 
         try:
-            finite = np.asarray(array, dtype=np.float32)
-            finite = finite[np.isfinite(finite)]
+            finite = self._sampleFiniteVolumeValues(array)
+
             if finite.size:
                 volume["min"] = float(np.min(finite))
                 volume["max"] = float(np.max(finite))
