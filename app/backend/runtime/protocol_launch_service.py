@@ -64,6 +64,7 @@ class RuntimeProtocolLaunchService:
             preparePostgresqlRuntimePointerOutputsForLaunchCallback: Callable,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
+            currentUserId: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Save, validate, and execute a protocol action.
@@ -154,6 +155,18 @@ class RuntimeProtocolLaunchService:
             postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
 
             self._validateProtocol(protocol=protocol, errors=errors)
+
+            if currentUserId is not None:
+                RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=getattr(
+                        protocol,
+                        "getObjId",
+                        lambda: protocolId,
+                    )(),
+                    userId=currentUserId,
+                )
 
             return self._executeProtocol(mapper=mapper, projectId=projectId, protocolId=protocolId, protocol=protocol,
                                          executeMode=executeMode, elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,

@@ -5649,7 +5649,16 @@ class ProjectService:
                         exc_info=True,
                     )
 
-    def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
+    def launchProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            executeMode,
+            currentUserId=None,
+    ):
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
 
         self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
@@ -5674,6 +5683,7 @@ class ProjectService:
                     self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
                 ),
                 syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+                currentUserId=currentUserId,
             )
         finally:
             self._releasePostgresqlRuntimeLaunchInputs()

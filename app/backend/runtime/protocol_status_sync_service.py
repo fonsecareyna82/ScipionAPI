@@ -437,6 +437,74 @@ class RuntimeProtocolStatusSyncService:
 
         return dict(params)
 
+    def persistProtocolExecutionUser(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            userId: int,
+    ) -> Dict[str, Any]:
+        row = (
+            mapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot persist protocol execution user: "
+                "protocol row was not found. "
+                "projectId=%s protocolId=%s"
+                % (
+                    projectId,
+                    protocolId,
+                )
+            )
+
+        params = self.normalizeParams(
+            row.get(
+                "params"
+            )
+        )
+
+        runtimeMetadata = params.get(
+            self.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            runtimeMetadata = {}
+
+        runtimeMetadata = dict(
+            runtimeMetadata
+        )
+
+        runtimeMetadata[
+            "launchedByUserId"
+        ] = int(userId)
+
+        params[
+            self.RUNTIME_METADATA_KEY
+        ] = runtimeMetadata
+
+        mapper.updateProtocol({
+            "id": row["id"],
+            "params": json.dumps(
+                params,
+                ensure_ascii=False,
+            ),
+        })
+
+        return {
+            "projectId": int(projectId),
+            "protocolId": str(protocolId),
+            "launchedByUserId": int(userId),
+        }
+
     def mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):
         storedText = str(storedStatus or "").strip().lower()
         runtimeText = str(runtimeStatus or "").strip().lower()

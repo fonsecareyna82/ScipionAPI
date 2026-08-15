@@ -539,6 +539,7 @@ def launchProtocol(
             protocolClassName=request.getProtocolClassName(),
             params=request.getParams(),
             executeMode=request.getMode(),
+            currentUserId = currentUser["id"],
         ) or {}
 
         response = {
