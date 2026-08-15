@@ -885,7 +885,6 @@ class SettingsService:
 
         # runtimeSafeSubset
         return {
-            "enableCelery": data.get("enableCelery"),
             "defaultQueueName": data.get("defaultQueueName"),
             "maxConcurrentRunsPerUser": data.get("maxConcurrentRunsPerUser"),
             "requireConfirmBeforeExecute": data.get("requireConfirmBeforeExecute"),

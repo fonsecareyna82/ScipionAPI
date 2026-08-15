@@ -48,7 +48,6 @@ class FakeSettingsService:
             "workflowViewMode": "treeTb"
         }
         self.instanceSettingsResult = {
-            "enableCelery": False,
             "defaultQueueName": "default",
             "maxConcurrentRunsPerUser": 2,
             "requireConfirmBeforeExecute": True,
@@ -362,7 +361,6 @@ def test_PutInstanceSettingsDelegatesToService(settingsClient, fakeSettingsServi
     response = settingsClient.put(
         "/settings/instance",
         json={
-            "enableCelery": True,
             "defaultQueueName": "gpu",
             "maxConcurrentRunsPerUser": 4,
             "requireConfirmBeforeExecute": False,
@@ -373,7 +371,6 @@ def test_PutInstanceSettingsDelegatesToService(settingsClient, fakeSettingsServi
     assert response.status_code == 200
     call = fakeSettingsService.lastPutInstanceSettingsCall
     assert call["payload"].dict() == {
-        "enableCelery": True,
         "defaultQueueName": "gpu",
         "maxConcurrentRunsPerUser": 4,
         "requireConfirmBeforeExecute": False,
@@ -385,7 +382,6 @@ def test_PatchInstanceSettingsDelegatesToService(settingsClient, fakeSettingsSer
     response = settingsClient.patch(
         "/settings/instance",
         json={
-            "enableCelery": True,
             "maxConcurrentRunsPerUser": 8,
         },
     )
@@ -393,7 +389,6 @@ def test_PatchInstanceSettingsDelegatesToService(settingsClient, fakeSettingsSer
     assert response.status_code == 200
     call = fakeSettingsService.lastPatchInstanceSettingsCall
     assert call["patch"].dict(exclude_unset=True) == {
-        "enableCelery": True,
         "maxConcurrentRunsPerUser": 8,
     }
 

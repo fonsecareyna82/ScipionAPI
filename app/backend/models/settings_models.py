@@ -63,7 +63,6 @@ class UserSettingsPatch(BaseModel):
 
 class InstanceSettings(BaseModel):
     # instanceSettings
-    enableCelery: bool = False
     defaultQueueName: str = "default"
 
     maxConcurrentRunsPerUser: int = Field(default=2, ge=1, le=64)
@@ -74,7 +73,6 @@ class InstanceSettings(BaseModel):
 
 class InstanceSettingsPatch(BaseModel):
     # instanceSettingsPatch
-    enableCelery: Optional[bool] = None
     defaultQueueName: Optional[str] = None
 
     maxConcurrentRunsPerUser: Optional[int] = Field(default=None, ge=1, le=64)
