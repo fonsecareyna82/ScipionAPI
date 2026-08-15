@@ -27,7 +27,7 @@
 # settingsRouter
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Dict, List
 from app.backend.api.dependencies import getCurrentUser, requireAdmin
 from app.backend.database import getMapper
@@ -46,6 +46,9 @@ HostSettingsOut,
     HostSettingsPatch,
 )
 from app.backend.api.services.settings_service import SettingsService
+from app.backend.api.services.job_monitoring_service import (
+    JobMonitoringService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,10 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 def getSettingsService() -> SettingsService:
     """Return a fresh SettingsService per request to avoid shared state."""
     return SettingsService()
+
+
+def getJobMonitoringService() -> JobMonitoringService:
+    return JobMonitoringService()
 
 
 @router.get(
@@ -156,6 +163,45 @@ def getInstanceSettings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load instance settings: {e}",
+        )
+
+
+@router.get(
+    "/jobs",
+    response_model=JobMonitoringOverviewOut,
+    status_code=status.HTTP_200_OK,
+)
+def getJobsOverview(
+    recentLimit: int = Query(
+        25,
+        ge=1,
+        le=100,
+    ),
+    currentUser=Depends(requireAdmin),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: JobMonitoringService = Depends(getJobMonitoringService),
+):
+    try:
+        return service.getOverview(
+            mapper=mapper,
+            recentLimit=recentLimit,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error in getJobsOverview: %s",
+            error,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Failed to load job monitoring data: %s"
+                % error
+            ),
         )
 
 

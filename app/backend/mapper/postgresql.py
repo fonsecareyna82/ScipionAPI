@@ -2370,6 +2370,55 @@ class PostgresqlFlatMapper(Mapper):
             (projectId,),
         )
 
+    def listRecentProtocolExecutions(
+            self,
+            limit: int = 25,
+    ) -> List[Dict[str, Any]]:
+        limit = max(
+            1,
+            min(
+                int(limit or 25),
+                100,
+            ),
+        )
+
+        return self.db.fetchAll(
+            """
+            SELECT
+                p."projectId" AS "projectId",
+                pr.name AS "projectName",
+                p."protocolId" AS "protocolId",
+                p."protocolClassName" AS "protocolClassName",
+                p.status AS status,
+                p."createdAt" AS "createdAt",
+                p."updatedAt" AS "updatedAt",
+                COALESCE(
+                    p.params -> '_scipionWebRuntime',
+                    '{}'::jsonb
+                ) AS "runtimeMetadata"
+              FROM protocols p
+              JOIN projects pr
+                ON pr.id = p."projectId"
+             WHERE LOWER(COALESCE(p.status, '')) IN (
+                 'scheduled',
+                 'launched',
+                 'running',
+                 'finished',
+                 'failed',
+                 'aborted',
+                 'interactive'
+             )
+             ORDER BY COALESCE(
+                 p."updatedAt",
+                 p."createdAt"
+             ) DESC
+             LIMIT %s
+            """,
+            (
+                limit,
+            ),
+        )
+
     def getProjectProtocolByProtocolId(
             self,
             projectId: int,
