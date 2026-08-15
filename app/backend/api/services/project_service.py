@@ -5665,7 +5665,9 @@ class ProjectService:
         self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
         self._postgresqlLaunchInputObjectIdsResolving = set()
 
-        def executeRuntimeLaunch():
+        def executeRuntimeLaunch(
+                executionId=None,
+        ):
             return runtimeProtocolLaunchService.launchProtocol(
                 mapper=mapper,
                 projectId=projectId,
@@ -5686,6 +5688,7 @@ class ProjectService:
                     self.syncPostgresqlRuntimeProtocol
                 ),
                 currentUserId=currentUserId,
+                executionId=executionId,
             )
 
         try:
@@ -5739,7 +5742,9 @@ class ProjectService:
                         ),
                     )
 
-                return executeRuntimeLaunch()
+                return executeRuntimeLaunch(
+                    executionId=uuid4().hex
+                )
 
         finally:
             self._releasePostgresqlRuntimeLaunchInputs()

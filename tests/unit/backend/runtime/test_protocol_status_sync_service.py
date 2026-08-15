@@ -332,3 +332,50 @@ def test_GetEffectiveElapsedTimeKeepsProjectedMetadataWhenGreaterThanSteps():
 
     assert result == 40.0
 
+
+def test_PersistProtocolExecutionUserStoresExecutionId():
+    mapper = FakeMapper()
+
+    result = (
+        RuntimeProtocolStatusSyncService()
+        .persistProtocolExecutionUser(
+            mapper=mapper,
+            projectId=1,
+            protocolId=10,
+            userId=7,
+            executionId="execution-123",
+        )
+    )
+
+    params = (
+        RuntimeProtocolStatusSyncService()
+        .normalizeParams(
+            mapper.row["params"]
+        )
+    )
+
+    metadata = params[
+        (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+    ]
+
+    assert (
+        metadata["launchedByUserId"]
+        == 7
+    )
+
+    assert (
+        metadata["executionId"]
+        == "execution-123"
+    )
+
+    assert result == {
+        "projectId": 1,
+        "protocolId": "10",
+        "launchedByUserId": 7,
+        "executionId": "execution-123",
+    }
+
+

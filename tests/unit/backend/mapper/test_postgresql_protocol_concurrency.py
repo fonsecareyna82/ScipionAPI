@@ -105,6 +105,8 @@ def test_CountActiveProtocolExecutionsForUser():
     assert "'running'" in call["query"]
     assert "'_scipionWebRuntime'" in call["query"]
     assert "'launchedByUserId'" in call["query"]
+    assert '"projectId"' in call["query"]
+    assert '"protocolId"' in call["query"]
 
     assert call["params"] == (
         "7",

@@ -65,6 +65,7 @@ class RuntimeProtocolLaunchService:
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
             currentUserId: Optional[int] = None,
+            executionId: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Save, validate, and execute a protocol action.
@@ -170,6 +171,7 @@ class RuntimeProtocolLaunchService:
                 syncPostgresqlRuntimeProtocolCallback=
                 syncPostgresqlRuntimeProtocolCallback,
                 currentUserId=currentUserId,
+                executionId=executionId,
             )
 
         except HTTPException as error:
@@ -243,6 +245,7 @@ class RuntimeProtocolLaunchService:
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
             currentUserId: Optional[int] = None,
+            executionId: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             if executeMode == "schedule":
@@ -260,6 +263,7 @@ class RuntimeProtocolLaunchService:
                             lambda: protocolId,
                         )(),
                         userId=currentUserId,
+                        executionId=executionId,
                     )
 
                 return self._syncPostgresqlRuntimeAfterLaunch(
@@ -311,6 +315,7 @@ class RuntimeProtocolLaunchService:
                     projectId=projectId,
                     protocolId=launchedProtocolId,
                     userId=currentUserId,
+                    executionId=executionId,
                 )
 
             # The PostgreSQL worker owns the execution lifecycle.

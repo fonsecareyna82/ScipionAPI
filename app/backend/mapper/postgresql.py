@@ -2440,7 +2440,21 @@ class PostgresqlFlatMapper(Mapper):
     ) -> int:
         row = self.db.fetchOne(
             """
-            SELECT COUNT(*)::integer AS count
+            SELECT COUNT(
+                   DISTINCT COALESCE(
+                       NULLIF(
+                           params::jsonb
+                               -> '_scipionWebRuntime'
+                               ->> 'executionId',
+                           ''
+                       ),
+                       CONCAT(
+                           "projectId",
+                           ':',
+                           "protocolId"
+                       )
+                   )
+               )::integer AS count
               FROM protocols
              WHERE LOWER(COALESCE(status, '')) IN (
                  'scheduled',

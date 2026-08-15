@@ -443,6 +443,7 @@ class RuntimeProtocolStatusSyncService:
             projectId: int,
             protocolId,
             userId: int,
+            executionId: Optional[str] = None,
     ) -> Dict[str, Any]:
         row = (
             mapper
@@ -487,6 +488,22 @@ class RuntimeProtocolStatusSyncService:
             "launchedByUserId"
         ] = int(userId)
 
+        if executionId not in (
+                None,
+                "",
+        ):
+            runtimeMetadata[
+                "executionId"
+            ] = str(
+                executionId
+            )
+
+        else:
+            runtimeMetadata.pop(
+                "executionId",
+                None,
+            )
+
         params[
             self.RUNTIME_METADATA_KEY
         ] = runtimeMetadata
@@ -503,6 +520,14 @@ class RuntimeProtocolStatusSyncService:
             "projectId": int(projectId),
             "protocolId": str(protocolId),
             "launchedByUserId": int(userId),
+            "executionId": (
+                str(executionId)
+                if executionId not in (
+                    None,
+                    "",
+                )
+                else None
+            ),
         }
 
     def mergeRuntimeProtocolStatus(self, storedStatus, runtimeStatus):

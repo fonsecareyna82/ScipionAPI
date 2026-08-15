@@ -2161,6 +2161,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
     assert launchCall["executeMode"] == "launch"
     assert launchCall["currentProject"] is service.currentProject
     assert launchCall["currentUserId"] is None
+    assert launchCall["executionId"] is None
 
     assert set(launchCall) == {
         "mapper",
@@ -2176,6 +2177,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
         "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
         "syncPostgresqlRuntimeProtocolCallback",
         "currentUserId",
+        "executionId",
     }
 
 
@@ -2324,6 +2326,18 @@ def test_LaunchProtocolRunsBelowUserConcurrencyLimit(
             assert (
                 kwargs["currentUserId"]
                 == 7
+            )
+
+            assert isinstance(
+                kwargs["executionId"],
+                str,
+            )
+
+            assert (
+                    len(
+                        kwargs["executionId"]
+                    )
+                    == 32
             )
 
             return expectedResult
