@@ -2160,6 +2160,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
     assert launchCall["params"] is params
     assert launchCall["executeMode"] == "launch"
     assert launchCall["currentProject"] is service.currentProject
+    assert launchCall["currentUserId"] is None
 
     assert set(launchCall) == {
         "mapper",
@@ -2174,6 +2175,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
         "preparePostgresqlRuntimePointerOutputsForLaunchCallback",
         "deletePersistedProtocolOutputsForRuntimeProtocolsCallback",
         "syncPostgresqlRuntimeProtocolCallback",
+        "currentUserId",
     }
 
 

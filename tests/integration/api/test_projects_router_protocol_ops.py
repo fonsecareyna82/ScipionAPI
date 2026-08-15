@@ -317,6 +317,7 @@ def test_LaunchProtocolDelegatesToService(projectClient, fakeProjectService):
         "protocolClassName": "ProtClass",
         "params": {"a": 1},
         "executeMode": "resume",
+        "currentUserId": 1,
     }
 
 
@@ -346,12 +347,13 @@ def test_LaunchProtocolReturnsSyncCounts(
     monkeypatch,
 ):
     def fakeLaunchProtocol(
-        mapper,
-        projectId,
-        protocolId,
-        protocolClassName,
-        params,
-        executeMode,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            executeMode,
+            currentUserId=None,
     ):
         fakeProjectService.lastLaunchProtocolCall = {
             "mapper": mapper,
@@ -360,6 +362,7 @@ def test_LaunchProtocolReturnsSyncCounts(
             "protocolClassName": protocolClassName,
             "params": params,
             "executeMode": executeMode,
+            "currentUserId": currentUserId,
         }
         return {
             "protocols": 2,
@@ -415,12 +418,13 @@ def test_LaunchProtocolWrapsUnexpectedException(
     monkeypatch,
 ):
     def fakeLaunchProtocol(
-        mapper,
-        projectId,
-        protocolId,
-        protocolClassName,
-        params,
-        executeMode,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            executeMode,
+            currentUserId=None,
     ):
         raise RuntimeError("boom")
 

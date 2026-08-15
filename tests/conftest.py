@@ -1087,7 +1087,16 @@ class FakeProjectService:
         }
         return self.newProtocolParamsResult
 
-    def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
+    def launchProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            executeMode,
+            currentUserId=None,
+    ):
         self.lastLaunchProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1095,7 +1104,9 @@ class FakeProjectService:
             "protocolClassName": protocolClassName,
             "params": params,
             "executeMode": executeMode,
+            "currentUserId": currentUserId,
         }
+
         if self.launchProtocolError is not None:
             raise self.launchProtocolError
 
