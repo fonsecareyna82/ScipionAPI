@@ -50,8 +50,6 @@ class FakeSettingsService:
         self.instanceSettingsResult = {
             "defaultQueueName": "default",
             "maxConcurrentRunsPerUser": 2,
-            "requireConfirmBeforeExecute": True,
-            "requireConfirmBeforeDelete": True,
         }
         self.environmentVariablesResult = [
             {
@@ -363,8 +361,6 @@ def test_PutInstanceSettingsDelegatesToService(settingsClient, fakeSettingsServi
         json={
             "defaultQueueName": "gpu",
             "maxConcurrentRunsPerUser": 4,
-            "requireConfirmBeforeExecute": False,
-            "requireConfirmBeforeDelete": True,
         },
     )
 
@@ -373,8 +369,6 @@ def test_PutInstanceSettingsDelegatesToService(settingsClient, fakeSettingsServi
     assert call["payload"].dict() == {
         "defaultQueueName": "gpu",
         "maxConcurrentRunsPerUser": 4,
-        "requireConfirmBeforeExecute": False,
-        "requireConfirmBeforeDelete": True,
     }
 
 
