@@ -2393,7 +2393,7 @@ class PostgresqlFlatMapper(Mapper):
                 p."createdAt" AS "createdAt",
                 p."updatedAt" AS "updatedAt",
                 COALESCE(
-                    p.params -> '_scipionWebRuntime',
+                    p.params::jsonb -> '_scipionWebRuntime',
                     '{}'::jsonb
                 ) AS "runtimeMetadata"
               FROM protocols p
