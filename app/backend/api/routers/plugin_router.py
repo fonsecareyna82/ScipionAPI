@@ -262,6 +262,53 @@ def _refreshPluginCatalogAfterTask(taskId: str, status: Optional[str]) -> None:
         logger.debug("Could not invalidate import caches after task %s", taskId, exc_info=True)
 
 
+def _startCeleryPluginSystemTask(
+        celeryTask,
+        args: List[Any],
+        operation: str,
+        subject: str,
+        payload: Dict[str, Any],
+        retryOfTaskId: Optional[str] = None,
+) -> TaskStartResponse:
+    taskId = uuid4().hex
+
+    logPath = initializePluginTaskLog(
+        taskId,
+        subject,
+        operation,
+    )
+
+    systemTaskService.createTask(
+        taskId=taskId,
+        taskType="plugin",
+        operation=operation,
+        subject=subject,
+        backend="celery",
+        status="PENDING",
+        payload=payload,
+        retryOfTaskId=retryOfTaskId,
+        logPath=str(logPath),
+    )
+
+    try:
+        celeryTask.apply_async(
+            args=args,
+            task_id=taskId,
+        )
+    except Exception as error:
+        systemTaskService.updateTask(
+            taskId=taskId,
+            status="FAILURE",
+            error=str(error),
+        )
+        raise
+
+    return TaskStartResponse(
+        taskId=taskId,
+        status="PENDING",
+        backend="celery",
+    )
+
 @router.get("/", response_model=Any)
 def loadPlugins():
     return service.getPlugins()
@@ -474,7 +521,283 @@ def loadPlugin(pluginName: str):
     return plugin
 
 
-async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwargs) -> TaskStartResponse:
+@router.post(
+    "/tasks/{taskId}/retry",
+    response_model=TaskStartResponse,
+)
+async def retryPluginTask(taskId: str):
+    try:
+        originalTask = systemTaskService.getTask(taskId)
+
+        if originalTask is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+
+        if str(originalTask.get("taskType") or "").strip().lower() != "plugin":
+            raise HTTPException(
+                status_code=400,
+                detail="Task is not a plugin task",
+            )
+
+        originalStatus = str(
+            originalTask.get("status") or ""
+        ).strip().upper()
+
+        if originalStatus != "FAILURE":
+            raise HTTPException(
+                status_code=409,
+                detail="Only failed plugin tasks can be retried",
+            )
+
+        operation = str(
+            originalTask.get("operation") or ""
+        ).strip()
+
+        rawPayload = originalTask.get("payload")
+        payload = rawPayload if isinstance(rawPayload, dict) else {}
+
+        if operation == "install":
+            pluginName = str(
+                payload.get("pluginName")
+                or originalTask.get("subject")
+                or ""
+            ).strip()
+
+            if not pluginName:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original install task has no plugin name",
+                )
+
+            skipBinaries = bool(
+                payload.get("skipBinaries", False)
+            )
+
+            retryPayload = {
+                "pluginName": pluginName,
+                "skipBinaries": skipBinaries,
+            }
+
+            if (
+                    _celeryAppAvailable
+                    and _celeryInstallAvailable
+                    and installPluginTask is not None
+            ):
+                return _startCeleryPluginSystemTask(
+                    celeryTask=installPluginTask,
+                    args=[
+                        pluginName,
+                        skipBinaries,
+                    ],
+                    operation="install",
+                    subject=pluginName,
+                    payload=retryPayload,
+                    retryOfTaskId=taskId,
+                )
+
+            return await _startInProcessTask(
+                service.installPlugin,
+                pluginName,
+                "install",
+                retryOfTaskId=taskId,
+                skipBinaries=skipBinaries,
+            )
+
+        if operation == "install-batch":
+            rawPlugins = payload.get("plugins")
+
+            if not isinstance(rawPlugins, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original batch task has no plugin list",
+                )
+
+            plugins = []
+            seen = set()
+
+            for pluginName in rawPlugins:
+                cleanPluginName = str(
+                    pluginName or ""
+                ).strip()
+
+                if (
+                        not cleanPluginName
+                        or cleanPluginName in seen
+                ):
+                    continue
+
+                seen.add(cleanPluginName)
+                plugins.append(cleanPluginName)
+
+            if not plugins:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original batch task has no valid plugins",
+                )
+
+            if not (
+                    _celeryAppAvailable
+                    and _celeryInstallBatchAvailable
+                    and installPluginsBatchTask is not None
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Batch plugin retry requires Celery",
+                )
+
+            skipBinaries = bool(
+                payload.get("skipBinaries", False)
+            )
+
+            taskLabel = f"batch:{len(plugins)}"
+
+            return _startCeleryPluginSystemTask(
+                celeryTask=installPluginsBatchTask,
+                args=[
+                    plugins,
+                    skipBinaries,
+                ],
+                operation="install-batch",
+                subject=taskLabel,
+                payload={
+                    "plugins": plugins,
+                    "skipBinaries": skipBinaries,
+                },
+                retryOfTaskId=taskId,
+            )
+
+        if operation == "install-devel":
+            path = str(
+                payload.get("path") or ""
+            ).strip()
+
+            if not path:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original devel task has no plugin path",
+                )
+
+            validation = develService.validateDevelPluginPath(
+                path
+            )
+
+            if not validation.get("valid"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=validation,
+                )
+
+            pluginLabel = str(
+                validation.get("pipName")
+                or validation.get("path")
+                or originalTask.get("subject")
+                or "devel-plugin"
+            )
+
+            skipBinaries = bool(
+                payload.get("skipBinaries", False)
+            )
+
+            force = bool(
+                payload.get("force", False)
+            )
+
+            retryPayload = {
+                "path": path,
+                "skipBinaries": skipBinaries,
+                "force": force,
+            }
+
+            if (
+                    _celeryAppAvailable
+                    and _celeryInstallDevelAvailable
+                    and installDevelPluginTask is not None
+            ):
+                return _startCeleryPluginSystemTask(
+                    celeryTask=installDevelPluginTask,
+                    args=[
+                        path,
+                        skipBinaries,
+                        force,
+                    ],
+                    operation="install-devel",
+                    subject=pluginLabel,
+                    payload=retryPayload,
+                    retryOfTaskId=taskId,
+                )
+
+            return await _startInProcessTask(
+                develService.installDevelPlugin,
+                path,
+                "install-devel",
+                retryOfTaskId=taskId,
+                skipBinaries=skipBinaries,
+                force=force,
+            )
+
+        if operation == "uninstall":
+            pluginName = str(
+                payload.get("pluginName")
+                or originalTask.get("subject")
+                or ""
+            ).strip()
+
+            if not pluginName:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original uninstall task has no plugin name",
+                )
+
+            retryPayload = {
+                "pluginName": pluginName,
+            }
+
+            if (
+                    _celeryAppAvailable
+                    and _celeryUninstallAvailable
+                    and uninstallPluginTask is not None
+            ):
+                return _startCeleryPluginSystemTask(
+                    celeryTask=uninstallPluginTask,
+                    args=[
+                        pluginName,
+                    ],
+                    operation="uninstall",
+                    subject=pluginName,
+                    payload=retryPayload,
+                    retryOfTaskId=taskId,
+                )
+
+            return await _startInProcessTask(
+                service.uninstallPlugin,
+                pluginName,
+                "uninstall",
+                retryOfTaskId=taskId,
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported plugin task operation: {operation}",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+async def _startInProcessTask(
+            taskFn,
+            pluginName: str,
+            operation: str,
+            retryOfTaskId: Optional[str] = None,
+            **taskKwargs,
+    ) -> TaskStartResponse:
     taskId = uuid4().hex
     logPath = initializePluginTaskLog(taskId, pluginName, operation)
 
@@ -495,6 +818,7 @@ async def _startInProcessTask(taskFn, pluginName: str, operation: str, **taskKwa
         backend="local",
         status="STARTED",
         payload=taskPayload,
+        retryOfTaskId=retryOfTaskId,
         logPath=str(logPath),
     )
 

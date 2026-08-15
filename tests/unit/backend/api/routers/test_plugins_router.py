@@ -574,6 +574,124 @@ def test_ListPluginTasksReconcilesStaleCelerySuccess(
     }]
 
 
+def test_RetryFailedInstallUsesOriginalPayloadAndLinksTask(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeSystemTaskService.tasksById["failed-install"] = {
+        "taskId": "failed-install",
+        "taskType": "plugin",
+        "operation": "install",
+        "subject": "scipion-em-relion",
+        "status": "FAILURE",
+        "payload": {
+            "pluginName": "scipion-em-relion",
+            "skipBinaries": True,
+        },
+        "backend": "celery",
+    }
+
+    fakeTask = FakeCeleryTask()
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryInstallAvailable",
+        True,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "installPluginTask",
+        fakeTask,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "initializePluginTaskLog",
+        lambda taskId, pluginName, operation: "/tmp/retry-plugin.log",
+    )
+
+    response = pluginClient.post(
+        "/plugins/tasks/failed-install/retry"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["status"] == "PENDING"
+    assert body["backend"] == "celery"
+    assert body["taskId"] != "failed-install"
+
+    assert fakeTask.calls == [{
+        "args": [
+            "scipion-em-relion",
+            True,
+        ],
+        "task_id": body["taskId"],
+    }]
+
+    assert len(fakeSystemTaskService.createCalls) == 1
+
+    createdTask = fakeSystemTaskService.createCalls[0]
+
+    assert createdTask["taskId"] == body["taskId"]
+    assert createdTask["operation"] == "install"
+    assert createdTask["subject"] == "scipion-em-relion"
+    assert createdTask["retryOfTaskId"] == "failed-install"
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-relion",
+        "skipBinaries": True,
+    }
+
+
+def test_RetryPluginTaskRejectsNonFailedTask(
+        pluginClient,
+        fakeSystemTaskService,
+):
+    fakeSystemTaskService.tasksById["successful-task"] = {
+        "taskId": "successful-task",
+        "taskType": "plugin",
+        "operation": "install",
+        "subject": "scipion-em-relion",
+        "status": "SUCCESS",
+        "payload": {
+            "pluginName": "scipion-em-relion",
+            "skipBinaries": False,
+        },
+        "backend": "celery",
+    }
+
+    response = pluginClient.post(
+        "/plugins/tasks/successful-task/retry"
+    )
+
+    assert response.status_code == 409
+
+    assert response.json()["detail"] == (
+        "Only failed plugin tasks can be retried"
+    )
+
+
+def test_RetryPluginTaskReturns404WhenTaskDoesNotExist(
+        pluginClient,
+):
+    response = pluginClient.post(
+        "/plugins/tasks/missing-task/retry"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
 def test_GetTaskStatusDoesNotRegressPersistedProgressToCeleryPending(
         pluginClient,
         pluginRouterModule,
