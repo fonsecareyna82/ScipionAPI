@@ -5649,6 +5649,65 @@ class ProjectService:
                         exc_info=True,
                     )
 
+    def _executeProtocolExecutionWithConcurrencyLimit(
+            self,
+            mapper,
+            currentUserId,
+            executeCallback,
+    ):
+        if currentUserId is None:
+            return executeCallback(
+                None
+            )
+
+        runtimeInstanceSettings = (
+            SettingsService()
+            .getRuntimeInstanceSettings(
+                mapper=mapper,
+                currentUser=None,
+            )
+        )
+
+        maxConcurrentRunsPerUser = int(
+            runtimeInstanceSettings.get(
+                "maxConcurrentRunsPerUser"
+            )
+            or 2
+        )
+
+        with mapper.protocolLaunchUserLock(
+                currentUserId
+        ):
+            activeRuns = (
+                mapper
+                .countActiveProtocolExecutionsForUser(
+                    currentUserId
+                )
+            )
+
+            if (
+                    activeRuns
+                    >= maxConcurrentRunsPerUser
+            ):
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_409_CONFLICT
+                    ),
+                    detail=(
+                        "Maximum concurrent protocol runs "
+                        "per user reached "
+                        f"({activeRuns}/"
+                        f"{maxConcurrentRunsPerUser}). "
+                        "Wait for an active protocol to "
+                        "finish or stop one before "
+                        "launching another."
+                    ),
+                )
+
+            return executeCallback(
+                uuid4().hex
+            )
+
     def launchProtocol(
             self,
             mapper,
@@ -5658,6 +5717,7 @@ class ProjectService:
             params,
             executeMode,
             currentUserId=None,
+            executionId=None,
     ):
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
 
@@ -5696,55 +5756,33 @@ class ProjectService:
                     currentUserId is None
                     or executeMode == "stop"
             ):
-                return executeRuntimeLaunch()
-
-            runtimeInstanceSettings = (
-                SettingsService()
-                .getRuntimeInstanceSettings(
-                    mapper=mapper,
-                    currentUser=None,
-                )
-            )
-
-            maxConcurrentRunsPerUser = int(
-                runtimeInstanceSettings.get(
-                    "maxConcurrentRunsPerUser"
-                )
-                or 2
-            )
-
-            with mapper.protocolLaunchUserLock(
-                    currentUserId
-            ):
-                activeRuns = (
-                    mapper
-                    .countActiveProtocolExecutionsForUser(
-                        currentUserId
-                    )
-                )
-
-                if (
-                        activeRuns
-                        >= maxConcurrentRunsPerUser
-                ):
-                    raise HTTPException(
-                        status_code=(
-                            status.HTTP_409_CONFLICT
-                        ),
-                        detail=(
-                            "Maximum concurrent protocol runs "
-                            "per user reached "
-                            f"({activeRuns}/"
-                            f"{maxConcurrentRunsPerUser}). "
-                            "Wait for an active protocol to "
-                            "finish or stop one before "
-                            "launching another."
-                        ),
-                    )
-
                 return executeRuntimeLaunch(
-                    executionId=uuid4().hex
+                    executionId=executionId
                 )
+
+            if executionId not in (
+                    None,
+                    "",
+            ):
+                return executeRuntimeLaunch(
+                    executionId=executionId
+                )
+
+            return (
+                self
+                ._executeProtocolExecutionWithConcurrencyLimit(
+                    mapper=mapper,
+                    currentUserId=currentUserId,
+                    executeCallback=(
+                        lambda generatedExecutionId:
+                        executeRuntimeLaunch(
+                            executionId=(
+                                generatedExecutionId
+                            )
+                        )
+                    ),
+                )
+            )
 
         finally:
             self._releasePostgresqlRuntimeLaunchInputs()
@@ -6490,6 +6528,8 @@ class ProjectService:
             validationInfo,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+            currentUserId=None,
+            executionId=None,
     ) -> Dict[str, Any]:
         service = (
             RuntimePostgresqlRestartLauncherService()
@@ -6503,6 +6543,8 @@ class ProjectService:
             validationInfo=validationInfo,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+            currentUserId=currentUserId,
+            executionId=executionId,
         )
 
     def _buildPostgresqlContinuePlan(
@@ -6529,6 +6571,8 @@ class ProjectService:
             plan,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+            currentUserId=None,
+            executionId=None,
     ) -> Dict[str, Any]:
         service = (
             RuntimePostgresqlContinueLauncherService()
@@ -6541,6 +6585,8 @@ class ProjectService:
                 plan=plan,
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+                currentUserId=None,
+                executionId=None,
 
         )
 
@@ -6565,68 +6611,275 @@ class ProjectService:
 
         return {"protocolId": str(protocol.getObjId()), "persisted": bool(persist)}
 
-    def _executeProtocolWorkflowAll(self, mapper, projectId: int, protocolId, mode):
+    def _executeProtocolWorkflowAll(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            mode,
+            currentUserId=None,
+            executionId=None,
+    ):
         if mode == "continue":
-            return self.continueProtocolAll(mapper, projectId, protocolId)
+            return self.continueProtocolAll(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                currentUserId=currentUserId,
+                executionId=executionId,
+            )
 
-        return self.restartProtocolAll(mapper, projectId, protocolId)
+        return self.restartProtocolAll(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentUserId=currentUserId,
+            executionId=executionId,
+        )
 
-    def executeProtocolWorkflow(self, mapper, projectId: int, protocolId, protocolClassName: str, params, mode, scope):
-        runtimeProtocolWorkflowExecutionService = RuntimeProtocolWorkflowExecutionService()
-        return runtimeProtocolWorkflowExecutionService.executeWorkflow(mapper=mapper, projectId=projectId,
-                                                                       protocolId=protocolId,
-                                                                       protocolClassName=protocolClassName,
-                                                                       params=params, mode=mode, scope=scope,
-                                                                       prepareRootProtocolCallback=self._prepareProtocolWorkflowRoot,
-                                                                       resetDescendantsCallback=self.resetProtocolFrom,
-                                                                       executeSingleCallback=self.launchProtocol,
-                                                                       executeAllCallback=self._executeProtocolWorkflowAll)
+    def executeProtocolWorkflow(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            protocolClassName: str,
+            params,
+            mode,
+            scope,
+            currentUserId=None,
+    ):
+        runtimeProtocolWorkflowExecutionService = (
+            RuntimeProtocolWorkflowExecutionService()
+        )
+
+        def executeWorkflow(
+                executionId=None,
+        ):
+            return (
+                runtimeProtocolWorkflowExecutionService
+                .executeWorkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolClassName=(
+                        protocolClassName
+                    ),
+                    params=params,
+                    mode=mode,
+                    scope=scope,
+                    prepareRootProtocolCallback=(
+                        self
+                        ._prepareProtocolWorkflowRoot
+                    ),
+                    resetDescendantsCallback=(
+                        self.resetProtocolFrom
+                    ),
+                    executeSingleCallback=(
+                        lambda **kwargs:
+                        self.launchProtocol(
+                            **kwargs,
+                            currentUserId=(
+                                currentUserId
+                            ),
+                            executionId=(
+                                executionId
+                            ),
+                        )
+                    ),
+                    executeAllCallback=(
+                        lambda **kwargs:
+                        self._executeProtocolWorkflowAll(
+                            **kwargs,
+                            currentUserId=(
+                                currentUserId
+                            ),
+                            executionId=(
+                                executionId
+                            ),
+                        )
+                    ),
+                )
+            )
+
+        normalizedMode = str(
+            mode or ""
+        ).strip().lower()
+
+        normalizedScope = str(
+            scope or ""
+        ).strip().lower()
+
+        if (
+                currentUserId is None
+                or normalizedMode not in (
+                "continue",
+                "restart",
+        )
+                or normalizedScope not in (
+                "single",
+                "all",
+        )
+        ):
+            return executeWorkflow()
+
+        return (
+            self
+            ._executeProtocolExecutionWithConcurrencyLimit(
+                mapper=mapper,
+                currentUserId=currentUserId,
+                executeCallback=executeWorkflow,
+            )
+        )
 
     def restartProtocolAll(
             self,
             mapper,
             projectId: int,
             protocolId,
+            currentUserId=None,
+            executionId=None,
     ):
-        runtimeProtocolRestartService = RuntimeProtocolRestartService()
-
-        return runtimeProtocolRestartService.restartProtocolSubworkflow(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
-                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
-            ),
-            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
-                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
-            ),
-            validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
-            launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
-            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-            stopPostgresqlProtocolsCallback=self.stopProtocol,
+        runtimeProtocolRestartService = (
+            RuntimeProtocolRestartService()
         )
 
-    def continueProtocolAll(self,
-                            mapper,
-                            projectId,
-                            protocolId,
-                            currentUser=None):
-        runtimeProtocolContinueService = RuntimeProtocolContinueService()
+        def executeRestart(
+                currentExecutionId,
+        ):
+            return (
+                runtimeProtocolRestartService
+                .restartProtocolSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    getPostgresqlRuntimeSubworkflowCallback=(
+                        self
+                        ._getPostgresqlRuntimeSubworkflow
+                    ),
+                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                        self
+                        ._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+                    ),
+                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                        self
+                        ._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+                    ),
+                    validatePostgresqlRestartSubworkflowCallback=(
+                        self
+                        ._validatePostgresqlRestartSubworkflow
+                    ),
+                    launchPostgresqlRestartSubworkflowCallback=(
+                        lambda **kwargs:
+                        self._launchPostgresqlRestartSubworkflow(
+                            **kwargs,
+                            currentUserId=(
+                                currentUserId
+                            ),
+                            executionId=(
+                                currentExecutionId
+                            ),
+                        )
+                    ),
+                    buildProtocolMutationResultCallback=(
+                        self
+                        ._buildProtocolMutationResult
+                    ),
+                    stopPostgresqlProtocolsCallback=(
+                        self.stopProtocol
+                    ),
+                )
+            )
+
+        if executionId not in (
+                None,
+                "",
+        ):
+            return executeRestart(
+                executionId
+            )
 
         return (
-            runtimeProtocolContinueService
-            .continueProtocolSubworkflow(
+            self
+            ._executeProtocolExecutionWithConcurrencyLimit(
                 mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
-                buildPostgresqlContinuePlanCallback=self._buildPostgresqlContinuePlan,
-                launchPostgresqlContinueSubworkflowCallback=self._launchPostgresqlContinueSubworkflow,
-                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
-                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
-                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-                stopPostgresqlProtocolsCallback=self.stopProtocol,
+                currentUserId=currentUserId,
+                executeCallback=executeRestart,
+            )
+        )
+
+    def continueProtocolAll(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            currentUserId=None,
+            executionId=None,
+    ):
+        runtimeProtocolContinueService = (
+            RuntimeProtocolContinueService()
+        )
+
+        def executeContinue(
+                currentExecutionId,
+        ):
+            return (
+                runtimeProtocolContinueService
+                .continueProtocolSubworkflow(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    getPostgresqlRuntimeSubworkflowCallback=(
+                        self
+                        ._getPostgresqlRuntimeSubworkflow
+                    ),
+                    buildPostgresqlContinuePlanCallback=(
+                        self
+                        ._buildPostgresqlContinuePlan
+                    ),
+                    launchPostgresqlContinueSubworkflowCallback=(
+                        lambda **kwargs:
+                        self._launchPostgresqlContinueSubworkflow(
+                            **kwargs,
+                            currentUserId=(
+                                currentUserId
+                            ),
+                            executionId=(
+                                currentExecutionId
+                            ),
+                        )
+                    ),
+                    deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                        self
+                        ._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+                    ),
+                    clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                        self
+                        ._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+                    ),
+                    buildProtocolMutationResultCallback=(
+                        self
+                        ._buildProtocolMutationResult
+                    ),
+                    stopPostgresqlProtocolsCallback=(
+                        self.stopProtocol
+                    ),
+                )
+            )
+
+        if executionId not in (
+                None,
+                "",
+        ):
+            return executeContinue(
+                executionId
+            )
+
+        return (
+            self
+            ._executeProtocolExecutionWithConcurrencyLimit(
+                mapper=mapper,
+                currentUserId=currentUserId,
+                executeCallback=executeContinue,
             )
         )
 

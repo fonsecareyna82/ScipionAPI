@@ -665,6 +665,8 @@ class RuntimePostgresqlContinueLauncherService:
             plan,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+            currentUserId=None,
+            executionId=None,
     ) -> Dict[str, Any]:
         if plan.get("errors"):
             raise ValueError(
@@ -819,6 +821,18 @@ class RuntimePostgresqlContinueLauncherService:
             action = preparedItem[
                 "action"
             ]
+
+            if currentUserId is not None:
+                (
+                    RuntimeProtocolStatusSyncService()
+                    .persistProtocolExecutionUser(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        userId=currentUserId,
+                        executionId=executionId,
+                    )
+                )
 
             try:
                 taskId = (

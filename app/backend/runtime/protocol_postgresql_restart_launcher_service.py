@@ -486,6 +486,8 @@ class RuntimePostgresqlRestartLauncherService:
             validationInfo,
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+            currentUserId=None,
+            executionId=None,
     ) -> Dict[str, Any]:
 
         runtimeMapper = (
@@ -599,6 +601,18 @@ class RuntimePostgresqlRestartLauncherService:
             protocol = protocolsById[
                 str(protocolId)
             ]
+
+            if currentUserId is not None:
+                (
+                    RuntimeProtocolStatusSyncService()
+                    .persistProtocolExecutionUser(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        userId=currentUserId,
+                        executionId=executionId,
+                    )
+                )
 
             try:
                 taskId = (

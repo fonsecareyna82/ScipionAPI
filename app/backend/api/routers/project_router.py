@@ -1006,7 +1006,14 @@ def executeProtocolWorkflow(projectId: int, protocolId: int, payload: ProtocolWo
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"status": 1, "errors": ["Project not found"], "workflow": []})
 
     try:
-        result = service.executeProtocolWorkflow(mapper=mapper, projectId=projectId, protocolId=protocolId, protocolClassName=payload.protocolClassName, params=payload.params, mode=payload.mode, scope=payload.scope) or {}
+        result = service.executeProtocolWorkflow(mapper=mapper,
+                                                 projectId=projectId,
+                                                 protocolId=protocolId,
+                                                 protocolClassName=payload.protocolClassName,
+                                                 params=payload.params,
+                                                 mode=payload.mode,
+                                                 scope=payload.scope,
+                                                 currentUserId=currentUser["id"],) or {}
         refreshedProject = service.getProjectById(mapper, projectId, currentUser)
         workflow = refreshedProject.get("protocols", []) if refreshedProject else []
         return {"status": result.get("status", 0), "errors": result.get("errors", []), "workflow": workflow, "workflowExecution": result.get("workflowExecution")}
@@ -1042,7 +1049,12 @@ def restartProtocolAll(
         )
 
     try:
-        result = service.restartProtocolAll(mapper, projectId, protocolId)
+        result = service.restartProtocolAll(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentUserId=currentUser["id"],
+        )
 
         workflow = []
 
@@ -1103,7 +1115,12 @@ def continueProtocolAll(
         )
 
     try:
-        result = service.continueProtocolAll(mapper, projectId, protocolId, currentUser)
+        result = service.continueProtocolAll(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentUserId=currentUser["id"],
+        )
         workflow = []
 
         refreshedProject = service.getProjectById(
