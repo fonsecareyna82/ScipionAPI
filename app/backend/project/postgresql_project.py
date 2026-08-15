@@ -457,6 +457,57 @@ class PostgresqlProject(ScipionProject):
         logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)
         return process.wait() if wait else process.pid
 
+    def _enqueuePostgresqlProtocolTask(
+            self,
+            protocol,
+            runMode: str,
+            wait: bool = False,
+    ):
+        from app.workers.task_queue import executeProtocolTask
+
+        protocolId = getattr(
+            protocol,
+            "getObjId",
+            lambda: None,
+        )()
+
+        if protocolId in (None, ""):
+            raise RuntimeError(
+                "Cannot enqueue PostgreSQL protocol without protocol id"
+            )
+
+        taskResult = executeProtocolTask.apply_async(
+            args=[
+                self.postgresqlProjectId,
+                int(protocolId),
+                runMode,
+            ]
+        )
+
+        logger.info(
+            "Queued PostgreSQL protocol task. "
+            "projectId=%s protocolId=%s runMode=%s taskId=%s",
+            self.postgresqlProjectId,
+            protocolId,
+            runMode,
+            taskResult.id,
+        )
+
+        if not wait:
+            return str(taskResult.id)
+
+        result = taskResult.get()
+
+        if isinstance(result, dict):
+            return int(
+                result.get(
+                    "coordinatorReturnCode",
+                    0,
+                )
+            )
+
+        return result
+
     def launchProtocol(
             self,
             protocol: Protocol,
@@ -528,7 +579,7 @@ class PostgresqlProject(ScipionProject):
         try:
             return (
                 self
-                ._startPostgresqlProtocolWorker(
+                ._enqueuePostgresqlProtocolTask(
                     protocol=protocol,
                     runMode=runMode,
                     wait=wait,
@@ -603,7 +654,7 @@ class PostgresqlProject(ScipionProject):
         try:
             return (
                 self
-                ._startPostgresqlProtocolWorker(
+                ._enqueuePostgresqlProtocolTask(
                     protocol=protocol,
                     runMode=runMode,
                     wait=False,
