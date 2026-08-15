@@ -768,7 +768,7 @@ class RuntimePostgresqlProtocolWorker:
 
         return True
 
-    def load(self) -> None:
+    def load(self, configureLogging: bool = True,) -> None:
         from app.backend.database import getMapper
         self.mapper = getMapper()
 
@@ -829,7 +829,9 @@ class RuntimePostgresqlProtocolWorker:
 
         self._applyQueueLaunchOverride()
         self.protocol.makeWorkingDir()
-        self.configureSchedulingLogging()
+
+        if configureLogging:
+            self.configureSchedulingLogging()
 
     def configureSchedulingLogging(
             self,

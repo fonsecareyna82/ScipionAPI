@@ -370,7 +370,9 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
             runMode=runMode,
         )
 
-        runtimeWorker.load()
+        runtimeWorker.load(
+            configureLogging=False
+        )
 
         self.update_state(
             state="PROGRESS",
