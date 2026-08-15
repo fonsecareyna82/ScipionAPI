@@ -28,7 +28,9 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 PROTOCOL_TASK_NAME = "app.tasks.executeProtocolTask"
 
@@ -45,6 +47,9 @@ class JobMonitoringService:
             celeryAppInstance=None,
             inspectTimeout: float = 1.0,
     ):
+        self.statusSyncService = (
+            RuntimeProtocolStatusSyncService()
+        )
         self.inspectTimeout = max(
             0.1,
             float(inspectTimeout),
@@ -856,9 +861,15 @@ class JobMonitoringService:
                 "startedAt": row.get(
                     "updatedAt"
                 ),
-                "elapsedSeconds": self._optionalFloat(
-                    runtimeMetadata.get(
-                        "elapsedTimeSeconds"
+                "elapsedSeconds": (
+                    self
+                    .statusSyncService
+                    .getEffectiveElapsedTimeSeconds(
+                        runtimeMetadata=runtimeMetadata,
+                        statusValue=protocolStatus,
+                        nowEpochSeconds=(
+                            nowEpochSeconds
+                        ),
                     )
                 ),
             })

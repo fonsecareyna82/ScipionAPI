@@ -429,3 +429,103 @@ def test_JobMonitoringKeepsPostgresqlHistoryWhenCeleryUnavailable(
     assert result[
         "recentJobs"
     ][0]["elapsedTimeSeconds"] == 17.0
+
+
+def test_JobMonitoringProjectsElapsedTimeForRunningPostgresqlProtocol(
+        monkeypatch,
+):
+    createdAt = datetime(
+        2026,
+        8,
+        15,
+        8,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    updatedAt = datetime(
+        2026,
+        8,
+        15,
+        9,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    mapper = MapperStub(
+        recentRows=[],
+        activeRows=[
+            {
+                "projectId": 2,
+                "projectName": (
+                    "/projects/"
+                    "TestXmippClassifyPca"
+                ),
+                "protocolId": "412",
+                "protocolClassName": (
+                    "XmippProtClassifyPcaStreaming"
+                ),
+                "status": "running",
+                "createdAt": createdAt,
+                "updatedAt": updatedAt,
+                "runtimeMetadata": {
+                    "pid": 343914,
+                    "jobIds": [],
+                    "elapsedTimeSeconds": 0.0,
+                    (
+                        "elapsedUpdatedAt"
+                        "EpochSeconds"
+                    ): 1000.0,
+                },
+            },
+        ],
+    )
+
+    service = JobMonitoringService(
+        celeryAppInstance=object()
+    )
+
+    monkeypatch.setattr(
+        jobMonitoringModule.time,
+        "time",
+        lambda: 1025.0,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getCelerySnapshot",
+        lambda: {
+            "available": True,
+            "error": None,
+            "stats": {},
+            "active": {},
+            "reserved": {},
+        },
+    )
+
+    result = service.getOverview(
+        mapper=mapper,
+        recentLimit=10,
+    )
+
+    assert len(
+        result["activeJobs"]
+    ) == 1
+
+    activeJob = (
+        result["activeJobs"][0]
+    )
+
+    assert activeJob[
+        "protocolId"
+    ] == "412"
+
+    assert activeJob[
+        "protocolStatus"
+    ] == "running"
+
+    assert activeJob[
+        "elapsedSeconds"
+    ] == 25.0
+
+
