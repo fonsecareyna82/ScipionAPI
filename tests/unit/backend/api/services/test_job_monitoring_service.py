@@ -37,9 +37,11 @@ class MapperStub:
             self,
             recentRows,
             protocolRows=None,
+            activeRows=None,
     ):
         self.recentRows = list(recentRows)
         self.protocolRows = dict(protocolRows or {})
+        self.activeRows = list(activeRows or [])
         self.recentLimits = []
 
     def listRecentProtocolExecutions(
@@ -48,6 +50,13 @@ class MapperStub:
     ):
         self.recentLimits.append(limit)
         return list(self.recentRows)
+
+    def listActiveProtocolExecutions(
+            self,
+    ):
+        return list(
+            self.activeRows
+        )
 
     def getProtocolByProtocolId(
             self,
@@ -125,6 +134,7 @@ def test_JobMonitoringOverviewCombinesCeleryAndPostgresql(
     mapper = MapperStub(
         recentRows=recentRows,
         protocolRows=protocolRows,
+        activeRows=recentRows,
     )
 
     service = JobMonitoringService(

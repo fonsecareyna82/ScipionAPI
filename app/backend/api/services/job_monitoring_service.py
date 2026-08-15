@@ -32,12 +32,18 @@ from typing import Any, Dict, List, Optional
 
 PROTOCOL_TASK_NAME = "app.tasks.executeProtocolTask"
 
+PROTOCOL_ACTIVE_STATUSES = {
+    "scheduled",
+    "launched",
+    "running",
+}
+
 
 class JobMonitoringService:
     def __init__(
             self,
             celeryAppInstance=None,
-            inspectTimeout: float = 0.5,
+            inspectTimeout: float = 1.0,
     ):
         self.inspectTimeout = max(
             0.1,
@@ -219,11 +225,15 @@ class JobMonitoringService:
 
             result = method()
 
-            return (
-                result
-                if isinstance(result, dict)
-                else {}
+            if isinstance(result, dict):
+                return result
+
+            errors.append(
+                "%s: no response"
+                % methodName
             )
+
+            return {}
 
         except Exception as error:
             errors.append(
@@ -592,22 +602,23 @@ class JobMonitoringService:
             self,
             mapper,
             snapshot,
-            recentRows,
+            activeRows,
             nowEpochSeconds: float,
     ) -> List[Dict[str, Any]]:
         activeJobs = []
+        observedProtocolKeys = set()
 
-        recentByProtocol = {
+        activeByProtocol = {
             (
                 int(row["projectId"]),
                 str(row["protocolId"]),
             ): row
-            for row in recentRows or []
+            for row in activeRows or []
         }
 
         for workerName, tasks in (
                 snapshot["active"]
-                .items()
+                        .items()
         ):
             for task in tasks or []:
                 if (
@@ -643,6 +654,15 @@ class JobMonitoringService:
                 ):
                     continue
 
+                protocolKey = (
+                    projectId,
+                    str(protocolId),
+                )
+
+                observedProtocolKeys.add(
+                    protocolKey
+                )
+
                 runMode = str(
                     args[2]
                     if len(args) > 2
@@ -650,20 +670,20 @@ class JobMonitoringService:
                 )
 
                 protocolRow = (
-                    mapper
-                    .getProtocolByProtocolId(
-                        protocolId=protocolId,
-                        projectId=projectId,
-                    )
-                    or {}
+                        mapper
+                        .getProtocolByProtocolId(
+                            protocolId=protocolId,
+                            projectId=projectId,
+                        )
+                        or {}
                 )
 
-                recentRow = recentByProtocol.get(
-                    (
-                        projectId,
-                        str(protocolId),
-                    )
-                ) or {}
+                activeRow = (
+                        activeByProtocol.get(
+                            protocolKey
+                        )
+                        or {}
+                )
 
                 runtimeMetadata = (
                     self
@@ -703,27 +723,28 @@ class JobMonitoringService:
                 )
 
                 deliveryInfo = (
-                    task.get(
-                        "delivery_info"
-                    )
-                    or {}
+                        task.get(
+                            "delivery_info"
+                        )
+                        or {}
                 )
 
                 activeJobs.append({
                     "taskId": taskId,
                     "projectId": projectId,
-                    "projectName": (
-                        recentRow.get(
-                            "projectName"
-                        )
+                    "projectName": activeRow.get(
+                        "projectName"
                     ),
                     "protocolId": str(
                         protocolId
                     ),
                     "protocolClassName": (
-                        protocolRow.get(
-                            "protocolClassName"
-                        )
+                            protocolRow.get(
+                                "protocolClassName"
+                            )
+                            or activeRow.get(
+                        "protocolClassName"
+                    )
                     ),
                     "runMode": runMode,
                     "celeryState": celeryState,
@@ -732,13 +753,14 @@ class JobMonitoringService:
                         protocolRow.get(
                             "status"
                         )
+                        or activeRow.get(
+                            "status"
+                        )
                         or ""
                     ).strip().lower(),
                     "worker": workerName,
-                    "queue": (
-                        deliveryInfo.get(
-                            "routing_key"
-                        )
+                    "queue": deliveryInfo.get(
+                        "routing_key"
                     ),
                     "workerPid": self._optionalInt(
                         task.get(
@@ -761,12 +783,94 @@ class JobMonitoringService:
                     "elapsedSeconds": elapsedSeconds,
                 })
 
+        for row in activeRows or []:
+            projectId = int(
+                row["projectId"]
+            )
+
+            protocolId = str(
+                row["protocolId"]
+            )
+
+            protocolStatus = str(
+                row.get(
+                    "status"
+                )
+                or ""
+            ).strip().lower()
+
+            if (
+                    protocolStatus
+                    not in PROTOCOL_ACTIVE_STATUSES
+            ):
+                continue
+
+            protocolKey = (
+                projectId,
+                protocolId,
+            )
+
+            if protocolKey in observedProtocolKeys:
+                continue
+
+            runtimeMetadata = (
+                self
+                ._runtimeMetadata(
+                    row
+                )
+            )
+
+            activeJobs.append({
+                "taskId": (
+                        "postgresql:%s:%s"
+                        % (
+                            projectId,
+                            protocolId,
+                        )
+                ),
+                "projectId": projectId,
+                "projectName": row.get(
+                    "projectName"
+                ),
+                "protocolId": protocolId,
+                "protocolClassName": row.get(
+                    "protocolClassName"
+                ),
+                "runMode": "unknown",
+                "celeryState": "UNKNOWN",
+                "step": (
+                    "Celery worker details temporarily unavailable."
+                ),
+                "protocolStatus": protocolStatus,
+                "worker": "",
+                "queue": None,
+                "workerPid": None,
+                "protocolPid": self._optionalInt(
+                    runtimeMetadata.get(
+                        "pid"
+                    )
+                ),
+                "jobIds": self._normalizeJobIds(
+                    runtimeMetadata.get(
+                        "jobIds"
+                    )
+                ),
+                "startedAt": row.get(
+                    "updatedAt"
+                ),
+                "elapsedSeconds": self._optionalFloat(
+                    runtimeMetadata.get(
+                        "elapsedTimeSeconds"
+                    )
+                ),
+            })
+
         activeJobs.sort(
             key=lambda job: (
-                job["startedAt"]
-                or datetime.min.replace(
-                    tzinfo=timezone.utc
-                )
+                    job["startedAt"]
+                    or datetime.min.replace(
+                tzinfo=timezone.utc
+            )
             ),
             reverse=True,
         )
@@ -780,6 +884,11 @@ class JobMonitoringService:
     ) -> Dict[str, Any]:
         nowEpochSeconds = (
             time.time()
+        )
+
+        activeRows = (
+            mapper
+            .listActiveProtocolExecutions()
         )
 
         recentRows = (
@@ -807,7 +916,7 @@ class JobMonitoringService:
             "activeJobs": self._buildActiveJobs(
                 mapper=mapper,
                 snapshot=snapshot,
-                recentRows=recentRows,
+                activeRows=activeRows,
                 nowEpochSeconds=nowEpochSeconds,
             ),
             "recentJobs": self._buildRecentJobs(

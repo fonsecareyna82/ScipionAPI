@@ -2419,6 +2419,38 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
 
+    def listActiveProtocolExecutions(
+            self,
+    ) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(
+            """
+            SELECT
+                p."projectId" AS "projectId",
+                pr.name AS "projectName",
+                p."protocolId" AS "protocolId",
+                p."protocolClassName" AS "protocolClassName",
+                p.status AS status,
+                p."createdAt" AS "createdAt",
+                p."updatedAt" AS "updatedAt",
+                COALESCE(
+                    p.params::jsonb -> '_scipionWebRuntime',
+                    '{}'::jsonb
+                ) AS "runtimeMetadata"
+              FROM protocols p
+              JOIN projects pr
+                ON pr.id = p."projectId"
+             WHERE LOWER(COALESCE(p.status, '')) IN (
+                 'scheduled',
+                 'launched',
+                 'running'
+             )
+             ORDER BY COALESCE(
+                 p."updatedAt",
+                 p."createdAt"
+             ) DESC
+            """
+        )
+
     def getProjectProtocolByProtocolId(
             self,
             projectId: int,
