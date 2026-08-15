@@ -79,6 +79,7 @@ class RuntimeProtocolLaunchService:
         modeAliases = {
             None: "launch",
             "resume": "launch",
+            "continue": "launch",
         }
 
         executeMode = modeAliases.get(executeMode, executeMode)
