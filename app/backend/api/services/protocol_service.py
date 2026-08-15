@@ -19,33 +19,242 @@
 # * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
 # * 02111-1307  USA
 # *
-# *  All comments concerning this program package may be sent to the
-# *  e-mail address 'scipion@cnb.csic.es'
+# * All comments concerning this program package may be sent to the
+# * e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from pyworkflow.project import Manager
-from .project_service import ProjectService
+import copy
+import threading
+from typing import Any, Callable, Dict
+
+from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
+
+_newProtocolLock = threading.Lock()
+_newProtocolCache: Dict[str, Dict[str, Any]] = {}
+_lastNewProtocolRevision = -1
+
+
+def _invalidateNewProtocolCacheIfNeeded() -> int:
+    global _lastNewProtocolRevision
+
+    revision = int(getPluginsRevision() or 0)
+
+    with _newProtocolLock:
+        if revision != _lastNewProtocolRevision:
+            _newProtocolCache.clear()
+            _lastNewProtocolRevision = revision
+
+    return revision
 
 
 class ProtocolService:
-    """Service class to manage protocols operations"""
+    """Orchestrate protocol retrieval and context operations."""
 
-    def __init__(self):
-        self.projectList = {}
-        self.currentId = 1
-        self.manager = Manager()
+    def getNewProtocolParams(
+            self,
+            *,
+            currentProject,
+            projectId: int,
+            protocolClassName: str,
+            buildProtocolContextCallback: Callable,
+    ) -> Dict[str, Any]:
+        """
+        Return the web context for a new protocol instance.
 
-    def getProtocolParams(self, projectId, protocolName):
-        """Return the protocol parameters and types"""
+        The context is cached until the installed plugins revision changes.
+        """
+        _invalidateNewProtocolCacheIfNeeded()
+
+        cacheKey = "%s:%s" % (
+            str(projectId),
+            str(protocolClassName),
+        )
+
+        with _newProtocolLock:
+            cached = _newProtocolCache.get(cacheKey)
+
+            if cached is not None:
+                return copy.deepcopy(cached)
+
+        protocolClass = (
+            currentProject
+            .getDomain()
+            .getProtocols()
+            .get(protocolClassName)
+        )
+
+        if protocolClass:
+            protocol = currentProject.newProtocol(
+                protocolClass
+            )
+
+            currentProject._fixProtParamsConfiguration(
+                protocol
+            )
+
+            context = buildProtocolContextCallback(
+                projectId,
+                protocol,
+            )
+
+        else:
+            context = self._buildNewProtocolContextInSubprocess(
+                currentProject=currentProject,
+                projectId=projectId,
+                protocolClassName=protocolClassName,
+            )
+
+        with _newProtocolLock:
+            _newProtocolCache[cacheKey] = context
+
+        return copy.deepcopy(context)
+
+    def _buildNewProtocolContextInSubprocess(
+            self,
+            *,
+            currentProject,
+            projectId: int,
+            protocolClassName: str,
+    ) -> Dict[str, Any]:
+        """
+        Build a new protocol context in a clean process when the current
+        process domain does not yet contain the requested protocol class.
+        """
+        projectPath = None
+
+        for attrName in ("path", "_path"):
+            value = getattr(
+                currentProject,
+                attrName,
+                None,
+            )
+
+            if value:
+                projectPath = value
+                break
+
+        if not projectPath:
+            getPath = getattr(
+                currentProject,
+                "getPath",
+                None,
+            )
+
+            if callable(getPath):
+                projectPath = getPath()
+
+        if not projectPath:
+            raise RuntimeError(
+                "Cannot resolve currentProject path "
+                "for subprocess protocol build"
+            )
+
+        code = """
+    import contextlib
+    import os
+    import sys
+
+    with contextlib.redirect_stdout(sys.stderr):
+        from app.backend.database import getMapper
+        from app.backend.api.services.project_service import ProjectService
+
+        projectPath = os.environ["SCIPIONWEB_PROJECT_PATH"]
+        projectId = int(os.environ["SCIPIONWEB_PROJECT_ID"])
+        protocolClassName = os.environ["SCIPIONWEB_PROTOCOL_CLASS"]
+
+        mapper = getMapper()
         projectService = ProjectService()
-        project = projectService.getCurrentProject()
-        print(project)
-        protocol = project.getProtocol(protocolName)
-        print(protocol)
-        return {'id': 'Pepe',
-                'parents': [],
-                'children': [],
-                'label': 'Pepe',
-                'status': 'running',
-                'color': 'red',
-                'parameters': []}
+        project = None
+
+        try:
+            project = projectService._loadPostgresqlRuntimeProject(
+                mapper=mapper,
+                projectId=projectId,
+                projectPath=projectPath,
+            )
+
+            domain = project.getDomain()
+            protocolClass = domain.getProtocols().get(
+                protocolClassName
+            )
+
+            if protocolClass is None:
+                raise RuntimeError(
+                    f"Protocol class not found: {protocolClassName}"
+                )
+
+            protocol = project.newProtocol(
+                protocolClass
+            )
+            project._fixProtParamsConfiguration(
+                protocol
+            )
+
+            _scipionPayload = projectService._buildProtocolContext(
+                projectId,
+                protocol,
+            )
+
+        finally:
+            if project is not None:
+                try:
+                    project.closeMapper()
+                except Exception:
+                    pass
+
+            try:
+                mapper.db.close()
+            except Exception:
+                pass
+    """
+
+        jsonSubprocessRunner = JsonSubprocessRunner()
+
+        return jsonSubprocessRunner.run(
+            code=code,
+            operationName="Build new protocol context",
+            extraEnv={
+                "SCIPIONWEB_PROJECT_PATH": projectPath,
+                "SCIPIONWEB_PROJECT_ID": projectId,
+                "SCIPIONWEB_PROTOCOL_CLASS": protocolClassName,
+            },
+        )
+
+    def getProtocolParams(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            syncPostgresqlRuntimeProtocolCallback: Callable,
+    ) -> Dict[str, Any]:
+        """
+        Return the PostgreSQL runtime web context of an existing protocol.
+
+        The protocol is reconstructed from PostgreSQL and the context produced
+        during that reconstruction is returned directly.
+        """
+        syncResult = syncPostgresqlRuntimeProtocolCallback(mapper=mapper,
+                                                           projectId=projectId,
+                                                           protocolId=protocolId,
+                                                           registerOutputs=False,
+                                                           syncRelations=False,
+                                                           returnProtocolContext=True,
+                                                           persistRuntimeState=False)
+
+        protocolContext = (syncResult or {}).get(
+            "protocolContext"
+        )
+
+        if protocolContext is None:
+            raise RuntimeError(
+                "PostgreSQL runtime protocol context is not available. "
+                "projectId=%s protocolId=%s"
+                % (
+                    projectId,
+                    protocolId,
+                )
+            )
+
+        return protocolContext

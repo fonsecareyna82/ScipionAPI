@@ -23,28 +23,195 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import os
+from pathlib import Path
+
+from app.backend.bootstrap import bootstrapEnv
+from app.backend.api.services.environment import prepareEnvironment
+
+# bootstrapEnvFirst
+bootstrapEnv()
+
+# prepareScipionEnvironmentBeforeImportingRouters
+prepareEnvironment()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.backend.api.routers.project_router import router as projects
-from app.backend.api.routers.protocol_router import router as protocols
+# from app.backend.api.routers.protocol_router import router as protocols
+from app.backend.api.routers.plugin_router import router as plugins
+from app.backend.api.routers.auth_router import router as auth
+from app.backend.api.routers.user_router import router as users
+from app.backend.api.routers.settings_router import router as settingsRouter
+from app.backend.api.routers.coords2d_router import router as coords2dRouter
+from app.backend.api.routers.system_router import router as systemRouter
+from app.backend.utils.error_handlers import registerAllErrorHandlers
+from starlette.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHttpException
 
-app = FastAPI(title="Scipion API")
+
+class SpaStaticFiles(StaticFiles):
+    # spaStaticFilesFallbackToIndex
+    async def get_response(self, path: str, scope):
+        # getResponseOrFallbackToIndexHtml
+        try:
+            response = await super().get_response(path, scope)
+            if getattr(response, "status_code", None) == 404:
+                return await super().get_response("index.html", scope)
+            return response
+        except StarletteHttpException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+def _buildApiApp() -> FastAPI:
+    # buildApiApp
+    apiApp = FastAPI(
+        title="Scipion API",
+        debug=True,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+
+    # registerCustomErrorHandlers
+    registerAllErrorHandlers(apiApp)
+
+    apiApp.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=[
+            "*",
+            "Authorization",
+            "Content-Type",
+            "X-Requested-With",
+            "X-Scipion-Colormap",
+            "X-Preview-Colormap",
+            "X-Colormap",
+            "Scipion-Colormap",
+            "Colormap",
+            "X-Preview-Schema",
+            "X-Preview-Name",
+        ],
+        expose_headers=[
+            "Content-Disposition",
+            "X-Preview-Mime",
+            "X-Preview-Width",
+            "X-Preview-Height",
+            "X-Preview-Original-Width",
+            "X-Preview-Original-Height",
+            "X-Preview-Scale-X",
+            "X-Preview-Scale-Y",
+            "X-Preview-Origin",
+            "X-Preview-Orientation",
+            "X-Preview-Depth",
+            "X-Preview-Colormap",
+            "X-Preview-Colormap-Note",
+            "X-Preview-Tiles",
+            "X-Preview-SizeBytes",
+            "X-Preview-Columns",
+            "X-Preview-RowCount",
+            "X-Archive-Kind",
+            "X-Preview-VoxelSize",
+            "X-Preview-Schema",
+            "X-Preview-Name",
+            "X-Preview-MicrographId",
+            "X-Preview-Format",
+        ],
+    )
+
+    # includeRouters
+    apiApp.include_router(projects)
+    # apiApp.include_router(protocols)
+    apiApp.include_router(plugins)
+    apiApp.include_router(auth)
+    apiApp.include_router(users)
+    apiApp.include_router(settingsRouter)
+    apiApp.include_router(coords2dRouter)
+    apiApp.include_router(systemRouter)
+
+    @apiApp.get("/health")
+    def health_check():
+        # healthCheck
+        return {"status": "ok"}
+
+    return apiApp
+
+
+def _normalizeMountPath(value: str) -> str:
+    # normalizeMountPath
+    mountPath = (value or "/api").strip()
+    if not mountPath.startswith("/"):
+        mountPath = f"/{mountPath}"
+    if mountPath != "/" and mountPath.endswith("/"):
+        mountPath = mountPath.rstrip("/")
+    return mountPath
+
+
+def _shouldServeWeb() -> bool:
+    # shouldServeWeb
+    return (os.getenv("SERVE_WEB") or "").strip() == "1"
+
+
+def _resolveWebDistPath() -> Path:
+    # resolveWebDistPath
+    raw = (os.getenv("WEB_DIST_PATH") or "").strip()
+    if not raw:
+        return Path("")
+    return Path(raw).expanduser().resolve()
+
+
+apiApp = _buildApiApp()
+
+serveWeb = _shouldServeWeb()
+webDistPath = _resolveWebDistPath()
+apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
+
+# alwaysMountApiUnderApiMountPath
+app = FastAPI(
+    title="Scipion Web",
+    debug=True,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
-app.include_router(projects)
-app.include_router(protocols)
+app.mount(apiMountPath, apiApp)
 
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 def health_check():
-    return {"status": "ok"}
+    # healthCheckRoot
+    return {
+        "status": "ok",
+        "mode": "api-only" if not serveWeb else "combined",
+        "apiMountPath": apiMountPath,
+    }
 
+
+# optional: keepConvenienceRedirects
+@app.get("/docs", include_in_schema=False)
+def docs_redirect():
+    # redirectDocsToApiDocs
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{apiMountPath}/docs")
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_redirect():
+    # redirectOpenApiToApiOpenApi
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{apiMountPath}/openapi.json")
+
+
+if serveWeb and webDistPath and (webDistPath / "index.html").exists():
+    # mountSpaStaticRootLast
+    app.mount("/", SpaStaticFiles(directory=str(webDistPath), html=True), name="web")

@@ -23,3 +23,56 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+def toSerializable(obj):
+    """Convert complex Python objects into JSON-serializable structures, preserving full dict order recursively."""
+    from datetime import datetime, date
+    from decimal import Decimal
+
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        ordered_dict = {}
+        for k, v in obj.items():
+            ordered_dict[k] = toSerializable(v)
+        return ordered_dict
+    elif isinstance(obj, (list, tuple, set)):
+        return [toSerializable(item) for item in obj]
+    elif hasattr(obj, "get") and callable(getattr(obj, "get")):  # Scalar support
+        return obj.get()
+    elif hasattr(obj, "__dict__"):  # Custom class
+        excluded_keys = ['__module__', '__init__', '__doc__', '_dist', '_plugin']
+        param_dict = {}
+        for k, v in obj.__dict__.items():
+            if k not in excluded_keys:
+                param_dict[k] = toSerializable(v)
+        return param_dict
+    else:
+        return str(obj)
+
+
+def serializeToJson(obj):
+    """Serialize any Python object to JSON, preserving order of all dictionaries and nested structures."""
+    return toSerializable(obj)
+
+
+def getFreePort(basePort=0, host=''):
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((host, basePort))
+        ipaddr, port = s.getsockname()
+        s.close()
+    except Exception as e:
+        logger.error("Can't get a free port", exc_info=e)
+        return 0
+    return port
+

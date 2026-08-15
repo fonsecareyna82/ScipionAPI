@@ -1,0 +1,2590 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import pytest
+from datetime import datetime
+from unittest.mock import Mock
+
+from pyworkflow.object import (
+    CsvList,
+    Float,
+    Integer,
+    Object,
+    Pointer,
+    PointerList,
+    String,
+)
+
+from pwem.objects import Volume
+
+from app.backend.mapper.scipion_object_mapper import (
+    ScipionObjectPostgresqlMapper,
+)
+from app.backend.mapper.postgresql_scipion_item_hydrator import (
+    setPostgresqlRuntimeParentReference,
+)
+
+from app.backend.mapper.scipion_set_mapper import (
+    ScipionSetPostgresqlMapper,
+)
+from app.backend.mapper.postgresql_runtime_mapper import (
+    PostgresqlRuntimeMapper,
+)
+
+
+class FakeComposite(Object):
+    def __init__(self):
+        super().__init__()
+
+        self.title = String()
+        self.count = Integer()
+
+
+class FakeDerivedComposite(FakeComposite):
+    pass
+
+
+def test_ObjectTreePersistenceExcludesRuntimeParentReference():
+    outputObject = FakeComposite()
+    parentObject = FakeComposite()
+
+    outputObject._objParent = parentObject
+
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    attributes = mapper._getAttributesToStore(
+        outputObject
+    )
+
+    attributeNames = {
+        name
+        for name, _ in attributes
+    }
+
+    assert "title" in attributeNames
+    assert "count" in attributeNames
+    assert "_objParent" not in attributeNames
+
+
+def test_ObjectPointerReferencePreservesBaseTargetAndExtended():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+    parentProtocol._objName = "protocol"
+
+    pointer = Pointer(
+        parentProtocol,
+        extended="outputParticles",
+    )
+
+    reference = mapper._serializePointerReference(
+        pointer
+    )
+
+    assert reference == {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 101,
+        "targetClassName": "Object",
+        "targetObjectName": "protocol",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "outputParticles",
+        "uniqueId": "101.outputParticles",
+    }
+
+
+def test_ObjectPointerReferencePreservesDirectTargetParentIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    targetSet = Object()
+    targetSet.setObjId(300)
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParent = targetSet
+    targetObject._objParentId = 300
+
+    pointer = Pointer(
+        targetObject
+    )
+
+    reference = mapper._serializePointerReference(
+        pointer
+    )
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetClassName"] == "Object"
+    assert reference["targetParentObjectId"] == 300
+    assert reference["targetParentClassName"] == "Object"
+    assert reference["extended"] == ""
+
+
+def test_ObjectPointerReferencePreservesLegacySetOwnerIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParent = parentProtocol
+    targetSet._objParentId = 101
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParent = targetSet
+    targetObject._objParentId = 3_000_900
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+
+def test_ObjectPointerReferencePreservesPostgresqlRuntimeParentIdentity():
+    mapper = ScipionObjectPostgresqlMapper.__new__(
+        ScipionObjectPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParentId = 101
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetSet,
+        parent=parentProtocol,
+    )
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParentId = 3_000_900
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetObject,
+        parent=targetSet,
+    )
+
+    assert targetSet._objParent is None
+    assert targetObject._objParent is None
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+    assert targetSet._objParent is None
+    assert targetObject._objParent is None
+
+
+def test_SetPointerReferenceUsesPostgresqlRuntimeParentIdentity():
+    mapper = ScipionSetPostgresqlMapper.__new__(
+        ScipionSetPostgresqlMapper
+    )
+
+    parentProtocol = Object()
+    parentProtocol.setObjId(101)
+
+    targetSet = Object()
+    targetSet.setObjId(3_000_900)
+    targetSet._objName = "outputParticles"
+    targetSet._objParentId = 101
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetSet,
+        parent=parentProtocol,
+    )
+
+    targetObject = Object()
+    targetObject.setObjId(7)
+    targetObject._objParentId = 3_000_900
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=targetObject,
+        parent=targetSet,
+    )
+
+    pointer = Pointer(targetObject)
+
+    reference = mapper._serializePointerReference(pointer)
+
+    assert reference["targetObjectId"] == 7
+    assert reference["targetParentObjectId"] == 3_000_900
+    assert reference["targetParentObjectName"] == "outputParticles"
+    assert reference["targetParentParentObjectId"] == 101
+
+
+def test_ObjectTreePersistenceStoresSharedPointerOnEveryListPath():
+    class CursorStub:
+        def __init__(self, objectId):
+            self.objectId = objectId
+
+        def fetchone(self):
+            return {
+                "id": self.objectId,
+            }
+
+    class DbStub:
+        def __init__(self):
+            self.nextObjectId = 1
+            self.paths = []
+            self.scipionObjectIdsByPath = {}
+
+        def execute(self, query, params, commit=False):
+            self.paths.append(params[5])
+            self.scipionObjectIdsByPath[params[5]] = params[2]
+
+            objectId = self.nextObjectId
+            self.nextObjectId += 1
+
+            return CursorStub(objectId)
+
+    class PointerContainer(Object):
+        def __init__(self):
+            super().__init__()
+            self.targets = PointerList()
+
+    target = Object()
+    target.setObjId(900)
+
+    sharedPointer = Pointer(target)
+
+    outputObject = PointerContainer()
+    outputObject.setObjId(700)
+    outputObject.targets.append(sharedPointer)
+    outputObject.targets.append(sharedPointer)
+
+    db = DbStub()
+    mapper = ScipionObjectPostgresqlMapper(db)
+
+    storedPaths = []
+
+    scipionObjectIdsByPath = {
+        "outputObject": 700,
+        "outputObject.targets": 701,
+        "outputObject.targets.__item__000001": 702,
+        "outputObject.targets.__item__000001._extended": 703,
+        "outputObject.targets.__item__000002": 704,
+        "outputObject.targets.__item__000002._extended": 705,
+    }
+
+    mapper._storeObjectNode(
+        projectId=7,
+        protocolDbId=55,
+        scipionObj=outputObject,
+        name="outputObject",
+        path="outputObject",
+        parentObjectId=None,
+        storedPaths=storedPaths,
+        includeNestedProperties=True,
+        visited=set(),
+        scipionObjectIdsByPath=scipionObjectIdsByPath,
+    )
+
+    assert storedPaths == [
+        "outputObject",
+        "outputObject.targets",
+        "outputObject.targets.__item__000001",
+        "outputObject.targets.__item__000001._extended",
+        "outputObject.targets.__item__000002",
+        "outputObject.targets.__item__000002._extended",
+    ]
+
+    propertyPaths = [
+        prop["propertyPath"]
+        for prop in mapper._iterProperties(outputObject)
+    ]
+
+    assert "targets.__item__000001" in propertyPaths
+    assert "targets.__item__000002" in propertyPaths
+
+
+def test_ObjectTreePersistenceStillStopsRecursiveObjectCycles():
+    class CursorStub:
+        def __init__(self, objectId):
+            self.objectId = objectId
+
+        def fetchone(self):
+            return {
+                "id": self.objectId,
+            }
+
+    class DbStub:
+        def __init__(self):
+            self.nextObjectId = 1
+
+        def execute(self, query, params, commit=False):
+            objectId = self.nextObjectId
+            self.nextObjectId += 1
+
+            return CursorStub(objectId)
+
+    class RecursiveObject(Object):
+        def __init__(self):
+            super().__init__()
+            self.selfReference = self
+
+    outputObject = RecursiveObject()
+    outputObject.setObjId(700)
+
+    mapper = ScipionObjectPostgresqlMapper(DbStub())
+
+    storedPaths = []
+
+    mapper._storeObjectNode(
+        projectId=7,
+        protocolDbId=55,
+        scipionObj=outputObject,
+        name="outputObject",
+        path="outputObject",
+        parentObjectId=None,
+        storedPaths=storedPaths,
+        includeNestedProperties=True,
+        visited=set(),
+    )
+
+    assert storedPaths == [
+        "outputObject",
+    ]
+
+    properties = list(mapper._iterProperties(outputObject))
+
+    assert [prop["propertyPath"] for prop in properties] == [
+        "selfReference",
+    ]
+
+    assert properties[0]["className"] == "RecursiveObject"
+    assert properties[0]["isNested"] is True
+
+
+def test_ObjectTreePersistenceDoesNotDeleteStoredChildrenWhenAttributeEnumerationFails(
+        monkeypatch,
+):
+    class DbStub:
+        def transaction(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(
+                self,
+                excType,
+                excValue,
+                traceback,
+        ):
+            return False
+
+        def execute(self, *args, **kwargs):
+            pytest.fail(
+                "Object persistence must stop before writing when attribute enumeration fails"
+            )
+
+    class FailingObject(Object):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "attribute enumeration failed"
+            )
+
+    outputObject = FailingObject()
+    outputObject.setObjId(700)
+
+    mapper = ScipionObjectPostgresqlMapper(
+        DbStub()
+    )
+
+    staleDeleteCalls = []
+
+    monkeypatch.setattr(
+        mapper,
+        "_deleteStoredSetForOutput",
+        lambda **kwargs: 0,
+    )
+
+    monkeypatch.setattr(
+        mapper,
+        "_deleteStaleObjectTreePaths",
+        lambda **kwargs: staleDeleteCalls.append(kwargs) or 0,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="attribute enumeration failed",
+    ):
+        mapper.storeObjectTree(
+            projectId=7,
+            protocolDbId=55,
+            outputName="outputObject",
+            scipionObj=outputObject,
+            registerType=False,
+        )
+
+    assert staleDeleteCalls == []
+
+
+class FakeObjectMapper:
+    def __init__(
+            self,
+            rows=None,
+            classRows=None,
+            deleteResult=None,
+    ):
+        self.rows = list(rows or [])
+        self.classRows = list(classRows or [])
+        self.calls = []
+        self.classCalls = []
+        self.deleteCalls = []
+
+        if deleteResult is None:
+            deleteResult = {
+                "deletedObjectsCount": 0,
+                "deletedRelationsCount": 0,
+            }
+
+        self.deleteResult = dict(
+            deleteResult
+        )
+
+    def getStoredObjectSubtreeByScipionObjId(
+            self,
+            projectId,
+            scipionObjId,
+    ):
+        self.calls.append((
+            projectId,
+            scipionObjId,
+        ))
+
+        return list(self.rows)
+
+    def listCanonicalStoredObjectRows(
+            self,
+            projectId,
+            className=None,
+    ):
+        self.classCalls.append((
+            projectId,
+            className,
+        ))
+
+        return list(self.classRows)
+
+    def deleteStoredObjectSubtreesByScipionObjId(
+            self,
+            projectId,
+            scipionObjId,
+    ):
+        self.deleteCalls.append((
+            projectId,
+            scipionObjId,
+        ))
+
+        return dict(
+            self.deleteResult
+        )
+
+
+def buildRows():
+    return [
+        {
+            "id": 10,
+            "scipionObjId": 700,
+            "parentObjectId": None,
+            "name": "outputObject",
+            "path": "outputObject",
+            "className": "FakeComposite",
+            "value": None,
+            "label": "Output label",
+            "comment": "Output comment",
+            "creation": datetime(
+                2026,
+                7,
+                15,
+                12,
+                30,
+                45,
+                123456,
+            ),
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 0,
+        },
+        {
+            "id": 11,
+            "scipionObjId": 701,
+            "parentObjectId": 10,
+            "name": "title",
+            "path": "outputObject.title",
+            "className": "String",
+            "value": "PostgreSQL object",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 12,
+            "scipionObjId": 702,
+            "parentObjectId": 10,
+            "name": "count",
+            "path": "outputObject.count",
+            "className": "Integer",
+            "value": "5",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+    ]
+
+
+def buildRuntimeMapper(
+        rows,
+        classRows=None,
+        deleteResult=None,
+):
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 7
+    mapper.project = None
+    mapper.flatMapper = Mock()
+    mapper.flatMapper.getProtocols.return_value = []
+    mapper.flatMapper.getProjectRuntimeMetadata.return_value = None
+    mapper.flatMapper.getProjectProtocolByProtocolId.return_value = None
+
+    mapper.protocolGraphRepository = Mock()
+    mapper.protocolGraphRepository.listPersistedSetOutputRows.return_value = []
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = None
+
+    mapper.runtimeSetFactory = Mock()
+    mapper.runtimeSetFactory._getCachedRuntimeSet.return_value = None
+
+    mapper._runtimeProtocolsById = {}
+    mapper.dictClasses = {
+        "FakeComposite": FakeComposite,
+        "FakeDerivedComposite": FakeDerivedComposite,
+    }
+
+    mapper.objectMapper = FakeObjectMapper(
+        rows=rows,
+        classRows=classRows,
+        deleteResult=deleteResult,
+    )
+
+    mapper.setMapper = Mock()
+
+    mapper.setMapper.deleteStoredSetOutput.return_value = {
+        "deletedSetsCount": 1,
+        "deletedObjectsCount": 1,
+        "deletedRelationsCount": 2,
+    }
+
+    def failIfRuntimeContextIsAttached(obj):
+        raise AssertionError(
+            "Generic PostgreSQL objects must remain detached"
+        )
+
+    mapper._attachRuntimeContext = failIfRuntimeContextIsAttached
+
+    return mapper
+
+
+def test_SelectGenericObjectHydratesDetachedTree():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    result = (
+        mapper
+        ._selectGenericObjectByIdFromPostgresql(
+            "700"
+        )
+    )
+
+    assert isinstance(
+        result,
+        FakeComposite,
+    )
+
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+    assert result.getObjName() == (
+        "outputObject"
+    )
+
+    assert result.getObjLabel() == (
+        "Output label"
+    )
+
+    assert result.getObjComment() == (
+        "Output comment"
+    )
+
+    assert result.getObjCreation() == (
+        "2026-07-15 12:30:45.123456"
+    )
+
+    assert result.title.get() == (
+        "PostgreSQL object"
+    )
+    assert result.title.getObjId() == 701
+    assert result.title.getObjParentId() == 700
+    assert result.title._objParent is None
+
+    assert result.count.get() == 5
+    assert result.count.getObjId() == 702
+    assert result.count.getObjParentId() == 700
+    assert result.count._objParent is None
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_SelectGenericObjectRejectsUnknownClass():
+    rows = buildRows()
+    rows[0]["className"] = (
+        "MissingObjectClass"
+    )
+
+    mapper = buildRuntimeMapper(
+        rows
+    )
+
+    result = (
+        mapper
+        ._selectGenericObjectByIdFromPostgresql(
+            700
+        )
+    )
+
+    assert result is None
+
+
+def test_SelectGenericObjectRejectsPointerTree():
+    rows = buildRows()
+
+    rows.append({
+        "id": 13,
+        "scipionObjId": 703,
+        "parentObjectId": 10,
+        "name": "target",
+        "path": "outputObject.target",
+        "className": "Pointer",
+        "value": "900",
+        "label": None,
+        "comment": None,
+        "creation": None,
+        "metadata": {
+            "isPointer": True,
+        },
+        "ownerProtocolId": "101",
+        "depth": 1,
+    })
+
+    mapper = buildRuntimeMapper(
+        rows
+    )
+
+    result = (
+        mapper
+        ._selectGenericObjectByIdFromPostgresql(
+            700
+        )
+    )
+
+    assert result is None
+
+
+def test_SelectRuntimeInputVolumeIgnoresLegacyParentReference():
+    rows = [
+        {
+            "id": 10,
+            "scipionObjId": 700,
+            "parentObjectId": None,
+            "name": "outputVolume",
+            "path": "outputVolume",
+            "className": "Volume",
+            "value": None,
+            "label": "Output volume",
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 0,
+        },
+        {
+            "id": 11,
+            "scipionObjId": 701,
+            "parentObjectId": 10,
+            "name": "_filename",
+            "path": "outputVolume._filename",
+            "className": "String",
+            "value": "/tmp/output-volume.mrc",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 12,
+            "scipionObjId": 702,
+            "parentObjectId": 10,
+            "name": "_samplingRate",
+            "path": "outputVolume._samplingRate",
+            "className": "Float",
+            "value": "1.5",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 13,
+            "scipionObjId": 703,
+            "parentObjectId": 10,
+            "name": "_halfMapFilenames",
+            "path": "outputVolume._halfMapFilenames",
+            "className": "CsvList",
+            "value": (
+                "/tmp/half-map-1.mrc,"
+                "/tmp/half-map-2.mrc"
+            ),
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 14,
+            "scipionObjId": 704,
+            "parentObjectId": 10,
+            "name": "_sourcePointer",
+            "path": (
+                "outputVolume."
+                "_sourcePointer"
+            ),
+            "className": "Pointer",
+            "value": "900",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": True,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 15,
+            "scipionObjId": 705,
+            "parentObjectId": 14,
+            "name": "_extended",
+            "path": (
+                "outputVolume."
+                "_sourcePointer._extended"
+            ),
+            "className": "String",
+            "value": "outputParticles",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+        {
+            "id": 16,
+            "scipionObjId": 706,
+            "parentObjectId": 10,
+            "name": "_pluginRuntimeState",
+            "path": (
+                "outputVolume."
+                "_pluginRuntimeState"
+            ),
+            "className": (
+                "MissingPluginRuntimeState"
+            ),
+            "value": None,
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 20,
+            "scipionObjId": 101,
+            "parentObjectId": 10,
+            "name": "_objParent",
+            "path": "outputVolume._objParent",
+            "className": (
+                "ProtCryosparcNonUniformRefine"
+            ),
+            "value": None,
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 21,
+            "scipionObjId": 704,
+            "parentObjectId": 20,
+            "name": "status",
+            "path": (
+                "outputVolume."
+                "_objParent.status"
+            ),
+            "className": "String",
+            "value": "finished",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+    ]
+
+    mapper = buildRuntimeMapper(rows)
+
+    mapper.dictClasses.update({
+        "Volume": Volume,
+        "CsvList": CsvList,
+        "Float": Float,
+    })
+
+    mapper._selectSetByIdFromPostgresql = (
+        lambda *args, **kwargs: None
+    )
+
+    result = (
+        mapper
+        .selectRuntimeInputObjectById(
+            700
+        )
+    )
+
+    assert isinstance(result, Volume)
+
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+
+    assert result.getFileName() == (
+        "/tmp/output-volume.mrc"
+    )
+
+    assert result.getSamplingRate() == 1.5
+
+    assert list(
+        result.getHalfMaps(
+            asList=True
+        )
+    ) == [
+        "/tmp/half-map-1.mrc",
+        "/tmp/half-map-2.mrc",
+    ]
+
+    assert result._filename._objParent is None
+    assert result._samplingRate._objParent is None
+    assert result._halfMapFilenames._objParent is None
+
+    copiedVolume = Volume()
+    copiedVolume.copyInfo(result)
+
+    assert copiedVolume.getFileName() == "/tmp/output-volume.mrc"
+    assert copiedVolume.getSamplingRate() == 1.5
+    assert list(copiedVolume.getHalfMaps(asList=True)) == [
+        "/tmp/half-map-1.mrc",
+        "/tmp/half-map-2.mrc",
+    ]
+
+    assert result._objParent is None
+    assert not hasattr(
+        result,
+        "_sourcePointer",
+    )
+
+    assert not hasattr(
+        result,
+        "_pluginRuntimeState",
+    )
+
+
+def test_SelectRuntimeInputRestoresStructuredPointerToDetachedOutput():
+    rows = buildRows()
+
+    pointerReference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 101,
+        "targetClassName": "Object",
+        "targetObjectName": "protocol",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "outputParticles",
+        "uniqueId": "101.outputParticles",
+    }
+
+    rows.extend([
+        {
+            "id": 13,
+            "scipionObjId": 703,
+            "parentObjectId": 10,
+            "name": "target",
+            "path": "outputObject.target",
+            "className": "Pointer",
+            "value": "900",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": True,
+                "pointerReference": pointerReference,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 14,
+            "scipionObjId": 704,
+            "parentObjectId": 13,
+            "name": "_extended",
+            "path": "outputObject.target._extended",
+            "className": "String",
+            "value": "outputParticles",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+    ])
+
+    mapper = buildRuntimeMapper(rows)
+
+    mapper._selectSetByIdFromPostgresql = lambda *args, **kwargs: None
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.return_value = {
+        "id": 55,
+        "protocolId": "101",
+    }
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
+        "exists": True,
+        "kind": "set",
+        "runtimeObjectId": 900,
+        "outputName": "outputParticles",
+        "className": "SetOfParticles",
+    }
+
+    detachedOutput = Object()
+    detachedOutput.setObjId(900)
+
+    resolverCalls = []
+
+    def runtimeObjectResolver(runtimeObjectId):
+        resolverCalls.append(int(runtimeObjectId))
+
+        if int(runtimeObjectId) == 900:
+            return detachedOutput
+
+        return None
+
+    result = mapper.selectRuntimeInputObjectById(
+        700,
+        runtimeObjectResolver=runtimeObjectResolver,
+    )
+
+    assert isinstance(result, FakeComposite)
+    assert isinstance(result.target, Pointer)
+
+    assert result.target.getObjValue() is detachedOutput
+    assert result.target.get() is detachedOutput
+    assert result.target.getExtended() == ""
+    assert result.target._objParent is None
+
+    assert result.target._postgresqlRuntimeReference == pointerReference
+
+    copiedResult = FakeComposite()
+    copiedResult.copy(result, copyId=False)
+
+    assert copiedResult.title.get() == result.title.get()
+    assert copiedResult.count.get() == result.count.get()
+    assert copiedResult.target.getObjValue() is detachedOutput
+    assert copiedResult.target.get() is detachedOutput
+
+    assert result._postgresqlRuntimeObjectResolver is runtimeObjectResolver
+
+    pointerBeforeUpdate = result.target
+
+    staleOutput = Object()
+    staleOutput.setObjId(901)
+
+    result.title.set("Stale title")
+    result.target.set(staleOutput)
+
+    assert result.target.getObjValue() is staleOutput
+
+    mapper.updateFrom(result)
+
+    assert result.title.get() == "PostgreSQL object"
+    assert result.target is pointerBeforeUpdate
+    assert result.target.getObjValue() is detachedOutput
+    assert result.target.get() is detachedOutput
+    assert result.target.getExtended() == ""
+    assert result.target._objParent is None
+    assert result._postgresqlRuntimeObjectResolver is runtimeObjectResolver
+
+    assert resolverCalls == [
+        900,
+        900,
+    ]
+
+    assert mapper.flatMapper.getProjectProtocolByProtocolId.call_count == 2
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.assert_called_with(
+        projectId=7,
+        protocolId="101",
+    )
+
+    assert mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.call_count == 2
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_with(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=55,
+        outputName="outputParticles",
+    )
+
+
+def test_GenericObjectUpdateFromRestoresPreviousStateAfterPartialFailure(
+        monkeypatch,
+):
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject._objName = "originalOutput"
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    def partiallyUpdateObject(
+            targetObject,
+            storedObject,
+            preserveParentObject=False,
+    ):
+        targetObject._objName = "mutatedOutput"
+        targetObject.title.set("Mutated title")
+        targetObject.count.set(99)
+
+        return False
+
+    monkeypatch.setattr(
+        mapper,
+        "_copyGenericObjectStateFromPostgresql",
+        partiallyUpdateObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Could not refresh PostgreSQL generic runtime object",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert runtimeObject.getObjId() == 700
+    assert runtimeObject.getObjName() == "originalOutput"
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
+def test_GenericObjectUpdateFromPropagatesRollbackFailure(
+        monkeypatch,
+):
+    class FailingRestoreString(String):
+        def __init__(self):
+            super().__init__()
+            self.failOnValue = None
+
+        def set(self, value):
+            if getattr(self, "failOnValue", None) is not None and value == self.failOnValue:
+                raise RuntimeError(
+                    "rollback setter failed"
+                )
+
+            return super().set(value)
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject.title = FailingRestoreString()
+    runtimeObject.title.set("Original title")
+    runtimeObject.title.failOnValue = "Original title"
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    def partiallyUpdateObject(
+            targetObject,
+            storedObject,
+            preserveParentObject=False,
+    ):
+        targetObject.title.set("Mutated title")
+
+        return False
+
+    monkeypatch.setattr(
+        mapper,
+        "_copyGenericObjectStateFromPostgresql",
+        partiallyUpdateObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Could not restore runtime object value after failed updateFrom",
+    ) as error:
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert isinstance(
+        error.value.__cause__,
+        RuntimeError,
+    )
+
+    assert str(
+        error.value.__cause__
+    ) == "rollback setter failed"
+
+
+def test_RuntimeObjectSnapshotDoesNotRetryGetterTypeError():
+    class FailingSnapshotString(String):
+        def __init__(self):
+            super().__init__()
+            self.getCalls = 0
+
+        def get(self, default=None):
+            self.getCalls += 1
+            raise TypeError(
+                "snapshot getter failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.title = FailingSnapshotString()
+
+    with pytest.raises(
+            TypeError,
+            match="snapshot getter failed",
+    ):
+        mapper._captureRuntimeObjectState(
+            runtimeObject
+        )
+
+    assert runtimeObject.title.getCalls == 1
+
+
+def test_GenericObjectUpdateFromPropagatesValueSetterFailure(
+        monkeypatch,
+):
+    class FailingUpdateString(String):
+        def __init__(self):
+            super().__init__()
+            self.failOnValue = None
+
+        def set(self, value):
+            if getattr(self, "failOnValue", None) is not None and value == self.failOnValue:
+                raise RuntimeError(
+                    "generic value setter failed"
+                )
+
+            return super().set(value)
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject.title = FailingUpdateString()
+    runtimeObject.title.set("Original title")
+    runtimeObject.title.failOnValue = "PostgreSQL title"
+    runtimeObject.count.set(3)
+
+    storedObject = FakeComposite()
+    storedObject.setObjId(700)
+    storedObject.title = FailingUpdateString()
+    storedObject.title.set("PostgreSQL title")
+    storedObject.count.set(5)
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="generic value setter failed",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
+def test_GenericObjectUpdateFromPropagatesStoredAttributeEnumerationFailure(
+        monkeypatch,
+):
+    class FailingStoredComposite(FakeComposite):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "stored attribute enumeration failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    runtimeObject = FakeComposite()
+    runtimeObject.setObjId(700)
+    runtimeObject._objName = "originalOutput"
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    storedObject = FailingStoredComposite()
+    storedObject.setObjId(700)
+    storedObject._objName = "mutatedOutput"
+
+    monkeypatch.setattr(
+        mapper,
+        "_selectGenericObjectByIdFromPostgresql",
+        lambda *args, **kwargs: storedObject,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="stored attribute enumeration failed",
+    ):
+        mapper.updateFrom(
+            runtimeObject
+        )
+
+    assert runtimeObject.getObjId() == 700
+    assert runtimeObject.getObjName() == "originalOutput"
+    assert runtimeObject.title.get() == "Original title"
+    assert runtimeObject.count.get() == 3
+
+
+def test_RuntimeObjectSnapshotFailsWhenAttributeEnumerationFails():
+    class FailingSnapshotObject(FakeComposite):
+        def getAttributesToStore(self):
+            raise RuntimeError(
+                "snapshot attribute enumeration failed"
+            )
+
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    runtimeObject = FailingSnapshotObject()
+    runtimeObject.title.set("Original title")
+    runtimeObject.count.set(3)
+
+    with pytest.raises(
+            RuntimeError,
+            match="snapshot attribute enumeration failed",
+    ):
+        mapper._captureRuntimeObjectState(
+            runtimeObject
+        )
+
+
+def test_GenericPointerPrefersSemanticSetOwnerOverCollidingLegacyRuntimeId():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    targetItem = Object()
+    targetItem.setObjId(7)
+
+    wrongItem = Object()
+    wrongItem.setObjId(7)
+
+    itemReads = []
+
+    class SetMapperStub:
+        def __init__(self, label, item):
+            self.label = label
+            self.item = item
+
+        def selectById(self, objId):
+            objId = int(objId)
+            itemReads.append((self.label, objId))
+
+            if objId == 7:
+                return self.item
+
+            return None
+
+    class RuntimeSetStub:
+        def __init__(self, label, item):
+            self.mapper = SetMapperStub(label, item)
+
+        def _getMapper(self):
+            return self.mapper
+
+    canonicalSet = RuntimeSetStub(
+        "canonical",
+        targetItem,
+    )
+
+    collidingSet = RuntimeSetStub(
+        "legacy-collision",
+        wrongItem,
+    )
+
+    mapper._isSetLike = lambda obj: obj in (
+        canonicalSet,
+        collidingSet,
+    )
+
+    def getProjectProtocolByProtocolId(
+            projectId,
+            protocolId,
+    ):
+        assert projectId == 7
+
+        if str(protocolId) == "101":
+            return {
+                "id": 55,
+                "protocolId": "101",
+            }
+
+        return None
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.side_effect = getProjectProtocolByProtocolId
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
+        "exists": True,
+        "kind": "set",
+        "runtimeObjectId": 900,
+        "outputName": "outputParticles",
+        "className": "SetOfParticles",
+    }
+
+    resolverCalls = []
+
+    def runtimeObjectResolver(runtimeObjectId):
+        runtimeObjectId = int(runtimeObjectId)
+        resolverCalls.append(runtimeObjectId)
+
+        if runtimeObjectId == 3_000_900:
+            return collidingSet
+
+        if runtimeObjectId == 900:
+            return canonicalSet
+
+        return None
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 7,
+        "targetClassName": "Object",
+        "targetObjectName": None,
+        "targetParentObjectId": 3_000_900,
+        "targetParentClassName": "SetOfParticles",
+        "targetParentObjectName": "outputParticles",
+        "targetParentParentObjectId": 101,
+        "extended": "",
+        "uniqueId": "7",
+    }
+
+    target, extendedParts = mapper._resolveGenericPointerRuntimeTarget(
+        reference=reference,
+        runtimeObjectResolver=runtimeObjectResolver,
+    )
+
+    assert target is targetItem
+    assert target is not wrongItem
+    assert extendedParts == []
+
+    assert resolverCalls == [
+        900,
+    ]
+
+    assert itemReads == [
+        (
+            "canonical",
+            7,
+        ),
+    ]
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.assert_called_once_with(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=55,
+        outputName="outputParticles",
+    )
+
+
+def test_SelectByIdRestoresStructuredPointerWithMapperReferences():
+    rows = buildRows()
+
+    pointerReference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 101,
+        "targetClassName": "Object",
+        "targetObjectName": "protocol",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "outputParticles",
+        "uniqueId": "101.outputParticles",
+    }
+
+    rows.extend([
+        {
+            "id": 13,
+            "scipionObjId": 703,
+            "parentObjectId": 10,
+            "name": "target",
+            "path": "outputObject.target",
+            "className": "Pointer",
+            "value": "900",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": True,
+                "pointerReference": pointerReference,
+            },
+            "ownerProtocolId": "101",
+            "depth": 1,
+        },
+        {
+            "id": 14,
+            "scipionObjId": 704,
+            "parentObjectId": 13,
+            "name": "_extended",
+            "path": "outputObject.target._extended",
+            "className": "String",
+            "value": "outputParticles",
+            "label": None,
+            "comment": None,
+            "creation": None,
+            "metadata": {
+                "isPointer": False,
+            },
+            "ownerProtocolId": "101",
+            "depth": 2,
+        },
+    ])
+
+    mapper = buildRuntimeMapper(rows)
+
+    canonicalOutput = Object()
+    canonicalOutput.setObjId(900)
+
+    mapper._selectProtocolByIdFromPostgresql = lambda objId, refreshCached=True: None
+
+    setReads = []
+
+    def selectSet(objId, refreshParentProtocol=True):
+        runtimeObjectId = int(objId)
+        setReads.append((runtimeObjectId, refreshParentProtocol))
+
+        if runtimeObjectId == 900:
+            return canonicalOutput
+
+        return None
+
+    mapper._selectSetByIdFromPostgresql = selectSet
+
+    mapper.flatMapper.getProjectProtocolByProtocolId.return_value = {
+        "id": 55,
+        "protocolId": "101",
+    }
+
+    mapper.protocolGraphRepository.getPostgresqlRuntimeOutputInfo.return_value = {
+        "exists": True,
+        "kind": "set",
+        "runtimeObjectId": 900,
+        "outputName": "outputParticles",
+        "className": "SetOfParticles",
+    }
+
+    result = mapper.selectById(700)
+
+    assert isinstance(result, FakeComposite)
+    assert isinstance(result.target, Pointer)
+
+    assert result.target.getObjValue() is canonicalOutput
+    assert result.target.get() is canonicalOutput
+    assert result.target.getExtended() == ""
+    assert result.target._postgresqlRuntimeReference == pointerReference
+
+    assert not hasattr(
+        result,
+        "_postgresqlRuntimeObjectResolver",
+    )
+
+    assert setReads == [
+        (700, True),
+        (900, False),
+    ]
+
+    pointerBeforeUpdate = result.target
+
+    staleOutput = Object()
+    staleOutput.setObjId(901)
+
+    result.title.set("Stale title")
+    result.target.set(staleOutput)
+
+    mapper.updateFrom(result)
+
+    assert result.title.get() == "PostgreSQL object"
+    assert result.target is pointerBeforeUpdate
+    assert result.target.getObjValue() is canonicalOutput
+    assert result.target.get() is canonicalOutput
+    assert result.target.getExtended() == ""
+
+    assert not hasattr(
+        result,
+        "_postgresqlRuntimeObjectResolver",
+    )
+
+    assert setReads == [
+        (700, True),
+        (900, False),
+        (900, False),
+    ]
+
+
+def test_SelectByIdStructuredSelfPointerFailsWithoutRecursion():
+    rows = buildRows()
+
+    pointerReference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 700,
+        "targetClassName": "FakeComposite",
+        "targetObjectName": "outputObject",
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": "",
+        "uniqueId": "700",
+    }
+
+    rows.append({
+        "id": 13,
+        "scipionObjId": 703,
+        "parentObjectId": 10,
+        "name": "target",
+        "path": "outputObject.target",
+        "className": "Pointer",
+        "value": "700",
+        "label": None,
+        "comment": None,
+        "creation": None,
+        "metadata": {
+            "isPointer": True,
+            "pointerReference": pointerReference,
+        },
+        "ownerProtocolId": "101",
+        "depth": 1,
+    })
+
+    mapper = buildRuntimeMapper(rows)
+
+    mapper._selectProtocolByIdFromPostgresql = lambda objId, refreshCached=True: None
+    mapper._selectSetByIdFromPostgresql = lambda objId, refreshParentProtocol=True: None
+
+    result = mapper.selectById(700)
+
+    assert result is None
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+    assert mapper._postgresqlGenericObjectReadIds == set()
+
+
+def test_SelectByIdUsesGenericPostgresqlObject():
+    mapper = buildRuntimeMapper(buildRows())
+
+    mapper._selectProtocolByIdFromPostgresql = lambda objId: None
+    mapper._selectSetByIdFromPostgresql = lambda objId: None
+
+    result = mapper.selectById("700")
+
+    assert isinstance(result, FakeComposite)
+    assert result.getObjId() == 700
+    assert result.getObjParentId() == 101
+    assert result.title.get() == "PostgreSQL object"
+    assert result.count.get() == 5
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_SelectGenericNestedRootPreservesDirectParentId():
+    rows = [{
+        "id": 11,
+        "scipionObjId": 701,
+        "parentObjectId": 10,
+        "rootParentScipionObjId": 700,
+        "name": "title",
+        "path": "outputObject.title",
+        "className": "String",
+        "value": "Nested value",
+        "label": None,
+        "comment": None,
+        "creation": None,
+        "metadata": {
+            "isPointer": False,
+        },
+        "ownerProtocolId": "101",
+        "depth": 0,
+    }]
+
+    mapper = buildRuntimeMapper(rows)
+
+    result = mapper._selectGenericObjectByIdFromPostgresql(701)
+
+    assert isinstance(result, String)
+    assert result.get() == "Nested value"
+    assert result.getObjId() == 701
+    assert result.getObjParentId() == 700
+
+
+def test_ExistsUsesCanonicalGenericPostgresqlObject():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 7
+
+    mapper.db = Mock()
+    mapper.db.fetchOne.return_value = None
+
+    mapper.runtimeSetFactory = Mock()
+    mapper.runtimeSetFactory._getCachedRuntimeSet.return_value = None
+
+    mapper.protocolGraphRepository = Mock()
+    getSetOutput = (
+        mapper.protocolGraphRepository
+        .getPersistedSetOutputRowByRuntimeObjectId
+    )
+    getSetOutput.return_value = None
+
+    mapper._resolveCanonicalScipionObjectRowId = Mock(
+        return_value=10
+    )
+
+    assert mapper.exists("700") is True
+
+    mapper._resolveCanonicalScipionObjectRowId.assert_called_once_with(
+        700
+    )
+
+
+def test_SelectByClassUsesGenericPostgresqlObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": "700",
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectByClass(
+        FakeComposite,
+        includeSubclasses=False,
+        objectFilter=lambda obj: obj.count.get() == 5,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            "FakeComposite",
+        ),
+    ]
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+def test_SelectByClassReturnsIteratorForGenericObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectByClass(
+        "FakeComposite",
+        includeSubclasses=False,
+        iterate=True,
+    )
+
+    objects = list(result)
+
+    assert len(objects) == 1
+    assert isinstance(objects[0], FakeComposite)
+    assert objects[0].getObjId() == 700
+
+
+def test_GenericObjectClassRowsIncludeRegisteredSubclasses():
+    classRows = [
+        {
+            "id": 10,
+            "runtimeObjectId": 700,
+            "className": "FakeComposite",
+        },
+        {
+            "id": 20,
+            "runtimeObjectId": 800,
+            "className": "FakeDerivedComposite",
+        },
+        {
+            "id": 30,
+            "runtimeObjectId": 900,
+            "className": "String",
+        },
+    ]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    rows = mapper._getPostgresqlGenericObjectRowsForClass(
+        requestedClassName="FakeComposite",
+        requestedClass=FakeComposite,
+        includeSubclasses=True,
+    )
+
+    assert [
+        row["runtimeObjectId"]
+        for row in rows
+    ] == [
+        700,
+        800,
+    ]
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
+    ]
+
+
+def test_SelectAllBatchIncludesGenericPostgresqlObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectAllBatch()
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
+    ]
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+    mapper.flatMapper.getProtocols.assert_called_once_with(7)
+
+
+def test_SelectAllExcludesProtocolOwnedGenericObjects():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectAll()
+
+    assert result == []
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_SelectAllIncludesParentlessGenericRoot():
+    rows = buildRows()
+    rows[0]["ownerProtocolId"] = None
+
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        rows,
+        classRows=classRows,
+    )
+
+    result = mapper.selectAll(iterate=True)
+    objects = list(result)
+
+    assert len(objects) == 1
+    assert isinstance(objects[0], FakeComposite)
+    assert objects[0].getObjId() == 700
+    assert objects[0].getObjParentId() is None
+
+
+def test_SelectByMatchesGenericPostgresqlObjectFields():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectBy(
+        name="outputObject",
+        classname="FakeComposite",
+        parent_id=101,
+        label="Output label",
+        comment="Output comment",
+        creation="2026-07-15 12:30:45.123456",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+    assert result[0].getObjParentId() == 101
+    assert result[0].title.get() == "PostgreSQL object"
+    assert result[0].count.get() == 5
+
+    assert mapper.objectMapper.classCalls == [
+        (
+            7,
+            None,
+        ),
+    ]
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_SelectByMatchesGenericPostgresqlScalarValue():
+    rows = [{
+        "id": 20,
+        "scipionObjId": 800,
+        "parentObjectId": None,
+        "name": "message",
+        "path": "message",
+        "className": "String",
+        "value": "PostgreSQL value",
+        "label": "",
+        "comment": "",
+        "creation": None,
+        "metadata": {
+            "isPointer": False,
+        },
+        "ownerProtocolId": "101",
+        "depth": 0,
+    }]
+
+    classRows = [{
+        "id": 20,
+        "runtimeObjectId": 800,
+        "className": "String",
+    }]
+
+    mapper = buildRuntimeMapper(
+        rows,
+        classRows=classRows,
+    )
+
+    result = mapper.selectBy(
+        name="message",
+        classname="String",
+        parent_id="101",
+        value="PostgreSQL value",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], String)
+    assert result[0].getObjId() == 800
+    assert result[0].getObjParentId() == 101
+    assert result[0].get() == "PostgreSQL value"
+
+
+def test_DeduplicateRuntimeObjectsKeepsFirstObjectForEachRuntimeId():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    firstObject = FakeComposite()
+    firstObject.setObjId(700)
+
+    duplicatedObject = FakeComposite()
+    duplicatedObject.setObjId(700)
+
+    objectWithoutId = FakeComposite()
+
+    result = mapper._deduplicateRuntimeObjects([
+        firstObject,
+        duplicatedObject,
+        objectWithoutId,
+    ])
+
+    assert result == [
+        firstObject,
+        objectWithoutId,
+    ]
+
+
+def test_SelectByUsesGenericPostgresqlRuntimeId():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    result = mapper.selectBy(
+        id="700",
+        classname="FakeComposite",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], FakeComposite)
+    assert result[0].getObjId() == 700
+
+    staleResult = mapper.selectBy(
+        id=700,
+        classname="String",
+    )
+
+    assert staleResult == []
+
+
+def test_SelectByReturnsEmptyWhenNoPostgresqlObjectMatches():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectBy(
+        classname="String",
+    )
+
+    assert result == []
+
+
+def test_SelectByReturnsIteratorAndAppliesObjectFilter():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectBy(
+        iterate=True,
+        objectFilter=lambda obj: obj.count.get() == 5,
+        name="outputObject",
+    )
+
+    objects = list(result)
+
+    assert len(objects) == 1
+    assert isinstance(objects[0], FakeComposite)
+    assert objects[0].getObjId() == 700
+
+
+def test_SelectByCollectorDoesNotRefreshCachedProtocolsOrSetParents():
+    mapper = buildRuntimeMapper(
+        [],
+        classRows=[],
+    )
+
+    cachedProtocol = FakeComposite()
+    cachedProtocol.setObjId(100)
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    genericObject = FakeComposite()
+    genericObject.setObjId(800)
+
+    mapper._runtimeProtocolsById = {
+        100: cachedProtocol,
+    }
+
+    mapper.flatMapper.getProtocols.return_value = [{
+        "protocolId": "100",
+    }]
+
+    mapper._buildProtocolFromPostgresqlRow = Mock(
+        side_effect=AssertionError(
+            "Cached protocols must not be rebuilt or refreshed"
+        )
+    )
+
+    mapper.protocolGraphRepository.listPersistedSetOutputRows.return_value = [{
+        "runtimeObjectId": "700",
+    }]
+
+    mapper._selectSetByIdFromPostgresql = Mock(
+        return_value=runtimeSet
+    )
+
+    mapper._selectAllGenericObjectsFromPostgresql = Mock(
+        return_value=[
+            genericObject,
+        ]
+    )
+
+    mapper._selectProjectCreationTimeFromPostgresql = Mock(
+        return_value=None
+    )
+
+    result = mapper._selectAllPostgresqlObjectsForSelectBy()
+
+    assert [
+        obj.getObjId()
+        for obj in result
+    ] == [
+        100,
+        700,
+        800,
+    ]
+
+    mapper._selectSetByIdFromPostgresql.assert_called_once_with(
+        700,
+        refreshParentProtocol=False,
+    )
+
+    mapper._buildProtocolFromPostgresqlRow.assert_not_called()
+
+
+def test_SelectByReturnsOnlyPostgresqlObjectsInRuntimeIdOrder():
+    classRows = [{
+        "id": 10,
+        "runtimeObjectId": 700,
+        "className": "FakeComposite",
+    }]
+
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        classRows=classRows,
+    )
+
+    result = mapper.selectBy()
+
+    assert [
+        obj.getObjId()
+        for obj in result
+    ] == [
+        700,
+    ]
+
+    assert isinstance(
+        result[0],
+        FakeComposite,
+    )
+
+    assert result[0].title.get() == (
+        "PostgreSQL object"
+    )
+
+
+def test_UpdateFromHydratesExistingGenericObjectFromPostgresql():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    mapper._setObjName(
+        targetObject,
+        "staleOutput",
+    )
+
+    targetObject.setObjLabel("Stale label")
+    targetObject.setObjComment("Stale comment")
+    targetObject.title.set("Stale title")
+    targetObject.count.set(99)
+
+    titleBeforeUpdate = targetObject.title
+    countBeforeUpdate = targetObject.count
+
+    ownerProtocol = Mock()
+    targetObject._objParent = ownerProtocol
+
+    result = mapper.updateFrom(
+        targetObject
+    )
+
+    assert result is None
+
+    assert targetObject.getObjId() == 700
+    assert targetObject.getObjName() == "outputObject"
+    assert targetObject.getObjParentId() == 101
+    assert targetObject.getObjLabel() == "Output label"
+    assert targetObject.getObjComment() == "Output comment"
+    assert targetObject.getObjCreation() == (
+        "2026-07-15 12:30:45.123456"
+    )
+
+    assert targetObject.title is titleBeforeUpdate
+    assert targetObject.title.get() == "PostgreSQL object"
+    assert targetObject.title.getObjId() == 701
+    assert targetObject.title.getObjParentId() == 700
+    assert targetObject.title._objParent is None
+
+    assert targetObject.count is countBeforeUpdate
+    assert targetObject.count.get() == 5
+    assert targetObject.count.getObjId() == 702
+    assert targetObject.count.getObjParentId() == 700
+    assert targetObject.count._objParent is None
+
+    assert targetObject._objParent is ownerProtocol
+    assert ownerProtocol.mock_calls == []
+
+    assert mapper.objectMapper.calls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+
+def test_UpdateFromGenericObjectRemainsSafeForRecursiveCopy():
+    mapper = buildRuntimeMapper(
+        buildRows()
+    )
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    # Reproduce stale strong links created by the old PostgreSQL hydration.
+    targetObject.title._objParent = targetObject
+    targetObject.count._objParent = targetObject
+
+    mapper.updateFrom(
+        targetObject
+    )
+
+    assert targetObject.title._objParent is None
+    assert targetObject.count._objParent is None
+
+    copiedObject = FakeComposite()
+    copiedObject.copy(
+        targetObject,
+        copyId=False,
+    )
+
+    assert copiedObject.title.get() == "PostgreSQL object"
+    assert copiedObject.count.get() == 5
+
+
+def test_UpdateFromRaisesWhenGenericObjectIsMissingFromPostgresql():
+    mapper = buildRuntimeMapper([])
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    with pytest.raises(NotImplementedError) as error:
+        mapper.updateFrom(targetObject)
+
+    assert str(error.value) == (
+        "PostgreSQL updateFrom is only implemented "
+        "for protocols, PostgreSQL runtime Sets "
+        "and supported generic runtime objects."
+    )
+
+
+def test_UpdateFromClearsStaleParentIdForParentlessGenericObject():
+    rows = buildRows()
+    rows[0]["ownerProtocolId"] = None
+    rows[0]["rootParentScipionObjId"] = None
+
+    mapper = buildRuntimeMapper(
+        rows
+    )
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+    targetObject._objParentId = 999
+
+    result = mapper.updateFrom(
+        targetObject
+    )
+
+    assert result is None
+    assert targetObject.getObjParentId() is None
+
+
+def test_DeleteRemovesGenericObjectTreeWithoutMutatingOwner():
+    mapper = buildRuntimeMapper(
+        buildRows(),
+        deleteResult={
+            "deletedObjectsCount": 3,
+            "deletedRelationsCount": 2,
+        },
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    targetObject = FakeComposite()
+    targetObject.setObjId(700)
+
+    ownerProtocol = Mock()
+    ownerProtocol.outputObject = targetObject
+    targetObject._objParent = ownerProtocol
+
+    mapper.delete(
+        targetObject
+    )
+
+
+    assert mapper.objectMapper.deleteCalls == [
+        (
+            7,
+            700,
+        ),
+    ]
+
+    assert targetObject._objParent is ownerProtocol
+    assert ownerProtocol.outputObject is targetObject
+    assert ownerProtocol.mock_calls == []
+
+
+def test_DeleteRemovesPersistedPostgresqlSetWithoutMutatingOwner():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = {
+        "setId": 10,
+        "objectId": 900,
+        "runtimeObjectId": 700,
+        "outputName": "outputSet",
+    }
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    ownerProtocol = Mock()
+    ownerProtocol.outputSet = runtimeSet
+    runtimeSet._objParent = ownerProtocol
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    mapper.delete(
+        runtimeSet
+    )
+
+
+    mapper.setMapper.deleteStoredSetOutput.assert_called_once_with(
+        projectId=7,
+        setId=10,
+        objectId=900,
+        runtimeObjectId=700,
+    )
+
+    mapper.runtimeSetFactory.evictRuntimeSet.assert_called_once_with(
+        projectId=7,
+        runtimeObjectId=700,
+        runtimeSet=runtimeSet,
+    )
+
+    assert mapper.objectMapper.deleteCalls == []
+
+    assert runtimeSet._objParent is ownerProtocol
+    assert ownerProtocol.outputSet is runtimeSet
+    assert ownerProtocol.mock_calls == []
+
+
+def test_DeleteIgnoresUnstoredGenericObject():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    targetObject = FakeComposite()
+
+    mapper.delete(
+        targetObject
+    )
+
+    assert mapper.objectMapper.deleteCalls == []
+
+
+def test_DeleteIgnoresNonPersistedSet():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = None
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    mapper.delete(
+        runtimeSet
+    )
+
+
+    assert mapper.objectMapper.deleteCalls == []
+
+
+def test_DeleteDoesNotPartiallyDeleteUnsupportedObject():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    unsupportedObject = Mock()
+    unsupportedObject.getObjId.return_value = 700
+
+    mapper._isSetLike = lambda obj: False
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = None
+
+    mapper.delete(
+        unsupportedObject
+    )
+
+    mapper.writeFallbackMapper.delete.assert_not_called()
+    assert mapper.objectMapper.deleteCalls == []
+
+def test_DeleteRejectsPersistedSetWithoutCanonicalIdentity():
+    mapper = buildRuntimeMapper(
+        []
+    )
+
+    mapper.writeFallbackMapper = Mock()
+
+    mapper.protocolGraphRepository.getPersistedSetOutputRowByRuntimeObjectId.return_value = {
+        "setId": 10,
+        "objectId": None,
+        "runtimeObjectId": 700,
+    }
+
+    runtimeSet = FakeComposite()
+    runtimeSet.setObjId(700)
+
+    mapper._isSetLike = lambda obj: obj is runtimeSet
+
+    try:
+        mapper.delete(runtimeSet)
+    except RuntimeError as error:
+        assert str(error) == (
+            "Persisted PostgreSQL Set 700 does not expose "
+            "its set or canonical object identity."
+        )
+    else:
+        raise AssertionError(
+            "Expected incomplete persisted Set identity "
+            "to raise RuntimeError"
+        )
+
+    mapper.writeFallbackMapper.delete.assert_not_called()
+    mapper.runtimeSetFactory.evictRuntimeSet.assert_not_called()
+
+
+

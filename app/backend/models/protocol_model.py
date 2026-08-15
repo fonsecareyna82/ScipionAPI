@@ -23,13 +23,65 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from pydantic import BaseModel, ConfigDict
-from typing import Any
+# models/protocol_model.py
+from datetime import datetime
+from sqlalchemy import (
+    ARRAY,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from app.backend.database import Base
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Optional, List, Dict, Literal
+from app.backend.models.project_model import Project
+
+# ------------------------ SQLAlchemy model ------------------------
+
+
+class ProtocolWorkflowExecutionRequest(BaseModel):
+    protocolClassName: str
+    params: Any
+    mode: Literal["continue", "restart"]
+    scope: Literal["single", "all"]
+
+
+class Protocol(Base):
+    __tablename__ = "protocols"
+
+    id = Column(Integer, primary_key=True, index=True)
+    protocolId = Column(String, nullable=False, unique=True)
+    projectId = Column(Integer, ForeignKey("projects.id"))
+    protocolClassName = Column(String, nullable=False)
+    params = Column(JSON, nullable=True)
+    status = Column(String, default="pending")
+    parentIds = Column(ARRAY(Integer), default=[])
+    childIds = Column(ARRAY(Integer), default=[])
+    relationsSynchronized = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), onupdate=func.now())
+
+    project = relationship("Project", back_populates="protocols")
+
+# ------------------------ Pydantic models ------------------------
 
 
 class ProtocolRequest(BaseModel):
     protocolId: str
+    protocolClassName: str
     params: Any
+    mode: str = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def getProtocolId(self):
@@ -37,3 +89,69 @@ class ProtocolRequest(BaseModel):
 
     def getParams(self):
         return self.params
+
+    def getProtocolClassName(self):
+        return self.protocolClassName
+
+    def getMode(self):
+        return self.mode
+
+
+class ProtocolCreateRequest(BaseModel):
+    protocolId: str
+    projectId: int
+    protocolClassName: str
+    params: Any
+    status: str = "pending"
+
+
+class ProtocolResponse(BaseModel):
+    id: int
+    protocolId: str
+    projectId: int
+    protocolClassName: str
+    params: Any
+    status: str
+    createdAt: datetime
+    updatedAt: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class ProtocolUpdateRequest(BaseModel):
+    params: Any
+    status: str
+
+
+class ProtocolRenameIn(BaseModel):
+    runName: Optional[str] = ""
+    comment: Optional[str] = ""
+
+
+class ProtocolDuplicateIn(BaseModel):
+    name: Optional[str] = None
+
+
+class DuplicateItem(BaseModel):
+    id: str
+    name: Optional[str] = None
+
+
+class DuplicatePayload(BaseModel):
+    items: List[DuplicateItem]
+
+
+class DeletePayload(BaseModel):
+    protocolIds: List[str]
+
+
+class ProtocolOutputThumbnailItemIn(BaseModel):
+    protocolId: int
+    outputName: str
+
+
+class ProtocolOutputThumbnailsRequest(BaseModel):
+    size: int = Field(default=128, ge=64, le=512)
+    inlineImages: bool = True
+    outputs: List[ProtocolOutputThumbnailItemIn] = Field(default_factory=list, max_items=200)

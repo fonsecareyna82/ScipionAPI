@@ -1,0 +1,826 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import pytest
+
+from app.backend.runtime.protocol_output_persistence_service import (
+    RuntimeProtocolOutputPersistenceService,
+)
+
+class FakeRuntimeObject:
+    def __init__(
+            self,
+            objectId,
+            attributes=None,
+    ):
+        self._objId = objectId
+        self._objParentId = None
+        self._attributes = list(
+            attributes or []
+        )
+
+    def getObjId(self):
+        return self._objId
+
+    def setObjId(
+            self,
+            objectId,
+    ):
+        self._objId = (
+            None
+            if objectId is None
+            else int(objectId)
+        )
+
+    def setObjParentId(
+            self,
+            parentObjectId,
+    ):
+        self._objParentId = (
+            None
+            if parentObjectId is None
+            else int(parentObjectId)
+        )
+
+    def getAttributesToStore(self):
+        return list(
+            self._attributes
+        )
+
+
+class FakeMapper:
+    def __init__(
+            self,
+            objectIds,
+    ):
+        self.objectIds = list(
+            objectIds
+        )
+        self.allocateCalls = []
+
+    def allocateProjectObjectId(
+            self,
+            projectId,
+    ):
+        self.allocateCalls.append(
+            projectId
+        )
+
+        if not self.objectIds:
+            raise AssertionError(
+                "Unexpected object id allocation"
+            )
+
+        return self.objectIds.pop(
+            0
+        )
+
+
+class FakeObjectMapper:
+    def __init__(
+            self,
+            storedRows=None,
+    ):
+        self.storedRows = list(
+            storedRows or []
+        )
+        self.calls = []
+
+    def getStoredObjectTree(
+            self,
+            projectId,
+            protocolDbId,
+            outputName,
+    ):
+        self.calls.append({
+            "projectId": projectId,
+            "protocolDbId": protocolDbId,
+            "outputName": outputName,
+        })
+
+        return list(
+            self.storedRows
+        )
+
+
+def test_PrepareOutputObjectIdsAllocatesCanonicalIdForRunDbSetRoot():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    outputSet = FakeRuntimeObject(
+        objectId=3_000_000_050,
+        attributes=[
+            (
+                "_mapperPath",
+                FakeRuntimeObject(
+                    3_000_000_051
+                ),
+            ),
+        ],
+    )
+
+    mapper = FakeMapper([
+        1_000_100,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    report = (
+        service
+        ._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=3,
+            outputName="TiltSeries",
+            outputObj=outputSet,
+            includeNestedProperties=False,
+        )
+    )
+
+    assert outputSet.getObjId() == 1_000_100
+    assert outputSet._objParentId == 3
+
+    assert mapper.allocateCalls == [
+        341,
+    ]
+
+    assert report["rootObjectId"] == 1_000_100
+    assert report["prepared"] == 1
+    assert report["allocated"] == 1
+    assert report["reused"] == 0
+
+
+def test_PrepareOutputObjectIdsAllocatesCanonicalIdsForRunDbObjectTree():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    childObject = FakeRuntimeObject(
+        objectId=3_000_000_061
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_060,
+        attributes=[
+            (
+                "_child",
+                childObject,
+            ),
+        ],
+    )
+
+    mapper = FakeMapper([
+        1_000_110,
+        1_000_111,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    report = (
+        service
+        ._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=3,
+            outputName="outputVolume",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+    )
+
+    assert outputObject.getObjId() == 1_000_110
+    assert outputObject._objParentId == 3
+
+    assert childObject.getObjId() == 1_000_111
+    assert childObject._objParentId == 1_000_110
+
+    assert mapper.allocateCalls == [
+        341,
+        341,
+    ]
+
+    assert report["prepared"] == 2
+    assert report["allocated"] == 2
+    assert report["reused"] == 0
+
+
+def test_PrepareOutputObjectIdsReusesPersistedIdsByPath():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    childObject = FakeRuntimeObject(
+        objectId=3_000_000_071
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_070,
+        attributes=[
+            (
+                "_child",
+                childObject,
+            ),
+        ],
+    )
+
+    mapper = FakeMapper([])
+
+    objectMapper = FakeObjectMapper([
+        {
+            "path": "outputVolume",
+            "scipionObjId": 1_000_120,
+        },
+        {
+            "path": "outputVolume._child",
+            "scipionObjId": 1_000_121,
+        },
+    ])
+
+    report = (
+        service
+        ._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=3,
+            outputName="outputVolume",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+    )
+
+    assert outputObject.getObjId() == 1_000_120
+    assert childObject.getObjId() == 1_000_121
+
+    assert mapper.allocateCalls == []
+
+    assert report["allocated"] == 0
+    assert report["reused"] == 2
+
+
+def test_PrepareOutputObjectIdsKeepsDistinctCanonicalIdsForSharedPaths():
+    service = RuntimeProtocolOutputPersistenceService()
+
+    sharedChild = FakeRuntimeObject(
+        objectId=3_000_000_131
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_130,
+        attributes=[
+            (
+                "_first",
+                sharedChild,
+            ),
+            (
+                "_second",
+                sharedChild,
+            ),
+        ],
+    )
+
+    mapper = FakeMapper([
+        1_000_130,
+        1_000_131,
+        1_000_132,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    preparation = service._prepareOutputObjectIdsForPersistence(
+        mapper=mapper,
+        objectMapper=objectMapper,
+        projectId=341,
+        protocolDbId=700,
+        protocolId=3,
+        outputName="outputObject",
+        outputObj=outputObject,
+        includeNestedProperties=True,
+    )
+
+    assert preparation["_scipionObjectIdsByPath"] == {
+        "outputObject": 1_000_130,
+        "outputObject._first": 1_000_131,
+        "outputObject._second": 1_000_132,
+    }
+
+    assert preparation["prepared"] == 3
+    assert preparation["allocated"] == 3
+    assert preparation["reused"] == 0
+
+    assert mapper.allocateCalls == [
+        341,
+        341,
+        341,
+    ]
+
+    assert outputObject.getObjId() == 1_000_130
+    assert sharedChild.getObjId() == 1_000_132
+
+    service._restoreOutputObjectIdsAfterPersistence(preparation)
+
+    assert outputObject.getObjId() == 3_000_000_130
+    assert sharedChild.getObjId() == 3_000_000_131
+
+
+def test_PrepareOutputObjectIdsRestoresPartialIdentityOnFailure():
+    service = RuntimeProtocolOutputPersistenceService()
+
+    firstChild = FakeRuntimeObject(
+        objectId=3_000_000_141
+    )
+
+    secondChild = FakeRuntimeObject(
+        objectId=3_000_000_142
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_140,
+        attributes=[
+            (
+                "_first",
+                firstChild,
+            ),
+            (
+                "_second",
+                secondChild,
+            ),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    firstChild._objParentId = 3_000_000_140
+    secondChild._objParentId = 3_000_000_140
+
+    mapper = FakeMapper([
+        1_000_140,
+        1_000_141,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    with pytest.raises(
+            AssertionError,
+            match="Unexpected object id allocation",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == [
+        341,
+        341,
+        341,
+    ]
+
+    assert outputObject.getObjId() == 3_000_000_140
+    assert outputObject._objParentId == 4
+
+    assert firstChild.getObjId() == 3_000_000_141
+    assert firstChild._objParentId == 3_000_000_140
+
+    assert secondChild.getObjId() == 3_000_000_142
+    assert secondChild._objParentId == 3_000_000_140
+
+
+def test_PrepareOutputObjectIdsRestoresIdentityOnAttributeEnumerationFailure():
+    class FailingObjectMapper(FakeObjectMapper):
+        def _getAttributesToStore(self, runtimeObject):
+            raise RuntimeError(
+                "output identity attribute enumeration failed"
+            )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_150
+    )
+    outputObject._objParentId = 4
+
+    mapper = FakeMapper([
+        1_000_150,
+    ])
+
+    objectMapper = FailingObjectMapper()
+
+    with pytest.raises(
+            RuntimeError,
+            match="output identity attribute enumeration failed",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == [
+        341,
+    ]
+
+    assert outputObject.getObjId() == 3_000_000_150
+    assert outputObject._objParentId == 4
+
+
+def test_PrepareOutputObjectIdsPropagatesObjectIdSnapshotFailure():
+    class FailingObjectIdRuntimeObject(FakeRuntimeObject):
+        def getObjId(self):
+            raise RuntimeError(
+                "output object id snapshot failed"
+            )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    outputObject = FailingObjectIdRuntimeObject(
+        objectId=3_000_000_155
+    )
+    outputObject._objParentId = 4
+
+    mapper = FakeMapper([
+        1_000_155,
+    ])
+
+    with pytest.raises(
+            RuntimeError,
+            match="output object id snapshot failed",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=FakeObjectMapper(),
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == []
+    assert outputObject._objId == 3_000_000_155
+    assert outputObject._objParentId == 4
+
+
+def test_PrepareOutputObjectIdsPropagatesParentIdSnapshotFailure():
+    class FailingParentIdRuntimeObject(FakeRuntimeObject):
+        def getObjParentId(self):
+            raise RuntimeError(
+                "output parent id snapshot failed"
+            )
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    outputObject = FailingParentIdRuntimeObject(
+        objectId=3_000_000_156
+    )
+    outputObject._objParentId = 4
+
+    mapper = FakeMapper([
+        1_000_156,
+    ])
+
+    with pytest.raises(
+            RuntimeError,
+            match="output parent id snapshot failed",
+    ):
+        service._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=FakeObjectMapper(),
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="outputObject",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+
+    assert mapper.allocateCalls == []
+    assert outputObject._objId == 3_000_000_156
+    assert outputObject._objParentId == 4
+
+
+def test_RestoreOutputObjectIdsRestoresRunDbIdentity():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    childObject = FakeRuntimeObject(
+        objectId=3_000_000_151
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_150,
+        attributes=[
+            (
+                "_child",
+                childObject,
+            ),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    childObject._objParentId = (
+        3_000_000_150
+    )
+
+    mapper = FakeMapper([
+        1_000_150,
+        1_000_151,
+    ])
+
+    objectMapper = FakeObjectMapper()
+
+    preparation = (
+        service
+        ._prepareOutputObjectIdsForPersistence(
+            mapper=mapper,
+            objectMapper=objectMapper,
+            projectId=341,
+            protocolDbId=700,
+            protocolId=4,
+            outputName="TiltSeries",
+            outputObj=outputObject,
+            includeNestedProperties=True,
+        )
+    )
+
+    assert outputObject.getObjId() == (
+        1_000_150
+    )
+
+    assert childObject.getObjId() == (
+        1_000_151
+    )
+
+    service._restoreOutputObjectIdsAfterPersistence(
+        preparation
+    )
+
+    assert outputObject.getObjId() == (
+        3_000_000_150
+    )
+
+    assert outputObject._objParentId == 4
+
+    assert childObject.getObjId() == (
+        3_000_000_151
+    )
+
+    assert childObject._objParentId == (
+        3_000_000_150
+    )
+
+
+def test_RestoreOutputObjectIdsContinuesAfterRestoreFailure():
+    class FailingRestoreRuntimeObject(FakeRuntimeObject):
+        def __init__(self, objectId, attributes=None):
+            super().__init__(objectId, attributes)
+            self.failOnObjectId = None
+
+        def setObjId(self, objectId):
+            if self.failOnObjectId is not None and objectId == self.failOnObjectId:
+                raise RuntimeError(
+                    "output identity restore failed"
+                )
+
+            return super().setObjId(objectId)
+
+    service = RuntimeProtocolOutputPersistenceService()
+
+    firstChild = FakeRuntimeObject(
+        objectId=3_000_000_161
+    )
+
+    secondChild = FailingRestoreRuntimeObject(
+        objectId=3_000_000_162
+    )
+
+    outputObject = FakeRuntimeObject(
+        objectId=3_000_000_160,
+        attributes=[
+            ("_first", firstChild),
+            ("_second", secondChild),
+        ],
+    )
+
+    outputObject._objParentId = 4
+    firstChild._objParentId = 3_000_000_160
+    secondChild._objParentId = 3_000_000_160
+    secondChild.failOnObjectId = 3_000_000_162
+
+    mapper = FakeMapper([
+        1_000_160,
+        1_000_161,
+        1_000_162,
+    ])
+
+    preparation = service._prepareOutputObjectIdsForPersistence(
+        mapper=mapper,
+        objectMapper=FakeObjectMapper(),
+        projectId=341,
+        protocolDbId=700,
+        protocolId=4,
+        outputName="outputObject",
+        outputObj=outputObject,
+        includeNestedProperties=True,
+    )
+
+    with pytest.raises(
+            RuntimeError,
+            match="Could not fully restore temporary PostgreSQL output object identity",
+    ) as error:
+        service._restoreOutputObjectIdsAfterPersistence(preparation)
+
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert str(error.value.__cause__) == "output identity restore failed"
+
+    assert outputObject.getObjId() == 3_000_000_160
+    assert outputObject._objParentId == 4
+
+    assert firstChild.getObjId() == 3_000_000_161
+    assert firstChild._objParentId == 3_000_000_160
+
+    assert secondChild.getObjId() == 1_000_162
+    assert secondChild._objParentId == 3_000_000_160
+
+
+class FakePostgresqlRuntimeMapper:
+    isPostgresqlRuntimeMapper = True
+
+
+class FakeSqliteRuntimeMapper:
+    isPostgresqlRuntimeMapper = False
+
+
+class FakeTerminalProtocol:
+    def __init__(
+            self,
+            mapper,
+            outputs=None,
+    ):
+        self.mapper = mapper
+        self.outputs = list(
+            outputs or []
+        )
+
+    def iterOutputAttributes(self):
+        return list(
+            self.outputs
+        )
+
+    def isFinished(self):
+        return True
+
+    def isFailed(self):
+        return False
+
+    def isAborted(self):
+        return False
+
+    def getStatus(self):
+        return "finished"
+
+
+class FakeSetOutput:
+    def iterItems(self):
+        return iter(())
+
+    def getSize(self):
+        return 0
+
+    def getFileName(self):
+        return "output.sqlite"
+
+
+def test_PostgresqlRuntimeProjectionDoesNotReconcileEmptyTerminalOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakePostgresqlRuntimeMapper(),
+        outputs=[],
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+
+def test_RunDbProtocolReconcilesEmptyTerminalOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakeSqliteRuntimeMapper(),
+        outputs=[],
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+
+def test_PostgresqlRuntimeProjectionStillRegistersAvailableOutputs():
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    protocol = FakeTerminalProtocol(
+        mapper=FakePostgresqlRuntimeMapper(),
+        outputs=[
+            (
+                "TiltSeries",
+                FakeSetOutput(),
+            ),
+        ],
+    )
+
+    assert (
+        service
+        .shouldRegisterProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+    assert (
+        service
+        .shouldReconcileMissingProtocolOutputs(
+            protocol
+        )
+        is False
+    )
+
+    assert (
+        service
+        .shouldSyncProtocolOutputs(
+            protocol
+        )
+        is True
+    )
+
+

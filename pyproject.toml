@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scipionapi"
+dynamic = ["version"]
+requires-python = ">=3.8"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13",
+  "python-dotenv>=1.0",
+]
+
+[project.scripts]
+scipionapi = "scipionapi_cli.cli:app"
+
+[tool.setuptools.dynamic]
+version = {attr = "scipionapi_cli.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scipionapi_cli*", "app*"]

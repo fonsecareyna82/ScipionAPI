@@ -1,0 +1,6 @@
+Generic single-database configuration.
+--------------------------------------
+
+Alembic
+-------
+alembic init alembic

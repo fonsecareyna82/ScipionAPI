@@ -1,0 +1,251 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import logging
+from typing import Any, Dict, List, Optional
+
+
+logger = logging.getLogger(__name__)
+
+
+class ProtocolIdentityResolver:
+    """
+    Resolve protocol identity between PostgreSQL and Scipion runtime ids.
+
+    PostgreSQL uses:
+      - protocols.id: internal database id
+      - protocols."protocolId": Scipion runtime object id
+
+    Scipion uses:
+      - protocol.getObjId(): runtime object id
+    """
+
+    def __init__(self, mapper=None, projectId: Optional[int] = None, db=None):
+        self.mapper = mapper
+        self.projectId = self.toOptionalInt(projectId)
+        self.db = db if db is not None else getattr(mapper, "db", None)
+
+    def _getIdentityMapper(self, readerName: str):
+        mapper = self.mapper
+        flatMapper = getattr(mapper, "flatMapper", None)
+
+        for candidate in (flatMapper, mapper):
+            reader = getattr(candidate, readerName, None)
+
+            if callable(reader):
+                return candidate
+
+        if self.db is None:
+            return None
+
+        identityMapper = getattr(self, "_identityMapper", None)
+
+        if identityMapper is None:
+            from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
+            identityMapper = PostgresqlFlatMapper(self.db)
+            self._identityMapper = identityMapper
+
+        return identityMapper
+
+    def resolveScipionProtocolId(self, protocolId: Any) -> Optional[int]:
+        """
+        Accept PostgreSQL protocols.id or Scipion protocols.protocolId.
+        Return the Scipion runtime protocol id.
+        """
+        protocolRow = self.getProtocolRowByDbId(protocolId)
+
+        if protocolRow is None:
+            protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is not None:
+            scipionProtocolId = self.toOptionalInt(protocolRow.get("protocolId"))
+            if scipionProtocolId is not None:
+                return scipionProtocolId
+
+        return self.toOptionalInt(protocolId)
+
+    def resolvePostgresqlProtocolDbId(self, protocolId: Any) -> Optional[int]:
+        """
+        Accept PostgreSQL protocols.id or Scipion protocols.protocolId.
+        Return PostgreSQL protocols.id.
+        """
+        protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is None:
+            protocolRow = self.getProtocolRowByDbId(protocolId)
+
+        if protocolRow is None:
+            return None
+
+        return self.toOptionalInt(protocolRow.get("id"))
+
+    def resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            self,
+            protocolId: Any,
+    ) -> Optional[int]:
+        protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is None:
+            return None
+
+        return self.toOptionalInt(protocolRow.get("id"))
+
+    def resolveReaderProtocolId(self, protocolId: Any) -> Optional[int]:
+        """
+        Return the id expected by PostgreSQL readers.
+
+        Readers usually work with protocols.id. If the protocol is not found in
+        PostgreSQL, keep the numeric value as fallback for legacy callers.
+        """
+        postgresqlProtocolDbId = self.resolvePostgresqlProtocolDbId(protocolId)
+
+        if postgresqlProtocolDbId is not None:
+            return postgresqlProtocolDbId
+
+        return self.toOptionalInt(protocolId)
+
+    def getProtocolRowByDbId(self, protocolDbId: Any) -> Optional[Dict[str, Any]]:
+        if self.projectId is None:
+            return None
+
+        protocolDbId = self.toOptionalInt(
+            protocolDbId
+        )
+
+        if protocolDbId is None:
+            return None
+
+        identityMapper = self._getIdentityMapper("getProjectProtocolByDbId")
+
+        reader = getattr(
+            identityMapper,
+            "getProjectProtocolByDbId",
+            None,
+        )
+
+        if not callable(reader):
+            return None
+
+        return reader(
+            projectId=int(self.projectId),
+            protocolDbId=protocolDbId,
+        )
+
+    def getProtocolRowByScipionProtocolId(self, protocolId: Any) -> Optional[Dict[str, Any]]:
+        if self.projectId is None:
+            return None
+
+        protocolIdText = (
+            str(protocolId).strip()
+            if protocolId not in (None, "")
+            else ""
+        )
+
+        if not protocolIdText:
+            return None
+
+        identityMapper = self._getIdentityMapper("getProjectProtocolByProtocolId")
+
+        reader = getattr(
+            identityMapper,
+            "getProjectProtocolByProtocolId",
+            None,
+        )
+
+        if not callable(reader):
+            return None
+
+        return reader(
+            projectId=int(self.projectId),
+            protocolId=protocolIdText,
+        )
+
+    def getProtocolRow(self, protocolId: Any) -> Optional[Dict[str, Any]]:
+        try:
+            protocolRow = self.getProtocolRowByDbId(protocolId)
+
+            if protocolRow is not None:
+                return protocolRow
+
+            return self.getProtocolRowByScipionProtocolId(protocolId)
+
+        except Exception:
+            logger.debug(
+                "Could not resolve protocol identity. projectId=%s protocolId=%s",
+                self.projectId,
+                protocolId,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def toOptionalInt(value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            pass
+
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return None
+
+    @staticmethod
+    def extractProtocolIdsFromProtocols(protocols) -> List[str]:
+        protocolIds = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolIds.append(str(protocolId))
+
+        return protocolIds
+
+    def resolveProtocolDbIdsFromProtocols(self, protocols) -> Dict[str, Any]:
+        protocolIds = ProtocolIdentityResolver.extractProtocolIdsFromProtocols(protocols)
+        protocolDbIds = []
+        missingProtocolIds = []
+
+        for protocolIdText in protocolIds:
+            protocolDbId = self.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolIdText)
+
+            if protocolDbId is None:
+                missingProtocolIds.append(protocolIdText)
+                continue
+
+            protocolDbIds.append(int(protocolDbId))
+
+        return {
+            "protocolIds": protocolIds,
+            "protocolDbIds": protocolDbIds,
+            "missingProtocolIds": missingProtocolIds,
+        }

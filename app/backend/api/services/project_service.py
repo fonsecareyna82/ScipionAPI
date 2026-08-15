@@ -23,421 +23,15089 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import base64
+import collections
+import io
+import logging
+import re
+from uuid import uuid4
+import copy
+import json
+import threading
+import shutil
+import sqlite3
+
+import numpy as np
+
+from app.backend.runtime.protocol_workflow_execution_service import RuntimeProtocolWorkflowExecutionService
+from metadataviewer.dao.numpy_dao import NumpyDao
+from metadataviewer.model import ObjectManager
+from starlette.responses import JSONResponse
+from tomo.constants import BOTTOM_LEFT_CORNER
+from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
+
+from app.backend.utils.constants import maxThumbSize
+from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
+from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
+from app.backend.api.services.protocol_wizard_service import (
+    ProtocolWizardService,
+)
+from app.backend.api.services.protocol_context_service import ProtocolContextService
+from app.backend.api.services.protocol_service import ProtocolService
+from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
+from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
+from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
+
+from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
+from pwem.objects import SetOfVolumes
+from pwem.protocols import ProtUserSubSet
+from pwem.viewers.mdviewer.readers import ScipionImageReader
+from pwem.viewers.mdviewer.sqlite_dao import ScipionSetsDAO, OBJECT_TABLE
+from pwem.viewers.mdviewer.star_dao import StarFile
+from pyworkflow.object import Set as ScipionSet
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
+from pyworkflow.template import TemplateList
+from app.backend.runtime.project_lifecycle_service import (
+    RuntimeProjectLifecycleService,
+)
+
+try:
+    from pyworkflow.viewer import DESKTOP_TKINTER
+except Exception:
+    DESKTOP_TKINTER = None
+    findViewers=None
+
+logger = logging.getLogger(__name__)
 
 import os
 import subprocess
-from typing import List, Any
-from datetime import datetime
 from pathlib import Path
-
+from datetime import datetime
+from typing import List, Optional, Any, Union, Tuple, Dict, Set as TypingSet, Sequence, Callable
+from fastapi import HTTPException, status, Response
+from pathlib import Path as FsPath
+import mimetypes
 import pyworkflow
-from pyworkflow.object import String, Scalar
-from pyworkflow.project import Manager, Project
-from pyworkflow.protocol import PointerParam, MODE_RESTART
-from pyworkflow.utils import HYPER_BOLD, HYPER_ITALIC, HYPER_LINK1, HYPER_LINK2, parseHyperText
+from app.backend.mapper.postgresql import (
+    POSTGRESQL_PROTOCOL_ID_START,
+    POSTGRESQL_RUNTIME_OBJECT_ID_START,
+    PostgresqlFlatMapper,
+)
+from pyworkflow.config import Config
+from pyworkflow.project import Manager, Project as ScipionProject
+from app.backend.project import PostgresqlProject
 
-from app.backend.models.project_model import ProjectCreateRequest, ProjectUpdateRequest
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.runtime.pointer_resolver import RuntimePointerResolver
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+from app.backend.runtime.protocol_delete_service import RuntimeProtocolDeleteService
+from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+from app.backend.runtime.protocol_duplicate_service import RuntimeProtocolDuplicateService
+from app.backend.runtime.protocol_input_sync_service import RuntimeProtocolInputSyncService
+from app.backend.runtime import (
+    RuntimeOutputProxyService,
+    RuntimeProtocolOutputPersistenceService,
+    RuntimeProtocolStepPersistenceService,
+    RuntimeProtocolStatusSyncService,
+    RuntimeProjectGraphSyncService,
+    RuntimeProtocolLaunchService,
+    RuntimeProtocolSaveService,
+    RuntimeProtocolStepStatusService,
+    RuntimeProtocolLogService,
+    RuntimeProtocolLaunchPrepareService,
+    RuntimeProtocolRestartService,
+    RuntimeProtocolContinueService,
+    RuntimeProtocolResetService,
+    RuntimeProtocolStopService,
+    RuntimeProtocolRenameService,
+    RuntimePostgresqlRestartLauncherService,
+    RuntimePostgresqlContinueLauncherService,
+)
+from app.backend.runtime.legacy_protocol_loader_service import LegacyRuntimeProtocolLoaderService
+from app.backend.runtime.project_import_service import (
+    RuntimeProjectImportService,
+)
+from app.backend.runtime.project_import_audit_service import (
+    RuntimeProjectImportAuditService,
+)
+from app.backend.runtime.project_relation_sync_service import (
+    RuntimeProjectRelationSyncService,
+)
+
+from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
+from app.backend.utils.file_handlers import FileHandlers
+from app.backend.utils.thumbnail_service import ThumbnailService
+from app.backend.api.services.settings_service import SettingsService
+
+_VOLUME_SLICE_CACHE_LOCK = threading.Lock()
+_VOLUME_SLICE_CACHE = collections.OrderedDict()
+_VOLUME_SLICE_CACHE_MAX_ITEMS = 128
+
+# Global lock for metadata / DAO operations (not thread-safe)
+_metadataLock = threading.Lock()
+
+# Global lock for Scipion project thumbnail operations.
+# Loading several Scipion projects concurrently can mix project state in Pyworkflow internals.
+_thumbnailProjectLock = threading.Lock()
+
+# In-memory cache for rendered tilt-series previews.
+# The key includes file path, mtime and render options, so changed stacks invalidate naturally.
+_tiltSeriesPreviewCacheLock = threading.Lock()
+_tiltSeriesPreviewCache = collections.OrderedDict()
+_TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
 
 
 class ProjectService:
-    """Service class to manage project operations"""
-
     def __init__(self):
-        self.projectList = {}
-        self.currentId = 1
+        self.projectsPath = self._resolveProjectsPath()
+
         self.manager = Manager()
+        self.manager.PROJECTS = str(self.projectsPath)
+
+        # Real per-instance state
+        self.currentProject: Optional[ScipionProject] = None
+        self.tomoList: Dict[Any, Any] = {}
+        self._thumbnailService: Optional[ThumbnailService] = None
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
+
+    @staticmethod
+    def _resolveProjectsPath() -> Path:
+        rawProjectsPath = str(
+            os.environ.get("PROJECTS_PATH") or ""
+        ).strip()
+
+        if not rawProjectsPath:
+            raise RuntimeError(
+                "PROJECTS_PATH is not configured. "
+                "Run 'scipionapi install' or define it in the environment."
+            )
+
+        projectsPath = Path(
+            rawProjectsPath
+        ).expanduser().resolve()
+
+        try:
+            projectsPath.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not create PROJECTS_PATH '%s': %s"
+                % (projectsPath, error)
+            ) from error
+
+        if not projectsPath.is_dir():
+            raise RuntimeError(
+                "PROJECTS_PATH is not a directory: %s"
+                % projectsPath
+            )
+
+        if not os.access(
+                projectsPath,
+                os.W_OK | os.X_OK,
+        ):
+            raise RuntimeError(
+                "PROJECTS_PATH is not writable: %s"
+                % projectsPath
+            )
+
+        return projectsPath
+
+    # ------------------------------------------------------------------
+    # Per-request project / tomogram context
+    # ------------------------------------------------------------------
+    def clearCurrentProject(self):
+        """Clear per-request project and tomogram cache."""
         self.currentProject = None
-        self.loadProjects()
+        self.tomoList = {}
+        self._thumbnailService = None
 
-    def getProjectList(self):
-        return self.projectList
+    def _getThumbnailService(self) -> ThumbnailService:
+        if self.currentProject is None:
+            raise RuntimeError("Cannot create thumbnail service without a loaded project")
 
-    def getCurrentProject(self):
-        return self.currentProject
+        thumbnailService = getattr(self, "_thumbnailService", None)
 
-    def createProject(self, project: ProjectCreateRequest) -> dict:
-        """Create a new project and store it in memory"""
-        project_id = self.currentId
-        self.currentId += 1
+        if thumbnailService is None or thumbnailService.currentProject is not self.currentProject:
+            thumbnailService = ThumbnailService(self.currentProject)
+            self._thumbnailService = thumbnailService
 
-        self.projectList[project_id] = {
-            "id": project_id,
-            "name": project.name,
-            "description": project.description,
-            "created_at": datetime.now(),
-            "status": "created",
-            "protocolsCount": project.protocols,
-            "diskUsage": project.diskUsage
+        return thumbnailService
+
+    def _loadPostgresqlRuntimeProject(self, mapper: PostgresqlFlatMapper,
+                                      projectId: int, projectPath: str, domain=None) -> PostgresqlProject:
+        """
+        Load a PostgreSQL runtime project directly, without first loading a
+        legacy ScipionProject from project.sqlite.
+        """
+        runtimeDomain = domain
+
+        if runtimeDomain is None:
+            refreshScipionDomainIfNeeded()
+            runtimeDomain = pyworkflow.Config.getDomain()
+
+        postgresqlProject = PostgresqlProject(
+            domain=runtimeDomain,
+            path=str(projectPath),
+            projectId=projectId,
+            flatMapper=mapper,
+        )
+
+        try:
+            postgresqlProject.load(
+                chdir=True,
+                loadAllConfig=False,
+            )
+        except Exception:
+            try:
+                postgresqlProject.closeMapper()
+            except Exception:
+                logger.debug(
+                    "Could not close PostgreSQL runtime project after load failure. "
+                    "projectId=%s path=%s",
+                    projectId,
+                    projectPath,
+                    exc_info=True,
+                )
+
+            raise
+
+        self.currentProject = postgresqlProject
+
+        logger.info("Loaded PostgreSQL runtime project directly. projectId=%s path=%s", projectId, projectPath)
+
+        return postgresqlProject
+
+    def _createObjectManager(self) -> ObjectManager:
+        """Create and configure a fresh ObjectManager instance.
+
+        A new instance is returned on each call to avoid sharing
+        SQLite connections across threads.
+        """
+        objMgr = ObjectManager()
+        objMgr.registerDAO(ScipionSetsDAO)
+        objMgr.registerDAO(StarFile)
+        objMgr.registerReader(ScipionImageReader)
+        NumpyDao.addCompatibleFileType('cs')
+        return objMgr
+
+    def _getPreviewObjectManager(self) -> ObjectManager:
+        """
+        Return an ObjectManager for preview operations.
+
+        Prefer a fresh instance to avoid sharing SQLite connections across
+        concurrent HTTP requests.
+        """
+        return self._createObjectManager()
+
+    def _safeScipionValue(self, value: Any) -> Any:
+        """
+        Convert Scipion/Python values into JSON-safe preview values.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str) and len(value) > 240:
+                return value[:240] + "..."
+            return value
+
+        if isinstance(value, (list, tuple)):
+            return [self._safeScipionValue(v) for v in value[:20]]
+
+        if isinstance(value, dict):
+            return {
+                str(k): self._safeScipionValue(v)
+                for k, v in list(value.items())[:30]
+            }
+
+        try:
+            text = str(value)
+            return text[:240] + "..." if len(text) > 240 else text
+        except Exception:
+            return repr(value)
+
+    def _tryReadScipionSetWithObjectManager(self, filePath: FsPath) -> Optional[Any]:
+        """
+        Try several ObjectManager entry points because different metadata
+        viewer versions expose slightly different method names.
+        """
+        objMgr = self._getPreviewObjectManager()
+        fileName = str(filePath)
+
+        candidateCalls = [
+            ("read", (fileName,)),
+            ("load", (fileName,)),
+            ("open", (fileName,)),
+            ("getObject", (fileName,)),
+            ("getDataObject", (fileName,)),
+            ("getDataObjects", (fileName,)),
+        ]
+
+        lastError = None
+
+        for methodName, args in candidateCalls:
+            method = getattr(objMgr, methodName, None)
+            if method is None:
+                continue
+
+            try:
+                result = method(*args)
+                if result is not None:
+                    if isinstance(result, (list, tuple)) and result:
+                        return result[0]
+                    return result
+            except Exception as exc:
+                lastError = exc
+
+        if lastError is not None:
+            logger.debug(
+                "Could not read Scipion sqlite with ObjectManager. file=%s error=%s",
+                fileName,
+                lastError,
+            )
+
+        return None
+
+    def _extractScipionSetPreviewInfo(self, obj: Any) -> Dict[str, Any]:
+        """
+        Build a compact preview payload from a Scipion set-like object.
+        """
+        objectClass = obj.__class__.__name__ if obj is not None else None
+
+        objectCount = None
+        for methodName in ("getSize", "__len__"):
+            try:
+                if methodName == "__len__":
+                    objectCount = len(obj)
+                else:
+                    method = getattr(obj, methodName, None)
+                    if method is not None:
+                        objectCount = int(method())
+                if objectCount is not None:
+                    break
+            except Exception:
+                pass
+
+        summary: list[Dict[str, Any]] = []
+
+        if objectClass:
+            summary.append({"key": "Object class", "value": objectClass})
+        if objectCount is not None:
+            summary.append({"key": "Items", "value": objectCount})
+
+        scalarMethods = [
+            ("Sampling rate", "getSamplingRate"),
+            ("Dimensions", "getDimensions"),
+            ("First item", "getFirstItem"),
+            ("File name", "getFileName"),
+        ]
+
+        for label, methodName in scalarMethods:
+            try:
+                method = getattr(obj, methodName, None)
+                if method is None:
+                    continue
+                value = method()
+                safeValue = self._safeScipionValue(value)
+                if safeValue not in (None, ""):
+                    summary.append({"key": label, "value": safeValue})
+            except Exception:
+                pass
+
+        sampleRows = []
+        sampleColumns: list[str] = []
+
+        try:
+            iterator = iter(obj)
+            for index, item in enumerate(iterator):
+                if index >= 10:
+                    break
+
+                row = self._buildScipionItemPreviewRow(item)
+                if row:
+                    for key in row.keys():
+                        if key not in sampleColumns:
+                            sampleColumns.append(key)
+                    sampleRows.append(row)
+        except Exception:
+            pass
+
+        return {
+            "objectClass": objectClass,
+            "objectCount": objectCount,
+            "summary": summary,
+            "sample": {
+                "columns": sampleColumns,
+                "rows": sampleRows,
+            },
         }
-        return self.projectList[project_id]
 
-    def listProjects(self) -> List[dict]:
-        """Return all stored projects"""
-        return list(self.projectList.values())
+    def _buildScipionItemPreviewRow(self, item: Any) -> Dict[str, Any]:
+        """
+        Build a compact preview row for one Scipion object item.
+        """
+        row: Dict[str, Any] = {}
 
-    def deleteProject(self, project_id: int) -> dict:
-        """Delete a project by ID"""
-        if project_id not in self.projectList:
-            raise ValueError("Project not found")
-        del self.projectList[project_id]
+        candidates = [
+            ("id", "getObjId"),
+            ("class", "getClassName"),
+            ("fileName", "getFileName"),
+            ("index", "getIndex"),
+            ("enabled", "isEnabled"),
+            ("samplingRate", "getSamplingRate"),
+            ("dimensions", "getDimensions"),
+        ]
+
+        for key, methodName in candidates:
+            try:
+                method = getattr(item, methodName, None)
+                if method is None:
+                    continue
+                value = method()
+                row[key] = self._safeScipionValue(value)
+            except Exception:
+                pass
+
+        if not row:
+            try:
+                row["value"] = self._safeScipionValue(item)
+            except Exception:
+                pass
+
+        return row
+
+    def _inspectScipionSqliteDatabase(self, filePath: FsPath) -> Optional[Dict[str, Any]]:
+        """
+        Inspect a Scipion SQLite object database using the metadata viewer
+        ObjectManager when possible.
+        """
+        obj = self._tryReadScipionSetWithObjectManager(filePath)
+        if obj is None:
+            return None
+
+        info = self._extractScipionSetPreviewInfo(obj)
+        info["reader"] = "ObjectManager"
+        return info
+
+    @staticmethod
+    def sanitizeProjectName(rawName: str) -> str:
+        """
+        Return a filesystem-safe project name.
+
+        Rules:
+          - Replace any char not in [A-Za-z0-9_-] with '_'
+          - Collapse consecutive underscores
+          - Strip leading/trailing underscores and dots
+          - Ensure non-empty (fallback to 'project')
+        """
+        if rawName is None:
+            rawName = ""
+
+        # Trim whitespace
+        name = rawName.strip()
+
+        # Replace invalid chars with underscore
+        name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
+
+        # Collapse multiple underscores
+        name = re.sub(r"_+", "_", name)
+
+        # Strip leading/trailing underscores and dots
+        name = name.strip("._")
+
+        # Fallback if empty
+        if not name:
+            name = "project"
+
+        return name
+
+    def createProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectData: ProjectCreate,
+            currentUser,
+    ) -> dict:
+        sanitizedName = self.sanitizeProjectName(projectData.name)
+        description = projectData.description or ""
+        statusValue = projectData.status or "active"
+
+        projectPath = self._normalizeProjectPath(
+            self.manager.getProjectPath(sanitizedName)
+        )
+
+        existingProjects = mapper.listProjects(
+            ownerId=currentUser["id"]
+        ) or []
+
+        existingNames = {
+            self._getProjectDisplayNameFromPostgresqlPath(
+                project.get("name")
+            )
+            for project in existingProjects
+            if project.get("name")
+        }
+
+        existingPaths = {
+            self._normalizeProjectPath(project.get("name"))
+            for project in existingProjects
+            if project.get("name")
+        }
+
+        if sanitizedName in existingNames or projectPath in existingPaths:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                        "A project with this name already exists for the current user "
+                        "(sanitized name: '%s')" % sanitizedName
+                ),
+            )
+
+        if os.path.lexists(projectPath):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                        "A project with this name already exists in the file system "
+                        "(sanitized name: '%s')" % sanitizedName
+                ),
+            )
+
+        project = None
+        dbProjectId = None
+        createAttempted = False
+        projectMapperClosed = False
+
+        try:
+            createAttempted = True
+
+            project = self.manager.createProject(
+                sanitizedName
+            )
+
+            projectDbPath = project.getDbPath()
+
+            closeMapper = getattr(
+                project,
+                "closeMapper",
+                None,
+            )
+
+            if not callable(closeMapper):
+                raise RuntimeError(
+                    "Created Scipion project does not expose "
+                    "closeMapper()"
+                )
+
+            closeMapper()
+            projectMapperClosed = True
+
+            lifecycleService = (
+                RuntimeProjectLifecycleService()
+            )
+
+            cleanupReport = (
+                lifecycleService
+                .removeLegacyProjectDatabase(
+                    projectPath=projectPath,
+                    projectDbPath=projectDbPath,
+                )
+            )
+
+            dbProjectId = mapper.insertProject(
+                ownerId=currentUser["id"],
+                name=projectPath,
+                description=description,
+                status=statusValue,
+            )
+
+            dbProject = mapper.getProject(
+                projectId=dbProjectId,
+                userId=currentUser["id"],
+            )
+
+            if not dbProject:
+                raise RuntimeError(
+                    "Project was inserted but could not "
+                    "be read from PostgreSQL"
+                )
+
+            return self._buildProjectOutFromPostgresqlRow(
+                mapper=mapper,
+                dbProj=dbProject,
+                currentUser=currentUser,
+                includeDiskUsage=False,
+            )
+
+        except Exception as error:
+            rollbackErrors = []
+
+            if dbProjectId is not None:
+                try:
+                    mapper.deleteProject(
+                        dbProjectId,
+                        currentUser["id"],
+                    )
+                except Exception as rollbackError:
+                    rollbackErrors.append(
+                        "PostgreSQL rollback failed: %s"
+                        % rollbackError
+                    )
+
+            if (
+                    project is not None
+                    and not projectMapperClosed
+            ):
+                try:
+                    project.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close project mapper "
+                        "during creation rollback. path=%s",
+                        projectPath,
+                        exc_info=True,
+                    )
+
+            if createAttempted:
+                try:
+                    self._removeCreatedProjectPath(
+                        projectPath
+                    )
+                except Exception as rollbackError:
+                    rollbackErrors.append(
+                        "Filesystem rollback failed: %s"
+                        % rollbackError
+                    )
+
+            logger.exception(
+                "Failed to create project. "
+                "name=%s path=%s rollbackErrors=%s",
+                sanitizedName,
+                projectPath,
+                rollbackErrors,
+            )
+
+            detail = (
+                    "Failed to create project: %s"
+                    % error
+            )
+
+            if rollbackErrors:
+                detail += ". " + "; ".join(
+                    rollbackErrors
+                )
+
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=detail,
+            )
+
+    def _normalizeProjectPath(self, projectPath: str) -> str:
+        """
+        Normalize a stored project path to an absolute filesystem path.
+
+        Important:
+        - Do NOT resolve symlinks here.
+        - We want the project entry path, not the real target path.
+        """
+        if not projectPath:
+            return ""
+
+        normalized = os.path.expanduser(str(projectPath).strip())
+
+        if not os.path.isabs(normalized):
+            normalized = self.manager.getProjectPath(normalized)
+
+        return os.path.abspath(normalized)
+
+    def _isManagedProjectPath(self, projectPath: str) -> bool:
+        """
+        Return True when the project entry iºtself lives under the managed projects root.
+
+        Important:
+        - This checks the lexical path of the entry.
+        - It must not resolve symlinks, otherwise linked external projects would
+          look "outside" even if their symlink entry is inside the workspace.
+        """
+        try:
+            managedRoot = self._normalizeProjectPath(self.manager.PROJECTS)
+            normalizedPath = self._normalizeProjectPath(projectPath)
+
+            common = os.path.commonpath([managedRoot, normalizedPath])
+            return common == managedRoot
+        except Exception:
+            return False
+
+    def _isLinkedProjectPath(self, projectPath: str) -> bool:
+        """
+        Return True if the stored project entry is a symbolic link.
+        """
+        normalizedPath = self._normalizeProjectPath(projectPath)
+        return os.path.islink(normalizedPath)
+
+    def _removeCreatedProjectPath(
+            self,
+            projectPath: str,
+    ) -> None:
+        normalizedPath = self._normalizeProjectPath(projectPath)
+
+        if not self._isManagedProjectPath(normalizedPath):
+            raise RuntimeError(
+                "Refusing to remove project path outside the managed projects root: %s"
+                % normalizedPath
+            )
+
+        if not os.path.lexists(normalizedPath):
+            return
+
+        try:
+            os.chdir(self.manager.PROJECTS)
+        except Exception:
+            logger.warning(
+                "Could not restore managed projects working directory before cleanup. path=%s",
+                normalizedPath,
+                exc_info=True,
+            )
+
+        if os.path.islink(normalizedPath) or not os.path.isdir(normalizedPath):
+            os.unlink(normalizedPath)
+        else:
+            shutil.rmtree(normalizedPath)
+
+    def _validateImportableScipionProject(self, sourcePath: Path) -> Dict[str, Any]:
+        """
+        Validate that a folder is a real Scipion project by trying to load it.
+
+        Returns a small metadata dict that can be reused by importProject.
+        """
+        if sourcePath is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid source project path",
+            )
+
+        if not sourcePath.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source project path does not exist",
+            )
+
+        if not sourcePath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source project path must be a directory",
+            )
+
+        importedProject = None
+
+        try:
+            importedProject = ScipionProject(
+                pyworkflow.Config.getDomain(),
+                str(sourcePath),
+            )
+            importedProject.load(
+                dbPath=importedProject.getDbPath()
+            )
+
+            try:
+                description = importedProject.getComment() or ""
+            except Exception:
+                description = ""
+
+            try:
+                importedStatus = importedProject.getStatus()
+                statusValue = str(importedStatus) if importedStatus else "active"
+            except Exception:
+                statusValue = "active"
+
+            return {
+                "description": description,
+                "status": statusValue or "active",
+            }
+
+        except HTTPException:
+            raise
+
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Source path is not a valid Scipion project: {error}",
+            ) from error
+
+        finally:
+            if importedProject is not None:
+                try:
+                    importedProject.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close source project mapper after validation. "
+                        "path=%s",
+                        sourcePath,
+                        exc_info=True,
+                    )
+
+    def _loadLegacyProjectForImport(self, projectPath: str) -> ScipionProject:
+        """
+        Load project.sqlite exclusively as the source of a legacy project import.
+
+        This method must not be used by the normal PostgreSQL runtime,
+        viewers or protocol operations.
+        """
+        legacyProjectPath = Path(projectPath)
+        project = ScipionProject(pyworkflow.Config.getDomain(), str(legacyProjectPath))
+        project.load(dbPath=project.getDbPath())
+
+        self.currentProject = project
+        return project
+
+    def _shouldRegisterProtocolOutputs(self, protocol: Any) -> bool:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.shouldRegisterProtocolOutputs(
+            protocol=protocol,
+        )
+
+    def _safeCall(self, obj: Any, methodName: str, default: Any = None) -> Any:
+        try:
+            method = getattr(obj, methodName, None)
+            if method is None:
+                return default
+            return method()
+        except Exception:
+            return default
+
+    def _getScipionClassName(self, obj: Any) -> Optional[str]:
+        if obj is None:
+            return None
+
+        className = self._safeCall(obj, "getClassName", None)
+        if className:
+            return str(className)
+
+        return obj.__class__.__name__
+
+    def _getScipionObjectId(self, obj: Any) -> Optional[Any]:
+        return self._safeCall(obj, "getObjId", None)
+
+    def _isPersistableNonSetOutput(self, outputObj: Any) -> bool:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.isPersistableNonSetOutput(
+            outputObj=outputObj,
+        )
+
+    def _isScipionSetLikeOutput(self, outputObj: Any) -> bool:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.isScipionSetLikeOutput(
+            outputObj=outputObj,
+        )
+
+    # ------------------------------------------------------------------
+    # Scipion runtime protocol resolution
+    # ------------------------------------------------------------------
+    def _resolveScipionProtocolId(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Optional[int]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return protocolIdentityResolver.resolveScipionProtocolId(protocolId)
+
+    def _getScipionProtocolByRuntimeId(
+            self,
+            protocolId: Union[int, str],
+            logFailure: bool = True,
+    ):
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current Scipion project loaded",
+            )
+
+        try:
+            runtimeMapper = getattr(
+                self.currentProject,
+                "mapper",
+                None,
+            )
+            selectRuntimeProtocol = getattr(
+                runtimeMapper,
+                "selectRuntimeProtocolById",
+                None,
+            )
+
+            if callable(selectRuntimeProtocol):
+                protocol = selectRuntimeProtocol(
+                    int(protocolId)
+                )
+            else:
+                protocol = self.currentProject.getProtocol(
+                    int(protocolId)
+                )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logMessage = (
+                "Failed to load protocol from currentProject. "
+                "protocolId=%s currentProject=%s mapper=%s"
+            )
+
+            logArgs = (
+                protocolId,
+                type(self.currentProject),
+                type(getattr(self.currentProject, "mapper", None)),
+            )
+
+            if logFailure:
+                logger.exception(logMessage, *logArgs)
+            else:
+                logger.debug(logMessage, *logArgs)
+
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in Scipion runtime: {protocolId}. {e}",
+            )
+
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in Scipion runtime: {protocolId}",
+            )
+
+        return protocol
+
+    def _tryGetScipionProtocolByRuntimeId(
+            self,
+            protocolId: Union[int, str],
+    ):
+        try:
+            return self._getScipionProtocolByRuntimeId(
+                protocolId,
+                logFailure=False,
+            )
+        except Exception:
+            return None
+
+    def _getScipionProtocolForRuntime(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ):
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+    def _tryGetScipionProtocolForRuntime(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ):
+        try:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            return self._getScipionProtocolByRuntimeId(
+                scipionProtocolId,
+                logFailure=False,
+            )
+
+        except Exception:
+            return None
+
+    def _resolvePostgresqlProtocolDbId(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Optional[int]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+
+    def _raisePostgresqlViewerUnavailable(
+            self,
+            viewerName: str,
+            projectId: int,
+            protocolId: Union[int, str],
+            outputName: str,
+            reason: Optional[str] = None,
+            **extra,
+    ) -> None:
+        extraText = " ".join(
+            "%s=%s" % (key, value)
+            for key, value in extra.items()
+            if value is not None
+        )
+
+        logger.warning(
+            "%s output is not available in PostgreSQL metadata. projectId=%s protocolId=%s outputName=%s reason=%s %s",
+            viewerName,
+            projectId,
+            protocolId,
+            outputName,
+            reason,
+            extraText,
+        )
+
+        detail = "%s output is not available in PostgreSQL metadata" % viewerName
+        if reason:
+            detail = "%s: %s" % (detail, reason)
+
+        raise HTTPException(
+            status_code=404,
+            detail=detail,
+        )
+
+    def _resolvePostgresqlReaderProtocolId(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> Union[int, str]:
+        if mapper is None:
+            return protocolId
+
+        return self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        ) or protocolId
+
+    def _getGeneratedSetOutputIdentity(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            protocol,
+            outputPrefix: str,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            return {
+                "outputName": protocol.getNextOutputName(outputPrefix),
+                "outputSuffix": str(protocol.getOutputsSize()),
+                "protocolDbId": None,
+            }
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
+            )
+
+        outputNames = RuntimeProtocolOutputPersistenceService().loadPersistedProtocolOutputNames(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+        )
+
+        maxCounter = -1
+
+        for attributeName in outputNames:
+            nameSuffix = str(attributeName).replace(outputPrefix, "")
+
+            try:
+                counter = int(nameSuffix)
+            except (TypeError, ValueError):
+                counter = 1
+
+            maxCounter = max(counter, maxCounter)
+
+        nextNameSuffix = str(maxCounter + 1) if maxCounter > 0 else ""
+
+        return {
+            "outputName": outputPrefix + nextNameSuffix,
+            "outputSuffix": str(len(outputNames)),
+            "protocolDbId": int(protocolDbId),
+        }
+
+    def _createWritableGeneratedPostgresqlSet(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            protocol,
+            outputName: str,
+            sourceSet,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            raise RuntimeError(
+                "Generated Sets require a PostgreSQL mapper"
+            )
+
+        db = getattr(mapper, "db", None)
+
+        if db is None:
+            raise RuntimeError(
+                "Generated Sets require a PostgreSQL database"
+            )
+
+        protocolDbId = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        ).resolvePostgresqlProtocolDbId(protocolId)
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in PostgreSQL",
+            )
+
+        allocator = getattr(
+            mapper,
+            "allocateProjectObjectId",
+            None,
+        )
+
+        if not callable(allocator):
+            raise RuntimeError(
+                "PostgreSQL mapper does not expose allocateProjectObjectId()"
+            )
+
+        nativeSetClass = sourceSet.getClass()
+
+        if not isinstance(nativeSetClass, type):
+            raise RuntimeError(
+                f"Could not resolve native Set class for '{outputName}'"
+            )
+
+        seedSet = nativeSetClass()
+
+        copyInfo = getattr(
+            seedSet,
+            "copyInfo",
+            None,
+        )
+
+        if callable(copyInfo):
+            copyInfo(sourceSet)
+        else:
+            seedSet.copy(
+                sourceSet,
+                copyId=False,
+            )
+
+        runtimeObjectId = int(
+            allocator(int(projectId))
+        )
+
+        seedSet.setObjId(runtimeObjectId)
+        seedSet.setName(outputName)
+        seedSet.setObjLabel(outputName)
+
+        from app.backend.mapper.scipion_set_mapper import (
+            ScipionSetPostgresqlMapper,
+        )
+        from app.backend.runtime.postgresql_runtime_set_factory import (
+            PostgresqlRuntimeSetFactory,
+        )
+
+        setMapper = ScipionSetPostgresqlMapper(db)
+
+        reservation = setMapper.reserveRuntimeSet(
+            projectId=int(projectId),
+            protocolDbId=int(protocolDbId),
+            outputName=outputName,
+            scipionSet=seedSet,
+            reservationToken=str(uuid4()),
+        )
+
+        runtimeSetFactory = PostgresqlRuntimeSetFactory()
+
+        try:
+            outputInfo = dict(reservation)
+            outputInfo["exists"] = True
+            outputInfo["itemsCount"] = 0
+
+            outputSet = runtimeSetFactory.build(
+                db=db,
+                parent=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+            )
+
+            outputSet.enablePostgresqlWrite()
+
+        except Exception:
+            setMapper.discardReservedRuntimeSet(
+                projectId=int(projectId),
+                protocolDbId=int(protocolDbId),
+                runtimeObjectId=runtimeObjectId,
+            )
+            raise
+
+        return {
+            "outputSet": outputSet,
+            "setMapper": setMapper,
+            "runtimeSetFactory": runtimeSetFactory,
+            "reservation": reservation,
+            "protocolDbId": int(protocolDbId),
+            "runtimeObjectId": runtimeObjectId,
+        }
+
+    def _cloneGeneratedNestedSet(self, sourceSet):
+        nativeSetClass = sourceSet.getClass()
+
+        if not isinstance(nativeSetClass, type):
+            raise RuntimeError(
+                "Could not resolve native nested Set class"
+            )
+
+        result = nativeSetClass()
+        result.copy(
+            sourceSet,
+            copyId=False,
+        )
+
+        return result
+
+    def _finalizeGeneratedPostgresqlSet(
+            self,
+            context: Dict[str, Any],
+            projectId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        return context["setMapper"].finalizeRuntimeSetOutput(
+            projectId=int(projectId),
+            protocolDbId=int(context["protocolDbId"]),
+            outputName=outputName,
+            scipionSet=context["outputSet"],
+        )
+
+    def _discardGeneratedPostgresqlSet(
+            self,
+            context: Optional[Dict[str, Any]],
+            projectId: int,
+    ) -> bool:
+        if not context:
+            return False
+
+        reservation = context.get("reservation") or {}
+        runtimeObjectId = reservation.get(
+            "runtimeObjectId",
+            context.get("runtimeObjectId"),
+        )
+
+        if runtimeObjectId is None:
+            return False
+
+        return bool(
+            context["setMapper"].discardReservedRuntimeSet(
+                projectId=int(projectId),
+                protocolDbId=int(context["protocolDbId"]),
+                runtimeObjectId=int(runtimeObjectId),
+            )
+        )
+
+    def _storeGeneratedSetInPostgresql(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+            outputName: str,
+            scipionSet,
+            contextLabel: str,
+    ) -> Dict[str, Any]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.storeGeneratedSetInPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            scipionSet=scipionSet,
+            contextLabel=contextLabel,
+        )
+
+    def registerOutput(
+            self,
+            projectId: int,
+            protocol: Any,
+            mapper: PostgresqlFlatMapper,
+            returnReport: bool = False,
+            projectPaths: Optional[
+                Sequence[str]
+            ] = None,
+            allowDetachedSetOutputs: bool = False,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        runtimeProtocolOutputPersistenceService = (
+            RuntimeProtocolOutputPersistenceService()
+        )
+
+        resolvedProjectPaths = []
+
+        for candidatePath in (
+                list(projectPaths or [])
+                + [
+                    self._getCurrentProjectPath()
+                ]
+        ):
+            if not candidatePath:
+                continue
+
+            normalizedPath = os.path.abspath(
+                os.path.expanduser(
+                    str(candidatePath)
+                )
+            )
+
+            if (
+                    normalizedPath
+                    not in resolvedProjectPaths
+            ):
+                resolvedProjectPaths.append(
+                    normalizedPath
+                )
+
+        try:
+            return (
+                runtimeProtocolOutputPersistenceService
+                .registerOutput(
+                    projectId=projectId,
+                    protocol=protocol,
+                    mapper=mapper,
+                    returnReport=returnReport,
+                    projectPaths=(
+                        resolvedProjectPaths
+                    ),
+                    allowDetachedSetOutputs=(
+                        allowDetachedSetOutputs
+                    ),
+                )
+            )
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
+                detail=str(exc),
+            )
+
+    def _deletePersistedProtocolOutputsFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            protocol: Any = None,
+    ) -> Dict[str, Any]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.deletePersistedProtocolOutputs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            getCurrentProjectPathCallback=self._getCurrentProjectPath,
+        )
+
+    def _collectPersistedProtocolOutputFilesFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+    ) -> List[str]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.collectPersistedProtocolOutputFiles(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+        )
+
+    def _deletePersistedProtocolOutputFilesFromFilesystem(
+            self,
+            protocol: Any,
+            rawFileNames: List[str],
+    ) -> Dict[str, Any]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.deletePersistedProtocolOutputFilesFromFilesystem(
+            protocol=protocol,
+            rawFileNames=rawFileNames,
+            getCurrentProjectPathCallback=self._getCurrentProjectPath,
+        )
+
+    def _resolvePersistedOutputFileForDeletion(
+            self,
+            rawFileName: str,
+            projectPath: str,
+            allowedRoot: str,
+    ) -> Optional[str]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.resolvePersistedOutputFileForDeletion(
+            rawFileName=rawFileName,
+            projectPath=projectPath,
+            allowedRoot=allowedRoot,
+        )
+
+    def _deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql(
+            self,
+            mapper,
+            projectId: int,
+            protocols: List[Any],
+    ) -> Dict[str, Any]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.deletePersistedProtocolOutputsForRuntimeProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            getCurrentProjectPathCallback=self._getCurrentProjectPath,
+        )
+
+    def _shouldPreservePostgresqlOnlyProtocols(self) -> bool:
+        value = os.environ.get("SCIPIONWEB_PRESERVE_POSTGRESQL_ONLY_PROTOCOLS", "1")
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _preserveStoredProtocolParamsInRuntimeContext(
+            self,
+            protocolContext: Dict[str, Any],
+            storedRow: Optional[Dict[str, Any]],
+            protocol=None,
+    ) -> Dict[str, Any]:
+        """
+        Keep PostgreSQL protocol parameters authoritative when synchronizing
+        an explicitly supplied runtime protocol representation.
+
+        The supplied protocol may contain execution status, steps and outputs,
+        but its editable parameter values may belong to a previous execution.
+        """
+        if (
+                not isinstance(protocolContext, dict)
+                or not storedRow
+        ):
+            return protocolContext
+
+        storedParams = storedRow.get(
+            "params"
+        )
+
+        if isinstance(storedParams, str):
+            try:
+                storedParams = json.loads(
+                    storedParams
+                )
+            except Exception:
+                storedParams = None
+
+        if not isinstance(
+                storedParams,
+                dict,
+        ):
+            return protocolContext
+
+        runtimeValues = protocolContext.get(
+            "values"
+        )
+
+        if not isinstance(
+                runtimeValues,
+                dict,
+        ):
+            runtimeValues = {}
+
+        runtimeMetadataKey = (
+            RuntimeProtocolStatusSyncService
+            .RUNTIME_METADATA_KEY
+        )
+
+        runtimeMetadata = runtimeValues.get(
+            runtimeMetadataKey
+        )
+
+        # PostgreSQL protocols.params remains authoritative for regular
+        # editable values. Pointer values reconstructed from
+        # protocol_input_refs are authoritative for protocol inputs.
+        mergedValues = copy.deepcopy(storedParams)
+
+        if protocol is not None:
+            for paramName, runtimeValue in runtimeValues.items():
+                try:
+                    param = protocol.getParam(paramName)
+                except Exception:
+                    param = None
+
+                if isinstance(param, (PointerParam, MultiPointerParam)):
+                    mergedValues[paramName] = copy.deepcopy(runtimeValue)
+
+        # Runtime metadata may legitimately have changed in the supplied execution state.
+        if runtimeMetadata is not None:
+            mergedValues[
+                runtimeMetadataKey
+            ] = runtimeMetadata
+
+        protocolContext[
+            "values"
+        ] = mergedValues
+
+        protocolInfo = protocolContext.setdefault(
+            "info",
+            {},
+        )
+
+        storedRunName = (
+                mergedValues.get("runName")
+                or mergedValues.get(
+            "object.label"
+        )
+        )
+
+        if storedRunName not in (
+                None,
+                "",
+        ):
+            protocolInfo[
+                "runName"
+            ] = str(
+                storedRunName
+            )
+
+        return protocolContext
+
+    def syncPostgresqlRuntimeProtocol(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId,
+            registerOutputs: bool = True,
+            syncRelations: bool = True,
+            returnProtocolContext: bool = False,
+            protocol=None,
+            authoritativeProtocolState: bool = False,
+            persistRuntimeState: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Persist one protocol state into PostgreSQL without opening a runtime SQLite database.
+
+        The explicitly supplied protocol, or the protocol loaded through the PostgreSQL
+        runtime mapper when omitted, is authoritative for this operation. When relation
+        synchronization is enabled, only relations created by this protocol are written.
+        Parent protocols and their outputs remain read-only relation targets.
+        """
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocol is None:
+            protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+
+        if protocol is None:
+            raise RuntimeError(
+                "Cannot synchronize PostgreSQL runtime protocol %s: protocol was not found in PostgreSQL" % scipionProtocolId)
+
+        protocolContext = self._buildProtocolContext(
+            projectId,
+            protocol,
+            mapper,
+        )
+
+        storedRow = (
+            mapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+            )
+        )
+
+        if not authoritativeProtocolState:
+            protocolContext = (
+                self
+                ._preserveStoredProtocolParamsInRuntimeContext(
+                    protocolContext=protocolContext,
+                    storedRow=storedRow,
+                    protocol=protocol,
+                )
+            )
+
+        storedStatus = (
+            storedRow.get("status")
+            if storedRow
+            else None
+        )
+
+        protocolInfo = protocolContext.setdefault(
+            "info",
+            {},
+        )
+
+        runtimeStatus = protocolInfo.get(
+            "status"
+        )
+
+        if not persistRuntimeState:
+            persistedStatus = storedStatus if storedStatus not in (None, "") else runtimeStatus
+        elif authoritativeProtocolState:
+            persistedStatus = runtimeStatus
+        else:
+            runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
+            persistedStatus = runtimeProtocolStatusSyncService.mergeRuntimeProtocolStatus(storedStatus=storedStatus,
+                                                                                          runtimeStatus=runtimeStatus)
+
+        protocolInfo["status"] = persistedStatus
+
+        if not persistRuntimeState:
+            protocolDbId = int(storedRow["id"]) if storedRow and storedRow.get("id") not in (None, "") else None
+            syncResult = {"protocolId": str(scipionProtocolId), "protocolDbId": protocolDbId,
+                          "protocolStatus": persistedStatus, "postgresqlRuntimeSync": False, "readOnly": True}
+
+            if returnProtocolContext:
+                syncResult["protocolContext"] = protocolContext
+
+            return syncResult
+
+        protocolDbId = mapper.saveProtocol(protocolContext)
+
+        runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
+
+        steps = []
+
+        try:
+            steps = runtimeProtocolStepPersistenceService.buildProtocolStepsForPostgresql(
+                protocol,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to build PostgreSQL runtime protocol steps. projectId=%s protocolId=%s",
+                projectId,
+                scipionProtocolId,
+            )
+
+        if steps:
+            mapper.replaceProtocolSteps(
+                projectId=projectId,
+                protocolDbId=int(protocolDbId),
+                protocolId=int(scipionProtocolId),
+                steps=steps,
+            )
+        runtimeProtocolOutputPersistenceService =  RuntimeProtocolOutputPersistenceService()
+
+        outputReport = {
+            "declared": [],
+            "persisted": [],
+            "skipped": [],
+            "removed": [],
+            "errors": [],
+        }
+
+        shouldRegisterOutputs = (
+                registerOutputs
+                and (
+                    runtimeProtocolOutputPersistenceService
+                    .shouldSyncProtocolOutputs(
+                        protocol
+                    )
+                )
+        )
+
+        if shouldRegisterOutputs:
+            try:
+                outputReport = self.registerOutput(
+                    projectId=projectId,
+                    protocol=protocol,
+                    mapper=mapper,
+                    returnReport=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to register PostgreSQL runtime protocol outputs. projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                )
+                outputReport = {
+                    "declared": [],
+                    "persisted": [],
+                    "skipped": [],
+                    "removed": [],
+                    "errors": [{
+                        "protocolId": str(scipionProtocolId),
+                        "error": "Failed to register outputs",
+                    }],
+                }
+
+        relationReport = {
+            "relationsDeclared": 0,
+            "relations": 0,
+            "relationMissing": [],
+            "relationErrors": [],
+            "cleanup": [],
+            "complete": True,
+        }
+
+        if syncRelations:
+            try:
+                relationSyncService = (
+                    RuntimeProjectRelationSyncService()
+                )
+
+                relationSnapshot = (
+                    relationSyncService
+                    .collectRuntimeProtocolRelations(
+                        currentProject=self.currentProject,
+                        protocolId=scipionProtocolId,
+                        runtimeProtocol=protocol,
+                    )
+                )
+
+                relationReport = (
+                    relationSyncService
+                    .syncProjectRelations(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolsByScipionId={
+                            str(scipionProtocolId): protocol,
+                        },
+                        protocolDbIdByScipionId={
+                            str(scipionProtocolId): int(protocolDbId),
+                        },
+                        relationsByScipionId={
+                            str(scipionProtocolId): (
+                                relationSnapshot["relations"]
+                            ),
+                        },
+                    )
+                )
+
+                relationReport["sources"] = (
+                    relationSnapshot["sources"]
+                )
+
+                relationReport["sourceErrors"] = (
+                    relationSnapshot["errors"]
+                )
+
+            except Exception as relationError:
+                logger.exception(
+                    "Failed to synchronize PostgreSQL runtime relations. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    scipionProtocolId,
+                )
+
+                relationReport = {
+                    "relationsDeclared": 0,
+                    "relations": 0,
+                    "relationMissing": [],
+                    "relationErrors": [{
+                        "protocolId": str(scipionProtocolId),
+                        "error": str(relationError),
+                    }],
+                    "cleanup": [],
+                    "sources": [],
+                    "sourceErrors": [],
+                    "complete": False,
+                }
+
+        syncResult = {
+            "protocols": 1,
+            "dependencies": 0,
+            "inputRefs": 0,
+            "steps": len(steps or []),
+            "stepsProtocols": 1 if steps else 0,
+            "stepErrors": [],
+            "outputsDeclared": len(outputReport.get("declared") or []),
+            "outputs": len(outputReport.get("persisted") or []),
+            "outputsRemoved": len(
+                outputReport.get(
+                    "removed"
+                ) or []
+            ),
+            "outputsByKind": runtimeProtocolOutputPersistenceService.countRuntimeOutputKinds(
+                outputReport.get("persisted") or []
+            ),
+            "outputMissing": [],
+            "outputErrors": outputReport.get("errors") or [],
+            "postgresqlRuntimeSync": True,
+            "relationsSyncRequested": bool(syncRelations),
+            "protocolId": str(scipionProtocolId),
+            "protocolStatus": self._safeCall(protocol, "getStatus", None),
+            "outputsRegistered": bool(outputReport.get("persisted")),
+            "relationsDeclared": int(
+                relationReport.get("relationsDeclared") or 0
+            ),
+            "relations": int(
+                relationReport.get("relations") or 0
+            ),
+            "relationMissing": (
+                    relationReport.get("relationMissing") or []
+            ),
+            "relationErrors": (
+                    relationReport.get("relationErrors") or []
+            ),
+            "relationCleanup": (
+                    relationReport.get("cleanup") or []
+            ),
+            "relationSources": (
+                    relationReport.get("sources") or []
+            ),
+            "relationSourceErrors": (
+                    relationReport.get("sourceErrors") or []
+            ),
+        }
+
+        if returnProtocolContext:
+            syncResult["protocolContext"] = protocolContext
+
+        return syncResult
+
+    def _getCurrentProjectPath(self) -> Optional[str]:
+        project = getattr(self, "currentProject", None)
+
+        if project is None:
+            return None
+
+        for attrName in ("path", "_path"):
+            value = getattr(project, attrName, None)
+
+            if value:
+                return str(value)
+
+        try:
+            value = project.getPath()
+        except Exception:
+            return None
+
+        return str(value) if value else None
+
+    def _isRuntimeProtocolTerminal(self, protocol) -> bool:
+        for methodName in ("isFinished", "isFailed", "isAborted"):
+            method = getattr(protocol, methodName, None)
+            if callable(method):
+                try:
+                    if bool(method()):
+                        return True
+                except Exception:
+                    pass
+
+        statusValue = self._safeCall(protocol, "getStatus", None)
+        statusText = str(statusValue or "").strip().lower()
+
+        return statusText in {
+            "finished",
+            "failed",
+            "aborted",
+            "interactive",
+        }
+
+    def _syncLegacyProjectGraphToPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            refresh: bool = False,
+            checkPid: bool = False,
+            strict: bool = False,
+            syncRelations: bool = False,
+            outputProjectPaths: Optional[Sequence[str]] = None,
+            allowDetachedSetOutputs: bool = False,
+            prepareProtocolForOutputPersistenceCallback: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        """
+        Import a complete legacy Scipion project graph into PostgreSQL.
+
+        This method is restricted to the old-project migration boundary.
+        Normal runtime mutations must synchronize only their explicitly
+        selected protocols, inputs, dependencies, outputs and relations.
+        """
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No legacy project loaded for PostgreSQL import",
+            )
+
+        runtimeProjectGraphSyncService = RuntimeProjectGraphSyncService()
+        registerOutputCallback = self.registerOutput
+        normalizedOutputProjectPaths = []
+
+        for candidatePath in outputProjectPaths or []:
+            if not candidatePath:
+                continue
+
+            normalizedPath = os.path.abspath(os.path.expanduser(str(candidatePath)))
+
+            if normalizedPath not in normalizedOutputProjectPaths:
+                normalizedOutputProjectPaths.append(normalizedPath)
+
+        if normalizedOutputProjectPaths or allowDetachedSetOutputs:
+            def registerOutputCallback(**kwargs):
+                return self.registerOutput(
+                    **kwargs,
+                    projectPaths=normalizedOutputProjectPaths,
+                    allowDetachedSetOutputs=allowDetachedSetOutputs,
+                )
+
+        return runtimeProjectGraphSyncService.syncLegacyProjectGraphToPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+            currentProject=self.currentProject,
+            buildProtocolContextCallback=self._buildProtocolContext,
+            tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            registerOutputCallback=registerOutputCallback,
+            shouldPreservePostgresqlOnlyProtocolsCallback=self._shouldPreservePostgresqlOnlyProtocols,
+            prepareProtocolForOutputPersistenceCallback=prepareProtocolForOutputPersistenceCallback,
+            refresh=refresh,
+            checkPid=checkPid,
+            strict=strict,
+            syncRelations=syncRelations,
+        )
+
+    def _migrateImportedProjectToPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            projectPath: str,
+            ownerId: int,
+            sourceProjectPath: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        project = None
+        projectMapperClosed = False
+
+        try:
+            project = self._loadLegacyProjectForImport(projectPath)
+
+            outputProjectPaths = [
+                os.path.abspath(
+                    os.path.expanduser(
+                        str(projectPath)
+                    )
+                )
+            ]
+
+            if sourceProjectPath:
+                normalizedSourceProjectPath = (
+                    os.path.abspath(
+                        os.path.expanduser(
+                            str(sourceProjectPath)
+                        )
+                    )
+                )
+
+                if (
+                        normalizedSourceProjectPath
+                        not in outputProjectPaths
+                ):
+                    outputProjectPaths.append(
+                        normalizedSourceProjectPath
+                    )
+
+            sqliteDbPath = os.path.abspath(
+                str(
+                    project.getDbPath()
+                )
+            )
+
+            with sqlite3.connect(
+                    sqliteDbPath
+            ) as sqliteConnection:
+                sqliteRow = (
+                    sqliteConnection
+                    .execute(
+                        """
+                        SELECT COALESCE(
+                                   MAX(id),
+                                   1
+                               )
+                          FROM Objects
+                        """
+                    )
+                    .fetchone()
+                )
+
+            maxSqliteObjectId = int(
+                sqliteRow[0]
+                if (
+                        sqliteRow
+                        and sqliteRow[0] is not None
+                )
+                else 1
+            )
+
+            importedProtocolIds = []
+
+            for importedProtocol in (
+                    project.getRuns()
+                    or []
+            ):
+                protocolId = getattr(
+                    importedProtocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+
+                try:
+                    protocolId = int(
+                        protocolId
+                    )
+                except Exception:
+                    continue
+
+                if (
+                        protocolId
+                        < POSTGRESQL_PROTOCOL_ID_START
+                        or protocolId
+                        >= POSTGRESQL_RUNTIME_OBJECT_ID_START
+                ):
+                    continue
+
+                importedProtocolIds.append(
+                    protocolId
+                )
+
+            maxSqliteProtocolId = max(
+                importedProtocolIds
+                or [
+                    POSTGRESQL_PROTOCOL_ID_START - 1
+                ]
+            )
+
+            nextProtocolIdFloor = max(
+                maxSqliteProtocolId + 1,
+                POSTGRESQL_PROTOCOL_ID_START,
+            )
+
+            initializedProtocolIdFloor = (
+                mapper.ensureProjectProtocolIdFloor(
+                    projectId=projectId,
+                    nextProtocolId=(
+                        nextProtocolIdFloor
+                    ),
+                )
+            )
+
+            legacyRuntimeProtocolLoaderService = LegacyRuntimeProtocolLoaderService()
+
+            def prepareImportedProtocolOutputs(
+                    *,
+                    protocolId,
+                    protocol,
+            ):
+                return legacyRuntimeProtocolLoaderService.loadProtocolFromRuntimeDb(protocolId=int(protocolId),
+                                                                                    currentProject=project,
+                                                                                    getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+                                                                                    protocol=protocol,
+                                                                                    projectPaths=outputProjectPaths)
+
+            migrationReport = (
+                self
+                ._syncLegacyProjectGraphToPostgresql(
+                    mapper=mapper,
+                    projectId=projectId,
+                    refresh=False,
+                    checkPid=False,
+                    strict=True,
+                    syncRelations=True,
+                    outputProjectPaths=outputProjectPaths,
+                    allowDetachedSetOutputs=True,
+                    prepareProtocolForOutputPersistenceCallback=prepareImportedProtocolOutputs,
+                )
+            )
+
+            migrationReport[
+                "sqliteIdentity"
+            ] = {
+                "database": sqliteDbPath,
+                "maxObjectId": (
+                    maxSqliteObjectId
+                ),
+                "maxProtocolId": (
+                    maxSqliteProtocolId
+                ),
+                "protocolsCount": len(
+                    importedProtocolIds
+                ),
+                "nextProtocolIdFloor": (
+                    initializedProtocolIdFloor
+                ),
+            }
+
+            migrationReport[
+                "outputProjectPaths"
+            ] = list(
+                outputProjectPaths
+            )
+
+            auditService = RuntimeProjectImportAuditService()
+
+            auditReport = auditService.auditProject(
+                mapper=mapper,
+                projectId=projectId,
+                migrationReport=migrationReport,
+            )
+
+            migrationReport["audit"] = auditReport
+
+            closeMapper = getattr(
+                project,
+                "closeMapper",
+                None,
+            )
+
+            if not callable(closeMapper):
+                raise RuntimeError(
+                    "Imported Scipion project does not "
+                    "expose closeMapper()"
+                )
+
+            closeMapper()
+            projectMapperClosed = True
+
+            self.clearCurrentProject()
+
+            lifecycleService = RuntimeProjectLifecycleService()
+
+            projectDatabaseCleanup = (
+                lifecycleService.removeLegacyProjectDatabase(
+                    projectPath=projectPath,
+                    projectDbPath=sqliteDbPath,
+                )
+            )
+
+            runDatabaseCleanup = (
+                lifecycleService.removeLegacyRunDatabases(
+                    projectPath=projectPath,
+                )
+            )
+
+            migrationReport[
+                "legacyProjectDatabaseCleanup"
+            ] = projectDatabaseCleanup
+
+            migrationReport[
+                "legacyRunDatabaseCleanup"
+            ] = runDatabaseCleanup
+
+            dbProject = mapper.getProject(
+                projectId=projectId,
+                userId=ownerId,
+            )
+
+            if not dbProject:
+                raise RuntimeError(
+                    "Imported project could not be loaded "
+                    "for PostgreSQL-only reconstruction"
+                )
+
+            postgresqlProject = None
+
+            try:
+                postgresqlProject = (
+                    self._loadPostgresqlRuntimeProject(
+                        mapper=mapper,
+                        projectId=projectId,
+                        projectPath=projectPath,
+                    )
+                )
+
+                postgresqlRuntimeAudit = (
+                    auditService.auditRuntimeProject(
+                        runtimeProject=postgresqlProject,
+                        projectPath=projectPath,
+                    )
+                )
+
+                loadedProject = (
+                    self.loadProjectFromPostgresql(
+                        dbProj=dbProject,
+                        mapper=mapper,
+                    )
+                )
+
+                postgresqlLoadAudit = (
+                    auditService.auditLoadedProject(
+                        loadedProject=loadedProject,
+                        migrationReport=migrationReport,
+                    )
+                )
+
+            finally:
+                if postgresqlProject is not None:
+                    try:
+                        postgresqlProject.closeMapper()
+                    except Exception:
+                        logger.debug(
+                            "Could not close PostgreSQL-only "
+                            "project after import audit. "
+                            "projectId=%s path=%s",
+                            projectId,
+                            projectPath,
+                            exc_info=True,
+                        )
+
+                self.clearCurrentProject()
+
+            migrationReport[
+                "postgresqlRuntimeAudit"
+            ] = postgresqlRuntimeAudit
+
+            migrationReport[
+                "postgresqlLoadAudit"
+            ] = postgresqlLoadAudit
+
+            migrationReport["postgresqlOnly"] = True
+            migrationReport["usesProjectSqlite"] = False
+            migrationReport["usesLegacyRunDatabases"] = False
+
+            return migrationReport
+
+        finally:
+            projectToClose = project or getattr(
+                self,
+                "currentProject",
+                None,
+            )
+
+            if (
+                    projectToClose is not None
+                    and not projectMapperClosed
+            ):
+                try:
+                    closeMapper = getattr(
+                        projectToClose,
+                        "closeMapper",
+                        None,
+                    )
+
+                    if callable(closeMapper):
+                        closeMapper()
+
+                except Exception:
+                    logger.debug(
+                        "Could not close imported project mapper. projectId=%s path=%s",
+                        projectId,
+                        projectPath,
+                        exc_info=True,
+                    )
+
+            self.clearCurrentProject()
+
+    def importProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectData,
+            currentUser,
+    ) -> dict:
+        rawLocation = (getattr(projectData, "projectLocation", None) or "").strip()
+        if not rawLocation:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="projectLocation is required",
+            )
+
+        try:
+            sourcePath = Path(rawLocation).expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source project path does not exist",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid source project path: {e}",
+            )
+
+        if not sourcePath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source project path must be a directory",
+            )
+
+        importMetadata = self._validateImportableScipionProject(
+            sourcePath
+        )
+        description = importMetadata["description"]
+        statusValue = importMetadata["status"]
+
+        requestedName = (getattr(projectData, "projectName", None) or "").strip()
+        rawName = requestedName or sourcePath.name
+        sanitizedName = self.sanitizeProjectName(rawName)
+
+        existingProjects = mapper.listProjects(ownerId=currentUser["id"]) or []
+
+        existingNames = set()
+        existingResolvedPaths = set()
+
+        for proj in existingProjects:
+            storedName = str(proj.get("name") or "").strip()
+            if not storedName:
+                continue
+
+            storedPath = Path(storedName)
+            if not storedPath.is_absolute():
+                storedPath = Path(self.manager.getProjectPath(storedName))
+
+            existingNames.add(os.path.basename(str(storedPath)))
+
+            try:
+                if storedPath.exists():
+                    existingResolvedPaths.add(str(storedPath.resolve()))
+            except Exception:
+                pass
+
+        if sanitizedName in existingNames:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A project with this name already exists: '{sanitizedName}'",
+            )
+
+        if str(sourcePath) in existingResolvedPaths:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This Scipion project is already imported for the current user",
+            )
+
+        targetPath = Path(self.manager.getProjectPath(sanitizedName)).expanduser()
+
+        if targetPath.exists() or targetPath.is_symlink():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Target project path already exists: '{targetPath}'",
+            )
+
+        try:
+            targetResolved = targetPath.resolve(strict=False)
+        except Exception:
+            targetResolved = targetPath
+
+        if sourcePath == targetPath or sourcePath == targetResolved:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source and target project paths cannot be the same",
+            )
+
+        runtimeProjectImportService = RuntimeProjectImportService()
+
+        try:
+            importResult = (
+                runtimeProjectImportService
+                .importProject(
+                    mapper=mapper,
+                    ownerId=currentUser["id"],
+                    sourcePath=sourcePath,
+                    targetPath=targetPath,
+                    projectsPath=self.projectsPath,
+                    description=description,
+                    statusValue=statusValue,
+                    migrateProjectCallback=(
+                        lambda projectId, projectPath: (
+                            self
+                            ._migrateImportedProjectToPostgresql(
+                                mapper=mapper,
+                                projectId=projectId,
+                                projectPath=projectPath,
+                                ownerId=currentUser["id"],
+                                sourceProjectPath=str(
+                                    sourcePath
+                                ),
+                            )
+                        )
+                    ),
+                )
+            )
+        except Exception as error:
+            logger.exception(
+                "Failed to import project. sourcePath=%s targetPath=%s",
+                sourcePath,
+                targetPath,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(error),
+            )
+
+        project = self._buildProjectOutFromPostgresqlRow(
+            mapper=mapper,
+            dbProj=importResult["project"],
+            currentUser=currentUser,
+            includeDiskUsage=True,
+        )
+
+        project["importReport"] = importResult["migration"]
+
+        return project
+
+    def updateProject(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict, projectData: ProjectUpdate):
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        currentPath = self._normalizeProjectPath(dbProj["name"])
+
+        if not os.path.lexists(currentPath):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project path not found on disk",
+            )
+
+        if not self._isManagedProjectPath(currentPath):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Renaming external imported projects is not supported",
+            )
+
+        newName = self.sanitizeProjectName(projectData.name)
+        newPath = self._normalizeProjectPath(self.manager.getProjectPath(newName))
+
+        if currentPath != newPath and os.path.lexists(newPath):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A project with this name already exists: '{newName}'",
+            )
+
+        try:
+            if self._isLinkedProjectPath(currentPath):
+                os.rename(currentPath, newPath)
+            else:
+                self.manager.renameProject(currentPath, newName)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to rename project: {e}",
+            )
+
+        description = projectData.description
+        if description is None:
+            description = dbProj.get("description")
+
+        project = mapper.updateProject(
+            projectId,
+            currentUser["id"],
+            newPath,
+            description,
+        )
+
+        return project
+
+    def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        projectPath = self._normalizeProjectPath(dbProj["name"])
+        isManagedEntry = self._isManagedProjectPath(projectPath)
+        isLinkedEntry = self._isLinkedProjectPath(projectPath)
+
+        deleted = mapper.deleteProject(projectId, currentUser["id"])
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        if isLinkedEntry:
+            try:
+                if os.path.lexists(projectPath):
+                    os.unlink(projectPath)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Project was unregistered but the symbolic link could not be removed: {e}",
+                )
+
+            return {"message": "Linked project unregistered successfully"}
+
+        if not isManagedEntry:
+            return {"message": "Project unregistered successfully"}
+
+        if not os.path.exists(projectPath):
+            return {"message": "Project deleted successfully"}
+
+        try:
+            cwd = self.manager.PROJECTS
+            self.manager.deleteProject(projectPath)
+            os.chdir(cwd)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Project was unregistered but the managed project folder could not be removed: {e}",
+            )
+
         return {"message": "Project deleted successfully"}
 
-    def updateProject(self, project_id: int, updated: ProjectUpdateRequest) -> dict:
-        """Update project name and description"""
-        if project_id not in self.projectList:
-            raise ValueError("Project not found")
-        project = self.projectList[project_id]
-        project["name"] = updated.name
-        project["description"] = updated.description
+    def _getProjectDisplayNameFromPostgresqlPath(self, storedProjectPath: Any) -> str:
+        pathText = str(storedProjectPath or "").strip()
+        if not pathText:
+            return ""
+
+        return Path(pathText).expanduser().name or pathText
+
+    def _countProjectProtocolsFromPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> int:
+        countProjectProtocols = getattr(mapper, "countProjectProtocols", None)
+        if not callable(countProjectProtocols):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL mapper does not expose countProjectProtocols",
+            )
+
+        try:
+            return int(countProjectProtocols(projectId) or 0)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(
+                "Failed to count project protocols from PostgreSQL. projectId=%s",
+                projectId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to count project protocols from PostgreSQL: {e}",
+            )
+
+    def _getProjectDiskUsageFromFilesystem(self, storedProjectPath: Any) -> str:
+        pathText = str(storedProjectPath or "").strip()
+        if not pathText:
+            return "0.00 GB"
+
+        projectPath = Path(pathText).expanduser()
+        if not projectPath.is_absolute():
+            projectPath = Path(self.manager.getProjectPath(str(projectPath)))
+
+        try:
+            realProjectPath = projectPath.resolve(strict=True)
+        except Exception:
+            realProjectPath = projectPath
+
+        try:
+            sizeGB = self.getProjectSize(str(realProjectPath)) / (1024 ** 3)
+        except Exception:
+            sizeGB = 0.0
+
+        return f"{sizeGB:.2f} GB"
+
+    def _buildProjectOutFromPostgresqlRow(
+            self,
+            mapper: PostgresqlFlatMapper,
+            dbProj: Dict[str, Any],
+            currentUser: dict,
+            includeDiskUsage: bool = True,
+    ) -> Dict[str, Any]:
+        projectId = int(dbProj["id"])
+        storedProjectPath = dbProj.get("name")
+        displayName = self._getProjectDisplayNameFromPostgresqlPath(storedProjectPath)
+
+        protocolsCount = self._countProjectProtocolsFromPostgresql(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        currentUserId = currentUser["id"]
+        isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUserId)
+        isShared = dbProj.get("isShared", False)
+        permission = dbProj.get("permission", "owner" if isOwner else "full")
+        projectOwnerId = dbProj.get("ownerId")
+        updatedAt = dbProj.get("updatedAt")
+
+        thumbnailVersion = "%s:%s:%s:postgresql" % (
+            projectId,
+            updatedAt or "",
+            protocolsCount,
+        )
+
+        diskUsage = (
+            self._getProjectDiskUsageFromFilesystem(storedProjectPath)
+            if includeDiskUsage
+            else "0.00 GB"
+        )
+
+        return {
+            "id": projectId,
+            "name": displayName,
+            "description": dbProj.get("description", ""),
+            "createdAt": dbProj.get("createdAt"),
+            "status": dbProj.get("status", "active"),
+            "protocolsCount": protocolsCount,
+            "diskUsage": diskUsage,
+            "isOwner": bool(isOwner),
+            "isShared": bool(isShared),
+            "permission": permission,
+            "projectOwnerId": projectOwnerId,
+            "updatedAt": updatedAt,
+            "thumbnailUrl": self.buildProjectThumbnailUrl(projectId),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(projectId),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(projectId),
+            "thumbnailVersion": thumbnailVersion,
+        }
+
+    def getProjectSummaryFromPostgresql(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            includeDiskUsage: bool = False,
+    ) -> Optional[dict]:
+        """
+        Return project metadata from PostgreSQL without loading Scipion runtime.
+
+        This is the cheap read path for project screens that only need project
+        metadata. It must not load a Scipion runtime project, refresh runs,
+        check PIDs or populate currentProject.
+        """
+        dbProj = mapper.getProject(
+            projectId=projectId,
+            userId=currentUser["id"],
+        )
+
+        if not dbProj:
+            return None
+
+        return self._buildProjectOutFromPostgresqlRow(
+            mapper=mapper,
+            dbProj=dbProj,
+            currentUser=currentUser,
+            includeDiskUsage=includeDiskUsage,
+        )
+
+    def listProjects(self, mapper: PostgresqlFlatMapper, currentUser) -> List[dict]:
+        """
+        List all projects visible for the current user using PostgreSQL only.
+
+        This endpoint should not load Scipion projects nor scan project folders.
+        It is used by the project list screen, so it must stay cheap even when
+        projects contain many runs or large files.
+        """
+        dbProjects = mapper.listProjects(ownerId=currentUser["id"]) or []
+
+        result = []
+        for dbProj in dbProjects:
+            if not dbProj.get("name"):
+                continue
+
+            result.append(
+                self._buildProjectOutFromPostgresqlRow(
+                    mapper=mapper,
+                    dbProj=dbProj,
+                    currentUser=currentUser,
+                    includeDiskUsage=True,
+                )
+            )
+
+        return result
+
+    def shareProjectWithUser(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            targetUserIds: list,
+            permission: str = "full",
+    ) -> dict:
+        """
+        Share a project owned by currentUser with another user.
+
+        Only the project owner is allowed to call this method.
+        """
+        # Ensure project exists and is owned by currentUser
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found or you are not the owner",
+            )
+
+        if targetUserIds == currentUser["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot share a project with yourself",
+            )
+
+        for userId in targetUserIds:
+            shareRow = mapper.shareProjectWithUser(
+                projectId=projectId,
+                targetUserId=int(userId),
+                permission=permission or "full",
+            )
+
+        return {
+            "id": shareRow["id"],
+            "projectId": shareRow["projectId"],
+            "userId": shareRow["userId"],
+            "permission": shareRow["permission"],
+            "createdAt": shareRow.get("createdAt"),
+            "updatedAt": shareRow.get("updatedAt"),
+        }
+
+    def listProjectShares(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+    ) -> List[dict]:
+        """
+        List users that have access to a project.
+
+        Only the project owner is allowed to call this method.
+        """
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found or you are not the owner",
+            )
+
+        return mapper.listProjectShares(projectId)
+
+    def revokeProjectShareForUser(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            targetUserId: int,
+            currentUser: dict,
+    ) -> dict:
+        """
+        Revoke project access for targetUserId.
+        Only the project owner is allowed to perform this action.
+        """
+        # Ensure currentUser has access and get full project row
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Ensure current user is the owner
+        if int(dbProj["ownerId"]) != int(currentUser["id"]):
+            raise HTTPException(status_code=403, detail="Only project owner can revoke shares")
+
+        # Prevent removing owner from a project
+        if int(targetUserId) == int(currentUser["id"]):
+            raise HTTPException(status_code=400, detail="Owner cannot be removed from the project")
+
+        deleted = mapper.revokeProjectShare(projectId=projectId, userId=targetUserId)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Share entry not found")
+
+        return {"success": True}
+
+    def getProjectById(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+    ) -> Optional[dict]:
+        # Retrieve project from PostgreSQL using the mapper
+        userId = currentUser["id"]
+        dbProj = mapper.getProject(projectId=projectId, userId=userId)
+        if not dbProj:
+            return None
+
+        projectPath = dbProj["name"]
+        if not os.path.exists(projectPath):
+            return None
+
+        project = self.loadProjectFromPostgresql(
+            dbProj=dbProj,
+            mapper=mapper,
+        )
+
         return project
+
+    def getProjectEffectiveSettings(
+            self,
+            mapper,
+            projectId: int,
+            currentUser: Any,
+    ) -> Dict[str, Any]:
+        # getProjectEffectiveSettings
+        project = self.getProjectDbRow(mapper, projectId, currentUser)
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        settingsService = SettingsService()
+
+        userSettings = None
+        instanceSettings = None
+        hostSettings = None
+
+        # userSettings
+        try:
+            userSettings = settingsService.getUserSettings(mapper, currentUser)
+            if hasattr(userSettings, "model_dump"):
+                userSettings = userSettings.model_dump()
+            elif hasattr(userSettings, "dict"):
+                userSettings = userSettings.dict()
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Error loading user settings for project %s: %s", projectId, e)
+            userSettings = None
+
+        # runtimeInstanceSettings
+        try:
+            instanceSettings = settingsService.getRuntimeInstanceSettings(mapper, currentUser)
+        except Exception as e:
+            logger.exception("Error loading runtime instance settings for project %s: %s", projectId, e)
+            instanceSettings = None
+
+        # runtimeHostSettings
+        try:
+            hostSettings = settingsService.getRuntimeHostSettings(mapper, currentUser)
+        except Exception as e:
+            logger.exception("Error loading runtime host settings for project %s: %s", projectId, e)
+            hostSettings = None
+
+        return {
+            "projectId": projectId,
+            "settings": {
+                "user": userSettings,
+                "instance": instanceSettings,
+                "host": hostSettings,
+            },
+        }
+
+    def getProjectDbRow(self, mapper: PostgresqlFlatMapper, projectId: int, currentUser: dict) -> Optional[dict]:
+        dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        if not dbProj:
+            return None
+
+        projectPath = dbProj.get("name")
+        if not projectPath:
+            return None
+
+        if not os.path.isabs(projectPath):
+            projectPath = self.manager.getProjectPath(projectPath)
+
+        if not os.path.exists(projectPath):
+            return None
+
+        dbProj = dict(dbProj)
+        dbProj["name"] = projectPath
+        return dbProj
+
+    def loadPostgresqlRuntimeProjectForMutation(self, mapper: PostgresqlFlatMapper,
+                                                projectId: int, currentUser: dict) -> Optional[dict]:
+        """
+        Load only the PostgreSQL-aware Scipion runtime context required
+        to mutate or execute protocols.
+
+        This path intentionally avoids:
+          - loading the complete runs graph;
+          - building the project graph response;
+          - loading the legacy ScipionProject first and replacing it later.
+        """
+        dbProj = self.getProjectDbRow(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+
+        if not dbProj:
+            return None
+
+        projectPath = str(
+            dbProj["name"]
+        )
+
+        self._loadPostgresqlRuntimeProject(
+            mapper=mapper,
+            projectId=projectId,
+            projectPath=projectPath,
+        )
+
+        logger.info("Loaded lightweight PostgreSQL runtime mutation context. projectId=%s path=%s", projectId, projectPath)
+
+        return dbProj
+
+    def loadProjectForThumbnails(
+            self,
+            dbProj: dict,
+            mapper: PostgresqlFlatMapper,
+    ):
+        """
+        Load the project runtime required by thumbnail operations.
+
+        Thumbnail endpoints are PostgreSQL-only and must never load
+        project.sqlite.
+        """
+        projectPath = Path(
+            dbProj["name"]
+        )
+
+        if mapper is None:
+            raise RuntimeError(
+                "Cannot load PostgreSQL thumbnail "
+                "project context: PostgreSQL mapper "
+                "is required. projectPath=%s"
+                % projectPath
+            )
+
+        projectId = self._toPersistedOutputInt(dbProj.get("id"))
+
+        if projectId is None:
+            raise RuntimeError(
+                "Cannot load PostgreSQL thumbnail "
+                "project context: project id is missing."
+            )
+
+        return self._loadPostgresqlRuntimeProject(
+                mapper=mapper,
+                projectId=projectId,
+                projectPath=str(
+                    projectPath),)
 
     @staticmethod
     def getProjectSize(path: Path) -> int:
-        """Return project folder size in bytes"""
         result = subprocess.run(["du", "-sb", path], stdout=subprocess.PIPE, text=True)
-        return int(result.stdout.split()[0])
+        return int(result.stdout.split()[0]) if result.stdout else 0
 
     @staticmethod
     def countProtocols(path: str) -> int:
-        """Count the number of protocol directories"""
-        return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        try:
+            return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
+        except Exception:
+            return 0
 
     @staticmethod
-    def buildProtocolsGraph(runs) -> dict:
-        """Build graph of protocol dependencies and statuses"""
-        nodesDict = runs._nodesDict
-        graphData = {}
-        for nodeId, nodeObj in nodesDict.items():
-            childrenIds = [child.getName() for child in nodeObj._children]
-            parentIds = [parent.getName() for parent in nodeObj._parents]
-            status = nodeObj.run.getStatus() if nodeObj.run else ''
+    def _buildProjectThumbnailVersion(
+            projectPath: str,
+            projectId,
+            updatedAt=None,
+            protocolsCount: int = 0,
+    ) -> str:
+        # _buildProjectThumbnailVersion
+        runsPath = os.path.join(projectPath, "Runs")
+
+        try:
+            runsMtime = int(os.path.getmtime(runsPath)) if os.path.exists(runsPath) else 0
+        except Exception:
+            runsMtime = 0
+
+        updatedText = str(updatedAt) if updatedAt is not None else ""
+
+        return f"{projectId}:{updatedText}:{protocolsCount}:{runsMtime}"
+
+    def _toPersistedOutputInt(self, value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            pass
+
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return None
+
+    def _toPersistedOutputFloat(self, value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+
+        try:
+            return float(value)
+        except Exception:
+            pass
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+
+        try:
+            return float(match.group(0))
+        except Exception:
+            return None
+
+    def _loadPersistedOutputsByProtocolId(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.loadPersistedOutputsByProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+    def _formatProtocolElapsedSecondsFromPostgresql(self, value: Any) -> str:
+        elapsedSeconds = self._toPersistedOutputFloat(value)
+        if elapsedSeconds is None or elapsedSeconds <= 0:
+            return ""
+
+        return str(int(elapsedSeconds))
+
+    def buildProtocolsGraph(
+            self,
+            projectId: int,
+            protocolRows: List[Dict[str, Any]],
+            tags: Dict[str, List[str]],
+            dependencyMap: Optional[Dict[str, Dict[str, List[str]]]] = None,
+            runMap: Optional[Dict[str, Any]] = None,
+            persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+            protocolStepSummaryByProtocolId: Optional[Dict[str, Dict[str, Any]]] = None,
+            inputRefsByProtocolId: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+            allowRuntimeFallback: bool = True,
+    ) -> dict:
+        """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
+        graphData: Dict[str, Any] = {}
+        adjacency = dependencyMap or {}
+        liveRuns = runMap or {}
+        persistedOutputsByProtocolId = persistedOutputsByProtocolId or {}
+        protocolStepSummaryByProtocolId = protocolStepSummaryByProtocolId or {}
+        inputRefsByProtocolId = inputRefsByProtocolId or {}
+        runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
+
+        def sortKey(row: Dict[str, Any]):
+            raw = str(row.get("protocolId") or "")
+            try:
+                return (0, int(raw))
+            except Exception:
+                return (1, raw)
+
+        orderedRows = sorted(protocolRows or [], key=sortKey)
+
+        protocolIds: List[str] = []
+        for row in orderedRows:
+            rawId = row.get("protocolId")
+            if rawId is None:
+                continue
+            protocolIds.append(str(rawId))
+
+        # Root node synthesized from DB graph:
+        # protocols without parents hang directly from PROJECT
+        rootChildren = [
+            pid for pid in protocolIds
+            if not (adjacency.get(pid, {}).get("parents") or [])
+        ]
+
+        projectLabel = "PROJECT"
+        try:
+            if self.currentProject is not None:
+                projectLabel = os.path.basename(self.currentProject.getPath()) or "PROJECT"
+        except Exception:
+            projectLabel = "PROJECT"
+
+        graphData["PROJECT"] = {
+            "protocolId": "PROJECT",
+            "children": rootChildren,
+            "parents": [],
+            "label": projectLabel,
+            "status": "",
+            "parameter": [],
+            "inputs": [],
+            "outputs": [],
+            "cpuTime": "",
+            "elapsedTime": "",
+            "isInteractive": False,
+            "numberOfSteps": 0,
+            "stepsDone": 0,
+            "tags": [],
+            "thumbnailUrl": None,
+            "thumbnailRebuildUrl": None,
+        }
+
+        for row in orderedRows:
+            rawNodeId = row.get("protocolId")
+            if rawNodeId is None:
+                continue
+
+            nodeId = str(rawNodeId)
+            persistedOutputsByName = persistedOutputsByProtocolId.get(nodeId, {})
+            stepSummary = protocolStepSummaryByProtocolId.get(nodeId, {}) or {}
+            persistedInputRefs = inputRefsByProtocolId.get(nodeId, [])
+            nodeDeps = adjacency.get(nodeId, {"parents": [], "children": []})
+            childrenIds = list(nodeDeps.get("children") or [])
+            parentIds = list(nodeDeps.get("parents") or [])
+
+            statusValue = row.get("status")
+            status = str(statusValue) if statusValue is not None else ""
+
+            protocolClassName = str(row.get("protocolClassName") or "")
+
+            params = row.get("params") or {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except Exception:
+                    params = {}
+
+            if not isinstance(params, dict):
+                params = {}
+
+            runtimeMetadata = params.get(
+                RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY
+            ) or {}
+
+            if not isinstance(runtimeMetadata, dict):
+                runtimeMetadata = {}
+
+            def getParamValue(*names):
+                for name in names:
+                    if name not in params:
+                        continue
+
+                    value = params.get(name)
+
+                    if isinstance(value, dict):
+                        for valueKey in (
+                                "value",
+                                "editableValue",
+                                "default",
+                                "objValue",
+                                "_value",
+                        ):
+                            if valueKey in value:
+                                value = value.get(valueKey)
+                                break
+
+                    if value is None:
+                        continue
+
+                    text = str(value).strip()
+                    if text and text.lower() not in ("none", "null"):
+                        return text
+
+                return ""
+
+            storedRunName = getParamValue(
+                "runName",
+                "_runName",
+            )
+
+            storedTitle = getParamValue(
+                "title",
+                "_title",
+                "objLabel",
+                "_objLabel",
+            )
+
+            storedComment = getParamValue(
+                "_objComment",
+                "objComment",
+                "comment",
+                "_comment",
+            )
+
+            label = storedTitle or storedRunName or protocolClassName or nodeId
+
+            inputs = []
+            outputs = []
+            seenOutputNames = set()
+
+            cpuTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                runtimeMetadata.get("cpuTimeSeconds")
+            )
+
+            elapsedTimeSeconds = runtimeProtocolStatusSyncService.getEffectiveElapsedTimeSeconds(runtimeMetadata,
+                                                                                                 status,
+                                                                                                 fallbackElapsedSeconds=stepSummary.get(
+                                                                                                     "elapsedSeconds"))
+            elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
+            isinteractive = bool(stepSummary.get("isInteractive"))
+            numberOfSteps = self._toPersistedOutputInt(
+                stepSummary.get("numberOfSteps")
+            ) or 0
+            stepsDone = self._toPersistedOutputInt(
+                stepSummary.get("stepsDone")
+            ) or 0
+            thumbnailUrl = None
+            thumbnailRebuildUrl = None
+            runName = storedRunName
+            comment = storedComment
+            title = storedTitle
+
+            # Prefer the live protocol object coming from runs graph.
+            # Runtime fallback is optional so the graph can be built from PostgreSQL only.
+            protocol = liveRuns.get(nodeId)
+
+            if protocol is None and allowRuntimeFallback:
+                protocol = self._tryGetScipionProtocolByRuntimeId(nodeId)
+
+            if protocol is not None:
+                try:
+                    runtimeLabel = str(protocol) or ""
+                    if runtimeLabel:
+                        label = runtimeLabel
+                        if not title:
+                            title = runtimeLabel
+                except Exception:
+                    pass
+
+                try:
+                    runtimeRunName = protocol.runName.get()
+                    if runtimeRunName is None:
+                        runtimeRunName = protocol.getRunName()
+
+                    runtimeRunName = str(runtimeRunName or "").strip()
+                    if runtimeRunName:
+                        runName = runtimeRunName
+                except Exception:
+                    pass
+
+                try:
+                    comment = protocol._objComment
+                except Exception:
+                    pass
+
+                try:
+                    protStatus = protocol.getStatus()
+                    if protStatus:
+                        status = str(protStatus)
+                except Exception:
+                    pass
+
+                try:
+                    liveRuntimeMetadata = (
+                        RuntimeProtocolStatusSyncService()
+                        .buildRuntimeMetadata(protocol)
+                    )
+
+                    liveCpuTime = liveRuntimeMetadata.get(
+                        "cpuTimeSeconds"
+                    )
+
+                    if liveCpuTime is not None:
+                        cpuTime = self._formatProtocolElapsedSecondsFromPostgresql(
+                            liveCpuTime
+                        )
+
+                    liveElapsedTimeSeconds = self._toPersistedOutputFloat(liveRuntimeMetadata.get("elapsedTimeSeconds"))
+                    persistedElapsedTimeSeconds = self._toPersistedOutputFloat(elapsedTimeSeconds)
+
+                    if liveElapsedTimeSeconds is not None:
+                        elapsedTimeSeconds = max(persistedElapsedTimeSeconds or 0.0, liveElapsedTimeSeconds, 0.0)
+                        elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
+
+                except Exception:
+                    pass
+
+                try:
+                    isinteractive = bool(protocol.isInteractive())
+                except Exception:
+                    isinteractive = False
+
+                try:
+                    numberOfSteps = protocol.numberOfSteps
+                except Exception:
+                    numberOfSteps = 0
+
+                try:
+                    stepsDone = protocol.stepsDone
+                except Exception:
+                    stepsDone = 0
+
+                try:
+                    self.currentProject._fixProtParamsConfiguration(protocol)
+                except Exception:
+                    pass
+
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
+
+                try:
+                    for key, attr in protocol.iterInputAttributes():
+                        inputItem = {}
+                        try:
+                            inputItem["name"] = key
+                            inputItem["paramClass"] = "PointerParam"
+                            inputItem["pointerClass"] = attr.get().getClassName() if attr and attr.get() else ""
+                            inputItem["info"] = str(attr.get())
+                        except Exception:
+                            inputItem["pointerClass"] = ""
+                            inputItem["info"] = ""
+
+                        try:
+                            parentId = attr.getObjValue().getObjId()
+                            inputItem["value"] = "%s.%s" % (str(parentId), attr.getExtended())
+                            inputItem["parentId"] = parentId
+                        except Exception:
+                            inputItem["value"] = ""
+                            inputItem["parentId"] = None
+
+                        inputs.append(inputItem)
+                except Exception:
+                    inputs = []
+
+                try:
+                    for key, attr in protocol.iterOutputAttributes():
+                        outputName = str(key)
+                        seenOutputNames.add(outputName)
+
+                        outputItem = {}
+                        outputItem["name"] = key
+                        outputItem["paramClass"] = "PointerParam"
+                        outputItem["pointerClass"] = attr.__class__.__name__
+
+                        try:
+                            outputItem["info"] = attr.__str__()
+                        except Exception:
+                            outputItem["info"] = ""
+
+                        try:
+                            parentId = protocol.getObjId()
+                            outputItem["value"] = "%s.%s" % (str(parentId), key)
+                            outputItem["parentId"] = parentId
+                        except Exception:
+                            outputItem["value"] = ""
+                            outputItem["parentId"] = None
+
+                        persistedOutput = persistedOutputsByName.get(outputName)
+                        outputItem["persisted"] = bool(persistedOutput)
+                        outputItem["persistence"] = persistedOutput
+                        if not outputItem.get("info") and persistedOutput:
+                            outputItem["info"] = persistedOutput.get("info") or ""
+
+                        outputs.append(outputItem)
+
+                except Exception:
+                    outputs = []
+                    seenOutputNames = set()
+
+            else:
+                try:
+                    protocolIdInt = int(nodeId)
+                    thumbnailUrl = self.buildProtocolThumbnailUrl(projectId, protocolIdInt)
+                    thumbnailRebuildUrl = self.buildProtocolThumbnailRebuildUrl(projectId, protocolIdInt)
+                except Exception:
+                    thumbnailUrl = None
+                    thumbnailRebuildUrl = None
+
+            if not inputs:
+                for inputRef in persistedInputRefs:
+                    inputName = str(
+                        inputRef.get("inputName") or ""
+                    ).strip()
+
+                    if not inputName:
+                        continue
+
+                    parentProtocolId = inputRef.get("parentProtocolId")
+                    parentOutputName = str(
+                        inputRef.get("parentOutputName") or ""
+                    ).strip()
+                    objectId = inputRef.get("objectId")
+
+                    value = ""
+
+                    if parentProtocolId not in (None, ""):
+                        value = str(parentProtocolId)
+
+                        if parentOutputName:
+                            value = "%s.%s" % (
+                                value,
+                                parentOutputName,
+                            )
+                    elif objectId not in (None, ""):
+                        value = str(objectId)
+
+                    inputs.append({
+                        "name": inputName,
+                        "paramClass": "PointerParam",
+                        "pointerClass": str(
+                            inputRef.get("objectClassName") or ""
+                        ),
+                        "info": (
+                                parentOutputName
+                                or str(inputRef.get("objectClassName") or "")
+                        ),
+                        "value": value,
+                        "parentId": parentProtocolId,
+                        "itemIndex": int(
+                            inputRef.get("itemIndex") or 0
+                        ),
+                        "objectId": objectId,
+                        "persisted": True,
+                    })
+
+            # Add persisted outputs even when there is no runtime protocol object.
+            # If runtime already provided the output, only enrich that runtime output above.
+            for outputName, persistedOutput in persistedOutputsByName.items():
+                if outputName in seenOutputNames:
+                    continue
+
+                outputs.append({
+                    "name": outputName,
+                    "paramClass": "PointerParam",
+                    "pointerClass": persistedOutput.get("className") or "",
+                    "info": persistedOutput.get("info") or "",
+                    "value": "%s.%s" % (nodeId, outputName),
+                    "parentId": nodeId,
+                    "persisted": True,
+                    "persistence": persistedOutput,
+                })
+
             graphData[nodeId] = {
-                "id": nodeId,
+                "protocolId": nodeId,
                 "children": childrenIds,
                 "parents": parentIds,
-                "label": nodeObj.getLabel(),
+                "label": label,
+                "title": title,
+                "runName": runName,
+                "comment": comment,
                 "status": status,
-                "parameter": []
+                "parameter": [],
+                "inputs": inputs,
+                "outputs": outputs,
+                "cpuTime": cpuTime,
+                "elapsedTime": elapsedTime,
+                "isInteractive": isinteractive,
+                "numberOfSteps": numberOfSteps,
+                "stepsDone": stepsDone,
+                "tags": tags.get(nodeId, []),
+                "thumbnailUrl": thumbnailUrl,
+                "thumbnailRebuildUrl": thumbnailRebuildUrl,
             }
+
         return graphData
 
-    def loadProject(self, projectId: str) -> Any:
-        """Load project from disk and return metadata and protocol graph"""
-        from pyworkflow import Config
-        projPath = self.manager.getProjectPath(projectId)
-        if os.path.exists(projPath):
-            Config.setDomain("pwem")
-            self.currentProject = Project(pyworkflow.Config.getDomain(), projPath)
-            self.currentProject.load(dbPath=self.currentProject.getDbPath())
-            runs = self.currentProject.getRunsGraph(refresh=True, checkPids=True)
-            graphData = self.buildProtocolsGraph(runs)
+    def _loadProjectGraphDataFromPostgresql(
+            self,
+            mapper: Optional[PostgresqlFlatMapper],
+            projectId: int,
+    ) -> Dict[str, Any]:
+        """
+        Load all PostgreSQL-backed data needed to build the project protocol graph.
+
+        This method does not touch Scipion runtime. It only reads PostgreSQL
+        protocol rows, dependencies, tags and persisted output summaries.
+        """
+        tags: Dict[str, List[str]] = {}
+        dependencyMap: Dict[str, Dict[str, List[str]]] = {}
+        protocolRows: List[Dict[str, Any]] = []
+        persistedOutputsByProtocolId: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        protocolStepSummaryByProtocolId: Dict[str, Dict[str, Any]] = {}
+        inputRefsByProtocolId: Dict[str, List[Dict[str, Any]]] = {}
+
+        if mapper is None:
+            return {
+                "tags": tags,
+                "dependencyMap": dependencyMap,
+                "protocolRows": protocolRows,
+                "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+                "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
+                "inputRefsByProtocolId": inputRefsByProtocolId,
+            }
+
+        try:
+            tags = mapper.getProjectProtocolTagIdsByProtocolId(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol tags from PostgreSQL for project %s",
+                projectId,
+            )
+            tags = {}
+
+        try:
+            dependencyMap = mapper.getProjectProtocolAdjacencyMap(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol dependencies from PostgreSQL for project %s",
+                projectId,
+            )
+            dependencyMap = {}
+
+        try:
+            inputRefs = mapper.listProtocolInputRefs(
+                projectId
+            ) or []
+
+            for inputRef in inputRefs:
+                protocolId = str(
+                    inputRef.get("protocolId") or ""
+                ).strip()
+
+                if not protocolId:
+                    continue
+
+                inputRefsByProtocolId.setdefault(
+                    protocolId,
+                    [],
+                ).append(dict(inputRef))
+
+        except Exception:
+            logger.exception(
+                "Failed to load protocol input refs from PostgreSQL for project %s",
+                projectId,
+            )
+            inputRefsByProtocolId = {}
+
+        try:
+            getStepSummary = getattr(
+                mapper,
+                "getProjectProtocolStepSummaryByProtocolId",
+                None,
+            )
+            if callable(getStepSummary):
+                protocolStepSummaryByProtocolId = getStepSummary(projectId) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load protocol step summaries from PostgreSQL for project %s",
+                projectId,
+            )
+            protocolStepSummaryByProtocolId = {}
+
+        try:
+            protocolRows = mapper.getProtocols(projectId) or []
+        except Exception:
+            logger.exception(
+                "Failed to load protocol rows from PostgreSQL for project %s",
+                projectId,
+            )
+            protocolRows = []
+
+        try:
+            persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
+                mapper,
+                projectId,
+            ) or {}
+        except Exception:
+            logger.exception(
+                "Failed to load persisted Scipion outputs for graph. projectId=%s",
+                projectId,
+            )
+            persistedOutputsByProtocolId = {}
+
+        return {
+            "tags": tags,
+            "dependencyMap": dependencyMap,
+            "protocolRows": protocolRows,
+            "persistedOutputsByProtocolId": persistedOutputsByProtocolId,
+            "protocolStepSummaryByProtocolId": protocolStepSummaryByProtocolId,
+            "inputRefsByProtocolId": inputRefsByProtocolId,
+        }
+
+    def loadProjectFromPostgresql(
+            self,
+            dbProj: dict,
+            mapper: PostgresqlFlatMapper,
+    ) -> dict:
+        """
+        Load a project workflow tree using PostgreSQL only.
+
+        This method must not instantiate ScipionProject, must not load the
+        Scipion sqlite project and must not refresh the Scipion runs graph.
+        """
+        projPath = Path(dbProj['name'])
+
+        pgGraphData = self._loadProjectGraphDataFromPostgresql(
+            mapper=mapper,
+            projectId=dbProj['id'],
+        )
+
+        graphData = self.buildProtocolsGraph(
+            dbProj['id'],
+            pgGraphData["protocolRows"],
+            pgGraphData["tags"],
+            dependencyMap=pgGraphData["dependencyMap"],
+            runMap={},
+            persistedOutputsByProtocolId=pgGraphData["persistedOutputsByProtocolId"],
+            protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
+            inputRefsByProtocolId=pgGraphData.get("inputRefsByProtocolId"),
+            allowRuntimeFallback=False,
+        )
+
+        projectLabel = os.path.basename(
+            str(dbProj.get("name") or "")
+        ) or "PROJECT"
+
+        projectRoot = graphData.get("PROJECT")
+        if isinstance(projectRoot, dict):
+            projectRoot["label"] = projectLabel
+
+        return {
+            "id": dbProj['id'],
+            "name": dbProj['name'],
+            "shortName": os.path.basename(dbProj['name']),
+            "createdAt": str(dbProj['createdAt']),
+            "status": str(dbProj['status']),
+            "path": projPath,
+            "protocols": graphData,
+            "thumbnailUrl": self.buildProjectThumbnailUrl(dbProj['id']),
+            "thumbnailRebuildUrl": self.buildProjectThumbnailRebuildUrl(dbProj['id']),
+            "thumbnailItemsUrl": self.buildProjectThumbnailItemsUrl(dbProj['id']),
+        }
+
+    def listProjectWorkflows(self, raw: bool = False):
+        """
+        Return available workflow templates.
+
+        By default this method returns JSON-serializable workflow objects
+        with parsed content and a small preview graph for the frontend.
+
+        If raw=True, return the original Template objects. This is useful for
+        internal operations such as applyWorkflowToProject, where the selected
+        template object needs replaceEnvVariables() and createTemplateFile().
+        """
+        def getValue(item: Any, key: str, default: Any = None) -> Any:
+            if isinstance(item, dict):
+                return item.get(key, default)
+            return getattr(item, key, default)
+
+        def safeString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value)
+
+        def makeWorkflowId(source: Any, name: Any, fallbackIndex: int) -> str:
+            sourceText = safeString(source).strip()
+            nameText = safeString(name).strip()
+
+            if sourceText and nameText:
+                return "%s:%s" % (sourceText, nameText)
+
+            if nameText:
+                return nameText
+
+            return str(fallbackIndex)
+
+        def parseWorkflowContent(rawContent: Any) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+            if rawContent is None:
+                return [], None
+
+            if isinstance(rawContent, list):
+                return [item for item in rawContent if isinstance(item, dict)], None
+
+            if isinstance(rawContent, str):
+                text = rawContent.strip()
+                if not text:
+                    return [], None
+
+                text = self._extractWorkflowJsonText(text)
+
+                try:
+                    parsed = json.loads(text)
+                except Exception as e:
+                    return [], "Invalid workflow content JSON: %s" % e
+
+                if isinstance(parsed, list):
+                    return [item for item in parsed if isinstance(item, dict)], None
+
+                return [], "Workflow content JSON is not a list."
+
+            return [], "Unsupported workflow content format."
+
+        def normalizeParams(rawParams: Any) -> Any:
+            if rawParams is None:
+                return None
+
+            if isinstance(rawParams, collections.OrderedDict):
+                return dict(rawParams)
+
+            if isinstance(rawParams, dict):
+                return rawParams
+
+            try:
+                return dict(rawParams)
+            except Exception:
+                return rawParams
+
+        def iterReferenceValues(value: Any) -> List[Tuple[str, str]]:
+            refs: List[Tuple[str, str]] = []
+
+            if isinstance(value, str):
+                for match in re.finditer(r"\b(\d+)\.([A-Za-z_][A-Za-z0-9_\.]*)\b", value.strip()):
+                    refs.append((match.group(1), match.group(2)))
+                return refs
+
+            if isinstance(value, list):
+                for item in value:
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            if isinstance(value, dict):
+                for item in value.values():
+                    refs.extend(iterReferenceValues(item))
+                return refs
+
+            return refs
+
+        def buildWorkflowPreviewGraph(protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
+            nodeIds: TypingSet[str] = set()
+            nodes: List[Dict[str, Any]] = []
+            edges: List[Dict[str, Any]] = []
+
+            for index, protocol in enumerate(protocols):
+                protocolId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not protocolId:
+                    protocolId = str(index)
+
+                nodeIds.add(protocolId)
+
+                className = safeString(
+                    protocol.get("object.className")
+                    or protocol.get("className")
+                    or ""
+                ).strip()
+
+                label = safeString(
+                    protocol.get("object.label")
+                    or protocol.get("label")
+                    or protocol.get("runName")
+                    or className
+                    or protocolId
+                ).strip()
+
+                comment = safeString(
+                    protocol.get("object.comment")
+                    or protocol.get("comment")
+                    or ""
+                ).strip()
+
+                nodes.append(
+                    {
+                        "id": protocolId,
+                        "protocolId": protocolId,
+                        "className": className,
+                        "label": label,
+                        "comment": comment,
+                        "runName": protocol.get("runName"),
+                        "order": index,
+                    }
+                )
+
+            edgeSeen: TypingSet[Tuple[str, str, str, str]] = set()
+
+            for index, protocol in enumerate(protocols):
+                targetId = safeString(
+                    protocol.get("object.id")
+                    or protocol.get("id")
+                    or index
+                ).strip()
+
+                if not targetId:
+                    targetId = str(index)
+
+                for paramName, value in protocol.items():
+                    if str(paramName).startswith("object."):
+                        continue
+
+                    refs = iterReferenceValues(value)
+
+                    for sourceId, outputName in refs:
+                        if sourceId not in nodeIds:
+                            continue
+
+                        edgeKey = (sourceId, targetId, outputName, str(paramName))
+                        if edgeKey in edgeSeen:
+                            continue
+
+                        edgeSeen.add(edgeKey)
+
+                        edges.append(
+                            {
+                                "id": "%s:%s->%s:%s" % (sourceId, outputName, targetId, paramName),
+                                "source": sourceId,
+                                "target": targetId,
+                                "sourceOutput": outputName,
+                                "targetParam": str(paramName),
+                            }
+                        )
+
+            childIds = {edge["target"] for edge in edges}
+            rootIds = [node["id"] for node in nodes if node["id"] not in childIds]
 
             return {
-                "id": self.currentProject.getName(),
-                "name": self.currentProject.getName(),
-                "created_at": str(self.currentProject.getCreationTime()),
-                "path": projPath,
-                "protocols": graphData
+                "nodes": nodes,
+                "edges": edges,
+                "rootIds": rootIds,
             }
-        return None
 
-    def loadProjects(self) -> None:
-        """Load all existing projects from disk into memory"""
-        projects = self.manager.listProjects()
-        self.currentProject = None
-        for project in projects:
-            projectSize = self.getProjectSize(project.path) / (1024 ** 3)
-            protocolCount = self.countProtocols(os.path.join(project.path, 'Runs'))
-            self.projectList[project.getName()] = {
-                "id": project.getName(),
-                "name": project.getName(),
-                "description": project.getName(),
-                "created_at": project.getCreationTime(),
-                "status": "created",
-                "protocolsCount": f"{protocolCount}",
-                "diskUsage": f"Total size: {projectSize:.2f} GB"
-            }
+        tempList = TemplateList()
+        tempId = None
+
+        if not (tempId is not None and len(tempList.templates) == 1):
+            tempList.addPluginTemplates(tempId)
+
+        templates = tempList.sortListByPluginName().templates
+
+        if raw:
+            return templates
+
+        workflows: List[Dict[str, Any]] = []
+        pluginAvailabilityCache: Dict[str, bool] = {}
+
+        for index, template in enumerate(templates or []):
+            try:
+                source = getValue(template, "source")
+                name = getValue(template, "name")
+                description = getValue(template, "description")
+                rawContent = getValue(template, "content")
+                params = normalizeParams(getValue(template, "params"))
+                projectName = getValue(template, "projectName")
+                templatePath = getValue(template, "templatePath")
+                templateIdValue = getValue(template, "id")
+
+                protocols, parseError = parseWorkflowContent(rawContent)
+                previewGraph = buildWorkflowPreviewGraph(protocols)
+
+                requiredPluginNames = []
+                missingPluginNames = []
+
+                if isinstance(rawContent, str):
+                    requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
+
+                if not requiredPluginNames and templatePath:
+                    try:
+                        templateText = Path(str(templatePath)).expanduser().read_text(encoding="utf-8")
+                        requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
+                    except Exception:
+                        requiredPluginNames = []
+
+                missingPluginNames = self._getMissingWorkflowPluginNames(
+                    requiredPluginNames,
+                    availabilityCache=pluginAvailabilityCache,
+                )
+
+                workflowId = safeString(templateIdValue).strip()
+                if not workflowId:
+                    workflowId = makeWorkflowId(source, name, index)
+
+                workflows.append(
+                    {
+                        "id": workflowId,
+                        "source": safeString(source),
+                        "name": safeString(name),
+                        "description": safeString(description),
+                        "params": params,
+                        "projectName": projectName,
+                        "templatePath": safeString(templatePath),
+                        "content": protocols,
+                        "parseError": parseError,
+                        "protocolsCount": len(protocols),
+                        "previewGraph": previewGraph,
+                        "requiredPluginNames": requiredPluginNames,
+                        "missingPluginNames": missingPluginNames,
+                        "canLoad": len(missingPluginNames) == 0,
+                        "disabledReason": (
+                            "Missing required plugins: %s" % ", ".join(missingPluginNames)
+                            if missingPluginNames
+                            else ""
+                        ),
+                    }
+                )
+            except Exception:
+                logger.exception("Failed to normalize workflow template")
+                continue
+
+        return workflows
+
+    def applyWorkflowToProject(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            workflowId: Union[int, str],
+            currentUser: dict,
+    ) -> dict:
+        """
+        Apply a predefined workflow template to an existing project.
+        Returns a JSON-serializable dict suitable for sending to the frontend.
+        """
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL runtime project context is not loaded",
+            )
+        # 1) Get available templates/workflows
+        templates = self.listProjectWorkflows(raw=True) or []
+        if not templates:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No workflows are currently available",
+            )
+
+        # 3) Find the template by id or name
+        workflowIdStr = str(workflowId).strip()
+        selectedTemplate: Any = None
+
+        def getTemplateValue(template: Any, key: str, default: Any = None) -> Any:
+            if isinstance(template, dict):
+                return template.get(key, default)
+            return getattr(template, key, default)
+
+        def toCleanString(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> TypingSet[str]:
+            templateId = toCleanString(getTemplateValue(template, "id"))
+            templateName = toCleanString(getTemplateValue(template, "name"))
+            templateSource = toCleanString(getTemplateValue(template, "source"))
+            templatePath = toCleanString(getTemplateValue(template, "templatePath"))
+
+            candidates: TypingSet[str] = set()
+
+            if templateId:
+                candidates.add(templateId)
+
+            if templateName:
+                candidates.add(templateName)
+
+            if templateSource and templateName:
+                candidates.add("%s:%s" % (templateSource, templateName))
+
+            if templatePath:
+                candidates.add(templatePath)
+
+            candidates.add(str(fallbackIndex))
+
+            return candidates
+
+        # 3) Find the template by normalized id, source:name, name or path
+        for index, template in enumerate(templates):
+            candidateIds = buildTemplateCandidateIds(template, index)
+
+            if workflowIdStr in candidateIds:
+                selectedTemplate = template
+                break
+
+        if selectedTemplate is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow '{workflowIdStr}' not found",
+            )
+
+        # 4) Ensure params attribute exists and is an ordered mapping
+        if not hasattr(selectedTemplate, "params") or selectedTemplate.params is None:
+            selectedTemplate.params = collections.OrderedDict()
+
+        # 5) Materialize the workflow template file
+        try:
+            selectedTemplate.replaceEnvVariables()
+            workflowFile = selectedTemplate.createTemplateFile()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to materialize workflow '{workflowIdStr}': {e}",
+            )
+
+        if not workflowFile:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Workflow '{workflowIdStr}' did not generate a valid template file",
+            )
+        # 6) Import only the workflow protocols through the PostgreSQL runtime mapper.
+        workflowImportInfo = self._prepareWorkflowFileForImport(workflowFile)
+        importWorkflowFile = workflowImportInfo.get("workflowFile") or workflowFile
+        cleanupFile = workflowImportInfo.get("cleanupFile")
+
+        try:
+            workflowText = Path(str(importWorkflowFile)).expanduser().read_text(encoding="utf-8")
+            workflowContent = json.loads(self._extractWorkflowJsonText(workflowText))
+
+            if not isinstance(workflowContent, (list, dict)):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow content must be a JSON list or object",
+                )
+
+            workflowJson = json.dumps(workflowContent, ensure_ascii=False)
+            loadResult = self.currentProject.loadProtocols(jsonStr=workflowJson)
+
+            importErrors = self._normalizeWorkflowImportErrors(loadResult)
+            if importErrors:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=importErrors,
+                )
+
+            importedProtocols = self._workflowProtocolMapToProtocols(loadResult)
+            if not importedProtocols:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow did not create any protocols",
+                )
+
+            pointerParamsByProtocolId = self._buildImportedWorkflowPointerParamsByProtocolId(
+                workflowContent=workflowContent,
+                importedProtocolMap=loadResult,
+            )
+
+            syncInfo = self._syncImportedPostgresqlRuntimeProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=importedProtocols,
+                pointerParamsByProtocolId=pointerParamsByProtocolId,
+            )
+
+        except HTTPException:
+            raise
+
+        except Exception as error:
+            logger.exception(
+                "Failed to apply PostgreSQL workflow. projectId=%s workflowId=%s",
+                projectId,
+                workflowIdStr,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to apply workflow '{workflowIdStr}' to project {projectId}: {error}",
+            )
+
+        finally:
+            if cleanupFile:
+                try:
+                    os.remove(str(cleanupFile))
+                except Exception:
+                    logger.debug(
+                        "Could not remove temporary workflow import file: %s",
+                        cleanupFile,
+                        exc_info=True,
+                    )
+        # 8) Return a compact, useful payload for the frontend
+        return {
+            "status": 0,
+            "projectId": projectId,
+            "workflowId": workflowIdStr,
+            "workflowName": getattr(selectedTemplate, "name", workflowIdStr),
+            "workflowFile": str(workflowFile),
+            "protocolsCount": int(syncInfo.get("protocols", 0)),
+            "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+            "inputRefsCount": int(syncInfo.get("inputRefs", 0)),
+            "syncReports": syncInfo.get("reports") or [],
+            "loadResult": str(loadResult) if loadResult is not None else None,
+            "scipionWebWrapped": bool(workflowImportInfo.get("wrapped")),
+            "scipionWebMetadata": bool(workflowImportInfo.get("hasScipionWebMetadata")),
+            "requiredPluginNames": workflowImportInfo.get("requiredPluginNames") or [],
+        }
 
     @staticmethod
     def getProtocolColor(status: str) -> str:
-        """Return a hex color based on the protocol status.
-            STATUS_SAVED = '#D9F1FA';
-            STATUS_RUNNING = '#FCCE62';
-            STATUS_FINISHED = '#D2F5CB';
-            STATUS_FAILED = '#F5CCCB';
-        """
-        status_colors = {
+        """Return hex color based on protocol status."""
+        statusColors = {
             "finished": "#D2F5CB",
             "failed": "#F5CCCB",
             "aborted": "#F5CCCB",
             "running": "#FCCE62",
             "saved": "#D9F1FA",
-            "launched": "#FCCE62"
+            "launched": "#FCCE62",
+            "scheduled": "#918516",
+            "new": "#D9F1FA",
         }
-        return status_colors.get(status.lower(), "#9e9e9e")
+        return statusColors.get(status.lower(), "#9e9e9e")
 
-    def getProtocolParams(self, protocolId: str) -> dict:
-        """Return protocol parameters for a given node id in the current project"""
-        from pyworkflow.protocol import Line, Group
+    @staticmethod
+    def buildProjectThumbnailUrl(projectId: int) -> str:
+        # buildProjectThumbnailUrl
+        return f"/projects/{projectId}/thumbnail"
 
-        SPECIAL_PARAMS = ['numberOfMpi', 'numberOfThreads', 'hostName', 'expertLevel', '_useQueue']
-        OBJ_PARAMS = ['runName', 'comment']
-        context = {}
+    @staticmethod
+    def buildProjectThumbnailRebuildUrl(projectId: int) -> str:
+        # buildProjectThumbnailRebuildUrl
+        return f"/projects/{projectId}/thumbnail/rebuild"
 
-        if not self.currentProject:
-            raise ValueError("No project loaded")
-        # Load the selected protocol
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        hosts = self.currentProject.getHostNames()
+    @staticmethod
+    def buildProjectThumbnailItemsUrl(projectId: int) -> str:
+        # buildProjectThumbnailItemsUrl
+        return f"/projects/{projectId}/thumbnail-items"
 
-        # Package logo
-        package = protocol.getClassPackage()
-        logoPath = ''
-        path = getattr(package, '_logo', '')
-        if path != '':
-            logoPath = self.getResourceLogo(path)  # Logo
+    @staticmethod
+    def buildProtocolThumbnailUrl(projectId: int, protocolId: int) -> str:
+        # buildProtocolThumbnailUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/thumbnail"
 
-        protLabel = str(protocol)  # Label
-        status = protocol.getStatus()  # status
-        cite = protocol.citations()
-        help = protocol.getHelpText()
-        label = protocol._label if hasattr(protocol, '_label') else str(protocol)
+    @staticmethod
+    def buildProtocolThumbnailRebuildUrl(projectId: int, protocolId: int) -> str:
+        # buildProtocolThumbnailRebuildUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/thumbnail/rebuild"
 
-        context = {
-            "id": protocolId,
-            "label": label,
-            "protocolName": str(protocol),
-            "status": status,
-            "color": self.getProtocolColor(status),
-            "projectName": self.currentProject.getName(),
-            "packageLogo": logoPath,
-            "protocolId": protocol.getObjId(),
-            "hosts": hosts,
-            "favicon": self.getResourceIcon('favicon'),
-            "cite": cite,
-            "help": help
+    @staticmethod
+    def buildProtocolOutputThumbnailUrl(projectId: int, protocolId: int, outputName: str) -> str:
+        # buildProtocolOutputThumbnailUrl
+        return f"/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail"
+
+    def _getPostgresqlStoredSetForIntegratedContext(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+
+            setMapper = ScipionSetPostgresqlMapper(mapper.db)
+            return setMapper.getStoredSet(
+                projectId=projectId,
+                protocolDbId=protocolId,
+                outputName=outputName,
+                limit=None,
+                offset=0,
+            )
+        except Exception:
+            logger.debug(
+                "Could not load PostgreSQL stored set for integrated context. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+            return None
+
+    def _getPostgresqlIntegratedKind(self, storedSet: Dict[str, Any]) -> Optional[str]:
+        classText = "%s %s" % (
+            storedSet.get("setClassName") or "",
+            storedSet.get("itemClassName") or "",
+        )
+        classText = classText.replace(" ", "").lower()
+
+        if "setofcoordinates3d" in classText or "coordinate3d" in classText:
+            return "coordinates3d"
+
+        if "setofctftomoseries" in classText or "ctftomoseries" in classText:
+            return "ctf"
+
+        if "setoftiltseries" in classText or "tiltseries" in classText:
+            return "tiltSeries"
+
+        if "setoftomograms" in classText or "tomogram" in classText:
+            return "tomogram"
+
+        return None
+
+    def _getPostgresqlStoredSetProperty(
+            self,
+            storedSet: Dict[str, Any],
+            key: str,
+            default=None,
+    ):
+        properties = storedSet.get("properties") or {}
+
+        if isinstance(properties, str):
+            try:
+                properties = json.loads(properties)
+            except Exception:
+                properties = {}
+
+        if isinstance(properties, dict) and key in properties:
+            return properties.get(key)
+
+        for item in storedSet.get("setProperties") or []:
+            if str(item.get("key")) == str(key):
+                return item.get("value")
+
+        return default
+
+    def _buildPostgresqlIntegratedLink(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            storedSet: Dict[str, Any],
+            label: Optional[str] = None,
+            statusValue: str = "available",
+    ) -> Dict[str, Any]:
+        return {
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "itemId": storedSet.get("objectId") or storedSet.get("id"),
+            "label": label or outputName,
+            "status": statusValue,
         }
 
-        for paramName in SPECIAL_PARAMS:
-            context.setdefault(paramName, {})
-            attr = getattr(protocol, paramName, None)
-            if attr is not None:
-                context[paramName]['_class'] = attr.__class__.__name__
-                context[paramName]['_objValue'] = attr.get()
+    def _buildPostgresqlIntegratedSummary(
+            self,
+            storedSet: Dict[str, Any],
+            extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        items = storedSet.get("items") or []
+        itemsCount = self._getPostgresqlStoredSetProperty(storedSet, "itemsCount", None)
 
+        if itemsCount is None:
+            itemsCount = len(items)
 
-        # Detect available wizards and viewers
-        wizards = self.findWizardsWeb(protocol)
-        # viewers = findViewersWeb(protocol)
+        summary = {
+            "objectClass": storedSet.get("setClassName") or storedSet.get("itemClassName"),
+            "objectId": storedSet.get("objectId") or storedSet.get("id"),
+            "size": itemsCount,
+            "fileName": self._getPostgresqlStoredSetProperty(storedSet, "fileName", None),
+            "samplingRate": self._getPostgresqlStoredSetProperty(storedSet, "samplingRate", None),
+        }
 
-        # Process citations and documentation
-        protocol.htmlCitations = self.parseText(protocol.citations())
-        protocol.htmlDoc = self.parseText(protocol.getDoc())
+        if extra:
+            summary.update(extra)
 
-        visualize = 0
-        viewerDict = None
+        return self._safeScipionValue(summary)
 
-        paramsData = []
-        for section in protocol._definition.iterSections():
-            sectionData = {"name": section.getLabel(), "params": []}
-            for paramName, param in section.iterParams():
-                protVar = getattr(protocol, paramName, None)
-                if protVar is None:
-                    # Handle Group and Line special cases
-                    if isinstance(param, Group):
-                        group = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                        group[paramName]['children'] = []
-                        for paramGroupName, paramGroup in param.iterParams():
-                            protVar = getattr(protocol, paramGroupName, None)
+    def _firstPostgresqlValueByName(
+            self,
+            values: Dict[str, Any],
+            names: List[str],
+    ):
+        normalizedNames = {
+            str(name).replace("_", "").replace(".", "").replace("-", "").lower()
+            for name in names
+        }
 
-                            # LINE PARAM
-                            if isinstance(paramGroup, Line):
-                                for paramLineName, paramLine in paramGroup.iterParams():
-                                    protVar = getattr(protocol, paramLineName, None)
+        for key, value in (values or {}).items():
+            normalizedKey = str(key).replace("_", "").replace(".", "").replace("-", "").lower()
+            if normalizedKey in normalizedNames:
+                return value
 
-                                    if protVar is None:
-                                        pass
-                                    else:
-                                        paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0,
-                                                                             protVar)
-                                        if paramChild:
-                                            group[paramName]['children'].append(paramChild)
+        return None
 
-                            elif protVar is None:
-                                pass
-                            else:
-                                paramChild = self.PreprocessParamForm(paramGroup, paramGroupName, wizards, None, 0, protVar)
-                                if paramChild:
-                                    group[paramName]['children'].append(paramChild)
+    def _addPostgresqlIntegratedRelation(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            keyValue: Any,
+            **values: Any,
+    ) -> None:
+        key = str(keyValue) if keyValue is not None else ""
+        if not key:
+            return
 
-                        if group:
-                            sectionData["params"].append(group)
+        relation = relationsByKey.setdefault(
+            key,
+            {
+                "key": key,
+                "label": key,
+            },
+        )
 
-                        # LINE PARAM
-                    if isinstance(param, Line):
-                        line = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                        line[paramName]['children'] = []
-                        for paramLineName, paramLine in param.iterParams():
-                            protVar = getattr(protocol, paramLineName, None)
+        for name, value in values.items():
+            if value is not None:
+                relation[name] = value
 
-                            if protVar is None:
-                                pass
-                            else:
-                                paramChild = self.PreprocessParamForm(paramLine, paramLineName, wizards, None, 0, protVar)
-                                if paramChild:
-                                    line[paramName]['children'].append(paramChild)
+    def _addPostgresqlTiltSeriesRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tiltSeriesId = item.get("tiltSeriesId") or item.get("id") or index
+            label = item.get("label") or str(tiltSeriesId)
 
-                        if line:
-                            sectionData["params"].append(line)
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tiltSeriesId,
+                tiltSeriesId=tiltSeriesId,
+                label=label,
+            )
 
-                else:
-                    param = self.PreprocessParamForm(param, paramName, wizards, None, 0, protVar)
-                    if param:
-                        sectionData["params"].append(param)
+    def _addPostgresqlCtftomoRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tiltSeriesId = item.get("tiltSeriesId") or item.get("id") or index
+            label = item.get("label") or str(tiltSeriesId)
 
-            paramsData.append(sectionData)
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tiltSeriesId,
+                ctfSeriesId=tiltSeriesId,
+                tiltSeriesId=tiltSeriesId,
+                label=label,
+            )
 
-        context["definition"] = paramsData
+    def _addPostgresqlTomogramRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tomogramId = (
+                    item.get("tomoId")
+                    or item.get("tomogramId")
+                    or item.get("id")
+                    or item.get("label")
+                    or index
+            )
 
-        return context
+            label = item.get("label") or item.get("name") or str(tomogramId)
+            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
 
-    def launchProtocol(self, protocolId, params):
-        protocol = self.currentProject.getProtocol(int(protocolId))
-        protocol.runMode.set(MODE_RESTART)
-        self.currentProject.launchProtocol(protocol)
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tomogramId,
+                tomogramId=tomogramId,
+                tomogramVolumeId=volumeId,
+                label=label,
+            )
 
-    def toSerializable(self, obj):
-        """Convert complex Python objects into JSON-serializable structures."""
-        from datetime import datetime, date
-        from decimal import Decimal
-        if isinstance(obj, (str, int, float, bool, type(None))):
-            return obj
-        elif isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        elif isinstance(obj, Decimal):
-            return float(obj)
-        elif isinstance(obj, dict):
-            return {k: self.toSerializable(v) for k, v in obj.items()}
-        elif isinstance(obj, (list, tuple, set)):
-            return [self.toSerializable(item) for item in obj]
-        elif isinstance(obj, Scalar):
-            return obj.get()
-        elif hasattr(obj, "__dict__"):  # Any custom class
-            excludedKeys = ['__module__', '__init__', '__doc__']
-            paramDict = {k: self.toSerializable(v) for k, v in obj.__dict__.items() if k not in excludedKeys}
-            return paramDict
+    def _addPostgresqlCoordinates3dRelations(
+            self,
+            relationsByKey: Dict[str, Dict[str, Any]],
+            items: List[Dict[str, Any]],
+    ) -> None:
+        for index, item in enumerate(items or []):
+            tomogramId = (
+                    item.get("tomoId")
+                    or item.get("tomogramId")
+                    or item.get("id")
+                    or item.get("label")
+                    or index
+            )
+
+            label = item.get("label") or item.get("name") or str(tomogramId)
+            volumeId = item.get("tomogramVolumeId") or item.get("volumeId") or index
+
+            self._addPostgresqlIntegratedRelation(
+                relationsByKey,
+                tomogramId,
+                coordinatesTomogramId=tomogramId,
+                tomogramId=tomogramId,
+                tomogramVolumeId=volumeId,
+                label=label,
+            )
+
+    def _getPostgresqlIntegratedAnalyzeContextIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Optional[Dict[str, Any]]:
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_integrated_context_reader import PostgresqlIntegratedContextReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlIntegratedContextReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            return reader.getContext()
+        except Exception:
+            logger.debug(
+                "Could not build PostgreSQL integrated analyze context. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+            return None
+
+    def getIntegratedAnalyzeContextService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ) -> Dict[str, Any]:
+
+        pgContext = self._getPostgresqlIntegratedAnalyzeContextIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgContext is not None:
+            return pgContext
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Integrated Analyze Context",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="context_not_available",
+            )
+
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No current project loaded",
+            )
+
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol {protocolId} not found: {e}",
+            )
+
+        outputObj = getattr(protocol, outputName, None)
+        if outputObj is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol {protocolId}",
+            )
+
+        def className(obj: Any) -> str:
+            try:
+                return obj.getClassName()
+            except Exception:
+                return obj.__class__.__name__ if obj is not None else ""
+
+        def normalizedClassName(obj: Any) -> str:
+            return className(obj).replace(" ", "").lower()
+
+        def safeCall(obj: Any, methodName: str, default: Any = None) -> Any:
+            try:
+                method = getattr(obj, methodName, None)
+                if method is None:
+                    return default
+                return method()
+            except Exception:
+                return default
+
+        def safeList(value: Any) -> List[Any]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return list(value)
+            return [value]
+
+        def firstNonEmpty(*values: Any) -> Optional[Any]:
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value)
+                if text:
+                    return value
+            return None
+
+        def getTsIds(obj: Any) -> TypingSet[str]:
+            values = safeCall(obj, "getTSIds", [])
+            return {str(v) for v in safeList(values) if v is not None and str(v)}
+
+        def getObjId(obj: Any) -> Optional[Any]:
+            return safeCall(obj, "getObjId", None)
+
+        def iterItems(obj: Any) -> List[Any]:
+            if obj is None:
+                return []
+
+            try:
+                return list(obj.iterItems())
+            except Exception:
+                pass
+
+            try:
+                return list(obj)
+            except Exception:
+                return []
+
+        def getItemTsId(item: Any) -> Optional[Any]:
+            return firstNonEmpty(
+                safeCall(item, "getTsId", None),
+                safeCall(item, "getTSId", None),
+                safeCall(item, "getTomoId", None),
+                safeCall(item, "getTomogramId", None),
+            )
+
+        def getItemLabel(item: Any, fallback: Any = None) -> Optional[Any]:
+            return firstNonEmpty(
+                safeCall(item, "getTsId", None),
+                safeCall(item, "getTSId", None),
+                safeCall(item, "getObjLabel", None),
+                safeCall(item, "getFileName", None),
+                fallback,
+            )
+
+        def isTiltSeriesSet(obj: Any) -> bool:
+            name = normalizedClassName(obj)
+            return "setoftiltseries" in name and "setoftiltseriesm" not in name
+
+        def isTomogramSet(obj: Any) -> bool:
+            return "setoftomograms" in normalizedClassName(obj)
+
+        def isCoordinates3dSet(obj: Any) -> bool:
+            return "setofcoordinates3d" in normalizedClassName(obj)
+
+        def isCtfTomoSeriesSet(obj: Any) -> bool:
+            return "setofctftomoseries" in normalizedClassName(obj)
+
+        def getFirstIteratorItem(value: Any) -> Any:
+            if value is None:
+                return None
+
+            try:
+                iterator = value.iterItems() if hasattr(value, "iterItems") else iter(value)
+                return next(iterator, None)
+            except Exception:
+                return None
+
+        def getCoordinates3dTomograms(coordsSet: Any) -> Any:
+            for methodName in ("getTomograms", "getVolumes", "getPrecedents"):
+                tomograms = safeCall(coordsSet, methodName, None)
+                if tomograms is not None and isTomogramSet(tomograms):
+                    return tomograms
+
+            for methodName in ("iterTomograms", "iterVolumes"):
+                tomogramsIter = safeCall(coordsSet, methodName, None)
+                firstTomogram = getFirstIteratorItem(tomogramsIter)
+                if firstTomogram is None:
+                    continue
+
+                parent = safeCall(firstTomogram, "getObjParent", None)
+                if parent is None:
+                    parent = getattr(firstTomogram, "_objParent", None)
+
+                if parent is not None and isTomogramSet(parent):
+                    return parent
+
+            return None
+
+        def buildLink(
+                obj: Any,
+                source: Optional[Dict[str, Any]] = None,
+                statusValue: str = "available",
+                label: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            source = source or {}
+            return {
+                "protocolId": source.get("protocolId"),
+                "outputName": source.get("outputName"),
+                "itemId": getObjId(obj),
+                "label": label or source.get("label") or className(obj),
+                "status": statusValue,
+            }
+
+        def buildSummary(obj: Any, tsIds: Optional[TypingSet[str]] = None) -> Dict[str, Any]:
+            summary = {
+                "objectClass": className(obj),
+                "objectId": getObjId(obj),
+                "size": safeCall(obj, "getSize", None),
+                "tsIds": sorted(tsIds if tsIds is not None else getTsIds(obj)),
+                "samplingRate": safeCall(obj, "getSamplingRate", None),
+                "dimensions": safeCall(obj, "getDimensions", safeCall(obj, "getDim", None)),
+                "fileName": safeCall(obj, "getFileName", None),
+            }
+
+            boxSize = safeCall(obj, "getBoxSize", None)
+            if boxSize is not None:
+                summary["boxSize"] = boxSize
+
+            ctfCorrected = safeCall(obj, "ctfCorrected", None)
+            if ctfCorrected is not None:
+                summary["ctfCorrected"] = ctfCorrected
+
+            return self._safeScipionValue(summary)
+
+        def getProtocolInputRefs(protocolObj: Any) -> List[Dict[str, Any]]:
+            refs: List[Dict[str, Any]] = []
+
+            for inputName, pointer in protocolObj.iterInputAttributes():
+                try:
+                    inputObj = pointer.get() if pointer else None
+                except Exception:
+                    inputObj = None
+
+                if inputObj is None:
+                    continue
+
+                try:
+                    inputProtocolId = pointer.getObjValue().getObjId()
+                except Exception:
+                    inputProtocolId = None
+
+                try:
+                    inputOutputName = pointer.getExtended()
+                except Exception:
+                    inputOutputName = None
+
+                refs.append({
+                    "name": inputName,
+                    "object": inputObj,
+                    "protocolId": inputProtocolId,
+                    "outputName": inputOutputName,
+                    "label": inputName,
+                })
+
+            return refs
+
+        def getProtocolInputRefsById(sourceProtocolId: Any) -> List[Dict[str, Any]]:
+            if sourceProtocolId is None:
+                return []
+
+            try:
+                sourceProtocol = self.currentProject.getProtocol(int(sourceProtocolId))
+            except Exception:
+                return []
+
+            return getProtocolInputRefs(sourceProtocol)
+
+        def getProtocolOutputRefs(protocolObj: Any) -> List[Dict[str, Any]]:
+            refs: List[Dict[str, Any]] = []
+
+            for outputAttrName, outputObjRef in protocolObj.iterOutputAttributes():
+                if outputObjRef is None:
+                    continue
+
+                refs.append({
+                    "name": outputAttrName,
+                    "object": outputObjRef,
+                    "protocolId": safeCall(protocolObj, "getObjId", None),
+                    "outputName": outputAttrName,
+                    "label": outputAttrName,
+                })
+
+            return refs
+
+        inputRefs = getProtocolInputRefs(protocol)
+        outputRefs = getProtocolOutputRefs(protocol)
+        localRefs = inputRefs + outputRefs
+
+        def findInputRef(predicate, tsIds: Optional[TypingSet[str]] = None) -> Optional[Dict[str, Any]]:
+            for ref in inputRefs:
+                obj = ref["object"]
+                if not predicate(obj):
+                    continue
+
+                if tsIds:
+                    candidateTsIds = getTsIds(obj)
+                    if candidateTsIds and not candidateTsIds.intersection(tsIds):
+                        continue
+
+                return ref
+
+            return None
+
+        def findInputRefForObject(
+                targetObj: Any,
+                refs: List[Dict[str, Any]],
+                predicate=None,
+        ) -> Optional[Dict[str, Any]]:
+            if targetObj is None:
+                return None
+
+            targetClass = className(targetObj)
+            targetObjId = getObjId(targetObj)
+            targetFileName = safeCall(targetObj, "getFileName", None)
+            targetTsIds = getTsIds(targetObj)
+
+            for ref in refs:
+                obj = ref["object"]
+
+                if predicate is not None and not predicate(obj):
+                    continue
+
+                if obj is targetObj:
+                    return ref
+
+                objId = getObjId(obj)
+                if targetObjId is not None and objId is not None and str(objId) == str(targetObjId):
+                    return ref
+
+                fileName = safeCall(obj, "getFileName", None)
+                if targetFileName and fileName and str(fileName) == str(targetFileName):
+                    return ref
+
+                objTsIds = getTsIds(obj)
+                if targetTsIds and objTsIds and targetTsIds == objTsIds:
+                    return ref
+
+                if className(obj) != targetClass:
+                    continue
+
+            return None
+
+        links = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        summaries = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        relationObjects = {
+            "tiltSeries": None,
+            "ctf": None,
+            "tomogram": None,
+            "coordinates3d": None,
+        }
+        relationsByKey: Dict[str, Dict[str, Any]] = {}
+
+        def upsertRelation(keyValue: Any, **values: Any) -> None:
+            key = str(keyValue) if keyValue is not None else ""
+            if not key:
+                return
+
+            relation = relationsByKey.setdefault(key, {
+                "key": key,
+                "label": key,
+            })
+
+            for name, value in values.items():
+                if value is not None:
+                    relation[name] = value
+
+        def addSetRelations(kind: str, obj: Any) -> None:
+            items = iterItems(obj)
+
+            if not items:
+                for tsId in sorted(getTsIds(obj)):
+                    if kind == "tiltSeries":
+                        upsertRelation(tsId, tiltSeriesId=tsId, label=tsId)
+                    elif kind == "ctf":
+                        upsertRelation(tsId, ctfSeriesId=tsId, tiltSeriesId=tsId, label=tsId)
+                    elif kind == "tomogram":
+                        upsertRelation(tsId, tomogramId=tsId, label=tsId)
+                    elif kind == "coordinates3d":
+                        upsertRelation(tsId, coordinatesTomogramId=tsId, label=tsId)
+                return
+
+            for index, item in enumerate(items):
+                tsId = getItemTsId(item)
+                objId = getObjId(item)
+                key = firstNonEmpty(tsId, objId, index)
+                label = getItemLabel(item, key)
+
+                if kind == "tiltSeries":
+                    upsertRelation(
+                        key,
+                        tiltSeriesId=firstNonEmpty(tsId, objId, index),
+                        label=label,
+                    )
+                elif kind == "ctf":
+                    upsertRelation(
+                        key,
+                        ctfSeriesId=firstNonEmpty(tsId, objId, index),
+                        tiltSeriesId=tsId,
+                        label=label,
+                    )
+                elif kind == "tomogram":
+                    upsertRelation(
+                        key,
+                        tomogramId=firstNonEmpty(tsId, objId, index),
+                        tomogramVolumeId=index,
+                        label=label,
+                    )
+                elif kind == "coordinates3d":
+                    upsertRelation(
+                        key,
+                        coordinatesTomogramId=firstNonEmpty(tsId, objId, index),
+                        label=label,
+                    )
+
+        rootSource = {
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "label": outputName,
+        }
+
+        outputTsIds = getTsIds(outputObj)
+
+        if isCoordinates3dSet(outputObj):
+            links["coordinates3d"] = buildLink(outputObj, rootSource)
+            summaries["coordinates3d"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["coordinates3d"] = outputObj
+
+            tomograms = getCoordinates3dTomograms(outputObj)
+            if tomograms is not None:
+                tomoTsIds = outputTsIds or getTsIds(tomograms)
+                tomogramRef = findInputRefForObject(tomograms, localRefs, isTomogramSet)
+                links["tomogram"] = buildLink(tomograms, tomogramRef, statusValue="inferred")
+                summaries["tomogram"] = buildSummary(tomograms, tomoTsIds)
+                relationObjects["tomogram"] = tomograms
+                outputTsIds = tomoTsIds
+
+        elif isTomogramSet(outputObj):
+            links["tomogram"] = buildLink(outputObj, rootSource)
+            summaries["tomogram"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["tomogram"] = outputObj
+
+        elif isCtfTomoSeriesSet(outputObj):
+            links["ctf"] = buildLink(outputObj, rootSource)
+            summaries["ctf"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["ctf"] = outputObj
+
+            tiltSeries = safeCall(outputObj, "getSetOfTiltSeries", None)
+            if tiltSeries is not None and isTiltSeriesSet(tiltSeries):
+                tiltRef = findInputRefForObject(tiltSeries, localRefs, isTiltSeriesSet)
+                links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
+                summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                relationObjects["tiltSeries"] = tiltSeries
+
+        elif isTiltSeriesSet(outputObj):
+            links["tiltSeries"] = buildLink(outputObj, rootSource)
+            summaries["tiltSeries"] = buildSummary(outputObj, outputTsIds)
+            relationObjects["tiltSeries"] = outputObj
+
+        if outputTsIds and links["ctf"] is None:
+            ctfRef = findInputRef(isCtfTomoSeriesSet, outputTsIds)
+            if ctfRef is not None:
+                ctfSet = ctfRef["object"]
+                links["ctf"] = buildLink(ctfSet, ctfRef)
+                summaries["ctf"] = buildSummary(ctfSet, outputTsIds)
+                relationObjects["ctf"] = ctfSet
+
+                tiltSeries = safeCall(ctfSet, "getSetOfTiltSeries", None)
+                if tiltSeries is not None and links["tiltSeries"] is None and isTiltSeriesSet(tiltSeries):
+                    ctfInputRefs = getProtocolInputRefsById(ctfRef.get("protocolId"))
+                    tiltRef = (
+                            findInputRefForObject(tiltSeries, ctfInputRefs, isTiltSeriesSet)
+                            or findInputRefForObject(tiltSeries, inputRefs, isTiltSeriesSet)
+                    )
+                    links["tiltSeries"] = buildLink(tiltSeries, tiltRef, statusValue="inferred")
+                    summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                    relationObjects["tiltSeries"] = tiltSeries
+
+        if outputTsIds and links["tiltSeries"] is None:
+            tiltRef = findInputRef(isTiltSeriesSet, outputTsIds)
+            if tiltRef is not None:
+                tiltSeries = tiltRef["object"]
+                links["tiltSeries"] = buildLink(tiltSeries, tiltRef)
+                summaries["tiltSeries"] = buildSummary(tiltSeries, outputTsIds)
+                relationObjects["tiltSeries"] = tiltSeries
+
+        addSetRelations("tiltSeries", relationObjects["tiltSeries"])
+        addSetRelations("ctf", relationObjects["ctf"])
+        addSetRelations("tomogram", relationObjects["tomogram"])
+
+        if relationObjects["tomogram"] is not None:
+            addSetRelations("coordinates3d", relationObjects["tomogram"])
         else:
-            return str(obj)  # Last resort: convert to string
+            addSetRelations("coordinates3d", relationObjects["coordinates3d"])
 
-    def serializeToJson(self, obj):
-        """Serialize any Python object (even with 'weird' attributes) to JSON."""
-        return self.toSerializable(obj)
+        relations = self._safeScipionValue({
+            "items": list(relationsByKey.values()),
+        })
 
-    def findWizardsWeb(self, protocol):
-        # TODO: Find wizards...
-        return dict()
+        return {
+            "root": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "outputClass": className(outputObj),
+            },
+            "links": links,
+            "summaries": summaries,
+            "relations": relations,
+        }
+
+    def buildProtocolOutputThumbnail(
+            self,
+            protocolId: Union[int, str],
+            outputName: str,
+            force: bool = False,
+            size: int = 320,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return self._getThumbnailService().buildProtocolOutputThumbnail(protocolId=scipionProtocolId,
+                                                                        outputName=outputName,
+                                                                        force=force,
+                                                                        size=size)
+
+    def listProjectThumbnailItems(self,
+                                  projectId: int,
+                                  force: bool = False,
+                                  size: int = 320,
+                                  maxProtocols: int = 12,
+                                  maxOutputsPerProtocol: int = 4,
+                                  inlineImages: bool = False,
+                                  mapper=None):
+
+        return self._getThumbnailService().listProtocolThumbnailItems(projectId=projectId, force=force, size=size,
+                                                                      maxProtocols=maxProtocols,
+                                                                      maxOutputsPerProtocol=maxOutputsPerProtocol,
+                                                                      inlineImages=inlineImages)
+
+    def _buildMissingOutputSyncItems(
+            self,
+            protocolId,
+            declaredOutputs: List[Dict[str, Any]],
+            persistedOutputs: List[Dict[str, Any]],
+            skippedOutputs: List[Dict[str, Any]],
+            outputErrors: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+
+        return runtimeProtocolOutputPersistenceService.buildMissingOutputSyncItems(
+            protocolId=protocolId,
+            declaredOutputs=declaredOutputs,
+            persistedOutputs=persistedOutputs,
+            skippedOutputs=skippedOutputs,
+            outputErrors=outputErrors,
+        )
+
+    def _resolveProtocolDbIdForOutputPersistence(self, db, projectId: int, protocol: Any) -> int:
+        scipionProtocolId = self._getScipionObjId(protocol)
+        if scipionProtocolId is None:
+            raise ValueError("Cannot persist Scipion outputs without protocol getObjId()/getId()")
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            projectId=projectId,
+            db=db,
+        )
+
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            scipionProtocolId,
+        )
+
+        if protocolDbId is not None:
+            return int(protocolDbId)
+
+        raise ValueError(
+            "Protocol %s was not found in PostgreSQL protocols table for project %s"
+            % (scipionProtocolId, projectId)
+        )
+
+    def _isScipionSetOutput(self, outputObj: Any) -> bool:
+        className = self._getOutputClassName(outputObj)
+
+        if className.startswith("SetOf"):
+            return True
+
+        iterItems = getattr(outputObj, "iterItems", None)
+        if callable(iterItems):
+            return True
+
+        return False
+
+    def _isScipionObjectOutput(self, outputObj: Any) -> bool:
+        if outputObj is None:
+            return False
+
+        getClassName = getattr(outputObj, "getClassName", None)
+        if callable(getClassName):
+            return True
+
+        getAttributesToStore = getattr(outputObj, "getAttributesToStore", None)
+        if callable(getAttributesToStore):
+            return True
+
+        return False
+
+    def _getOutputClassName(self, outputObj: Any) -> str:
+        getClassName = getattr(outputObj, "getClassName", None)
+        if callable(getClassName):
+            try:
+                className = getClassName()
+                if className:
+                    return str(className)
+            except Exception:
+                pass
+
+        return outputObj.__class__.__name__ if outputObj is not None else ""
+
+    def _getScipionObjId(self, obj: Any) -> Optional[int]:
+        for getterName in ("getObjId", "getId"):
+            getter = getattr(obj, getterName, None)
+            if not callable(getter):
+                continue
+
+            try:
+                value = getter()
+            except Exception:
+                continue
+
+            if value is None:
+                continue
+
+            try:
+                return int(value)
+            except Exception:
+                continue
+
+        return None
+
+    def _buildProtocolContext(
+            self,
+            projectId,
+            protocol,
+            mapper=None,
+    ) -> dict:
+        protocolContextService = ProtocolContextService()
+
+        return protocolContextService.buildContext(
+            project=self.currentProject,
+            projectId=projectId,
+            protocol=protocol,
+            mapper=mapper,
+            getResourceLogoCallback=self.getResourceLogo,
+            getProtocolColorCallback=self.getProtocolColor,
+            buildProtocolThumbnailUrlCallback=self.buildProtocolThumbnailUrl,
+            buildProtocolThumbnailRebuildUrlCallback=self.buildProtocolThumbnailRebuildUrl,
+            findViewersWebCallback=self.findViewersWeb,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
+            splitPointerValueCallback=self._splitPointerValue,
+        )
+
+    def getNewProtocolParams(
+            self,
+            projectId,
+            protocolClassName: str,
+    ) -> dict:
+        protocolService = ProtocolService()
+
+        return protocolService.getNewProtocolParams(
+            currentProject=self.currentProject,
+            projectId=projectId,
+            protocolClassName=protocolClassName,
+            buildProtocolContextCallback=self._buildProtocolContext,
+        )
+
+    def getProtocolParams(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ) -> dict:
+        protocolService = ProtocolService()
+
+        return protocolService.getProtocolParams(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+        )
+
+    def getNextProtocolSuggestions(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ):
+        protocolSuggestionsService = ProtocolSuggestionsService()
+
+        return protocolSuggestionsService.getNextProtocolSuggestions(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+        )
+
+    def _getParentProtocolForPointer(
+            self,
+            mapper,
+            projectId: int,
+            parentId,
+    ):
+        parentScipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=parentId,
+        )
+
+        if parentScipionProtocolId is None:
+            return None, None
+
+        parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
+        return parentScipionProtocolId, parentProtocol
+
+    def _splitPointerValue(self, value):
+        pointerResolver = RuntimePointerResolver()
+        return pointerResolver.splitPointerValue(value)
+
+    def applyParamsToProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            params,
+    ):
+        runtimeProtocolSaveService = RuntimeProtocolSaveService()
+
+        return runtimeProtocolSaveService.applyPointerParamsToProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params or {},
+            resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
+            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+        )
+
+    def _restorePostgresqlPointerInputsBeforeCopy(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            parentProtocolsById: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
+
+        return runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            parentProtocolsById=parentProtocolsById,
+            getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    def syncPostgresqlRuntimeProtocolInputsAndDependencies(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocol,
+            params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        runtimeProtocolInputSyncService = RuntimeProtocolInputSyncService()
+
+        return runtimeProtocolInputSyncService.syncProtocolInputsAndDependencies(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params,
+        )
+
+    def _getPostgresqlRuntimeOutputInfo(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        return protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbId=parentProtocolDbId,
+            outputName=outputName,
+        )
+
+    def _resolvePostgresqlRuntimeInputObject(
+            self,
+            runtimeObjectId,
+    ):
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            raise RuntimeError(
+                "PostgreSQL runtime project "
+                "is not loaded"
+            )
+
+        runtimeMapper = currentProject.getPostgresqlRuntimeMapper()
+
+        if runtimeMapper is None:
+            raise RuntimeError(
+                "PostgreSQL runtime mapper "
+                "is not available"
+            )
+
+        resolver = getattr(
+            runtimeMapper,
+            "selectRuntimeInputObjectById",
+            None,
+        )
+
+        if not callable(resolver):
+            raise RuntimeError(
+                "PostgreSQL runtime mapper cannot "
+                "reconstruct input objects"
+            )
+
+        try:
+            runtimeObjectId = int(runtimeObjectId)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Invalid PostgreSQL runtime object id: %s"
+                % runtimeObjectId
+            ) from error
+
+        runtimeInputSets = getattr(
+            self,
+            "_postgresqlLaunchInputSetsByRuntimeObjectId",
+            None,
+        )
+
+        if runtimeInputSets is None:
+            runtimeInputSets = {}
+            self._postgresqlLaunchInputSetsByRuntimeObjectId = runtimeInputSets
+
+        runtimeInputObjects = getattr(
+            self,
+            "_postgresqlLaunchInputObjectsByRuntimeObjectId",
+            None,
+        )
+
+        if runtimeInputObjects is None:
+            runtimeInputObjects = {}
+            self._postgresqlLaunchInputObjectsByRuntimeObjectId = runtimeInputObjects
+
+        resolvingObjectIds = getattr(
+            self,
+            "_postgresqlLaunchInputObjectIdsResolving",
+            None,
+        )
+
+        if not isinstance(resolvingObjectIds, set):
+            resolvingObjectIds = set()
+            self._postgresqlLaunchInputObjectIdsResolving = resolvingObjectIds
+
+        cachedInputObject = runtimeInputObjects.get(
+            runtimeObjectId
+        )
+
+        if cachedInputObject is not None:
+            return cachedInputObject
+
+        if runtimeObjectId in resolvingObjectIds:
+            return None
+
+        resolvingObjectIds.add(
+            runtimeObjectId
+        )
+
+        try:
+            sourceOutputObject = resolver(
+                runtimeObjectId,
+                runtimeObjectResolver=self._resolvePostgresqlRuntimeInputObject,
+            )
+
+            if sourceOutputObject is None:
+                return None
+
+            if not isinstance(sourceOutputObject, ScipionSet):
+                runtimeInputObjects[runtimeObjectId] = sourceOutputObject
+                return sourceOutputObject
+
+            cloneRuntimeSet = getattr(
+                sourceOutputObject,
+                "clone",
+                None,
+            )
+
+            if not callable(cloneRuntimeSet):
+                raise RuntimeError(
+                    "PostgreSQL launch input Set does not support detached cloning. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            runtimeInputSet = cloneRuntimeSet(
+                _postgresqlDetachedConsumer=True
+            )
+
+            if runtimeInputSet is None:
+                raise RuntimeError(
+                    "PostgreSQL launch input Set clone returned None. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            if runtimeInputSet is sourceOutputObject:
+                raise RuntimeError(
+                    "PostgreSQL launch input Set clone reused the parent output object. "
+                    "runtimeObjectId=%s className=%s"
+                    % (
+                        runtimeObjectId,
+                        sourceOutputObject.__class__.__name__,
+                    )
+                )
+
+            runtimeInputSets[runtimeObjectId] = runtimeInputSet
+            runtimeInputObjects[runtimeObjectId] = runtimeInputSet
+
+            return runtimeInputSet
+
+        finally:
+            resolvingObjectIds.discard(
+                runtimeObjectId
+            )
+
+    def _preparePostgresqlRuntimePointerOutputsForLaunch(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+            allowMissingParentOutputs: bool = False,
+            parentProtocolsById: Optional[
+                Dict[str, Any]
+            ] = None,
+    ) -> Dict[str, Any]:
+        runtimeProtocolLaunchPrepareService = RuntimeProtocolLaunchPrepareService()
+
+        return (
+            runtimeProtocolLaunchPrepareService
+            .preparePointerOutputsForLaunch(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                allowMissingParentOutputs=(
+                    allowMissingParentOutputs
+                ),
+                parentProtocolsById=(
+                    parentProtocolsById
+                ),
+                getProtocolIdCallback=(
+                    self._getScipionObjectId
+                ),
+                getParentProtocolCallback=(
+                    self._getParentProtocolForPointer
+                ),
+                resolveRuntimeInputObjectCallback=(
+                    self
+                    ._resolvePostgresqlRuntimeInputObject
+                ),
+            )
+        )
+
+    def _resolveParentOutputForRuntimePointer(
+            self,
+            mapper,
+            projectId: int,
+            parentProtocolDbId: int,
+            parentScipionProtocolId,
+            parentProtocol,
+            outputName: str,
+            attachProxy: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Resolve whether a parent output exists for a child runtime pointer.
+
+        Parent protocols and their outputs are strictly read-only here:
+        - Do not attach outputs to the parent protocol.
+        - Do not repair the parent output mapper.
+        - Do not replace PostgreSQL proxies.
+        - Do not persist the parent protocol or its outputs.
+
+        PostgreSQL is the source of truth for output existence. The runtime
+        attribute is inspected only as compatibility information.
+        """
+        outputInfo = self._getPostgresqlRuntimeOutputInfo(
+            mapper=mapper,
+            projectId=projectId,
+            parentProtocolDbId=parentProtocolDbId,
+            outputName=outputName,
+        )
+
+        try:
+            hasRuntimeAttribute = hasattr(parentProtocol, outputName)
+        except Exception:
+            hasRuntimeAttribute = False
+
+        if outputInfo.get("exists"):
+            logger.debug(
+                "Resolved parent output from PostgreSQL without modifying the parent. "
+                "projectId=%s parentProtocolId=%s parentProtocolDbId=%s "
+                "outputName=%s hasRuntimeAttribute=%s",
+                projectId,
+                parentScipionProtocolId,
+                parentProtocolDbId,
+                outputName,
+                hasRuntimeAttribute,
+            )
+
+            return {
+                "exists": True,
+                "source": "postgresql",
+                "hasRuntimeAttribute": hasRuntimeAttribute,
+                "repairedMapper": False,
+                "persistedMapperRepair": False,
+                "parentProtocolReadOnly": True,
+                "outputInfo": outputInfo,
+            }
+
+        if hasRuntimeAttribute:
+            return {
+                "exists": True,
+                "source": "scipion_runtime",
+                "hasRuntimeAttribute": True,
+                "repairedMapper": False,
+                "persistedMapperRepair": False,
+                "parentProtocolReadOnly": True,
+                "outputInfo": outputInfo,
+            }
+
+        return {
+            "exists": False,
+            "source": None,
+            "hasRuntimeAttribute": False,
+            "repairedMapper": False,
+            "persistedMapperRepair": False,
+            "parentProtocolReadOnly": True,
+            "outputInfo": outputInfo,
+        }
+
+    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True, validateParams=True):
+        runtimeProtocolSaveService = RuntimeProtocolSaveService()
+
+        return runtimeProtocolSaveService.saveProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocolClassName=protocolClassName,
+            params=params,
+            setToSave=setToSave,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
+            resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+            syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=self.syncPostgresqlRuntimeProtocolInputsAndDependencies,
+            validateParams=validateParams,
+        )
+
+    def listProtocolStepsService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+    ):
+        runtimeProtocolStepStatusService = (
+            RuntimeProtocolStepStatusService()
+        )
+
+        return (
+            runtimeProtocolStepStatusService
+            .listProtocolSteps(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                resolveScipionProtocolIdCallback=(
+                    self._resolveScipionProtocolId
+                ),
+            )
+        )
+
+    def updateProtocolStepStatusService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            stepIndex: int,
+            stepStatus: str,
+    ):
+        runtimeProtocolStepStatusService = (
+            RuntimeProtocolStepStatusService()
+        )
+
+        return (
+            runtimeProtocolStepStatusService
+            .updateProtocolStepStatus(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                stepIndex=stepIndex,
+                stepStatus=stepStatus,
+                resolveScipionProtocolIdCallback=(
+                    self._resolveScipionProtocolId
+                ),
+            )
+        )
+
+    def _releasePostgresqlRuntimeLaunchInputs(
+            self,
+    ) -> None:
+        runtimeInputSets = list(getattr(self, "_postgresqlLaunchInputSetsByRuntimeObjectId", {}).values())
+        runtimeInputObjects = list(getattr(self, "_postgresqlLaunchInputObjectsByRuntimeObjectId", {}).values())
+
+        for runtimeInputObject in runtimeInputObjects:
+            runtimeInputObjectDict = getattr(runtimeInputObject, "__dict__", None)
+
+            if isinstance(runtimeInputObjectDict, dict):
+                runtimeInputObjectDict.pop("_postgresqlRuntimeObjectResolver", None)
+
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
+
+        releasedInputSetIds = set()
+
+        for runtimeInputSet in runtimeInputSets:
+            runtimeInputSetId = id(
+                runtimeInputSet
+            )
+
+            if runtimeInputSetId in releasedInputSetIds:
+                continue
+
+            releasedInputSetIds.add(
+                runtimeInputSetId
+            )
+
+            releaseDetachedConsumer = getattr(
+                runtimeInputSet,
+                "releasePostgresqlDetachedConsumer",
+                None,
+            )
+
+            if callable(releaseDetachedConsumer):
+                try:
+                    releaseDetachedConsumer()
+                except Exception:
+                    logger.debug(
+                        "Could not release detached PostgreSQL launch input Set.",
+                        exc_info=True,
+                    )
+
+                continue
+
+            materializer = getattr(
+                runtimeInputSet,
+                "_postgresqlSqliteMaterializer",
+                None,
+            )
+
+            releaseRuntimeSet = getattr(
+                materializer,
+                "releaseRuntimeSet",
+                None,
+            )
+
+            if callable(releaseRuntimeSet):
+                try:
+                    releaseRuntimeSet(
+                        runtimeInputSet
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not release PostgreSQL launch validation SQLite snapshot.",
+                        exc_info=True,
+                    )
+
+            close = getattr(
+                runtimeInputSet,
+                "close",
+                None,
+            )
+
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug(
+                        "Could not close detached PostgreSQL launch input Set.",
+                        exc_info=True,
+                    )
+
+    def launchProtocol(self, mapper, projectId, protocolId, protocolClassName, params, executeMode):
+        runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
+
+        self._postgresqlLaunchInputSetsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
+        self._postgresqlLaunchInputObjectIdsResolving = set()
+
+        try:
+            return runtimeProtocolLaunchService.launchProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocolClassName=protocolClassName,
+                params=params,
+                executeMode=executeMode,
+                currentProject=self.currentProject,
+                saveProtocolCallback=self.saveProtocol,
+                stopProtocolCallback=self.stopProtocol,
+                preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
+                    self._preparePostgresqlRuntimePointerOutputsForLaunch
+                ),
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                    self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+                ),
+                syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            )
+        finally:
+            self._releasePostgresqlRuntimeLaunchInputs()
+
+    def findViewersWeb(self, protocol):
+        # TODO: Find viewers...
+        """Stub for finding web-based viewers (to be implemented)."""
+        return {}
 
     def getResourceIcon(self, icon):
+        """Return absolute path to an icon resource."""
         return os.path.join(self.currentProject.getPath(), icon)
 
     def getResourceLogo(self, logo):
+        """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
-    @staticmethod
-    def getPointerHtml(protVar):
-        if protVar.hasValue():
-            # if protVar.get() is None:
-            #    raise Exception("protVar.hasValue...and .get() is None")
-            # TODO: CHECK THIS LATER to display better when _extended attribute
-            return protVar.getObjValue().getNameId(), '%s::%s' % (protVar.getObjValue().getObjId(),
-                                                                  protVar._extended.get())
-        return '', ''
+    def getProtocols(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser,
+    ) -> dict:
+        protocolCatalogService = ProtocolCatalogService()
 
-    @staticmethod
-    def replacePattern(m, mode):
-        g1 = m.group(mode)
-        if mode == HYPER_BOLD:
-            text = " <b>%s</b> " % g1
-        elif mode == HYPER_ITALIC:
-            text = " <i>%s</i> " % g1
-        elif mode == HYPER_LINK1:
-            text = " <a href='%s' target='_blank' style='color:firebrick;'>%s</a> " % (g1, g1)
-        elif mode == HYPER_LINK2:
-            if g1.startswith("sci-open:"):
-                url = 'javascript:launchViewer(%s)' % g1[len("sci-open:"):]
-            else:
-                url = g1
-            text = " <a href='%s' target='_blank' style='color:firebrick;'>%s</a> " % (url, m.group('link2_label'))
-        else:
-            raise Exception("Unrecognized pattern mode: " + mode)
+        return protocolCatalogService.getProtocols(
+            currentProject=self.currentProject,
+        )
 
-        return text
+    def _resolvePostgresqlProjectPathForFilesystem(
+            self,
+            mapper,
+            projectId: int,
+    ) -> Optional[str]:
+        try:
+            projectRuntimeRepository = ProjectRuntimeRepository()
+            rawPath = projectRuntimeRepository.getProjectNameById(
+                mapper=mapper,
+                projectId=projectId,
+            )
+        except Exception:
+            logger.debug(
+                "Could not resolve project path from PostgreSQL. projectId=%s",
+                projectId,
+                exc_info=True,
+            )
+            return None
 
-    def parseText(self, text, func=replacePattern):
-        """ Parse the text adding some basic tags for html.
-        Params:
-            text: can be string or list, if it is a list, a <br> tag will be generated.
-        """
-        parsedText = ""
-        if isinstance(text, list):
-            for itemText in text:
-                splitLines = itemText.splitlines(True)
-                if len(splitLines) == 0:
-                    parsedText += '<br />'
-                else:
-                    for lineText in splitLines:
-                        parsedText += parseHyperText(lineText, func) + '<br />'
-        else:
-            splitLines = text.splitlines(True)
-            for lineText in splitLines:
-                parsedText += parseHyperText(lineText, func) + '<br />'
-        #        parsedText = parseHyperText(text, func)
-        return parsedText[:-6]
-
-    def PreprocessParamForm(self, param, paramName, wizards, viewerDict, visualize, protVar):
+        if not rawPath:
+            return None
 
         try:
-            context = {}
-            from pyworkflow.protocol import MultiPointerParam, PointerParam, RelationParam, Boolean
-            # RELATION PARAM
-            if isinstance(param, RelationParam):
+            path = self._normalizeProjectPath(str(rawPath))
+        except Exception:
+            path = str(rawPath)
+
+        if not os.path.isabs(path):
+            try:
+                path = self.manager.getProjectPath(path)
+            except Exception:
                 pass
-                # param.htmlValue, param.htmlIdValue = self.getPointerHtml(protVar)
-                # param.relationName = param.getName()
-                # param.attributeName = param.getAttributeName()
-                # param.direction = param.getDirection()
 
+        return os.path.realpath(path)
+
+    def listProtocolLogChannelsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            mapper=None,
+            currentUser: Optional[dict] = None,
+    ):
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.listProtocolLogChannels(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    def pollProtocolLogsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            offsets: Dict[str, int],
+            maxBytes: Optional[int] = 65536,
+            maxLines: Optional[int] = 2000,
+            mapper=None,
+            currentUser: Optional[dict] = None,
+    ):
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.pollProtocolLogs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            offsets=offsets,
+            maxBytes=maxBytes,
+            maxLines=maxLines,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    def getProtocolLogs(
+            self,
+            projectId: int,
+            protocolId: int,
+            offset: int = 0,
+            errOffset: int = 0,
+            scheduleOffset: int = 0,
+            mapper=None,
+    ):
+        runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        return runtimeProtocolLogService.getProtocolLogs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            offset=offset,
+            errOffset=errOffset,
+            scheduleOffset=scheduleOffset,
+            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    @staticmethod
+    def _buildProtocolMutationResult(message: str, **extra) -> Dict[str, Any]:
+        errors = extra.get("errors", [])
+        duplicated = extra.get("duplicated", {})
+        result = dict(extra or {})
+
+        result.update({
+            "status": 1 if errors else 0,
+            "errors": errors,
+            "message": message,
+            "duplicated": duplicated,
+        })
+
+        return result
+
+    def renameProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            newName,
+            newComment,
+    ):
+        runtimeProtocolRenameService = (
+            RuntimeProtocolRenameService()
+        )
+
+        return runtimeProtocolRenameService.renameProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            newName=newName,
+            newComment=newComment,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            storeProtocolCallback=self.currentProject._storeProtocol,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+        )
+
+    def duplicateProtocol(self, mapper, projectId, protocols):
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
+
+        return runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+            getScipionObjectIdCallback=self._getScipionObjectId,
+            saveProtocolCallback=self.saveProtocol,
+            syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+            storeProtocolCallback=self.currentProject._storeProtocol,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+        )
+
+    def _resolveProtocolWorkingDirectoryForDelete(
+            self,
+            protocol,
+    ) -> Path:
+        projectPathValue = (
+            self._getCurrentProjectPath()
+        )
+
+        if not projectPathValue:
+            raise RuntimeError(
+                "Current project path is not available"
+            )
+
+        projectPath = Path(
+            projectPathValue
+        ).expanduser().resolve()
+
+        runsPath = Path(
+            os.path.abspath(
+                str(
+                    projectPath
+                    / "Runs"
+                )
+            )
+        )
+
+        rawWorkingDir = getattr(
+            protocol,
+            "getWorkingDir",
+            lambda: None,
+        )()
+
+        if not rawWorkingDir:
+            raise RuntimeError(
+                "Protocol %s does not expose "
+                "a working directory"
+                % getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+            )
+
+        workingDir = Path(
+            str(
+                rawWorkingDir
+            )
+        ).expanduser()
+
+        if not workingDir.is_absolute():
+            workingDir = (
+                projectPath
+                / workingDir
+            )
+
+        workingDir = Path(
+            os.path.abspath(
+                str(
+                    workingDir
+                )
+            )
+        )
+
+        try:
+            workingDir.relative_to(
+                runsPath
+            )
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Refusing to delete protocol path "
+                "outside the project Runs directory: %s"
+                % workingDir
+            ) from error
+
+        if workingDir == runsPath:
+            raise RuntimeError(
+                "Refusing to delete the complete "
+                "project Runs directory"
+            )
+
+        # Do not follow a protocol-directory symlink.
+        if workingDir.is_symlink():
+            return workingDir
+
+        resolvedRunsPath = (
+            runsPath.resolve(
+                strict=False
+            )
+        )
+
+        resolvedWorkingDir = (
+            workingDir.resolve(
+                strict=False
+            )
+        )
+
+        try:
+            resolvedWorkingDir.relative_to(
+                resolvedRunsPath
+            )
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Refusing to follow protocol path "
+                "outside the project Runs directory: %s"
+                % workingDir
+            ) from error
+
+        return workingDir
+
+    def _cleanupPostgresqlRuntimeProtocolDelete(
+            self,
+            *,
+            projectId: int,
+            protocols,
+            deleteInfo,
+    ) -> Dict[str, Any]:
+        deletedProtocolIds = {
+            str(
+                protocolId
+            )
+            for protocolId in (
+                deleteInfo.get(
+                    "deletedProtocolIds"
+                )
+                or []
+            )
+        }
+
+        cleanupProtocols = []
+
+        for protocol in protocols or []:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: None,
+            )()
+
+            if str(
+                    protocolId
+            ) not in deletedProtocolIds:
+                continue
+
+            cleanupProtocols.append(
+                protocol
+            )
+
+        runtimeMapper = None
+
+        try:
+            runtimeMapper = (
+                self.currentProject
+                .getPostgresqlRuntimeMapper()
+            )
+
+        except Exception:
+            runtimeMapper = None
+
+        cacheCleanup = None
+
+        if runtimeMapper is not None:
+            cacheCleanup = (
+                runtimeMapper
+                .evictDeletedRuntimeArtifacts(
+                    protocolIds=list(
+                        deletedProtocolIds
+                    ),
+                    runtimeSetObjectIds=(
+                        deleteInfo.get(
+                            "runtimeSetObjectIds"
+                        )
+                        or []
+                    ),
+                )
+            )
+
+        deletedDirectories = []
+        missingDirectories = []
+        errors = []
+
+        for protocol in cleanupProtocols:
+            protocolId = str(
+                getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: None,
+                )()
+            )
+
+            try:
+                workingDir = (
+                    self
+                    ._resolveProtocolWorkingDirectoryForDelete(
+                        protocol
+                    )
+                )
+
+                if workingDir.is_symlink():
+                    workingDir.unlink()
+
+                    deletedDirectories.append({
+                        "protocolId": protocolId,
+                        "path": str(
+                            workingDir
+                        ),
+                        "kind": "symlink",
+                    })
+
+                    continue
+
+                if not workingDir.exists():
+                    missingDirectories.append({
+                        "protocolId": protocolId,
+                        "path": str(
+                            workingDir
+                        ),
+                    })
+
+                    continue
+
+                if not workingDir.is_dir():
+                    raise RuntimeError(
+                        "Protocol working path is "
+                        "not a directory: %s"
+                        % workingDir
+                    )
+
+                shutil.rmtree(
+                    workingDir
+                )
+
+                deletedDirectories.append({
+                    "protocolId": protocolId,
+                    "path": str(
+                        workingDir
+                    ),
+                    "kind": "directory",
+                })
+
+            except Exception as error:
+                logger.exception(
+                    "Could not delete PostgreSQL "
+                    "protocol working directory. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                errors.append({
+                    "protocolId": protocolId,
+                    "error": str(
+                        error
+                    ),
+                })
+
+        return {
+            "cacheCleanup": cacheCleanup,
+            "deletedDirectories": (
+                deletedDirectories
+            ),
+            "missingDirectories": (
+                missingDirectories
+            ),
+            "errors": errors,
+        }
+
+    def deleteProtocol(self, mapper, projectId, protocols: Any):
+        runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
+
+        return runtimeProtocolDeleteService.deleteProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocols=protocols,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
+        )
+
+    def _clearPostgresqlChildInputRefObjectIdsForOutputProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+    ) -> Dict[str, Any]:
+        """
+        Clear cached output object IDs from child protocol input-reference rows.
+
+        The supplied protocols are output owners whose outputs are being reset
+        or restarted. This method only updates protocol_input_refs rows that
+        point to those outputs.
+
+        It never modifies or persists the supplied protocol objects or any of
+        their outputs.
+        """
+        outputProtocolDbIds = []
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        for protocol in protocols or []:
+            protocolId = getattr(
+                protocol,
+                "getObjId",
+                lambda: protocol,
+            )()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolId)
+
+            if protocolDbId is None:
+                continue
+
+            protocolDbId = int(protocolDbId)
+
+            if protocolDbId not in outputProtocolDbIds:
+                outputProtocolDbIds.append(protocolDbId)
+
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        return (
+            protocolGraphRepository
+            .clearInputRefObjectIdsForParentProtocolDbIds(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbIds=outputProtocolDbIds,
+            )
+        )
+
+    def _getPostgresqlRuntimeSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> "collections.OrderedDict[str, Tuple[Any, int]]":
+        """
+        Resolve the downstream subworkflow from PostgreSQL runtime graph.
+
+        The returned shape intentionally matches Scipion's private workflow methods:
+            {
+                protocolId: (protocol, level),
+                ...
+            }
+
+        Do not use currentProject._getSubworkflow() in PostgreSQL runtime mode:
+        the PostgreSQL graph is the source of truth here.
+        """
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
+        rootProtocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId
+        )
+
+        if rootProtocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Protocol %s was not found in PostgreSQL" % protocolId,
+            )
+
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        rows = protocolGraphRepository.loadSubworkflowRows(
+            mapper=mapper,
+            projectId=projectId,
+            rootProtocolDbId=rootProtocolDbId,
+        )
+
+        result = collections.OrderedDict()
+
+        for row in rows or []:
+            scipionProtocolId = row.get("protocolId")
+            level = int(row.get("level") or 0)
+
+            protocol = self._getScipionProtocolForRuntime(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=scipionProtocolId,
+            )
+
+            result[str(scipionProtocolId)] = (protocol, level)
+
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No PostgreSQL runtime subworkflow found for protocol %s" % protocolId,
+            )
+
+        return result
+
+    def _assertNoPostgresqlRuntimeSelfInputRefs(
+            self,
+            mapper,
+            projectId: int,
+            protocol,
+    ) -> None:
+        protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+        if protocolId in (None, ""):
+            return
+
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+            db=mapper.db,
+        )
+        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(
+            protocolId
+        )
+
+        if protocolDbId is None:
+            return
+
+        protocolGraphRepository = ProtocolGraphRepository()
+
+        rows = protocolGraphRepository.loadSelfInputRefs(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+        )
+
+        if rows:
+            raise ValueError(
+                "Protocol %s has self input refs in PostgreSQL: %s"
+                % (protocolId, rows)
+            )
+
+    def _restorePostgresqlRuntimePointersForProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols,
+            prepareOutputsForLaunch: bool = False,
+            allowMissingParentOutputs: bool = False,
+            parentProtocolsById: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        reports = []
+        errors = []
+        runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
+
+        for protocol in protocols or []:
+            protocolId = getattr(protocol, "getObjId", lambda: None)()
+
+            if protocolId in (None, ""):
+                continue
+
+            protocolReport = {
+                "protocolId": str(protocolId),
+                "restore": None,
+                "prepareOutputs": None,
+            }
+
+            try:
+                restoreReport = runtimeProtocolDuplicateService.restorePostgresqlPointerInputsBeforeCopy(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=protocol,
+                    parentProtocolsById=parentProtocolsById,
+                    getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+                )
+
+                protocolReport["restore"] = restoreReport
+
+                if restoreReport.get("errors"):
+                    errors.append({
+                        "protocolId": str(protocolId),
+                        "stage": "restore",
+                        "errors": restoreReport.get("errors"),
+                    })
+
+                if prepareOutputsForLaunch:
+                    prepareReport = (
+                        self
+                        ._preparePostgresqlRuntimePointerOutputsForLaunch(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocol=protocol,
+                            allowMissingParentOutputs=(
+                                allowMissingParentOutputs
+                            ),
+                            parentProtocolsById=(
+                                parentProtocolsById
+                            ),
+                        )
+                    )
+
+                    protocolReport["prepareOutputs"] = prepareReport
+
+                    if prepareReport.get("errors"):
+                        errors.append({
+                            "protocolId": str(protocolId),
+                            "stage": "prepareOutputs",
+                            "errors": prepareReport.get("errors"),
+                        })
+
+                reports.append(protocolReport)
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to restore PostgreSQL runtime pointers. "
+                    "projectId=%s protocolId=%s",
+                    projectId,
+                    protocolId,
+                )
+
+                errors.append({
+                    "protocolId": str(protocolId),
+                    "errors": [str(e)],
+                })
+
+        return {
+            "reports": reports,
+            "errors": errors,
+        }
+
+    def _workflowProtocolMapToProtocols(self, workflowProtocolMap) -> List[Any]:
+        if not workflowProtocolMap:
+            return []
+
+        if isinstance(workflowProtocolMap, dict):
+            protocols = []
+
+            for value in workflowProtocolMap.values():
+                if isinstance(value, (tuple, list)) and value:
+                    protocols.append(value[0])
+                else:
+                    protocols.append(value)
+
+            return protocols
+
+        return list(workflowProtocolMap or [])
+
+    def _validatePostgresqlRestartSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlRestartLauncherService()
+        )
+
+        return service.validateRestartSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            workflowProtocolMap=workflowProtocolMap,
+            currentProject=self.currentProject,
+        )
+
+    def _launchPostgresqlRestartSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+            validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlRestartLauncherService()
+        )
+
+        return service.launchRestartSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            workflowProtocolMap=workflowProtocolMap,
+            currentProject=self.currentProject,
+            validationInfo=validationInfo,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+        )
+
+    def _buildPostgresqlContinuePlan(
+            self,
+            mapper,
+            projectId: int,
+            workflowProtocolMap,
+            forceRestartProtocolIds=None,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlContinueLauncherService()
+        )
+
+        return service.buildContinuePlan(mapper=mapper,
+                                         projectId=projectId,
+                                         workflowProtocolMap=workflowProtocolMap,
+                                         currentProject=self.currentProject,
+                                         forceRestartProtocolIds=forceRestartProtocolIds)
+
+    def _launchPostgresqlContinueSubworkflow(
+            self,
+            mapper,
+            projectId: int,
+            plan,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+    ) -> Dict[str, Any]:
+        service = (
+            RuntimePostgresqlContinueLauncherService()
+        )
+
+        return service.launchContinueSubworkflow(
+                mapper=mapper,
+                projectId=projectId,
+                currentProject=self.currentProject,
+                plan=plan,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
+
+        )
+
+    def getProtocolWorkflowExecutionPreflight(self, mapper, projectId: int, protocolId, mode):
+        runtimeProtocolWorkflowExecutionService = RuntimeProtocolWorkflowExecutionService()
+        return runtimeProtocolWorkflowExecutionService.buildPreflight(mapper=mapper, projectId=projectId,
+                                                                      protocolId=protocolId, mode=mode,
+                                                                      getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow)
+
+    def _prepareProtocolWorkflowRoot(self, mapper, projectId: int, protocolId, protocolClassName: str, params,
+                                     persist=False):
+        protocol, errors = self.saveProtocol(mapper, projectId, protocolId, protocolClassName, params, setToSave=False)
+
+        if errors:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=errors)
+
+        if protocol.useQueue():
+            protocol.setQueueParams([params.get("_queueName"), params.get("_queueParams")])
+
+        if persist:
+            self.currentProject._storeProtocol(protocol)
+
+        return {"protocolId": str(protocol.getObjId()), "persisted": bool(persist)}
+
+    def _executeProtocolWorkflowAll(self, mapper, projectId: int, protocolId, mode):
+        if mode == "continue":
+            return self.continueProtocolAll(mapper, projectId, protocolId)
+
+        return self.restartProtocolAll(mapper, projectId, protocolId)
+
+    def executeProtocolWorkflow(self, mapper, projectId: int, protocolId, protocolClassName: str, params, mode, scope):
+        runtimeProtocolWorkflowExecutionService = RuntimeProtocolWorkflowExecutionService()
+        return runtimeProtocolWorkflowExecutionService.executeWorkflow(mapper=mapper, projectId=projectId,
+                                                                       protocolId=protocolId,
+                                                                       protocolClassName=protocolClassName,
+                                                                       params=params, mode=mode, scope=scope,
+                                                                       prepareRootProtocolCallback=self._prepareProtocolWorkflowRoot,
+                                                                       resetDescendantsCallback=self.resetProtocolFrom,
+                                                                       executeSingleCallback=self.launchProtocol,
+                                                                       executeAllCallback=self._executeProtocolWorkflowAll)
+
+    def restartProtocolAll(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ):
+        runtimeProtocolRestartService = RuntimeProtocolRestartService()
+
+        return runtimeProtocolRestartService.restartProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            validatePostgresqlRestartSubworkflowCallback=self._validatePostgresqlRestartSubworkflow,
+            launchPostgresqlRestartSubworkflowCallback=self._launchPostgresqlRestartSubworkflow,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            stopPostgresqlProtocolsCallback=self.stopProtocol,
+        )
+
+    def continueProtocolAll(self,
+                            mapper,
+                            projectId,
+                            protocolId,
+                            currentUser=None):
+        runtimeProtocolContinueService = RuntimeProtocolContinueService()
+
+        return (
+            runtimeProtocolContinueService
+            .continueProtocolSubworkflow(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+                buildPostgresqlContinuePlanCallback=self._buildPostgresqlContinuePlan,
+                launchPostgresqlContinueSubworkflowCallback=self._launchPostgresqlContinueSubworkflow,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql,
+                clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols,
+                buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+                stopPostgresqlProtocolsCallback=self.stopProtocol,
+            )
+        )
+
+    def resetProtocolFrom(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            includeRoot=True
+    ):
+        runtimeProtocolResetService = RuntimeProtocolResetService()
+
+        return runtimeProtocolResetService.resetProtocolSubworkflow(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            currentProject=self.currentProject,
+            getPostgresqlRuntimeSubworkflowCallback=self._getPostgresqlRuntimeSubworkflow,
+            stopPostgresqlProtocolsCallback=self.stopProtocol,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                self._clearPostgresqlChildInputRefObjectIdsForOutputProtocols
+            ),
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            includeRoot=includeRoot,
+        )
+
+    def stopProtocol(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds,
+    ):
+        runtimeProtocolStopService = RuntimeProtocolStopService()
+
+        return runtimeProtocolStopService.stopProtocols(
+            mapper=mapper,
+            projectId=projectId,
+            protocolIds=protocolIds,
+            currentProject=self.currentProject,
+            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+        )
+
+    _UNSAVED_FS_PROTOCOL_ID = "fake-protocol-id-for-browser-paths-resolution"
+
+    def _isGlobalFsBrowserMode(self, protocolId: Union[int, str]) -> bool:
+        return str(protocolId).strip() == "-1"
+
+    def _isUnpersistedFsBrowserMode(self, protocolId) -> bool:
+        protocolToken = "" if protocolId is None else str(protocolId).strip().lower()
+        return protocolToken in {"", "none", "null", "undefined", self._UNSAVED_FS_PROTOCOL_ID}
+
+    def _getGlobalFsBrowserRoot(self) -> Path:
+        raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
+        return Path(raw).expanduser().resolve()
+
+    def _extractWorkflowJsonText(self, text: str) -> str:
+        # extractWorkflowJsonText
+        raw = str(text or "").strip()
+        if not raw:
+            return raw
+
+        if raw.startswith("[") or raw.startswith("{"):
+            return raw
+
+        lines = raw.splitlines()
+
+        for index, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith("[") or stripped.startswith("{"):
+                return "\n".join(lines[index:]).strip()
+
+        return raw
+
+    def _sanitizeWorkflowHeaderValue(self, value: Any) -> str:
+        # sanitizeWorkflowHeaderValue
+        return (
+            str(value or "")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("|", "/")
+            .replace(";", " ")
+            .strip()
+        )
+
+    def _buildWorkflowTemplateHeader(self, protocolList: List[Any]) -> str:
+        # buildWorkflowTemplateHeader
+        metadata = self._buildWorkflowPluginMetadata(protocolList)
+
+        requiredPluginNames = [
+            self._sanitizeWorkflowHeaderValue(name)
+            for name in metadata.get("requiredPluginNames", [])
+            if self._sanitizeWorkflowHeaderValue(name)
+        ]
+
+        lines = [
+            "ScipionWeb metadata format: scipionweb.workflow.metadata",
+            "ScipionWeb metadata version: 1",
+            "ScipionWeb exported at UTC: %s" % self._sanitizeWorkflowHeaderValue(
+                metadata.get("exportedAt", "")
+            ),
+            "Scipion required plugins: %s" % ", ".join(requiredPluginNames),
+        ]
+
+        return "\n".join(lines).rstrip() + "\n\n"
+
+    def _extractRequiredPluginNamesFromWorkflowText(self, text: str) -> List[str]:
+        # extractRequiredPluginNamesFromWorkflowText
+        for line in str(text or "").splitlines():
+            cleanLine = line.strip()
+
+            if not cleanLine:
+                continue
+
+            if cleanLine.startswith("[") or cleanLine.startswith("{"):
+                break
+
+            match = re.match(
+                r"^Scipion required plugins:\s*(.*)$",
+                cleanLine,
+                flags=re.IGNORECASE,
+            )
+
+            if not match:
+                continue
+
+            rawNames = match.group(1).strip()
+            if not rawNames:
+                return []
+
+            names: List[str] = []
+            seen: TypingSet[str] = set()
+
+            for rawName in rawNames.split(","):
+                name = rawName.strip()
+                if not name or name in seen:
+                    continue
+
+                seen.add(name)
+                names.append(name)
+
+            return names
+
+        return []
+
+    def _decodeExportJsonPayload(self, rawExport: Any) -> Any:
+        if isinstance(rawExport, str):
+            text = rawExport.strip()
+            if not text:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Scipion export returned empty content",
+                )
+
+            try:
+                return json.loads(text)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scipion export returned invalid JSON text: {e}",
+                )
+
+        if isinstance(rawExport, (list, dict)):
+            return rawExport
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unsupported export payload returned by Scipion",
+        )
+
+    def _getProtocolPluginNameForExport(self, protocol: Any) -> str:
+        try:
+            plugin = protocol.getPlugin()
+        except Exception:
+            plugin = None
+
+        if plugin is not None:
+            try:
+                name = plugin.getName()
+                if name:
+                    return str(name).strip()
+            except Exception:
+                pass
+
+            try:
+                moduleName = getattr(plugin, "__name__", None)
+                if moduleName:
+                    return str(moduleName).strip()
+            except Exception:
+                pass
+
+        try:
+            moduleName = protocol.__class__.__module__
+            if moduleName:
+                return str(moduleName).split(".")[0].strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _getProtocolClassNameForExport(self, protocol: Any) -> str:
+        try:
+            className = protocol.getClassName()
+            if className:
+                return str(className).strip()
+        except Exception:
+            pass
+
+        try:
+            return protocol.__class__.__name__
+        except Exception:
+            return ""
+
+    def _getProtocolObjIdForExport(self, protocol: Any) -> str:
+        try:
+            objId = protocol.getObjId()
+            if objId is not None:
+                return str(objId).strip()
+        except Exception:
+            pass
+
+        return ""
+
+    def _buildWorkflowPluginMetadata(self, protocolList: List[Any]) -> Dict[str, Any]:
+        protocolPlugins: List[Dict[str, str]] = []
+        requiredPluginNames: List[str] = []
+        seenPluginNames: TypingSet[str] = set()
+
+        for protocol in protocolList or []:
+            protocolId = self._getProtocolObjIdForExport(protocol)
+            className = self._getProtocolClassNameForExport(protocol)
+            pluginName = self._getProtocolPluginNameForExport(protocol)
+
+            if pluginName and pluginName not in seenPluginNames:
+                seenPluginNames.add(pluginName)
+                requiredPluginNames.append(pluginName)
+
+            protocolPlugins.append(
+                {
+                    "protocolId": protocolId,
+                    "className": className,
+                    "pluginName": pluginName,
+                }
+            )
+
+        requiredPluginNames.sort()
+
+        return {
+            "format": "scipionweb.workflow.export",
+            "version": 1,
+            "requiredPluginNames": requiredPluginNames,
+            "protocolPlugins": protocolPlugins,
+            "exportedAt": datetime.utcnow().isoformat() + "Z",
+        }
+
+    def _buildWorkflowExportJsonContent(
+            self,
+            rawExport: Any,
+            protocolList: List[Any],
+    ) -> str:
+        # buildWorkflowExportJsonContent
+        jsonContent = self._normalizeExportJsonContent(rawExport)
+        header = self._buildWorkflowTemplateHeader(protocolList)
+
+        return header + jsonContent
+
+    def _readWorkflowTemplateJsonPayload(self, workflowFile: Any) -> Optional[Any]:
+        # readWorkflowTemplateJsonPayload
+        try:
+            path = Path(str(workflowFile)).expanduser().resolve()
+        except Exception:
+            return None
+
+        if not path.exists() or not path.is_file():
+            return None
+
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+
+        if not text:
+            return None
+
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _isScipionWebWorkflowExportPayload(self, payload: Any) -> bool:
+        # isScipionWebWorkflowExportPayload
+        if not isinstance(payload, dict):
+            return False
+
+        metadata = payload.get("scipionWeb")
+        if not isinstance(metadata, dict):
+            return False
+
+        return metadata.get("format") == "scipionweb.workflow.export" and "content" in payload
+
+    def _getRequiredPluginNamesFromWorkflowPayload(self, payload: Dict[str, Any]) -> List[str]:
+        # getRequiredPluginNamesFromWorkflowPayload
+        metadata = payload.get("scipionWeb") or {}
+        rawNames = metadata.get("requiredPluginNames") or []
+
+        names: List[str] = []
+        seen: TypingSet[str] = set()
+
+        for rawName in rawNames:
+            name = str(rawName or "").strip()
+            if not name or name in seen:
+                continue
+
+            seen.add(name)
+            names.append(name)
+
+        return names
+
+    def _getInstalledPluginNamesForWorkflowImport(self) -> TypingSet[str]:
+        # getInstalledPluginNamesForWorkflowImport
+        installedNames: TypingSet[str] = set()
+
+        try:
+            from app.backend.api.services.plugin_service import PluginService
+
+            plugins = PluginService().getPlugins(forceRefresh=False)
+            for plugin in plugins or []:
+                if not isinstance(plugin, dict):
+                    continue
+
+                if not plugin.get("installed"):
+                    continue
+
+                for key in ("name", "pipName", "pluginName", "moduleName", "packageName"):
+                    value = plugin.get(key)
+                    if value:
+                        installedNames.add(str(value).strip())
+        except Exception:
+            logger.debug("Could not load installed plugin names from PluginService", exc_info=True)
+
+        try:
+            domain = self.currentProject.getDomain()
+            rawPlugins = getattr(domain, "getPlugins", lambda: {})() or {}
+
+            if isinstance(rawPlugins, dict):
+                for key, plugin in rawPlugins.items():
+                    if key:
+                        installedNames.add(str(key).strip())
+
+                    try:
+                        pluginName = plugin.getName()
+                        if pluginName:
+                            installedNames.add(str(pluginName).strip())
+                    except Exception:
+                        pass
+        except Exception:
+            logger.debug("Could not load installed plugin names from Scipion domain", exc_info=True)
+
+        return {name for name in installedNames if name}
+
+    def _isWorkflowPluginAvailable(
+            self,
+            pluginName: str,
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> bool:
+        # isWorkflowPluginAvailable
+        name = str(pluginName or "").strip()
+        if not name:
+            return True
+
+        if availabilityCache is not None and name in availabilityCache:
+            return availabilityCache[name]
+
+        available = False
+
+        try:
+            import importlib.util
+            available = importlib.util.find_spec(name) is not None
+        except Exception:
+            available = False
+
+        if not available:
+            try:
+                __import__(name)
+                available = True
+            except Exception:
+                available = False
+
+        if availabilityCache is not None:
+            availabilityCache[name] = available
+
+        return available
+
+    def _getMissingWorkflowPluginNames(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> List[str]:
+        # getMissingWorkflowPluginNames
+        missing: List[str] = []
+        seen: TypingSet[str] = set()
+
+        for rawPluginName in requiredPluginNames or []:
+            pluginName = str(rawPluginName or "").strip()
+            if not pluginName or pluginName in seen:
+                continue
+
+            seen.add(pluginName)
+
+            if not self._isWorkflowPluginAvailable(
+                    pluginName,
+                    availabilityCache=availabilityCache,
+            ):
+                missing.append(pluginName)
+
+        return missing
+
+    def _validateWorkflowRequiredPlugins(
+            self,
+            requiredPluginNames: List[str],
+            availabilityCache: Optional[Dict[str, bool]] = None,
+    ) -> None:
+        # validateWorkflowRequiredPlugins
+        missing = self._getMissingWorkflowPluginNames(
+            requiredPluginNames,
+            availabilityCache=availabilityCache,
+        )
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing required plugins for workflow import: %s" % ", ".join(missing),
+            )
+
+    def _prepareWorkflowFileForImport(self, workflowFile: Any) -> Dict[str, Any]:
+        # prepareWorkflowFileForImport
+        payload = self._readWorkflowTemplateJsonPayload(workflowFile)
+
+        # Backward compatibility with previous ScipionWeb wrapper exports.
+        if self._isScipionWebWorkflowExportPayload(payload):
+            assert isinstance(payload, dict)
+
+            requiredPluginNames = self._getRequiredPluginNamesFromWorkflowPayload(payload)
+            self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+            content = payload.get("content")
+            if not isinstance(content, (list, dict)):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid ScipionWeb workflow export: content must be a JSON list or object.",
+                )
+
+            sourcePath = Path(str(workflowFile)).expanduser().resolve()
+            tempPath = sourcePath.parent / (
+                ".scipionweb-import-%s.json" % uuid4().hex
+            )
+
+            try:
+                tempPath.write_text(
+                    json.dumps(content, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to prepare workflow import file: %s" % e,
+                )
+
+            return {
+                "workflowFile": str(tempPath),
+                "cleanupFile": str(tempPath),
+                "wrapped": True,
+                "hasScipionWebMetadata": True,
+                "requiredPluginNames": requiredPluginNames,
+            }
+
+        requiredPluginNames: List[str] = []
+        resolvedPath: Optional[Path] = None
+
+        try:
+            resolvedPath = Path(str(workflowFile)).expanduser().resolve()
+        except Exception:
+            resolvedPath = None
+
+        if resolvedPath is not None and resolvedPath.exists() and resolvedPath.is_file():
+            try:
+                text = resolvedPath.read_text(encoding="utf-8")
+                requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(text)
+            except Exception:
+                requiredPluginNames = []
+
+        self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+        return {
+            "workflowFile": str(resolvedPath) if resolvedPath is not None else workflowFile,
+            "cleanupFile": None,
+            "wrapped": False,
+            "hasScipionWebMetadata": bool(requiredPluginNames),
+            "requiredPluginNames": requiredPluginNames,
+        }
+
+    def _normalizeExportJsonContent(self, rawExport: Any) -> str:
+        if isinstance(rawExport, str):
+            text = rawExport.strip()
+            if not text:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Scipion export returned empty content",
+                )
+
+            text = self._extractWorkflowJsonText(text)
+
+            try:
+                json.loads(text)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Scipion export returned invalid JSON text: {e}",
+                )
+
+            return text
+
+        if isinstance(rawExport, (list, dict)):
+            try:
+                return json.dumps(rawExport, indent=2, ensure_ascii=False)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to serialize export payload: {e}",
+                )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unsupported export payload returned by Scipion",
+        )
+
+    def _normalizeProtocolIdsForExport(
+            self,
+            protocolIds: Optional[List[Union[int, str]]],
+    ) -> List[str]:
+        out: List[str] = []
+        seen: TypingSet[str] = set()
+
+        for raw in protocolIds or []:
+            value = str(raw).strip()
+            if not value or value.upper() == "PROJECT":
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append(value)
+
+        return out
+
+    def _resolveRuntimeProtocolsForExport(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[Union[int, str]],
+    ) -> List[Any]:
+        protocolList = []
+        missing = []
+
+        for protocolId in protocolIds or []:
+            try:
+                protocol = self._getScipionProtocolForRuntime(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            except HTTPException as e:
+                if e.status_code == status.HTTP_404_NOT_FOUND:
+                    missing.append(str(protocolId))
+                    continue
+                raise
+
+            protocolList.append(protocol)
+
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol(s) not found: {', '.join(missing)}",
+            )
+
+        if not protocolList:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No valid protocols to export",
+            )
+
+        return protocolList
+
+    def _prepareRuntimeProtocolsForExport(
+            self,
+            mapper,
+            projectId: int,
+            protocolIds: List[Union[int, str]],
+    ) -> List[Any]:
+        """
+        Load runtime protocols and restore their PostgreSQL-backed pointer
+        inputs before serializing them as a Scipion workflow.
+
+        This operation only modifies the in-memory protocol instances.
+        It does not persist protocols, inputs, dependencies or outputs.
+        """
+        protocolList = (
+            self
+            ._resolveRuntimeProtocolsForExport(
+                mapper=mapper,
+                projectId=projectId,
+                protocolIds=protocolIds,
+            )
+        )
+
+        parentProtocolsById = {}
+
+        for protocol in protocolList:
+            protocolId = (
+                self
+                ._getProtocolObjIdForExport(
+                    protocol
+                )
+            )
+
+            if protocolId:
+                parentProtocolsById[
+                    str(protocolId)
+                ] = protocol
+
+        restoreReport = (
+                self
+                ._restorePostgresqlRuntimePointersForProtocols(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocols=protocolList,
+                    prepareOutputsForLaunch=False,
+                    allowMissingParentOutputs=True,
+                    parentProtocolsById=parentProtocolsById,
+                )
+                or {}
+        )
+
+        restoreErrors = (
+                restoreReport.get("errors")
+                or []
+        )
+
+        if restoreErrors:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                        "Failed to restore PostgreSQL "
+                        "protocol inputs for export: %s"
+                        % restoreErrors
+                ),
+            )
+
+        return protocolList
+
+    def _sanitizeExportFilename(self, rawFilename: str) -> str:
+        filename = str(rawFilename or "").strip()
+        filename = filename.replace("\\", "/").split("/")[-1].strip()
+
+        if not filename or filename in (".", ".."):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid filename",
+            )
+
+        filename = filename.rstrip(". ").strip()
+        if not filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid filename",
+            )
+
+        if not filename.lower().endswith(".json"):
+            filename += ".json"
+
+        return filename
+
+    def _resolveFsRootForWrite(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Path:
+        pathInfo = self.getProtocolPath(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
+        if not rootAbs:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not resolve browser root",
+            )
+        return Path(rootAbs).expanduser().resolve()
+
+    def _guardFsPathWithinRootForWrite(
+            self,
+            rootPath: Path,
+            requestedPath: str,
+    ) -> Path:
+        rawPath = str(requestedPath or "").strip()
+        if not rawPath:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing path",
+            )
+
+        candidate = Path(rawPath).expanduser()
+        if not candidate.is_absolute():
+            candidate = rootPath / candidate
+
+        candidate = candidate.resolve()
+
+        try:
+            candidate.relative_to(rootPath)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Path escapes browser root",
+            )
+
+        return candidate
+
+    def getProtocolPath(
+            self,
+            protocolId,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return {
+                "rootAbs": str(root),
+                "startPath": "",
+            }
+
+        if self._isUnpersistedFsBrowserMode(protocolId):
+            rootAbsPath = str(self._getGlobalFsBrowserRoot())
+            protocolAbsPath = rootAbsPath
+        else:
+            protocol = self._getScipionProtocolForRuntime(mapper=mapper, projectId=projectId, protocolId=protocolId)
+            protocolAbsPath = os.path.abspath(protocol.getPath())
+            rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
+
+        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
+
+        startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
+        if startRelPath == ".":
+            startRelPath = ""
+
+        if startRelPath.startswith(".."):
+            rootAbsPath = "/home"
+            startRelPath = ""
+
+        return {
+            "rootAbs": rootAbsPath,
+            "startPath": startRelPath,
+            "protocolRoot": startRelPath,
+        }
+
+    def _inferProjectRootAbs(self, protocolAbsPath: str) -> str:
+        # Try to infer project folder from a protocol path like: <project>/Runs/<protId>/...
+        normPath = os.path.abspath(protocolAbsPath)
+        runsMarker = f"{os.sep}Runs{os.sep}"
+        if runsMarker in normPath:
+            return normPath.split(runsMarker)[0] or ""
+
+        runsSuffix = f"{os.sep}Runs"
+        if normPath.endswith(runsSuffix):
+            return normPath[: -len(runsSuffix)] or ""
+
+        # Fallback: use project path if available
+        projectPath = ""
+        if hasattr(self.currentProject, "getPath"):
+            try:
+                projectPath = self.currentProject.getPath() or ""
+            except Exception:
+                projectPath = ""
+        elif hasattr(self.currentProject, "path"):
+            projectPath = getattr(self.currentProject, "path") or ""
+
+        return os.path.abspath(projectPath) if projectPath else ""
+
+    def _protocolRoot(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> FsPath:
+        """
+        Resolve the absolute root folder for a protocol, using your service.
+        """
+        pathInfo = self.getProtocolPath(
+            protocolId=str(protocolId),
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
+        if not rootAbs:
+            raise HTTPException(status_code=404, detail="Protocol path not found")
+
+        return FsPath(rootAbs).resolve()
+
+    @staticmethod
+    def _guardJoin(root: FsPath, relPath: str) -> FsPath:
+        """
+        Join root + relPath, resolve, and ensure it stays inside root.
+        """
+        rel = (relPath or "").strip().lstrip("/\\")
+        target = (root / rel).resolve()
+        try:
+            target.relative_to(root)
+        except Exception:
+            if not target.exists():
+                raise HTTPException(status_code=400, detail="Invalid path")
+        return target
+
+    @staticmethod
+    def _guessMime(p: FsPath) -> str:
+        mt, _ = mimetypes.guess_type(str(p))
+        return mt or "application/octet-stream"
+
+    def _resolveRuntimeProtocolIdForFs(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> str:
+        if self._isGlobalFsBrowserMode(protocolId):
+            return str(protocolId)
+
+        if self._isUnpersistedFsBrowserMode(protocolId):
+            return self._UNSAVED_FS_PROTOCOL_ID
+
+        scipionProtocolId = self._resolveScipionProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
+
+        return str(scipionProtocolId)
+
+    def listProtocolDir(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """Return the directory file list."""
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.listRemoteDirectoryUnderRoot(root, path)
+
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return fileHandlers.listProtocolDir(runtimeProtocolId, path)
+
+    def previewProtocolTextFile(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """
+        Return a lightweight preview for a file inside a protocol workspace.
+        """
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewTextFileUnderRoot(root, path)
+
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return fileHandlers.previewProtocolTextFile(runtimeProtocolId, path)
+
+    def previewRemoteEntry(
+            self,
+            protocolId: str,
+            path: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """
+        Return a preview.
+        """
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewRemoteEntryUnderRoot(
+                root,
+                path,
+                databaseInspector=self._inspectScipionSqliteDatabase,
+            )
+
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return fileHandlers.previewProtocolRemoteEntry(
+            runtimeProtocolId,
+            path,
+            databaseInspector=self._inspectScipionSqliteDatabase,
+        )
+
+    def previewProtocolImageFile(
+            self,
+            protocolId,
+            path,
+            inline: bool,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """
+        inline == False:
+            - attachment download (binary as-is)
+        inline == True:
+            - preview mode:
+              * if MRC/volume -> PNG slice + X-Preview-* headers
+              * if normal image -> raw image + X-Preview-* headers
+              * else -> raw bytes + minimal headers
+        """
+        fileHandlers = FileHandlers(self.currentProject)
+
+        if self._isGlobalFsBrowserMode(protocolId):
+            root = self._getGlobalFsBrowserRoot()
+            return fileHandlers.previewImageFileUnderRoot(root, path, inline)
+
+        runtimeProtocolId = self._resolveRuntimeProtocolIdForFs(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return fileHandlers.previewProtocolImageFile(runtimeProtocolId, path, inline)
+
+    def _resolvePostgresqlOutputForPreview(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId,
+            outputName: str,
+    ) -> Tuple[
+        Optional[Any],
+        Dict[str, Any],
+    ]:
+        """
+        Reconstruct one persisted protocol output from PostgreSQL.
+
+        This is a strictly read-only operation:
+        - it does not attach the output to the protocol;
+        - it does not persist or register anything;
+        - it does not use project.sqlite or run.db.
+        """
+        if (
+                mapper is None
+                or projectId is None
+        ):
+            return None, {}
+
+        protocolDbId = (
+            self
+            ._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if protocolDbId is None:
+            return None, {
+                "exists": False,
+                "reason": (
+                    "protocol_not_found"
+                ),
+            }
+
+        outputInfo = (
+            self
+            ._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(
+                    protocolDbId
+                ),
+                outputName=outputName,
+            )
+        )
+
+        if not outputInfo.get(
+                "exists"
+        ):
+            return None, outputInfo
+
+        runtimeObjectId = (
+            outputInfo.get(
+                "runtimeObjectId"
+            )
+        )
+
+        if runtimeObjectId in (
+                None,
+                "",
+        ):
+            return None, {
+                **outputInfo,
+                "reason": (
+                    "runtime_object_id_missing"
+                ),
+            }
+
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        if currentProject is None:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "PostgreSQL runtime project "
+                    "is not loaded"
+                ),
+            )
+
+        runtimeMapper = (
+            currentProject
+            .getPostgresqlRuntimeMapper()
+        )
+
+        if runtimeMapper is None:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "PostgreSQL runtime mapper "
+                    "is not available"
+                ),
+            )
+
+        try:
+            output = runtimeMapper.selectById(
+                int(runtimeObjectId)
+            )
+
+        except Exception as error:
+            logger.exception(
+                "Could not reconstruct PostgreSQL "
+                "output for preview. projectId=%s "
+                "protocolId=%s outputName=%s "
+                "runtimeObjectId=%s",
+                projectId,
+                protocolId,
+                outputName,
+                runtimeObjectId,
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Could not reconstruct output "
+                    f"'{outputName}' from PostgreSQL: "
+                    f"{error}"
+                ),
+            ) from error
+
+        if output is None:
+            return None, {
+                **outputInfo,
+                "reason": (
+                    "runtime_object_not_reconstructed"
+                ),
+            }
+
+        return output, outputInfo
+
+    def outputPreview(
+            self,
+            protocolId: Union[int, str],
+            outputName: str,
+            requestHeaders: Optional[Dict[str, Any]] = None,
+            colormap: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        return self._outputPreviewRuntime(
+            protocolId=protocolId,
+            outputName=outputName,
+            requestHeaders=requestHeaders,
+            colormap=colormap,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+    def _outputPreviewRuntime(
+            self,
+            protocolId: Union[
+                int,
+                str,
+            ],
+            outputName: str,
+            requestHeaders: Optional[
+                Dict[str, Any]
+            ] = None,
+            colormap: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        scipionProtocolId = (
+            self
+            ._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if self.currentProject is None:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "No current project loaded"
+                ),
+            )
+
+        try:
+            protocol = (
+                self.currentProject
+                .getProtocol(
+                    int(
+                        scipionProtocolId
+                    )
+                )
+            )
+
+        except Exception as error:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=(
+                    f"Protocol "
+                    f"{scipionProtocolId} "
+                    f"not found: {error}"
+                ),
+            ) from error
+
+        # Compatibility information only. A PostgreSQL protocol
+        # projection may not expose persisted outputs as attributes.
+        output = getattr(
+            protocol,
+            outputName,
+            None,
+        )
+
+        outputInfo: Dict[
+            str,
+            Any,
+        ] = {}
+
+        if mapper is not None and projectId is not None:
+            postgresqlOutput, outputInfo = self._resolvePostgresqlOutputForPreview(mapper=mapper,
+                                                                                   projectId=projectId,
+                                                                                   protocolId=scipionProtocolId,
+                                                                                   outputName=outputName,)
+
+            if postgresqlOutput is not None:
+                output = postgresqlOutput
+
+        if output is None:
+            reason = outputInfo.get("reason")
+
+            detail = (
+                f"Output '{outputName}' "
+                f"not found in protocol "
+                f"{scipionProtocolId}"
+            )
+
+            if reason:
+                detail = (
+                    f"{detail}: {reason}"
+                )
+
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=detail,
+            )
+
+        previewService = OutputsPreview(
+            self.currentProject,
+            protocol,
+            output,
+            requestHeaders=(
+                requestHeaders
+            ),
+            colormapOverride=colormap,
+        )
+
+        # SetOf... outputs persisted in PostgreSQL must be
+        # previewed using the PostgreSQL metadata DAO.
+        #
+        # Never attempt to reopen their removed legacy SQLite file.
+        if outputInfo.get(
+                "kind"
+        ) == "set":
+            with _metadataLock:
+                objectManager = (
+                    self
+                    ._getMetadataObjectManagerForOutput(
+                        projectId=int(
+                            projectId
+                        ),
+                        protocolId=int(
+                            scipionProtocolId
+                        ),
+                        outputName=outputName,
+                        mapper=mapper,
+                    )
+                )
+
+                return (
+                    previewService
+                    .getPreviewOutput(
+                        objectManager
+                    )
+                )
+
+        # Tree/object outputs such as Volume are reconstructed from
+        # PostgreSQL, but their actual binary artifact remains on disk.
+        outputPath = None
+
+        getFileName = getattr(
+            output,
+            "getFileName",
+            None,
+        )
+
+        if callable(getFileName):
+            try:
+                outputPath = (
+                    getFileName()
+                )
+            except Exception:
+                outputPath = None
+
+        if not outputPath:
+            try:
+                outputPath = str(
+                    output
+                )
+            except Exception:
+                outputPath = None
+
+        if not outputPath:
+            raise HTTPException(
+                status_code=(
+                    status
+                    .HTTP_404_NOT_FOUND
+                ),
+                detail=(
+                    f"Output '{outputName}' "
+                    "does not expose a previewable "
+                    "artifact"
+                ),
+            )
+
+        if not os.path.isabs(
+                str(outputPath)
+        ):
+            projectPath = (
+                self.currentProject
+                .getPath()
+            )
+
+            outputPath = os.path.join(
+                projectPath,
+                str(outputPath),
+            )
+
+        objectManager = (
+            self._createObjectManager()
+        )
+
+        return previewService.preview(
+            int(scipionProtocolId),
+            str(outputPath),
+            objectManager,
+        )
+
+    def buildProtocolThumbnail(
+            self,
+            protocolId: Union[int, str],
+            force: bool = False,
+            size: int = 320,
+            outputName: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        scipionProtocolId = self._resolveScipionProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        return self._getThumbnailService().buildProtocolThumbnail(protocolId=scipionProtocolId,
+                                                                  force=force,
+                                                                  size=size,
+                                                                  outputName=outputName)
+
+    def buildProjectThumbnail(
+        self,
+        force: bool = False,
+        size: int = 640,
+        maxProtocols: int = 6,
+    ) -> Dict[str, Any]:
+        # buildProjectThumbnail
+        return self._getThumbnailService().buildProjectThumbnail(force=force,
+                                                                 size=size,
+                                                                 maxProtocols=maxProtocols)
+
+    def exportProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        protocolIds = self._normalizeProtocolIdsForExport(
+            getattr(payload, "protocolIds", None),
+        )
+        if not protocolIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing protocolIds",
+            )
+
+        directoryPath = str(getattr(payload, "directoryPath", "") or "").strip()
+        if not directoryPath:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing directoryPath",
+            )
+
+        filename = self._sanitizeExportFilename(
+            getattr(payload, "filename", ""),
+        )
+
+        try:
+            protocolList = (
+                self
+                ._prepareRuntimeProtocolsForExport(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolIds=protocolIds,
+                )
+            )
+
+            rawExport = self.currentProject.getProtocolsJson(protocolList)
+            content = self._buildWorkflowExportJsonContent(rawExport, protocolList)
+
+            rootPath = self._resolveFsRootForWrite(
+                "-1",
+                mapper=mapper,
+                projectId=projectId,
+            )
+            targetDir = self._guardFsPathWithinRootForWrite(rootPath, directoryPath)
+
+            if targetDir.exists() and not targetDir.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Destination path is not a directory",
+                )
+
+            targetDir.mkdir(parents=True, exist_ok=True)
+
+            targetPath = (targetDir / filename).resolve()
+            try:
+                targetPath.relative_to(rootPath)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Path escapes browser root",
+                )
+
+            if targetPath.exists() and targetPath.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Destination path points to a directory",
+                )
+
+            targetPath.write_text(content, encoding="utf-8")
+
+            return {
+                "success": True,
+                "path": str(targetPath),
+                "filename": filename,
+                "size": targetPath.stat().st_size if targetPath.exists() else 0,
+                "mimeType": "application/json",
+                "protocolIds": protocolIds,
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Scipion export failed: {e}",
+            )
+
+    def _getCurrentWorkflowProtocolIds(self) -> TypingSet[str]:
+        try:
+            runs = self.currentProject.getRunsGraph(refresh=True, checkPids=False)
+            nodesDict = getattr(runs, "_nodesDict", {}) or {}
+        except Exception:
+            return set()
+
+        return {
+            str(nodeId)
+            for nodeId in nodesDict.keys()
+            if str(nodeId) != "PROJECT"
+        }
+
+    @staticmethod
+    def _sortProtocolIds(protocolIds: TypingSet[str]) -> List[str]:
+        def sortKey(value: str):
+            try:
+                return (0, int(value))
+            except Exception:
+                return (1, str(value))
+
+        return sorted(protocolIds, key=sortKey)
+
+    def _normalizeWorkflowImportErrors(self, result: Any) -> List[str]:
+        if result is None:
+            return []
+
+        if isinstance(result, dict):
+            rawErrors = result.get("errors") or result.get("error") or result.get("detail")
+            if rawErrors is None:
+                return []
+            if isinstance(rawErrors, list):
+                return [str(item) for item in rawErrors if str(item).strip()]
+            return [str(rawErrors)] if str(rawErrors).strip() else []
+
+        if isinstance(result, (list, tuple, set)):
+            return [str(item) for item in result if str(item).strip()]
+
+        text = str(result).strip()
+        return [text] if text else []
+
+    def _getWorkflowImportSourceProjectId(self, payload: Any, workflowPayload: Any) -> Optional[str]:
+        sourceProjectId = getattr(payload, "sourceProjectId", None)
+
+        if sourceProjectId is None and isinstance(workflowPayload, dict):
+            sourceProjectId = workflowPayload.get("sourceProjectId")
+
+            metadata = workflowPayload.get("scipionWeb")
+            if sourceProjectId is None and isinstance(metadata, dict):
+                sourceProjectId = metadata.get("sourceProjectId")
+
+        if sourceProjectId is None:
+            return None
+
+        sourceProjectIdText = str(sourceProjectId).strip()
+        return sourceProjectIdText or None
+
+    def _getWorkflowProtocolItems(self, workflowContent: Any) -> List[Dict[str, Any]]:
+        if isinstance(workflowContent, list):
+            return [item for item in workflowContent if isinstance(item, dict)]
+
+        if isinstance(workflowContent, dict):
+            for key in ("workflow", "content", "protocols"):
+                value = workflowContent.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+
+        return []
+
+    def _getWorkflowProtocolId(self, protocolItem: Dict[str, Any], fallbackIndex: int) -> str:
+        protocolId = (
+            protocolItem.get("object.id")
+            or protocolItem.get("id")
+            or protocolItem.get("_objId")
+            or fallbackIndex
+        )
+
+        return str(protocolId).strip()
+
+    def _collectWorkflowProtocolIds(self, workflowContent: Any) -> TypingSet[str]:
+        protocolIds: TypingSet[str] = set()
+
+        for index, protocolItem in enumerate(self._getWorkflowProtocolItems(workflowContent)):
+            protocolId = self._getWorkflowProtocolId(protocolItem, index)
+            if protocolId:
+                protocolIds.add(protocolId)
+
+        return protocolIds
+
+    def _sanitizeWorkflowExternalReferences(self, workflowContent: Any) -> Any:
+        copiedProtocolIds = self._collectWorkflowProtocolIds(workflowContent)
+        if not copiedProtocolIds:
+            return workflowContent
+
+        dropValue = object()
+        pointerPattern = re.compile(r"^\s*(\d+)\.([A-Za-z_][A-Za-z0-9_\.]*)\s*$")
+
+        def sanitizeValue(value: Any) -> Any:
+            if isinstance(value, str):
+                match = pointerPattern.match(value)
+                if match and match.group(1) not in copiedProtocolIds:
+                    return dropValue
+                return value
+
+            if isinstance(value, list):
+                nextList = []
+                for item in value:
+                    nextItem = sanitizeValue(item)
+                    if nextItem is not dropValue:
+                        nextList.append(nextItem)
+                return nextList
+
+            if isinstance(value, dict):
+                nextDict = {}
+                for key, item in value.items():
+                    nextItem = sanitizeValue(item)
+                    if nextItem is not dropValue:
+                        nextDict[key] = nextItem
+                return nextDict
+
+            return value
+
+        return sanitizeValue(workflowContent)
+
+    @staticmethod
+    def _getImportedWorkflowProtocol(importedValue):
+        if isinstance(importedValue, (tuple, list)) and importedValue:
+            return importedValue[0]
+
+        return importedValue
+
+    def _remapImportedWorkflowPointerValue(
+            self,
+            rawValue: Any,
+            importedProtocolIdMap: Dict[str, str],
+    ) -> Any:
+        if isinstance(rawValue, str):
+            pointerValue = rawValue.strip()
+
+            if "." not in pointerValue:
+                return rawValue
+
+            sourceParentId, outputName = pointerValue.split(".", 1)
+            sourceParentId = sourceParentId.strip()
+            outputName = outputName.strip()
+
+            newParentId = importedProtocolIdMap.get(sourceParentId)
+
+            if newParentId is None or not outputName:
+                return rawValue
+
+            return "%s.%s" % (newParentId, outputName)
+
+        if isinstance(rawValue, list):
+            return [
+                self._remapImportedWorkflowPointerValue(
+                    item,
+                    importedProtocolIdMap,
+                )
+                for item in rawValue
+            ]
+
+        if isinstance(rawValue, tuple):
+            return [
+                self._remapImportedWorkflowPointerValue(
+                    item,
+                    importedProtocolIdMap,
+                )
+                for item in rawValue
+            ]
+
+        if isinstance(rawValue, dict):
+            return {
+                key: self._remapImportedWorkflowPointerValue(
+                    value,
+                    importedProtocolIdMap,
+                )
+                for key, value in rawValue.items()
+            }
+
+        return rawValue
+
+    def _buildImportedWorkflowPointerParamsByProtocolId(
+            self,
+            workflowContent: Any,
+            importedProtocolMap: Dict[Any, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        workflowItemsBySourceId = {}
+
+        for index, protocolItem in enumerate(
+                self._getWorkflowProtocolItems(workflowContent)
+        ):
+            sourceId = self._getWorkflowProtocolId(
+                protocolItem,
+                index,
+            )
+
+            if sourceId:
+                workflowItemsBySourceId[str(sourceId)] = protocolItem
+
+        importedProtocolsBySourceId = {}
+        importedProtocolIdMap = {}
+
+        for rawSourceId, importedValue in (importedProtocolMap or {}).items():
+            sourceId = str(rawSourceId).strip()
+            protocol = self._getImportedWorkflowProtocol(importedValue)
+            newProtocolId = self._getScipionObjectId(protocol)
+
+            if not sourceId or newProtocolId is None:
+                continue
+
+            importedProtocolsBySourceId[sourceId] = protocol
+            importedProtocolIdMap[sourceId] = str(newProtocolId)
+
+        pointerParamsByProtocolId = {}
+
+        for sourceId, protocol in importedProtocolsBySourceId.items():
+            protocolItem = workflowItemsBySourceId.get(sourceId)
+
+            if not isinstance(protocolItem, dict):
+                continue
+
+            pointerParams = {}
+
+            for paramName, rawValue in protocolItem.items():
+                try:
+                    param = protocol.getParam(paramName)
+                except Exception:
+                    param = None
+
+                if not isinstance(
+                        param,
+                        (
+                            PointerParam,
+                            MultiPointerParam,
+                            RelationParam,
+                        ),
+                ):
+                    continue
+
+                pointerParams[paramName] = (
+                    self._remapImportedWorkflowPointerValue(
+                        rawValue,
+                        importedProtocolIdMap,
+                    )
+                )
+
+            if not pointerParams:
+                continue
+
+            newProtocolId = importedProtocolIdMap[sourceId]
+            pointerParamsByProtocolId[newProtocolId] = pointerParams
+
+        return pointerParamsByProtocolId
+
+    def _unwrapWorkflowImportPayload(self, workflowPayload: Any) -> Any:
+        if workflowPayload is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing workflow",
+            )
+
+        if isinstance(workflowPayload, dict):
+            metadata = workflowPayload.get("scipionWeb")
+            if isinstance(metadata, dict):
+                requiredPluginNames = [
+                    str(name).strip()
+                    for name in metadata.get("requiredPluginNames", []) or []
+                    if str(name).strip()
+                ]
+                self._validateWorkflowRequiredPlugins(requiredPluginNames)
+
+            if "workflow" in workflowPayload:
+                return workflowPayload.get("workflow")
+
+            if "content" in workflowPayload:
+                return workflowPayload.get("content")
+
+        return workflowPayload
+
+    def exportWorkflowProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        if bool(getattr(payload, "includeUpstream", False)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="includeUpstream is not supported yet",
+            )
+
+        protocolIds = self._normalizeProtocolIdsForExport(
+            getattr(payload, "protocolIds", None),
+        )
+        if not protocolIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing protocolIds",
+            )
+
+        protocolList = (
+            self
+            ._prepareRuntimeProtocolsForExport(
+                mapper=mapper,
+                projectId=projectId,
+                protocolIds=protocolIds,
+            )
+        )
+
+        rawExport = self.currentProject.getProtocolsJson(protocolList)
+        workflow = self._decodeExportJsonPayload(rawExport)
+        metadata = self._buildWorkflowPluginMetadata(protocolList)
+        metadata["sourceProjectId"] = projectId
+        metadata["sourceProtocolIds"] = protocolIds
+
+        return {
+            "sourceProjectId": projectId,
+            "protocolIds": protocolIds,
+            "workflow": workflow,
+            "scipionWeb": metadata,
+        }
+
+    def _syncImportedPostgresqlRuntimeProtocols(
+            self,
+            mapper,
+            projectId: int,
+            protocols: List[Any],
+            pointerParamsByProtocolId: Optional[
+                Dict[str, Dict[str, Any]]
+            ] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persist only protocols created by workflow import.
+
+        Protocol rows are persisted first so every newly imported parent exists
+        before child input references and dependency edges are created.
+
+        Existing PostgreSQL protocols, input refs, dependencies and outputs
+        remain untouched.
+        """
+        importedProtocols = []
+        reportsByProtocolId = {}
+        dependenciesCount = 0
+        inputRefsCount = 0
+
+        # First pass: persist every newly imported protocol.
+        for protocol in protocols or []:
+            protocolId = self._getScipionObjectId(protocol)
+
+            if protocolId is None:
+                continue
+
+            protocolIdText = str(protocolId)
+
+            protocolSync = self.syncPostgresqlRuntimeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                registerOutputs=False,
+                syncRelations=False,
+                authoritativeProtocolState=True,
+            ) or {}
+
+            importedProtocols.append(
+                (
+                    protocolIdText,
+                    protocol,
+                )
+            )
+
+            reportsByProtocolId[protocolIdText] = {
+                "protocolId": protocolIdText,
+                "protocolSync": protocolSync,
+                "inputSync": {},
+            }
+
+        # Second pass: persist only inputs and dependencies of imported protocols.
+        for protocolIdText, protocol in importedProtocols:
+            pointerParams = (
+                pointerParamsByProtocolId or {}
+            ).get(protocolIdText)
+
+            inputSync = (
+                self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=protocol,
+                    params=pointerParams,
+                )
+                or {}
+            )
+
+            dependenciesCount += int(
+                inputSync.get("dependencies", 0) or 0
+            )
+            inputRefsCount += int(
+                inputSync.get("inputRefsSaved", 0) or 0
+            )
+
+            reportsByProtocolId[protocolIdText]["inputSync"] = inputSync
+
+        reports = [
+            reportsByProtocolId[protocolIdText]
+            for protocolIdText, _protocol in importedProtocols
+        ]
+
+        return {
+            "protocols": len(importedProtocols),
+            "dependencies": dependenciesCount,
+            "inputRefs": inputRefsCount,
+            "reports": reports,
+        }
+
+    def importWorkflowProtocolsService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload: Any,
+    ) -> Dict[str, Any]:
+        mode = str(getattr(payload, "mode", "append") or "append").strip().lower()
+        if mode != "append":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported import mode: {mode}",
+            )
+
+        rawWorkflowPayload = getattr(payload, "workflow", None)
+        sourceProjectId = self._getWorkflowImportSourceProjectId(payload, rawWorkflowPayload)
+
+        workflowContent = self._unwrapWorkflowImportPayload(rawWorkflowPayload)
+
+        if isinstance(workflowContent, str):
+            workflowText = self._extractWorkflowJsonText(workflowContent)
+            try:
+                workflowContent = json.loads(workflowText)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid workflow JSON: {e}",
+                )
+
+        if not isinstance(workflowContent, (list, dict)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Workflow must be a JSON list or object",
+            )
+
+        isSameProjectImport = (
+            sourceProjectId is not None
+            and str(sourceProjectId).strip() == str(projectId).strip()
+        )
+
+        if not isSameProjectImport:
+            workflowContent = self._sanitizeWorkflowExternalReferences(workflowContent)
+
+        workflowJson = json.dumps(workflowContent, ensure_ascii=False)
+
+        try:
+            importedProtocolMap = self.currentProject.loadProtocols(jsonStr=workflowJson)
+        except Exception as error:
+            logger.exception(
+                "Failed to import workflow protocols. projectId=%s",
+                projectId,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to import workflow protocols: {error}",
+            )
+
+        errors = self._normalizeWorkflowImportErrors(importedProtocolMap)
+        importedProtocols = self._workflowProtocolMapToProtocols(
+            importedProtocolMap
+        )
+
+        pointerParamsByProtocolId = (
+            self._buildImportedWorkflowPointerParamsByProtocolId(
+                workflowContent=workflowContent,
+                importedProtocolMap=importedProtocolMap,
+            )
+        )
+
+        created = []
+
+        for sourceId, importedValue in (importedProtocolMap or {}).items():
+            protocol = self._getImportedWorkflowProtocol(importedValue)
+            newId = self._getScipionObjectId(protocol)
+
+            if newId is not None:
+                created.append({
+                    "sourceId": str(sourceId),
+                    "newId": str(newId),
+                })
+
+        syncInfo = {
+            "protocols": 0,
+            "dependencies": 0,
+            "reports": [],
+        }
+
+        if importedProtocols:
+            syncInfo = self._syncImportedPostgresqlRuntimeProtocols(
+                mapper=mapper,
+                projectId=projectId,
+                protocols=importedProtocols,
+                pointerParamsByProtocolId=pointerParamsByProtocolId,
+            )
+
+        return {
+            "status": 1 if errors else 0,
+            "errors": errors,
+            "workflow": [],
+            "created": created,
+            "protocolsCount": int(syncInfo.get("protocols", 0)),
+            "dependenciesCount": int(syncInfo.get("dependencies", 0)),
+            "inputRefsCount": int(syncInfo.get("inputRefs", 0)),
+            "syncReports": syncInfo.get("reports") or [],
+        }
+
+    def writeRemoteFileService(
+            self,
+            protocolId: Union[int, str],
+            payload: Any,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        rootPath = self._resolveFsRootForWrite(
+            protocolId=protocolId,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        targetPath = self._guardFsPathWithinRootForWrite(
+            rootPath,
+            getattr(payload, "path", ""),
+        )
+
+        if targetPath.exists() and targetPath.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Destination path points to a directory",
+            )
+
+        rawContent = getattr(payload, "content", "")
+        content = "" if rawContent is None else str(rawContent)
+        mimeType = getattr(payload, "mimeType", None) or "application/json"
+
+        targetPath.parent.mkdir(parents=True, exist_ok=True)
+        targetPath.write_text(content, encoding="utf-8")
+
+        return {
+            "success": True,
+            "path": str(targetPath),
+            "size": targetPath.stat().st_size if targetPath.exists() else 0,
+            "mimeType": mimeType,
+        }
+
+    # ----------------------------------------------------------------------
+    # Internal helpers for TiltSeries (SetOfTiltSeries)
+    # ----------------------------------------------------------------------
+
+    def _resolveOutputForTiltSeries(
+            self,
+            protocolId: int,
+            outputName: str,
+            projectId: Optional[int] = None,
+            mapper=None,
+    ):
+        """
+        Resolve a protocol and its SetOfTiltSeries output.
+
+        PostgreSQL outputs are reconstructed as independent runtime proxies.
+        The owner protocol and its existing outputs remain unchanged.
+        """
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+
+            if output is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, output
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        output = getattr(protocol, outputName)
+
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None",
+            )
+
+        return protocol, output
+
+    def _getPostgresqlTiltSeriesReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlTiltSeriesReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL TiltSeries reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def _parseTiltSeriesFramePath(
+            self,
+            framePath: Any,
+            fallbackIndex: int,
+    ) -> Tuple[str, int]:
+        pathText = str(framePath or "").strip()
+        if not pathText:
+            raise HTTPException(
+                status_code=404,
+                detail="Tilt image path not found in PostgreSQL metadata",
+            )
+
+        imageIndex = int(fallbackIndex)
+        imagePath = pathText
+
+        if "@" in pathText:
+            indexText, imagePath = pathText.split("@", 1)
+            try:
+                imageIndex = int(float(indexText))
+            except Exception:
+                imageIndex = int(fallbackIndex)
+
+        # Do not os.path.abspath() here.
+        # PostgreSQL paths can be project-relative:
+        # Runs/000084_Prot.../extra/...
+        # They must be resolved against the project path, not against cwd/scipion_home.
+        return str(Path(str(imagePath)).expanduser()), imageIndex
+
+    # ======================================================================
+    # Analyze Results: Resolve viewer
+    # ======================================================================
+    def resolveAnalyzeViewerDecision(
+            self,
+            projectId: int,
+            protocolId: int,
+            ctx: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        # This resolver is reserved for external developer-provided viewers.
+        # Built-in React viewers are selected on the frontend side.
+        return {"handled": False}
+
+    # ======================================================================
+    # Analyze Results: CTF Tomography (CTFTomoSeries)
+    # ======================================================================
+    def _resolveOutputForCtftomoSeries(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """
+        Resolve a protocol and its SetOfCTFTomoSeries output.
+
+        PostgreSQL outputs are reconstructed as independent runtime proxies.
+        The owner protocol and its existing outputs remain unchanged.
+        """
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+
+            if output is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, output
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        output = getattr(protocol, outputName)
+
+        if output is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' is None",
+            )
+
+        return protocol, output
+
+    def _buildCtftomoSeriesSummary(self, ctfSeries) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly summary for one CTFTomoSeries object.
+        """
+
+        tsId = ctfSeries.getTsId()
+        label = ctfSeries.getObjLabel()
+        tiltSeries = ctfSeries.getTiltSeries()
+        dims = list(tiltSeries.getDim())
+        pixelSize = tiltSeries.getSamplingRate()
+        nViews = tiltSeries.getSize()
+
+        item: Dict[str, Any] = {
+            "tiltSeriesId": tsId,
+            "label": str(label) if label is not None else "",
+        }
+        if nViews is not None:
+            item["nViews"] = nViews
+        if dims is not None:
+            item["dims"] = dims
+        if pixelSize is not None:
+            item["pixelSize"] = pixelSize
+        return item
+
+    def _buildCtftomoMeasurementRow(self, ctfObj, tiltSeries=None) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly row with CTF parameters for a single tilt image.
+        """
+
+        defocusU = ctfObj.getDefocusU()
+        defocusV = ctfObj.getDefocusV()
+        defocusAngle = ctfObj.getDefocusAngle()
+        resolution = ctfObj.getResolution()
+        phaseShift = ctfObj.getPhaseShift()
+        acqOrder = ctfObj.getAcquisitionOrder()
+        psdFile = ctfObj.getPsdFile()
+        astigmatism = defocusU - defocusV
+        tiltAngle = None
+        enabled = ctfObj.isEnabled()
+        dose = None
+
+        if tiltSeries is not None:
+            try:
+                view = tiltSeries.getItem('_acqOrder', acqOrder)
+            except Exception:
+                view = None
+
+            if view is not None:
+                try:
+                    tiltAngle = view.getTiltAngle()
+                except Exception:
+                    tiltAngle = None
+
+                try:
+                    acq = view.getAcquisition()
+                    dose = acq.getAccumDose()
+                except Exception:
+                    dose = None
+
+        row: Dict[str, Any] = {}
+        row["index"] = ctfObj.getObjId()
+        row["viewIndex"] = ctfObj.getObjId()
+        if tiltAngle is not None:
+            row["tiltAngle"] = tiltAngle
+        if dose is not None:
+            row["dose"] = dose
+        if defocusU is not None:
+            row["defocusU"] = defocusU
+        if defocusV is not None:
+            row["defocusV"] = defocusV
+        row['astigmatism'] = astigmatism
+        if defocusAngle is not None:
+            row["defocusAngle"] = defocusAngle
+        if resolution is not None:
+            row["resolution"] = resolution
+        if phaseShift is not None:
+            row["phaseShift"] = phaseShift
+        if acqOrder is not None:
+            row["order"] = acqOrder
+        if psdFile:
+            row['psdFile'] = psdFile
+
+        row['excluded'] = not enabled
+
+        return row
+
+    def listOutputCtftomoSeriesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        """
+        List all CTFTomoSeries in a CTFTomo output.
+
+        Shape:
+        [
+          {
+            "tiltSeriesId": "...",
+            "label": "...",
+            "nViews"?: number,
+            "dims"?: [...],
+            "pixelSize"?: number,
+            "tiltAxisAngle"?: number,
+          },
+          ...
+        ]
+        """
+        pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            return pgReader.listCtftomoSeries()
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="reader_not_available",
+            )
+
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        seriesList: List[Dict[str, Any]] = []
+
+        for index, ctfSeries in enumerate(output.iterItems(iterate=False)):
+            try:
+                summary = self._buildCtftomoSeriesSummary(ctfSeries)
+                summary["index"] = index
+                seriesList.append(summary)
+            except Exception as e:
+                logger.warning("Failed to summarize CTFTomoSeries #%s: %s", index, e)
+
+        return seriesList
+
+    def getCtftomoSeriesViewsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            mapper=None,
+    ):
+        """
+        Return all CTF measurements for one tilt series inside a CTFTomo output.
+
+        Shape:
+        {
+          "tiltSeriesId": "...",
+          "label": "...",
+          "nViews": number,
+          "dims"?: [...],
+          "pixelSize"?: number,
+          "tiltAxisAngle"?: number,
+          "isDefocusUInRange"?: bool,
+          "isDefocusVInRange"?: bool,
+          "frames": [
+             {
+               "index": 0-based index,
+               "viewIndex": 1-based index,
+               "tiltAngle"?: number,
+               "dose"?: number,
+               "defocusU"?: number,
+               "defocusV"?: number,
+               "defocusAngle"?: number,
+               "resolution"?: number,
+               "phaseShift"?: number,
+               "cutOnFreq"?: number,
+               "defocusUDeviation"?: number,
+               "defocusVDeviation"?: number,
+             },
+             ...
+          ]
+        }
+        """
+        pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getCtftomoSeriesViews(tiltSeriesId)
+            if payload is not None:
+                return payload
+
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo views",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) or "views_not_available",
+                tiltSeriesId=tiltSeriesId,
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo views",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="views_not_available" if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+            )
+
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        targetKey = str(tiltSeriesId)
+        setOfTiltSeries = output.getSetOfTiltSeries()
+        ctfSerie = output.getItem('_tsId', targetKey)
+        associatedTS = setOfTiltSeries.getItem('_tsId', targetKey)
+        frames: List[Dict[str, Any]] = []
+
+        for idx, ctfTomo in enumerate(ctfSerie.iterItems(iterate=False)):
+            try:
+                row = self._buildCtftomoMeasurementRow(ctfTomo, tiltSeries=associatedTS)
+                if "index" not in row:
+                    row["index"] = idx
+                frames.append(row)
+            except Exception as e:
+                logger.warning(
+                    "Failed to build CTFTomo measurement for tiltSeries '%s' (item #%s): %s",
+                    tiltSeriesId,
+                    idx,
+                    e,
+                )
+
+        summary = self._buildCtftomoSeriesSummary(ctfSerie)
+        summary["frames"] = frames
+        summary["tiltSeriesId"] = summary.get("tiltSeriesId") or tiltSeriesId
+        summary["nViews"] = len(frames)
+
+        return summary
+
+    def renderCtfTomoPsdImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            psdPath: str,
+            size: int = 1024,
+            fmt: str = "png",
+            inline: bool = True,
+            index: int = 0,
+            quality: int = 75,
+            applyTransform: bool = False,
+            rot=None,
+            shifts=None,
+            mapper=None,
+    ) -> Response:
+        """
+            Render a single CTFtomo PSD image using the OutputsPreview pipeline.
+
+            - psdPath can be relative to the protocol root or an absolute path.
+            - size sets the max side in pixels for the thumbnail (square).
+            - fmt controls the output format: png | jpg | webp.
+            - index is used when the PSD is stored in a stack file.
+            - applyTransform/rot/shifts are optional alignment parameters.
+            """
+        if mapper is not None and psdPath:
+            try:
+                splitPath = str(psdPath).split("@")
+                imageIndex = int(index)
+
+                if len(splitPath) > 1:
+                    try:
+                        imageIndex = int(float(splitPath[0]))
+                    except Exception:
+                        imageIndex = int(index)
+
+                candidatePath = Path(splitPath[-1]).expanduser()
+
+                if candidatePath.is_absolute():
+                    absPath = candidatePath.resolve()
+
+                    if absPath.exists() and absPath.is_file():
+                        preview = OutputsPreview(
+                            currentProject=self.currentProject,
+                            protocol=None,
+                            output=None,
+                        )
+
+                        return preview.renderImageFromFilePath(
+                            filePath=str(absPath),
+                            size=size,
+                            fmt=fmt,
+                            index=imageIndex,
+                            inline=inline,
+                            quality=quality,
+                            applyTransform=applyTransform and rot is not None and shifts is not None,
+                            rot=rot,
+                            shifts=shifts,
+                        )
+
+            except Exception:
+                logger.exception(
+                    "Failed to render CTFTomo PSD from PostgreSQL metadata. projectId=%s protocolId=%s outputName=%s psdPath=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    psdPath,
+                )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="CTFTomo PSD",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="psd_file_not_available",
+                psdPath=psdPath,
+            )
+
+        protocol, output = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        if protocol is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protocol '{protocolId}' not found in project '{projectId}'",
+            )
+
+        if not psdPath:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing PSD image path",
+            )
+
+        protRoot = Path(protocol.getPath()).resolve()
+        splitPath = psdPath.split('@')
+        if len(splitPath) > 1:
+            index = int(splitPath[0])
+        candidatePath = Path(splitPath[-1])
+
+        # Allow both relative (to protocol root) and absolute paths
+        if not candidatePath.is_absolute():
+            absPath = (protRoot / candidatePath).resolve()
+        else:
+            absPath = candidatePath.resolve()
+
+        if not absPath.exists() or not absPath.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"PSD image file not found: {absPath}",
+            )
+
+        # We do not need a real output object for this helper
+        preview = OutputsPreview(
+            currentProject=self.currentProject,
+            protocol=protocol,
+            output=None,
+        )
+
+        return preview.renderImageFromFilePath(
+            filePath=str(absPath),
+            size=size,
+            fmt=fmt,
+            index=index,
+            inline=inline,
+            quality=quality,
+            applyTransform=applyTransform and rot is not None and shifts is not None,
+            rot=rot,
+            shifts=shifts,
+        )
+
+    def _buildTiltSeriesSummary(self, ts) -> Dict[str, Any]:
+        """
+        Build a JSON-friendly summary for one tilt series.
+        """
+        tsId = ts.getTsId()
+        label = f"TiltSeries {tsId}"
+        nViews = ts.getSize()
+        dims = ts.getDim()
+        pixelSize = ts.getSamplingRate()
+        tiltAxisAngle = ts.getAcquisition().getTiltAxisAngle()
+        item: Dict[str, Any] = {
+            "tiltSeriesId": tsId,
+            "label": str(label),
+        }
+        if nViews is not None:
+            item["nViews"] = nViews
+        if dims is not None:
+            item["dims"] = dims
+        if pixelSize is not None:
+            item["pixelSize"] = pixelSize
+        if tiltAxisAngle is not None:
+            item["tiltAxisAngle"] = tiltAxisAngle
+
+        return item
+
+    def _getPostgresqlCtftomoReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_ctftomo_reader import PostgresqlCtftomoReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlCtftomoReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL CTFTomo reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    # ======================================================================
+    # Analyze Results: Volumes (Volume / VolumeMask / SetOfVolumes)
+    # ======================================================================
+
+    def _resolveOutputForVolumes(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        # Try exact + common alternates (singular/plural/alias)
+        candidates = [outputName]
+        alias = {
+            "outputVolumes": "outputVolume",
+            "outputVolume": "outputVolumes",
+            "outputMasks": "outputMask",
+            "outputMask": "outputMasks",
+        }
+        if outputName in alias:
+            candidates.append(alias[outputName])
+        if outputName.endswith("s"):
+            candidates.append(outputName[:-1])
+        else:
+            candidates.append(outputName + "s")
+
+        for name in candidates:
+            if hasattr(protocol, name):
+                out = getattr(protocol, name)
+                if out is not None:
+                    return protocol, out
+
+        raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in protocol (tried {candidates})")
+
+    def _getPostgresqlVolumeReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        try:
+            from app.backend.viewers.postgresql_coords3d_tomogram_volume_reader import \
+                PostgresqlCoords3dTomogramVolumeReader
+
+            reader = PostgresqlCoords3dTomogramVolumeReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.debug(
+                "PostgreSQL Coords3D-derived tomogram volume reader is not available. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+
+        try:
+            from app.backend.viewers.postgresql_volume_reader import PostgresqlVolumeReader
+
+            reader = PostgresqlVolumeReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL volume reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def listOutputVolumesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listVolumes()
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL volume list reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.listOutputVolumes()
+
+    def getVolumeInfoService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getVolumeInfo(volumeId)
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL volume info reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.getVolumeInfo(volumeId)
+
+    def getVolumeHistogramService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            bins: int = 128,
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getHistogram(volumeId=volumeId, bins=bins)
+            if payload is not None:
+                return {
+                    "binEdges": payload.get("binEdges") or [],
+                    "counts": payload.get("counts") or [],
+                }
+
+            logger.info(
+                "Skipping PostgreSQL volume histogram reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume histogram",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        op = OutputsPreview(self.currentProject, protocol, output)
+
+        if isinstance(output, SetOfVolumes):
+            output = output.getItem('_objId', int(volumeId) + 1)
+
+        raw = op.getVolumeHistogram(volumePath=output.getFileName(), bins=bins)
+        if not raw:
+            return {"binEdges": [], "counts": []}
+
+        binEdges = raw.get("binEdges") or raw.get("bin_edges") or []
+        counts = raw.get("counts") or raw.get("values") or []
+
+        try:
+            binEdges = list(binEdges)
+        except Exception:
+            binEdges = []
+
+        try:
+            counts = list(counts)
+        except Exception:
+            counts = []
+
+        return {
+            "binEdges": binEdges,
+            "counts": counts,
+        }
+
+    def _buildVolumeSliceCacheKey(
+            self,
+            *,
+            volumePath: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str,
+            colormap: Optional[str],
+            normalize: Optional[str],
+            scale: float,
+            fmt: str,
+            thumb: Optional[int],
+            fast: bool,
+            quality: int,
+    ):
+        try:
+            stat = os.stat(volumePath)
+            mtimeNs = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+            sizeBytes = int(stat.st_size)
+        except Exception:
+            mtimeNs = None
+            sizeBytes = None
+
+        return (
+            os.path.abspath(str(volumePath)),
+            mtimeNs,
+            sizeBytes,
+            str(tomogramId),
+            int(sliceIndex),
+            str(axis or "z").lower(),
+            str(colormap or ""),
+            str(normalize or "minmax").lower(),
+            float(scale or 1.0),
+            str(fmt or "webp").lower(),
+            int(thumb or 0),
+            bool(fast),
+            int(quality or 75),
+        )
+
+    def _getCachedVolumeSliceResponse(self, cacheKey) -> Optional[Response]:
+        with _VOLUME_SLICE_CACHE_LOCK:
+            cached = _VOLUME_SLICE_CACHE.get(cacheKey)
+            if cached is None:
+                return None
+
+            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+
+        headers = dict(cached.get("headers") or {})
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        headers["X-Preview-Cache"] = "hit"
+        self._exposeHeader(headers, "X-Preview-Cache")
+
+        return Response(
+            content=cached["body"],
+            media_type=cached.get("mediaType") or "image/webp",
+            headers=headers,
+        )
+
+    def _storeCachedVolumeSliceResponse(self, cacheKey, response: Response) -> Response:
+        body = getattr(response, "body", None)
+        if body is None:
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type")
+
+        with _VOLUME_SLICE_CACHE_LOCK:
+            _VOLUME_SLICE_CACHE[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+
+            while len(_VOLUME_SLICE_CACHE) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
+                _VOLUME_SLICE_CACHE.popitem(last=False)
+
+        response.headers["X-Preview-Cache"] = "miss"
+        self._exposeHeader(response.headers, "X-Preview-Cache")
+
+        return response
+
+    def _exposeHeader(self, headers, headerName: str) -> None:
+        exposeKey = "Access-Control-Expose-Headers"
+        current = headers.get(exposeKey, "")
+        parts = [h.strip() for h in str(current).split(",") if h.strip()]
+
+        if headerName not in parts:
+            parts.append(headerName)
+
+        headers[exposeKey] = ", ".join(parts)
+
+    def renderVolumeSliceService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            sliceIndex: int,
+            axis: str,
+            colormap: Optional[str],
+            normalize: Optional[str],
+            scale: float,
+            inline: bool,
+            fmt: str = "webp",
+            thumb: Optional[int] = None,
+            fast: bool = True,
+            quality: int = 75,
+            mapper=None,
+    ) -> Response:
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            info = pgReader.getVolumeFile(volumeId)
+            if info is not None:
+                volumePath = info.get("fileName") or info.get("path")
+                if volumePath and os.path.exists(str(volumePath)):
+                    cacheKey = self._buildVolumeSliceCacheKey(
+                        volumePath=str(volumePath),
+                        tomogramId=volumeId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize or "minmax",
+                        scale=scale,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+                    cachedResponse = self._getCachedVolumeSliceResponse(cacheKey)
+                    if cachedResponse is not None:
+                        return cachedResponse
+
+                    response = self._renderTomogramSliceFromPath(
+                        volumePath=str(volumePath),
+                        tomogramId=volumeId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize or "minmax",
+                        scale=scale,
+                        inline=inline,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+                    return self._storeCachedVolumeSliceResponse(cacheKey, response)
+
+            logger.info(
+                "Skipping PostgreSQL volume slice reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume slice",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        op = OutputsPreview(self.currentProject, protocol, output)
+        return op.renderVolumeSlice(
+            volumeId=volumeId,
+            sliceIndex=sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize,
+            scale=scale,
+            inline=inline,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
+        )
+
+    def getVolumeData3dService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            maxDim: int = 160,
+            method: str = "binning",
+            mapper=None,
+    ):
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            result = pgReader.getVolumeArray(volumeId)
+            if result is not None:
+                volume, _props, _info = result
+
+                if (method or "").lower() == "none":
+                    volumeSmall = np.asarray(volume, dtype=np.float32)
+                else:
+                    volumeSmall = self._downsampleVolumePreview(
+                        np.asarray(volume, dtype=np.float32),
+                        maxDim=maxDim,
+                        method=method,
+                    )
+
+                z, y, x = volumeSmall.shape
+                return {
+                    "dims": [int(z), int(y), int(x)],
+                    "values": volumeSmall.ravel(order="C").astype(np.float32).tolist(),
+                }
+
+            logger.info(
+                "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume 3D data",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        volumePath = self._getVolumePathFromOutput(output, volumeId)
+
+        try:
+            vol, _props = readVolumeArray3d(volumePath)
+        except HTTPException:
+            raise
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Volume file not found on disk")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
+
+        if (method or "").lower() == "none":
+            volSmall = np.asarray(vol, dtype=np.float32)
+        else:
+            volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
+
+        z, y, x = volSmall.shape
+        return {
+            "dims": [int(z), int(y), int(x)],
+            "values": volSmall.ravel(order="C").astype(np.float32).tolist(),
+        }
+
+    def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
+        """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
+        if isinstance(output, SetOfVolumes):
+            try:
+                vid = int(volumeId)
+            except Exception:
+                raise HTTPException(status_code=400, detail="volumeId must be an integer")
+
+            item = output.getItem('_objId', vid + 1)
+            if item is None:
+                raise HTTPException(status_code=404, detail="Volume not found in SetOfVolumes")
+            volumePath = item.getFileName()
+        else:
+            getFileNameFn = getattr(output, "getFileName", None)
+            if not callable(getFileNameFn):
+                raise HTTPException(status_code=404, detail="Output has no getFileName()")
+            volumePath = getFileNameFn()
+
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(status_code=404, detail="Volume file not found on disk")
+
+        return volumePath
+
+    def _readVolumeAsNumpy(self, volumePath: str) -> np.ndarray:
+        """
+        Read a volume file into a numpy array (Z,Y,X).
+        Tries Scipion/pwem readers first, falls back to mrcfile/numpy when possible.
+        """
+        ext = os.path.splitext(volumePath)[1].lower()
+
+        # Numpy formats
+        if ext in (".npy",):
+            arr = np.load(volumePath)
+            return np.asarray(arr, dtype=np.float32)
+
+        if ext in (".npz",):
+            zf = np.load(volumePath)
+            for k in ("data", "volume", "arr_0"):
+                if k in zf:
+                    return np.asarray(zf[k], dtype=np.float32)
+            firstKey = list(zf.keys())[0]
+            return np.asarray(zf[firstKey], dtype=np.float32)
+
+        # Try Scipion image readers registry
+        try:
+            reader = ImageReadersRegistry.getReader(volumePath)
+            if reader is not None:
+                data = reader.read(volumePath)
+                return np.asarray(data, dtype=np.float32)
+        except Exception:
+            pass
+
+        # Try pwem ImageHandler
+        try:
+            from pwem.emlib.image import ImageHandler
+            ih = ImageHandler()
+            ih.read(volumePath)
+            data = ih.getData()
+            return np.asarray(data, dtype=np.float32)
+        except Exception:
+            pass
+
+        # Last resort: mrcfile if available
+        try:
+            import mrcfile
+            with mrcfile.open(volumePath, permissive=True) as m:
+                data = m.data
+            return np.asarray(data, dtype=np.float32)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cannot read volume file '{volumePath}': {e}",
+            )
+
+    def _downsampleVolumePreview(
+            self,
+            vol: np.ndarray,
+            maxDim: int,
+            method: str = "binning",
+    ) -> np.ndarray:
+        """
+        Downsample a volume to a preview size suitable for web 3D rendering.
+        - binning: real-space average pooling with integer factor
+        - linear: scipy.ndimage.zoom (if available), else binning
+        - fourier: Fourier crop + inverse FFT
+        """
+        if vol is None or vol.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
+
+        z, y, x = vol.shape
+        m = max(z, y, x)
+
+        if m <= maxDim:
+            return vol.astype(np.float32)
+
+        methodLower = (method or "binning").lower()
+
+        if methodLower == "fourier":
+            return self._resizeVolumeFourier(vol, maxDim)
+
+        if methodLower == "linear":
+            try:
+                from scipy.ndimage import zoom
+                scale = maxDim / float(m)
+                small = zoom(vol, zoom=scale, order=1, prefilter=False)
+                return np.asarray(small, dtype=np.float32)
+            except Exception:
+                pass
+
+        factor = int(np.ceil(m / float(maxDim)))
+        return self._binVolume(vol, factor)
+
+    def _binVolume(self, vol: np.ndarray, factor: int) -> np.ndarray:
+        """Real-space average binning by an integer factor."""
+        if factor <= 1:
+            return vol.astype(np.float32)
+
+        z, y, x = vol.shape
+        z2 = (z // factor) * factor
+        y2 = (y // factor) * factor
+        x2 = (x // factor) * factor
+
+        volC = vol[:z2, :y2, :x2]
+
+        binned = volC.reshape(
+            z2 // factor, factor,
+            y2 // factor, factor,
+            x2 // factor, factor
+        ).mean(axis=(1, 3, 5))
+
+        return np.asarray(binned, dtype=np.float32)
+
+    def _resizeVolumeFourier(self, vol: np.ndarray, maxDim: int) -> np.ndarray:
+        """Fourier crop downsample (low-pass) preserving global structure."""
+        z, y, x = vol.shape
+        m = max(z, y, x)
+        if m <= maxDim:
+            return vol.astype(np.float32)
+
+        scale = maxDim / float(m)
+        tz = max(8, int(z * scale))
+        ty = max(8, int(y * scale))
+        tx = max(8, int(x * scale))
+
+        f = np.fft.fftn(vol)
+        fshift = np.fft.fftshift(f)
+
+        cropped = self._centerCrop3d(fshift, (tz, ty, tx))
+
+        out = np.fft.ifftn(np.fft.ifftshift(cropped)).real
+        out *= (z * y * x) / float(tz * ty * tx)
+
+        return np.asarray(out, dtype=np.float32)
+
+    def _strideDownsampleVolume(self, volume: np.ndarray,
+                                maxDim: int) -> np.ndarray:
+        z, y, x = volume.shape
+        largestDim = max(z, y, x)
+        if largestDim <= maxDim:
+            return volume.astype(np.float32, copy=False)
+
+        step = max(1, int(np.ceil(largestDim / float(maxDim))))
+        return volume[::step, ::step, ::step].astype(np.float32, copy=False)
+
+    def _downsampleVolumeForSurface(self, volume: np.ndarray, *, maxDim: int, method: str) -> np.ndarray:
+        if volume is None or volume.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
+
+        methodLower = (method or "stride").lower()
+        requestedMaxDim = max(32, int(maxDim or 192))
+        largestDim = max(int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2]))
+        voxelCount = int(volume.size)
+        maxInteractiveVoxels = 8_000_000
+        effectiveMaxDim = requestedMaxDim
+
+        if voxelCount > maxInteractiveVoxels:
+            budgetScale = (maxInteractiveVoxels / float(voxelCount)) ** (1.0 / 3.0)
+            effectiveMaxDim = min(effectiveMaxDim, max(32, int(np.floor(largestDim * budgetScale))))
+
+        if largestDim <= effectiveMaxDim:
+            return volume.astype(np.float32, copy=False)
+
+        if methodLower in ("none", "stride"):
+            return self._strideDownsampleVolume(volume, maxDim=effectiveMaxDim)
+
+        return self._downsampleVolumePreview(volume, maxDim=effectiveMaxDim, method=methodLower)
+
+    def getVolumeSurfaceMesh(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            level,
+            maxDim,
+            method,
+            maxTriangles,
+            currentUser,
+            mapper=None,
+    ):
+        effectiveMaxTriangles = min(250000, max(1000, int(maxTriangles or 220000)))
+
+        pgReader = self._getPostgresqlVolumeReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            result = pgReader.getVolumeArray(volumeId)
+            if result is not None:
+                volume, _props, _info = result
+                volumeSmall = self._downsampleVolumeForSurface(volume,
+                                                               maxDim=maxDim,
+                                                               method=method)
+                mesh = buildVolumeSurfaceMesh(volumeSmall,
+                                              level=level,
+                                              maxTriangles=effectiveMaxTriangles)
+
+                mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
+                mesh["maxDim"] = int(maxDim)
+                mesh["method"] = method
+                mesh["maxTriangles"] = effectiveMaxTriangles
+                mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
+                mesh["volumeId"] = str(volumeId)
+                mesh["outputName"] = outputName
+
+                response = JSONResponse(mesh)
+                response.headers["X-Debug-Auth"] = "ok"
+                response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+                response.headers["Vary"] = "Authorization"
+                return response
+
+            logger.info(
+                "Skipping PostgreSQL volume surface reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                volumeId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Volume surface mesh",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                volumeId=volumeId,
+            )
+
+        protocol, output = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        volumePath = self._getVolumePathFromOutput(output, volumeId)
+
+        volume, _props = readVolumeArray3d(volumePath)
+        volumeSmall = self._downsampleVolumeForSurface(
+            volume,
+            maxDim=maxDim,
+            method=method,
+        )
+
+        mesh = buildVolumeSurfaceMesh(volumeSmall,
+                                      level=level,
+                                      maxTriangles=effectiveMaxTriangles)
+
+        mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
+        mesh["maxDim"] = int(maxDim)
+        mesh["method"] = method
+        mesh["maxTriangles"] = effectiveMaxTriangles
+        mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
+        mesh["volumeId"] = str(volumeId)
+        mesh["outputName"] = outputName
+
+        response = JSONResponse(mesh)
+        response.headers["X-Debug-Auth"] = "ok"
+        response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+        response.headers["Vary"] = "Authorization"
+        return response
+
+    def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
+        """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""
+        tz, ty, tx = targetShape
+        z, y, x = fshift.shape
+
+        z0 = max(0, (z - tz) // 2)
+        y0 = max(0, (y - ty) // 2)
+        x0 = max(0, (x - tx) // 2)
+
+        return fshift[z0:z0 + tz, y0:y0 + ty, x0:x0 + tx]
+
+    def listOutputTiltSeriesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        """
+        List all tilt series in a SetOfTiltSeries-like output.
+
+        Shape:
+        [
+          {
+            "tiltSeriesId": "...",
+            "label": "...",
+            "nViews"?: number,
+            "dims"?: [w, h, ...],
+            "pixelSize"?: number,
+            "tiltAxisAngle"?: number,
+          },
+          ...
+        ]
+        """
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            return pgReader.listTiltSeries()
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="reader_not_available",
+            )
+
+        _, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
+
+        seriesList: List[Dict[str, Any]] = []
+        for idx, ts in enumerate(setOfTiltSeries.iterItems(iterate=False)):
+            try:
+                summary = self._buildTiltSeriesSummary(ts)
+                seriesList.append(summary)
+            except Exception as e:
+                logger.warning("Failed to summarize TiltSeries #%s: %s", idx, e)
+
+        return seriesList
+
+    def getTiltSeriesFramesService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            mapper=None,
+    ):
+        """
+        Return metadata for all tilt images in a given tilt series.
+
+        Shape:
+        {
+          "tiltSeriesId": ...,
+          "label": "...",
+          "tiltAxisAngle"?: number,
+          "frames": [
+            {
+              "viewId": ...,
+              "index": 0-based index,
+              "order"?: number,
+              "tiltAngle"?: number,
+              "excluded"?: bool,
+              "dose"?: number,
+              "path"?: str,
+              "rot"?: number,
+              "shiftX"?: number,
+              "shiftY"?: number,
+            },
+            ...
+          ]
+        }
+        """
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getTiltSeriesFrames(tiltSeriesId)
+            if payload is not None:
+                return payload
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries frames",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="frames_not_available" if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+            )
+
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
+        targetKey = str(tiltSeriesId)
+        selectedSummary: Optional[Dict[str, Any]] = None
+        selectedSeries = setOfTiltSeries.getItem('_tsId', targetKey)
+        if selectedSeries is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
+            )
+
+        frames: List[Dict[str, Any]] = []
+
+        for idx, view in enumerate(selectedSeries.iterItems(iterate=False)):
+            frame: Dict[str, Any] = {}
+            # viewId
+            frame["viewId"] = view.getObjId()
+            frame["index"] = view.getIndex()
+            frame["order"] = view.getAcquisitionOrder()
+            frame["tiltAngle"] = view.getTiltAngle()
+
+            # excluded flag
+            excluded = False
+            if hasattr(view, "isExcluded"):
+                try:
+                    excluded = bool(view.isExcluded())
+                except Exception:
+                    pass
+            elif hasattr(view, "getIsExcluded"):
+                try:
+                    excluded = bool(view.getIsExcluded())
+                except Exception:
+                    pass
+            elif hasattr(view, "isEnabled"):
+                try:
+                    enabled = bool(view.isEnabled())
+                    excluded = not enabled
+                except Exception:
+                    pass
+            elif hasattr(view, "getEnabled"):
+                try:
+                    enabled = bool(view.getEnabled())
+                    excluded = not enabled
+                except Exception:
+                    pass
             else:
-                context.setdefault(paramName, {})
-                # Public attributes
-                for name, value in param.getAttributes():
-                    context[paramName][name] = self.serializeToJson(value)
-                # Protected attributes
-                for name, value in vars(param).items():
-                    if name != 'paramClass' and name != '_form':
-                        context[paramName][name] = self.serializeToJson(value)
+                for attrName in ("excluded", "_excluded", "skip", "_skip"):
+                    try:
+                        v = getattr(view, attrName, None)
+                        if v is not None:
+                            excluded = bool(v)
+                            break
+                    except Exception:
+                        continue
+            frame["excluded"] = excluded
 
-                context[paramName]['_class'] = param.__class__.__name__
-                if protVar is not None:
-                    if isinstance(param, MultiPointerParam):
-                        # TODO CHECK THIS LATER to display better when no _extended attribute
-                        valueList = []
-                        defaultValueList = []
-                        for pointer in protVar:
-                            value = "%s.%s" % (pointer.getObjValue(), pointer.getExtended())
-                            valueList.append({'object': value, 'info': '---'})
-                            defaultValueList.append({'object': value, 'info': '---'})
-                        context[paramName]['_objValue'] = valueList
-                        context[paramName]['default'] = defaultValueList
-                    elif isinstance(param, PointerParam):
-                        # TODO CHECK THIS LATER to display better when no _extended attribute
-                        context[paramName]['_objValue'] = "%s.%s" % (protVar.getObjValue(), protVar.getExtended())
-                        context[paramName]['default'] = context[paramName]['_objValue']
+            # dose
+            dose = view.getAcquisition().getAccumDose()
+            if dose is not None:
+                frame["dose"] = dose
+
+            # path
+            path = view.getFileName()
+            if path is not None:
+                frame["path"] = str(view.getIndex()) + '@' + path
+
+            # rotation and shifts
+            rot = None
+            shifts = None
+
+            if view.hasTransform():
+                transf = view.getTransform()
+                _, _, rot = transf.getEulerAngles()
+                rot = np.rad2deg(-rot)
+                list = transf.getMatrixAsList()
+                shifts = list[2], list[5]
+
+            if rot is not None:
+                frame["rot"] = rot
+
+            # shifts
+            if shifts is not None:
+                frame["shiftX"] = shifts[0]
+                frame["shiftY"] = shifts[1]
+
+            frames.append(frame)
+
+        payload: Dict[str, Any] = {
+            "tiltSeriesId": selectedSummary.get("tiltSeriesId") if selectedSummary else tiltSeriesId,
+            "label": selectedSummary.get("label") if selectedSummary else str(tiltSeriesId),
+            "frames": frames,
+        }
+
+        if selectedSummary and "tiltAxisAngle" in selectedSummary:
+            payload["tiltAxisAngle"] = selectedSummary["tiltAxisAngle"]
+
+        return payload
+
+    def createNewSetOfCtftomoSeriesService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        exclusions: Dict[str, Any],
+        restack: bool,
+        mapper=None,
+    ) -> Dict[str, Any]:
+        protocol, inputSet = self._resolveOutputForCtftomoSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        normalizedExclusions: Dict[str, Dict[str, Any]] = {}
+
+        for key, value in (exclusions or {}).items():
+            normalizedExclusions[str(key)] = value or {}
+
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix="CTFTomoSeries",
+        )
+        newOutputName = outputIdentity["outputName"]
+
+        generatedSetContext = self._createWritableGeneratedPostgresqlSet(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputName=newOutputName,
+            sourceSet=inputSet,
+        )
+        outputSet = generatedSetContext["outputSet"]
+        finalized = False
+
+        try:
+            linkedTiltSeries = inputSet.getSetOfTiltSeries()
+
+            if linkedTiltSeries is not None:
+                outputSet.setSetOfTiltSeries(
+                    linkedTiltSeries
+                )
+
+            createdCount = 0
+
+            for ctfSeries in inputSet.iterItems(
+                    iterate=False
+            ):
+                tsId = ctfSeries.getTsId()
+                tsExclusion = normalizedExclusions.get(
+                    str(tsId),
+                    {},
+                )
+
+                if bool(tsExclusion.get("excluded", False)):
+                    continue
+
+                excludedTiltIndices = set()
+
+                for value in tsExclusion.get("tiltimages") or []:
+                    try:
+                        excludedTiltIndices.add(
+                            int(value)
+                        )
+                    except (TypeError, ValueError):
+                        continue
+
+                newSeries = self._cloneGeneratedNestedSet(
+                    ctfSeries
+                )
+                newSeries.setEnabled(True)
+                seriesAppended = False
+
+                try:
+                    outputSet.append(newSeries)
+                    seriesAppended = True
+
+                    for ctfObject in ctfSeries.iterItems(
+                            iterate=False
+                    ):
+                        newCtfObject = ctfObject.clone()
+                        newCtfObject.setEnabled(
+                            int(ctfObject.getIndex())
+                            not in excludedTiltIndices
+                        )
+                        newSeries.append(newCtfObject)
+
+                    outputSet.update(newSeries)
+                    createdCount += 1
+
+                except Exception:
+                    logger.exception(
+                        "Error storing CTF tomography series %s "
+                        "in generated PostgreSQL Set %s",
+                        tsId,
+                        newOutputName,
+                    )
+
+                    if seriesAppended:
+                        try:
+                            outputSet.remove(newSeries)
+                        except Exception:
+                            logger.exception(
+                                "Could not remove incomplete CTF "
+                                "tomography series %s from %s",
+                                tsId,
+                                newOutputName,
+                            )
+                            raise
+
+            if outputSet.isEmpty():
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
+                generatedSetContext = None
+
+                return {
+                    "status": "empty",
+                    "outputName": newOutputName,
+                    "createdSeries": 0,
+                    "restack": bool(restack),
+                    "message": (
+                        "No output was generated because "
+                        "it cannot be empty"
+                    ),
+                }
+
+            protocol._defineOutputs(
+                **{
+                    newOutputName: outputSet,
+                }
+            )
+            protocol._store()
+
+            postgresqlSync = (
+                self._finalizeGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                    outputName=newOutputName,
+                )
+            )
+            finalized = True
+
+            logger.info(
+                "The new CTF tomography Set (%s) has been "
+                "created directly in PostgreSQL with %d series",
+                newOutputName,
+                createdCount,
+            )
+
+            return {
+                "status": 0,
+                "outputName": newOutputName,
+                "createdSeries": createdCount,
+                "restack": bool(restack),
+                "postgresqlSync": postgresqlSync,
+                "postgresqlError": None,
+            }
+
+        except Exception:
+            if not finalized:
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
+
+            raise
+
+    def _buildTiltSeriesPreviewCacheKey(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            index: int,
+            size: int,
+            fmt: str,
+            applyTransform: bool,
+            inline: bool,
+            imagePath: str,
+    ) -> Tuple[Any, ...]:
+        # buildTiltSeriesPreviewCacheKey
+        absPath = os.path.abspath(str(imagePath))
+
+        try:
+            stat = os.stat(absPath)
+            fileMtimeNs = int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)))
+            fileSize = int(stat.st_size)
+        except Exception:
+            fileMtimeNs = 0
+            fileSize = 0
+
+        return (
+            int(projectId),
+            int(protocolId),
+            str(outputName),
+            str(tiltSeriesId),
+            int(index),
+            int(size),
+            str(fmt or "png").lower(),
+            bool(applyTransform),
+            bool(inline),
+            absPath,
+            fileMtimeNs,
+            fileSize,
+        )
+
+    def _ensureTiltSeriesPreviewCacheHeader(
+            self,
+            headers: Dict[str, str],
+            cacheState: str,
+    ) -> Dict[str, str]:
+        # ensureTiltSeriesPreviewCacheHeader
+        nextHeaders = dict(headers or {})
+        nextHeaders["X-Preview-Cache"] = cacheState
+
+        exposeRaw = nextHeaders.get("Access-Control-Expose-Headers", "")
+        exposeItems = [h.strip() for h in exposeRaw.split(",") if h.strip()]
+        if "X-Preview-Cache" not in exposeItems:
+            exposeItems.append("X-Preview-Cache")
+        nextHeaders["Access-Control-Expose-Headers"] = ", ".join(exposeItems)
+
+        return nextHeaders
+
+    def _getTiltSeriesPreviewFromCache(self, cacheKey: Tuple[Any, ...]) -> Optional[Response]:
+        # getTiltSeriesPreviewFromCache
+        with _tiltSeriesPreviewCacheLock:
+            cached = _tiltSeriesPreviewCache.get(cacheKey)
+            if not cached:
+                return None
+
+            _tiltSeriesPreviewCache.move_to_end(cacheKey)
+
+            headers = self._ensureTiltSeriesPreviewCacheHeader(
+                cached.get("headers") or {},
+                "HIT",
+            )
+
+            return Response(
+                content=cached.get("body") or b"",
+                media_type=cached.get("mediaType") or "image/png",
+                headers=headers,
+            )
+
+    def _storeTiltSeriesPreviewInCache(
+            self,
+            cacheKey: Tuple[Any, ...],
+            response: Any,
+    ) -> Any:
+        # storeTiltSeriesPreviewInCache
+        headersObj = getattr(response, "headers", None)
+        if headersObj is None or not hasattr(headersObj, "update"):
+            return response
+
+        body = getattr(response, "body", None)
+
+        if body is None:
+            response.headers.update(
+                self._ensureTiltSeriesPreviewCacheHeader(
+                    dict(response.headers),
+                    "SKIP",
+                )
+            )
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type") or "image/png"
+
+        with _tiltSeriesPreviewCacheLock:
+            _tiltSeriesPreviewCache[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _tiltSeriesPreviewCache.move_to_end(cacheKey)
+
+            while len(_tiltSeriesPreviewCache) > _TILT_SERIES_PREVIEW_CACHE_LIMIT:
+                _tiltSeriesPreviewCache.popitem(last=False)
+
+        response.headers.update(
+            self._ensureTiltSeriesPreviewCacheHeader(
+                dict(response.headers),
+                "MISS",
+            )
+        )
+
+        return response
+
+    def renderTiltSeriesImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            index: int = 0,
+            size: int = 1024,
+            fmt: str = "png",
+            applyTransform: bool = True,
+            inline: bool = True,
+            requestHeaders: Optional[Dict[str, str]] = None,
+            mapper=None,
+    ):
+
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            frame = pgReader.getTiltImageFrame(tiltSeriesId, index)
+            if frame is not None:
+                try:
+                    imagePath, imageIndex = self._parseTiltSeriesFramePath(
+                        frame.get("path"),
+                        fallbackIndex=int(index),
+                    )
+
+                    if mapper is not None and getattr(mapper, "db", None) is not None:
+                        from app.backend.viewers.postgresql_path_resolver import (
+                            PostgresqlProjectPathResolver,
+                        )
+
+                        resolvedImagePath = PostgresqlProjectPathResolver(
+                            db=mapper.db,
+                            projectId=projectId,
+                        ).resolveExistingPath(imagePath)
+
+                        if resolvedImagePath is None:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=(
+                                    "TiltSeries image path could not be resolved from "
+                                    f"PostgreSQL metadata: {imagePath}"
+                                ),
+                            )
+
+                        imagePath = resolvedImagePath
+
+                    cacheKey = self._buildTiltSeriesPreviewCacheKey(
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        tiltSeriesId=tiltSeriesId,
+                        index=imageIndex,
+                        size=size,
+                        fmt=fmt,
+                        applyTransform=applyTransform,
+                        inline=inline,
+                        imagePath=imagePath,
+                    )
+
+                    cachedResponse = self._getTiltSeriesPreviewFromCache(cacheKey)
+                    if cachedResponse is not None:
+                        return cachedResponse
+
+                    rot = None
+                    shifts = None
+
+                    if applyTransform:
+                        rot = frame.get("rot")
+                        shiftX = frame.get("shiftX")
+                        shiftY = frame.get("shiftY")
+                        if shiftX is not None and shiftY is not None:
+                            shifts = (shiftX, shiftY)
+
+                    preview = OutputsPreview(
+                        currentProject=self.currentProject,
+                        protocol=None,
+                        output=None,
+                        requestHeaders=requestHeaders,
+                    )
+
+                    response = preview.renderImageFromFilePath(
+                        imagePath,
+                        size=size,
+                        fmt=fmt,
+                        index=imageIndex,
+                        applyTransform=applyTransform,
+                        inline=inline,
+                        rot=rot,
+                        shifts=shifts,
+                    )
+
+                    return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+
+                except HTTPException:
+                    logger.exception(
+                        "Failed to render TiltSeries image from PostgreSQL. projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s index=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        tiltSeriesId,
+                        index,
+                    )
+                    raise
+
+                except Exception as e:
+                    logger.exception(
+                        "Failed to render TiltSeries image from PostgreSQL. projectId=%s protocolId=%s outputName=%s tiltSeriesId=%s index=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        tiltSeriesId,
+                        index,
+                    )
+
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to render TiltSeries image from PostgreSQL metadata: {e}",
+
+                    )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries image",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+                index=index,
+            )
+
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
+        ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
+
+        if ts is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
+            )
+
+        ti = ts.getItem('_index', index)
+
+        if ti is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tilt image index '{index}' not found in tiltSeries '{tiltSeriesId}'",
+            )
+
+        imagePath = os.path.abspath(ti.getFileName())
+
+        cacheKey = self._buildTiltSeriesPreviewCacheKey(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            index=index,
+            size=size,
+            fmt=fmt,
+            applyTransform=applyTransform,
+            inline=inline,
+            imagePath=imagePath,
+        )
+
+        cachedResponse = self._getTiltSeriesPreviewFromCache(cacheKey)
+        if cachedResponse is not None:
+            return cachedResponse
+
+        rot = shifts = None
+        if applyTransform and ti.hasTransform():
+            transf = ti.getTransform()
+            _, _, rot = transf.getEulerAngles()
+            rot = np.rad2deg(-rot)
+            matrixValues = transf.getMatrixAsList()
+            shifts = matrixValues[2], matrixValues[5]
+
+        preview = OutputsPreview(
+            currentProject=self.currentProject,
+            protocol=protocol,
+            output=ts,
+            requestHeaders=requestHeaders,
+        )
+
+        response = preview.renderImageFromFilePath(
+            imagePath,
+            size=size,
+            fmt=fmt,
+            index=index,
+            applyTransform=applyTransform,
+            inline=inline,
+            rot=rot,
+            shifts=shifts,
+        )
+
+        return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+    def renderTiltSeriesImagesBatchService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            indices: Sequence[int],
+            size: int = 512,
+            fmt: str = "webp",
+            applyTransform: bool = True,
+            inline: bool = True,
+            requestHeaders: Optional[Dict[str, str]] = None,
+            mapper=None,
+    ) -> Dict[str, Any]:
+        # renderTiltSeriesImagesBatchService
+        cleanIndices: List[int] = []
+        seenIndices: TypingSet[int] = set()
+
+        for rawIndex in indices or []:
+            try:
+                index = int(rawIndex)
+            except (TypeError, ValueError):
+                continue
+
+            if index < 0 or index in seenIndices:
+                continue
+
+            cleanIndices.append(index)
+            seenIndices.add(index)
+
+            if len(cleanIndices) >= 24:
+                break
+
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for index in cleanIndices:
+            try:
+                response = self.renderTiltSeriesImageService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    tiltSeriesId=tiltSeriesId,
+                    index=index,
+                    size=size,
+                    fmt=fmt,
+                    applyTransform=applyTransform,
+                    inline=inline,
+                    requestHeaders=requestHeaders,
+                    mapper=mapper,
+                )
+
+                body = getattr(response, "body", None) or b""
+                mediaType = (
+                        getattr(response, "media_type", None)
+                        or response.headers.get("content-type")
+                        or "image/png"
+                )
+
+                dataUrl = "data:%s;base64,%s" % (
+                    mediaType,
+                    base64.b64encode(body).decode("ascii"),
+                )
+
+                items.append({
+                    "index": index,
+                    "contentType": mediaType,
+                    "dataUrl": dataUrl,
+                    "cache": response.headers.get("X-Preview-Cache"),
+                })
+
+            except HTTPException as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc.detail),
+                })
+            except Exception as exc:
+                errors.append({
+                    "index": index,
+                    "error": str(exc),
+                })
+
+        return {
+            "tiltSeriesId": str(tiltSeriesId),
+            "size": int(size),
+            "fmt": str(fmt or "webp").lower(),
+            "applyTransform": bool(applyTransform),
+            "items": items,
+            "errors": errors,
+        }
+
+    def createNewSetOfTiltSeriesService(
+        self,
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        exclusions: Dict[str, Any],
+        restack: bool,
+        mapper=None
+    ) -> Dict[str, Any]:
+        """
+        Create a new SetOfTiltSeries applying per-tilt-series and per-tilt exclusions.
+
+        The `exclusions` dict is expected to have the shape:
+        {
+            "<tsId>": {
+                "excluded": bool,
+                "tiltimages": [index1, index2, ...]  # tilt indices (1-based)
+            },
+            ...
+        }
+
+        Returns a JSON-serializable payload for the web UI with basic metadata.
+        """
+        # Resolve protocol and input set for the given output
+        protocol, inputSet = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+        )
+        hasOddEven = inputSet.hasOddEven()
+
+        # Normalize exclusions keys to strings (tsId can be int/str on the backend)
+        normalizedExclusions: Dict[str, Dict[str, Any]] = {}
+        for key, value in (exclusions or {}).items():
+            normalizedExclusions[str(key)] = value or {}
+
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix="TiltSeries_",
+        )
+        newOutputName = outputIdentity["outputName"]
+        outputPath = os.path.join(
+            protocol._getExtraPath(),
+            newOutputName,
+        )
+
+        if restack and not os.path.exists(outputPath):
+            os.mkdir(outputPath)
+
+        generatedSetContext = (
+            self._createWritableGeneratedPostgresqlSet(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                outputName=newOutputName,
+                sourceSet=inputSet,
+            )
+        )
+        outputSet = generatedSetContext["outputSet"]
+
+        inputSetDim = inputSet.getDim()
+
+        if inputSetDim is not None:
+            outputSet.setDim(
+                inputSetDim
+            )
+
+        totalInputSeries = inputSet.getSize() if hasattr(inputSet, "getSize") else None
+
+        for tsIndex, ts in enumerate(inputSet.iterItems(iterate=False)):
+            tsId = ts.getTsId()
+            tsKey = str(tsId)
+
+            # Per-tilt-series exclusion info
+            tsExcl = normalizedExclusions.get(tsKey, {})
+            seriesExcluded = bool(tsExcl.get("excluded", False))
+
+            # Per-tilt-image exclusions: indices (1-based)
+            rawTiltIndices = tsExcl.get("tiltimages") or []
+            excludedTiltIndices: TypingSet[int] = set()
+
+            for v in rawTiltIndices:
+                try:
+                    excludedTiltIndices.add(int(v))
+                except (TypeError, ValueError):
+                    continue
+
+            try:
+                # Skip the whole tilt series if marked as excluded
+                if seriesExcluded:
+                    continue
+
+                newTs = TiltSeries()
+                newTs.copyInfo(ts)
+                outputSet.append(newTs)
+
+                newBinaryName = os.path.join(outputPath, f"{tsId}.mrcs")
+                if hasOddEven:
+                    oddFileName = ts.getOddFileName()
+                    evenFileName = ts.getEvenFileName()
+                    newOddBinaryName = os.path.join(outputPath, f"{tsId}_odd.mrcs")
+                    newEvenBinaryName = os.path.join(outputPath, f"{tsId}_even.mrcs")
+
+                stack = None
+                oddStack = None
+                evenStack = None
+
+                if restack:
+                    properties = {
+                        "sr": ts.getSamplingRate(),
+                    }
+                    stack = ImageStack(
+                        properties=properties
+                    )
+
+                    if hasOddEven:
+                        oddStack = ImageStack(
+                            properties=properties
+                        )
+                        evenStack = ImageStack(
+                            properties=properties
+                        )
+
+                index = 1  # new index when restacking
+                validImages = 0
+                errorsCount = 0
+
+                for ti in ts.iterItems(iterate=False):
+                    try:
+                        # In the web workflow, exclusions use tilt index (1-based)
+                        tiIndex = getattr(ti, "getIndex", lambda: None)()
+                        if tiIndex is None:
+                            included = True
+                        else:
+                            included = int(tiIndex) not in excludedTiltIndices
+
+                        if not restack or (included and restack):
+                            newTi = self._cloneTiltImage(ti, included)
+
+                            if restack:
+                                oldIndex = str(ti.getIndex())
+                                stack.append(
+                                    ImageReadersRegistry.open(
+                                        f"{oldIndex}@{ti.getFileName()}"
+                                    )
+                                )
+                                newTi.setLocation((index, newBinaryName))
+
+                                if hasOddEven:
+                                    oddStack.append(
+                                        ImageReadersRegistry.open(
+                                            f"{oldIndex}@{oddFileName}"
+                                        )
+                                    )
+                                    evenStack.append(
+                                        ImageReadersRegistry.open(
+                                            f"{oldIndex}@{evenFileName}"
+                                        )
+                                    )
+                                    newTi.setOddEven(
+                                        [newOddBinaryName, newEvenBinaryName]
+                                    )
+
+                                index += 1
+
+                            newTs.append(newTi)
+                            validImages += 1
+
+                    except Exception:
+                        errorsCount += 1
+                        logger.exception(
+                            "Error processing tilt image in tilt series %s (tilt index %s)",
+                            tsId,
+                            getattr(ti, "getIndex", lambda: "unknown")(),
+                        )
+                        continue
+
+                # If no image was processed successfully and at least one failed,
+                # skip this tilt series completely (do not write or add it to the output set).
+                if validImages == 0 and errorsCount > 0:
+                    logger.warning(
+                        "Skipping tilt series %s (%d/%s): all tilt images failed. "
+                        "Check log for details.",
+                        tsId,
+                        tsIndex + 1,
+                        totalInputSeries if totalInputSeries is not None else "?",
+                    )
+                    # Remove empty newTs from the output set if it was added
+                    try:
+                        outputSet.remove(newTs)
+                    except Exception:
+                        pass
+                    continue
+
+                if restack:
+                    ImageReadersRegistry.write(stack, newBinaryName, isStack=True)
+                    if hasOddEven:
+                        ImageReadersRegistry.write(
+                            oddStack, newOddBinaryName, isStack=True
+                        )
+                        ImageReadersRegistry.write(
+                            evenStack, newEvenBinaryName, isStack=True
+                        )
+
+                # If all tilts are excluded, disable this tilt series
+                if excludedTiltIndices and len(excludedTiltIndices) == ts.getSize():
+                    newTs.setEnabled(False)
+
+                sourceDim = ts.getDim()
+
+                if sourceDim is not None:
+                    newTs.setDim(
+                        sourceDim
+                    )
+
+                newTs.setAnglesCount(
+                    newTs.getSize()
+                )
+                outputSet.update(
+                    newTs
+                )
+
+            except Exception:
+                logger.exception(
+                    "Error processing tilt series %s (%d/%s)",
+                    tsId or "unknown",
+                    tsIndex + 1,
+                    totalInputSeries if totalInputSeries is not None else "?",
+                )
+                # Do not propagate; continue with next tilt series
+                continue
+
+        createdCount = outputSet.getSize()
+        if not createdCount:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+
+            logger.info(
+                "No output was generated because it cannot be empty"
+            )
+            return {
+                "status": "empty",
+                "outputName": newOutputName,
+                "createdTiltSeries": 0,
+                "hasOddEven": bool(hasOddEven),
+                "restack": bool(restack),
+                "message": "No output was generated because it cannot be empty",
+            }
+
+        protocol._defineOutputs(
+            **{
+                newOutputName: outputSet,
+            }
+        )
+        protocol._store()
+
+        try:
+            postgresqlSync = (
+                self._finalizeGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                    outputName=newOutputName,
+                )
+            )
+        except Exception:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+            raise
+
+        postgresqlError = None
+
+        logger.info("The new set (%s) has been created successfully", newOutputName)
+
+        return {
+            "status": 0,
+            "outputName": newOutputName,
+            "createdTiltSeries": createdCount,
+            "hasOddEven": bool(hasOddEven),
+            "restack": bool(restack),
+            "postgresqlSync": postgresqlSync,
+            "postgresqlError": postgresqlError,
+        }
+
+    def _cloneTiltImage(self, ti, included):
+        newTi = ti.clone()
+        newTi.copyInfo(ti, copyId=False)
+        newTi.setObjId(None)
+        newTi.setAcquisition(ti.getAcquisition())
+        newTi.setEnabled(included)
+        return newTi
+
+    # ----------------------------------------------------------------------
+    # Analyze Results: Coordinates3D
+    # ----------------------------------------------------------------------
+    def _getPostgresqlCoords3dReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlCoords3dReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL Coordinates3D reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def _resolveOutputForCoordinates3d(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol '{protocolId}' not found",
+            )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            ) or {}
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+        else:
+            output = getattr(protocol, outputName, None)
+
+        if output is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        return protocol, output
+
+    @staticmethod
+    def _iterCoordinates3dTomograms(setOfCoordinates3D):
+        def asIterator(value):
+            iterItems = getattr(value, "iterItems", None)
+
+            if callable(iterItems):
+                try:
+                    return iterItems(iterate=False)
+                except TypeError:
+                    return iterItems()
+
+            return iter(value)
+
+        for methodName in ("iterTomograms", "iterVolumes"):
+            method = getattr(setOfCoordinates3D, methodName, None)
+
+            if not callable(method):
+                continue
+
+            try:
+                return asIterator(method())
+            except Exception:
+                continue
+
+        getTomograms = getattr(setOfCoordinates3D, "getTomograms", None)
+
+        if callable(getTomograms):
+            try:
+                return asIterator(getTomograms())
+            except Exception as error:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to iterate Coordinates3D tomograms: {error}",
+                )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SetOfCoordinates3D does not expose tomograms iterator",
+        )
+
+    def listCoordinates3dTomogramsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        """
+        Return a list of tomograms referenced by the SetOfCoordinates3D output.
+
+        Normalized shape:
+        [
+          { "id": <tomoId>, "name": "<label>" },
+          ...
+        ]
+        """
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listTomograms()
+            if payload is not None:
+                self.tomoList = {}
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D tomograms reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            raise HTTPException(
+                status_code=404,
+                detail="Coordinates3D output is not available in PostgreSQL metadata",
+            )
+
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        self.tomoList = {}
+        tomogramList: List[Dict[str, Any]] = []
+
+        iterator = self._iterCoordinates3dTomograms(setOfCoordinates3D)
+
+        for index, tomo in enumerate(iterator):
+            tomoId = None
+            for fnName in ("getTsId", "getObjId"):
+                fn = getattr(tomo, fnName, None)
+                if callable(fn):
+                    try:
+                        tomoId = fn()
+                        if tomoId is not None:
+                            break
+                    except Exception:
+                        continue
+            if tomoId is None:
+                tomoId = index
+            self.tomoList[tomoId] = tomo
+            label = None
+            for fnName in ("getObjLabel", "getNameId", "getFileName"):
+                fn = getattr(tomo, fnName, None)
+                if callable(fn):
+                    try:
+                        label = fn()
+                        if label:
+                            break
+                    except Exception:
+                        continue
+
+            if not label:
+                label = str(tomoId)
+
+            sr = tomo.getSamplingRate()
+
+            tomogramList.append(
+                {
+                    "id": tomoId,
+                    "name": str(label),
+                    "label": tomoId,
+                    "dims": list(tomo.getDim()),
+                    "voxelSize": [sr, sr, sr],
+                }
+            )
+
+        return tomogramList
+
+    def getCoordinates3dPointsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            mapper=None,
+    ):
+        """
+        Return a flat list of 3D points for one tomogram.
+        Each point is {x, y, z, ...optional fields}.
+
+        Returned shape:
+        [
+          {
+            "x": number,
+            "y": number,
+            "z": number,
+            "id"?: number | str,
+            "classId"?: number,
+            "label"?: string,
+            "score"?: number,
+            "weight"?: number,
+            "radius"?: number,
+            "tomoId"?: number | str,
+            "matrix"?: list
+          },
+          ...
+        ]
+        """
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getPoints(tomogramId)
+            if payload is not None:
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D points reader. projectId=%s protocolId=%s outputName=%s tomogramId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tomogramId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D points",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        try:
+            boxSize = float(setOfCoordinates3D.getBoxSize())
+        except Exception:
+            boxSize = None
+
+        key: Union[int, str] = tomogramId
+        if isinstance(tomogramId, str):
+            try:
+                key = int(tomogramId)
+            except ValueError:
+                key = tomogramId
+
+        try:
+            if self.tomoList:
+                tomogram = self.tomoList[key]
+            else:
+                tomogram = setOfCoordinates3D._getTomogram(key)
+        except Exception:
+            tomogram = None
+
+        if tomogram is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tomogram '{tomogramId}' not found in SetOfCoordinates3D",
+            )
+
+        try:
+            tomoId = tomogram.getTsId()
+        except Exception:
+            tomoId = getattr(tomogram, "getObjId", lambda: None)()
+
+        points: List[Dict[str, Any]] = []
+
+        try:
+            coordsIter = setOfCoordinates3D.iterCoordinates(tomogram)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to iterate coordinates: {e}",
+            )
+
+        for coord in coordsIter:
+            try:
+                x = float(coord.getX(BOTTOM_LEFT_CORNER))
+                y = float(coord.getY(BOTTOM_LEFT_CORNER))
+                z = float(coord.getZ(BOTTOM_LEFT_CORNER))
+            except Exception:
+                continue
+
+            p: Dict[str, Any] = {"x": x, "y": y, "z": z}
+
+            getIdFn = getattr(coord, "getObjId", None)
+            if callable(getIdFn):
+                try:
+                    objId = getIdFn()
+                    if objId is not None:
+                        p["id"] = objId
+                except Exception:
+                    pass
+
+            getClassFn = getattr(coord, "getClassId", None)
+            if callable(getClassFn):
+                try:
+                    classId = getClassFn()
+                    if classId is not None:
+                        p["classId"] = classId
+                except Exception:
+                    pass
+
+            label = getattr(coord, "_objLabel", None)
+            if not label and hasattr(coord, "getObjLabel"):
+                try:
+                    label = coord.getObjLabel()
+                except Exception:
+                    label = None
+            if label not in (None, ""):
+                p["label"] = str(label)
+
+            score = getattr(coord, "_score", None)
+            if score is None and hasattr(coord, "getScore"):
+                try:
+                    score = coord.getScore()
+                except Exception:
+                    score = None
+            if score is not None:
+                try:
+                    p["score"] = float(score)
+                except Exception:
+                    pass
+
+            getWeightFn = getattr(coord, "getWeight", None)
+            if callable(getWeightFn):
+                try:
+                    w = getWeightFn()
+                    if w is not None:
+                        p["weight"] = float(w)
+                except Exception:
+                    pass
+
+            if boxSize is not None:
+                p["radius"] = float(boxSize)
+
+            matrix = coord.getMatrix()
+            p['matrix'] = matrix.tolist()
+
+            p["tomoId"] = tomoId
+
+            points.append(p)
+
+        return points
+
+    def _coords3dPilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
+        """
+        Convert a PIL tomogram slice into a small 2D float array.
+
+        - Downsamples to <= maxThumbSize without upscaling.
+        - Converts to grayscale if needed.
+        - Applies highlightSlice/normalizeSlice at most once.
+        - Returns float32 2D array; caller can decide final uint8/colormap.
+        """
+        try:
+            width, height = pilImg.size
+            scale = min(
+                maxThumbSize / float(width),
+                maxThumbSize / float(height),
+                1.0,
+            )
+            thumbWidth = max(1, int(round(width * scale)))
+            thumbHeight = max(1, int(round(height * scale)))
+
+            if pilImg.mode not in ("L", "I;16", "F"):
+                pilGray = pilImg.convert("L")
+            else:
+                pilGray = pilImg
+
+            if thumbWidth < width or thumbHeight < height:
+                pilGray = pilGray.copy()
+                pilGray.thumbnail((thumbWidth, thumbHeight))
+
+            arr = np.asarray(pilGray, dtype=np.float32)
+
+            arr = np.squeeze(arr)
+            if arr.ndim != 2 or arr.size == 0:
+                return None
+
+            try:
+                arr = imgStk.highlightSlice(arr)
+                arr = imgStk.normalizeSlice(arr)
+            except Exception:
+                pass
+
+            return arr.astype(np.float32, copy=False)
+        except Exception:
+            return None
+
+    def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
+        """
+        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
+
+        Safeguards:
+        - Accepts any numeric dtype.
+        - If already uint8 and mode in ('minmax', 'none'), returns a copy directly.
+        - Handles NaNs and constant arrays without blowing up.
+        """
+        if a.ndim != 2:
+            raise ValueError("Expected 2D slice")
+
+        arr = np.asarray(a)
+
+        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
+            return arr.copy()
+
+        arr = arr.astype(np.float32, copy=False)
+        mode = (mode or "minmax").lower()
+
+        finiteMask = np.isfinite(arr)
+        if not finiteMask.all():
+            if finiteMask.any():
+                fillVal = float(np.nanmedian(arr[finiteMask]))
+            else:
+                fillVal = 0.0
+            arr = np.where(finiteMask, arr, fillVal)
+
+        if mode == "zscore":
+            mu = float(np.mean(arr))
+            sd = float(np.std(arr))
+            if sd == 0.0 or not np.isfinite(sd):
+                return np.zeros_like(arr, dtype=np.uint8)
+            arr = (arr - mu) / sd
+            arr = np.clip(arr, -3.0, 3.0)
+            amin, amax = float(arr.min()), float(arr.max())
+            if amax <= amin:
+                return np.zeros_like(arr, dtype=np.uint8)
+            arr = (arr - amin) / (amax - amin + 1e-12)
+            return (255.0 * arr).astype(np.uint8)
+
+        amin, amax = float(arr.min()), float(arr.max())
+        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
+            return np.zeros_like(arr, dtype=np.uint8)
+
+        arr = (arr - amin) / (amax - amin + 1e-12)
+        return (255.0 * arr).astype(np.uint8)
+
+    def renderCoords3dTomogramSliceService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str = "z",
+            colormap: Optional[str] = None,
+            normalize: Optional[str] = "minmax",
+            scale: float = 1.0,
+            inline: bool = True,
+            fmt: str = "webp",
+            thumb: Optional[int] = 128,
+            fast: bool = True,
+            quality: int = 75,
+            mapper=None,
+    ) -> Response:
+        """
+        Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
+
+        Fast path:
+          - axis == 'z' and fast == True
+          - Uses ImageReadersRegistry.open + getImage(pilImage=True)
+          - Uses Scipion helpers to enhance contrast.
+
+        Slow path:
+          - Other axes or fast path failure
+          - Uses cached readVolumeArray3d to avoid reloading on each request.
+        """
+        from PIL import Image as PILImage
+
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            tomogramInfo = pgReader.getTomogramFile(tomogramId)
+            if tomogramInfo is not None:
+                volumePath = tomogramInfo.get("fileName")
+                if volumePath and os.path.exists(volumePath):
+                    return self._renderTomogramSliceFromPath(
+                        volumePath=volumePath,
+                        tomogramId=tomogramId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize,
+                        scale=scale,
+                        inline=inline,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+            logger.info(
+                "Skipping PostgreSQL Coordinates3D tomogram slice reader. projectId=%s protocolId=%s outputName=%s tomogramId=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tomogramId,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D tomogram slice",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        try:
+            if self.tomoList:
+                tomogram = self.tomoList[tomogramId]
+            else:
+                tomogram = setOfCoordinates3D._getTomogram(tomogramId)
+        except Exception:
+            tomogram = None
+
+        if tomogram is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tomogram '{tomogramId}' not found in SetOfCoordinates3D",
+            )
+
+        getFileNameFn = getattr(tomogram, "getFileName", None)
+        if not callable(getFileNameFn):
+            raise HTTPException(
+                status_code=404,
+                detail="Tomogram object has no getFileName()",
+            )
+
+        volumePath = getFileNameFn()
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(
+                status_code=404,
+                detail="Tomogram file not found on disk",
+            )
+
+        axis = (axis or "z").lower()
+        if axis not in ("x", "y", "z"):
+            axis = "z"
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        usedColormap = colormap
+        gray: Optional[np.ndarray] = None
+        depth = 1
+
+        try:
+            requestedIndex = int(sliceIndex or 0)
+        except Exception:
+            requestedIndex = 0
+        requestedIndex = max(0, requestedIndex)
+
+        sliceUsed = requestedIndex
+        if axis == "z" and fast:
+            try:
+                reader = ImageReadersRegistry.open(volumePath)
+
+                try:
+                    images = reader.getImages()
+                    if hasattr(images, "ndim") and images.ndim == 3:
+                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+                    elif hasattr(images, "ndim") and images.ndim == 2:
+                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
                     else:
-                        context[paramName]['_objValue'] = protVar.get() if protVar.get() is not None else ""
-                        context[paramName]['default'] = str(context[paramName]['_objValue'])
+                        zdim, ydim, xdim = 1, 0, 0
+                except Exception:
+                    zdim, ydim, xdim = 1, 0, 0
 
-            return context
-        except Exception as ex:
-            print("ERROR with param: " + paramName)
-            raise ex
+                depth = max(zdim, 1)
+
+                k = requestedIndex
+                if zdim > 0:
+                    k = max(0, min(k, zdim - 1))
+
+                try:
+                    pilImg = reader.getImage(index=k, pilImage=True)
+                except Exception:
+                    try:
+                        pilImg = reader.getCentralImage(pilImage=True)
+                        if zdim > 0:
+                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
+                        else:
+                            k = 0
+                    except Exception:
+                        pilImg = reader.getImage(index=0, pilImage=True)
+                        k = 0
+
+                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
+                if arr2d is None:
+                    arrRaw = np.asarray(pilImg)
+                    if arrRaw.ndim == 3:
+                        arr2d = arrRaw.mean(axis=-1)
+                    else:
+                        arr2d = arrRaw.astype(np.float32, copy=False)
+
+                gray = self._normalize2dSlice(arr2d, mode=normalize)
+                sliceUsed = k
+            except Exception:
+                gray = None
+
+        if gray is None:
+            try:
+                vol3d, _props = readVolumeArray3d(str(volumePath))  # Z, Y, X
+            except HTTPException:
+                raise
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Tomogram file not found on disk",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read tomogram volume: {e}",
+                )
+
+            if vol3d.ndim != 3:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid tomogram volume shape {vol3d.shape}",
+                )
+
+            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
+            depth = max(zdim, 1)
+
+            if axis == "z":
+                dim = zdim
+            elif axis == "y":
+                dim = ydim
+            else:
+                dim = xdim
+
+            if dim <= 0:
+                raise HTTPException(status_code=500, detail="Empty tomogram volume")
+
+            k = max(0, min(requestedIndex, dim - 1))
+
+            if axis == "z":
+                slice2d = vol3d[k, :, :]
+            elif axis == "y":
+                slice2d = vol3d[:, k, :]
+            else:
+                slice2d = vol3d[:, :, k]
+
+            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            sliceUsed = k
+
+        if thumb is not None and thumb > 0:
+            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.asarray(pilTmp)
+
+            if gray.dtype != np.uint8:
+                gray = gray.astype(np.uint8, copy=False)
+
+        imgArray = gray.astype(np.uint8, copy=False)
+        pilMode = "L"
+
+        if usedColormap:
+            try:
+                import matplotlib.cm as cm
+                sliceNorm = imgArray.astype(np.float32) / 255.0
+                cmapObj = cm.get_cmap(usedColormap)
+                rgba = cmapObj(sliceNorm)
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                usedColormap = None
+                imgArray = gray.astype(np.uint8, copy=False)
+                pilMode = "L"
+
+        if scale is not None and scale != 1.0:
+            try:
+                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
+                newW = max(1, int(round(pilScale.width * float(scale))))
+                newH = max(1, int(round(pilScale.height * float(scale))))
+                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
+                imgArray = np.asarray(pilScale, copy=False)
+            except Exception:
+                pass
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        disp = "inline" if inline else "attachment"
+        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, "
+                "X-Preview-Mime, "
+                "X-Preview-Width, "
+                "X-Preview-Height, "
+                "X-Preview-Depth, "
+                "X-Preview-Colormap, "
+                "X-Preview-Format, "
+                "X-Preview-TomogramId"
+            ),
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": str(depth),
+            "X-Preview-Colormap": usedColormap or "",
+            "X-Preview-Format": pilFormat,
+            "X-Preview-TomogramId": str(tomogramId),
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def _renderTomogramSliceFromPath(
+            self,
+            volumePath: str,
+            tomogramId: Union[int, str],
+            sliceIndex: int,
+            axis: str = "z",
+            colormap: Optional[str] = None,
+            normalize: Optional[str] = "minmax",
+            scale: float = 1.0,
+            inline: bool = True,
+            fmt: str = "webp",
+            thumb: Optional[int] = 128,
+            fast: bool = True,
+            quality: int = 75,
+    ) -> Response:
+
+        from PIL import Image as PILImage
+
+        axis = (axis or "z").lower()
+        if axis not in ("x", "y", "z"):
+            axis = "z"
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": int(quality or 75)}
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": int(quality or 75)}
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+
+        usedColormap = colormap
+        gray: Optional[np.ndarray] = None
+        depth = 1
+
+        try:
+            requestedIndex = int(sliceIndex or 0)
+        except Exception:
+            requestedIndex = 0
+        requestedIndex = max(0, requestedIndex)
+
+        sliceUsed = requestedIndex
+        if axis == "z" and fast:
+            try:
+                reader = ImageReadersRegistry.open(volumePath)
+
+                try:
+                    images = reader.getImages()
+                    if hasattr(images, "ndim") and images.ndim == 3:
+                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+                    elif hasattr(images, "ndim") and images.ndim == 2:
+                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
+                    else:
+                        zdim, ydim, xdim = 1, 0, 0
+                except Exception:
+                    zdim, ydim, xdim = 1, 0, 0
+
+                depth = max(zdim, 1)
+
+                k = requestedIndex
+                if zdim > 0:
+                    k = max(0, min(k, zdim - 1))
+
+                try:
+                    pilImg = reader.getImage(index=k, pilImage=True)
+                except Exception:
+                    try:
+                        pilImg = reader.getCentralImage(pilImage=True)
+                        if zdim > 0:
+                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
+                        else:
+                            k = 0
+                    except Exception:
+                        pilImg = reader.getImage(index=0, pilImage=True)
+                        k = 0
+
+                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
+                if arr2d is None:
+                    arrRaw = np.asarray(pilImg)
+                    if arrRaw.ndim == 3:
+                        arr2d = arrRaw.mean(axis=-1)
+                    else:
+                        arr2d = arrRaw.astype(np.float32, copy=False)
+
+                gray = self._normalize2dSlice(arr2d, mode=normalize)
+                sliceUsed = k
+            except Exception:
+                gray = None
+
+        if gray is None:
+            try:
+                slice2d, _props, sliceMeta = readVolumeSlice2d(
+                    str(volumePath),
+                    sliceIndex=requestedIndex,
+                    axis=axis,
+                    maxSide=thumb,
+                )
+            except HTTPException:
+                raise
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Tomogram file not found on disk",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read tomogram slice: {e}",
+                )
+
+            zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
+            depth = max(int(zdim), 1)
+
+            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            sliceUsed = int(sliceMeta.get("index", requestedIndex))
+
+        if thumb is not None and thumb > 0:
+            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            pilTmp.thumbnail((thumb, thumb))
+            gray = np.asarray(pilTmp)
+
+            if gray.dtype != np.uint8:
+                gray = gray.astype(np.uint8, copy=False)
+
+        imgArray = gray.astype(np.uint8, copy=False)
+        pilMode = "L"
+
+        if usedColormap:
+            try:
+                import matplotlib.cm as cm
+                sliceNorm = imgArray.astype(np.float32) / 255.0
+                cmapObj = cm.get_cmap(usedColormap)
+                rgba = cmapObj(sliceNorm)
+                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
+                imgArray = rgb
+                pilMode = "RGB"
+            except Exception:
+                usedColormap = None
+                imgArray = gray.astype(np.uint8, copy=False)
+                pilMode = "L"
+
+        if scale is not None and scale != 1.0:
+            try:
+                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
+                newW = max(1, int(round(pilScale.width * float(scale))))
+                newH = max(1, int(round(pilScale.height * float(scale))))
+                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
+                imgArray = np.asarray(pilScale, copy=False)
+            except Exception:
+                pass
+
+        img = PILImage.fromarray(imgArray, mode=pilMode)
+
+        buf = io.BytesIO()
+        img.save(buf, format=pilFormat, **saveKw)
+
+        disp = "inline" if inline else "attachment"
+        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{filename}"',
+            "Access-Control-Expose-Headers": (
+                "Content-Disposition, "
+                "X-Preview-Mime, "
+                "X-Preview-Width, "
+                "X-Preview-Height, "
+                "X-Preview-Depth, "
+                "X-Preview-Colormap, "
+                "X-Preview-Format, "
+                "X-Preview-TomogramId"
+            ),
+            "X-Preview-Mime": mediaType,
+            "X-Preview-Width": str(img.width),
+            "X-Preview-Height": str(img.height),
+            "X-Preview-Depth": str(depth),
+            "X-Preview-Colormap": usedColormap or "",
+            "X-Preview-Format": pilFormat,
+            "X-Preview-TomogramId": str(tomogramId),
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def createCoords3dOutputFromPointsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            payload: Any,
+            mapper=None,
+    ) -> Dict[str, Any]:
+        if mapper is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PostgreSQL mapper is required to create a Coordinates3D output",
+            )
+
+        payload = payload or {}
+        replacementMap: Dict[str, List[Dict[str, Any]]] = {}
+
+        for tomogramPayload in payload.get("tomograms") or []:
+            if not isinstance(tomogramPayload, dict):
+                continue
+
+            tomoId = tomogramPayload.get("tomoId")
+
+            if tomoId is None:
+                continue
+
+            replacementMap[str(tomoId)] = [
+                point
+                for point in tomogramPayload.get("coords") or []
+                if isinstance(point, dict)
+            ]
+
+        if not replacementMap:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No Coordinates3D changes provided",
+            )
+
+        protocol, srcSet = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        sourceTomograms = list(self._iterCoordinates3dTomograms(srcSet))
+        self.tomoList = {}
+
+        for index, tomoObj in enumerate(sourceTomograms):
+            tomoId = None
+
+            for methodName in ("getTsId", "getObjId"):
+                method = getattr(tomoObj, methodName, None)
+
+                if not callable(method):
+                    continue
+
+                try:
+                    tomoId = method()
+                except Exception:
+                    tomoId = None
+
+                if tomoId is not None:
+                    break
+
+            if tomoId is None:
+                tomoId = index
+
+            self.tomoList[str(tomoId)] = tomoObj
+
+        missingTomoIds = sorted(set(replacementMap) - set(self.tomoList))
+
+        if missingTomoIds:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tomogram(s) not found in source Coordinates3D output: {', '.join(missingTomoIds)}",
+            )
+
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix=outputName,
+        )
+        newOutputName = outputIdentity["outputName"]
+
+        generatedSetContext = self._createWritableGeneratedPostgresqlSet(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputName=newOutputName,
+            sourceSet=srcSet,
+        )
+        dstSet = generatedSetContext["outputSet"]
+
+        try:
+            try:
+                dstSet.copyInfo(srcSet)
+            except Exception:
+                logger.debug(
+                    "Could not copy Coordinates3D Set metadata. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    exc_info=True,
+                )
+
+            try:
+                sourceTomogramsSet = srcSet.getTomograms()
+
+                if sourceTomogramsSet is not None:
+                    dstSet.setTomograms(sourceTomogramsSet)
+            except Exception:
+                logger.debug(
+                    "Could not copy Coordinates3D tomograms pointer. projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    exc_info=True,
+                )
+
+            try:
+                sourceBoxSize = srcSet.getBoxSize()
+            except Exception:
+                sourceBoxSize = None
+
+            if sourceBoxSize is not None:
+                try:
+                    dstSet.setBoxSize(sourceBoxSize)
+                except Exception:
+                    pass
+
+            replaced = 0
+            copied = 0
+
+            for tomoId, tomoObj in self.tomoList.items():
+                replacementCoords = replacementMap.get(tomoId)
+
+                if replacementCoords is None:
+                    try:
+                        sourceCoordinates = srcSet.iterCoordinates(tomoObj)
+                    except Exception as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Could not read source coordinates for tomogram '{tomoId}': {error}",
+                        )
+
+                    for sourceCoord in sourceCoordinates:
+                        cloneMethod = getattr(sourceCoord, "clone", None)
+                        newCoord = cloneMethod() if callable(cloneMethod) else copy.deepcopy(sourceCoord)
+                        newCoord.setObjId(None)
+
+                        setVolume = getattr(newCoord, "setVolume", None)
+
+                        if callable(setVolume):
+                            setVolume(tomoObj)
+
+                        setTomoId = getattr(newCoord, "setTomoId", None)
+
+                        if callable(setTomoId):
+                            setTomoId(tomoId)
+
+                        dstSet.append(newCoord)
+                        copied += 1
+
+                    continue
+
+                for point in replacementCoords:
+                    try:
+                        x = float(point["x"])
+                        y = float(point["y"])
+                        z = float(point["z"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Invalid coordinate for tomogram '{tomoId}': {error}",
+                        )
+
+                    coordinate = Coordinate3D()
+                    coordinate.setObjId(None)
+                    coordinate.setVolume(tomoObj)
+                    coordinate.setPosition(x, y, z, BOTTOM_LEFT_CORNER)
+
+                    groupId = point.get("groupId", point.get("classId", 0))
+
+                    if groupId in (None, ""):
+                        groupId = 0
+
+                    coordinate.setGroupId(groupId)
+                    coordinate.setTomoId(point.get("tomoId", tomoId))
+
+                    boxSize = point.get("radius", sourceBoxSize)
+
+                    if boxSize is not None:
+                        coordinate.setBoxSize(float(boxSize))
+
+                    score = point.get("score", 0)
+
+                    if score is None:
+                        score = 0
+
+                    coordinate.setScore(float(score))
+
+                    transformMatrix = point.get("matrix")
+
+                    if transformMatrix:
+                        coordinate.setMatrix(np.asarray(transformMatrix))
+
+                    dstSet.append(coordinate)
+                    replaced += 1
+
+            protocol._defineOutputs(**{newOutputName: dstSet})
+            protocol._store()
+
+            postgresqlSync = self._finalizeGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+                outputName=newOutputName,
+            )
+
+        except HTTPException:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+            raise
+
+        except Exception as error:
+            self._discardGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not persist Coordinates3D output in PostgreSQL: {error}",
+            )
+
+        return {
+            "success": True,
+            "outputName": newOutputName,
+            "message": f"Created new coords3d output '{newOutputName}'",
+            "data": {
+                "sourceOutputName": outputName,
+                "replacedPoints": replaced,
+                "copiedPoints": copied,
+                "postgresqlStored": True,
+                "postgresqlError": None,
+                "postgresqlSync": postgresqlSync,
+            },
+        }
+
+    # ======================================================================
+    # Internal helpers for FSCs
+    # ======================================================================
+    def _getPostgresqlFscReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_fsc_reader import PostgresqlFscReader
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlFscReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL FSC reader. projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def getFscRowsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            currentUser: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return FSC curves for a SetOfFSCs-like output.
+        """
+        pgReader = self._getPostgresqlFscReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getFscRows()
+            if payload is not None and payload.get("rows"):
+                return payload
+
+            logger.info(
+                "Skipping PostgreSQL FSC reader. projectId=%s protocolId=%s outputName=%s reason=%s",
+                projectId,
+                protocolId,
+                outputName,
+                getattr(pgReader, "lastSkipReason", None),
+            )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="FSC",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        output = getattr(protocol, outputName, None)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol",
+            )
+
+        threshold = 0.143
+
+        def iterFscObjects():
+            # iterateWithoutReusingSameMutableObject
+            iterItemsFn = getattr(output, "iterItems", None)
+            if callable(iterItemsFn):
+                try:
+                    for item in iterItemsFn(iterate=False):
+                        yield item
+                    return
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+
+                try:
+                    for item in iterItemsFn():
+                        clone = getattr(item, "clone", lambda: item)()
+                        yield clone
+                    return
+                except Exception:
+                    pass
+
+            # singleFscObjectFallback
+            if hasattr(output, "getData") and callable(getattr(output, "getData", None)):
+                yield output
+                return
+
+            # genericIterableFallback
+            try:
+                for item in output:
+                    clone = getattr(item, "clone", lambda: item)()
+                    yield clone
+                return
+            except Exception:
+                pass
+
+            raise HTTPException(
+                status_code=500,
+                detail="Output does not expose iterable FSC objects",
+            )
+
+        def getXY(fsc):
+            # getXYExactlyLikeThumbnailPreview
+            data = fsc.getData()
+
+            if isinstance(data, (list, tuple)) and len(data) == 2:
+                x, y = data
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+            else:
+                arr = np.asarray(data, dtype=float)
+
+                if arr.ndim != 2:
+                    raise ValueError("Invalid FSC data shape")
+
+                if arr.shape[1] >= 2:
+                    x, y = arr[:, 0], arr[:, 1]
+                elif arr.shape[0] >= 2:
+                    x, y = arr[0, :], arr[1, :]
+                else:
+                    raise ValueError("Invalid FSC data shape")
+
+            mask = np.isfinite(x) & np.isfinite(y)
+            x = x[mask]
+            y = y[mask]
+
+            return x, y
+
+        rows: List[Dict[str, Any]] = []
+
+        for i, fsc in enumerate(iterFscObjects()):
+            if fsc is None:
+                continue
+
+            clone = getattr(fsc, "clone", lambda: fsc)()
+
+            label = getattr(clone, "getObjLabel", lambda: None)() or f"FSC {i + 1}"
+
+            try:
+                x, y = getXY(clone)
+            except Exception as e:
+                logger.warning("Skipping FSC '%s' because data could not be parsed: %s", label, e)
+                continue
+
+            if x.size == 0:
+                continue
+
+            resolution = None
+            if hasattr(clone, "calculateResolution"):
+                try:
+                    res = clone.calculateResolution(threshold)
+                    if res is not None:
+                        res = float(res)
+                        if np.isfinite(res) and res > 0:
+                            resolution = res
+                except Exception:
+                    resolution = None
+
+            rows.append(
+                {
+                    "label": str(label),
+                    "resolution": resolution,
+                    "x": x.astype(float).tolist(),
+                    "y": y.astype(float).tolist(),
+                }
+            )
+
+        return {
+            "threshold": threshold,
+            "rows": rows,
+        }
+
+    # ======================================================================
+    # Internal helpers for metadata tables (STAR / SQLITE / etc.)
+    # ======================================================================
+
+    def _resolveOutputForMetadata(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        """
+        Resolve protocol and output object for metadata operations.
+
+        It also normalizes the metadata file path:
+        - If getFileName() returns a relative path, it is interpreted as
+          project-relative.
+        - Raises 404 if the final path does not exist on disk.
+        """
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not hasattr(protocol, outputName):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' not found in protocol"
+            )
+
+        output = getattr(protocol, outputName)
+        if output is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Output '{outputName}' is None"
+            )
+
+        getFileNameFn = getattr(output, "getFileName", None)
+        if not callable(getFileNameFn):
+            raise HTTPException(
+                status_code=404,
+                detail="Output has no metadata file (getFileName not available)"
+            )
+
+        metaPath = getFileNameFn()
+
+        if not metaPath:
+            logger.warning(
+                "[METADATA] Empty metaPath for project=%s protocolId=%s outputName=%s",
+                getattr(self.currentProject, "getName", lambda: '<?>')(),
+                protocolId,
+                outputName,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Metadata file not found for this output"
+            )
+
+        # If path is not absolute, interpret it as project-relative
+        if not os.path.isabs(metaPath):
+            projectPath = None
+            try:
+                projectPath = self.currentProject.getPath()
+            except Exception:
+                projectPath = None
+
+            if projectPath:
+                metaPath = os.path.join(projectPath, metaPath)
+
+        if not os.path.exists(metaPath):
+            logger.warning(
+                "[METADATA] Metadata file does not exist on disk. "
+                "project=%s protocolId=%s outputName=%s metaPath=%s",
+                getattr(self.currentProject, "getName", lambda: '<?>')(),
+                protocolId,
+                outputName,
+                metaPath,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Metadata file not found for this output"
+            )
+
+        return protocol, output, metaPath
+
+    def _getMetadataObjectManager(self, metaPath: str) -> ObjectManager:
+        """
+        Configure ObjectManager to work over the given metadata file.
+
+        A fresh ObjectManager is created per call to avoid sharing
+        SQLite connections between threads.
+        """
+        objMgr = self._createObjectManager()
+        objMgr._fileName = FsPath(metaPath)
+        objMgr._dao = None
+        objMgr._tables = {}
+        objMgr.selectDAO()
+        objMgr.getTables()
+        return objMgr
+
+    def _getPostgresqlDAOIfAvailable(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ):
+        from app.backend.viewers.postgresql_dao import PostgresqlDAO
+
+        if mapper is None:
+            return None
+
+        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        dao = PostgresqlDAO(
+            db=mapper.db,
+            projectId=projectId,
+            protocolId=readerProtocolId,
+            outputName=outputName,
+        )
+
+        if dao.hasOutput():
+            return dao
+
+        return None
+
+    def _getMetadataObjectManagerForOutput(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ) -> ObjectManager:
+        pgDao = self._getPostgresqlDAOIfAvailable(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+        )
+
+        if pgDao is not None:
+            objMgr = self._createObjectManager()
+            objMgr._fileName = "postgresql://project/%s/protocol/%s/output/%s" % (
+                projectId,
+                protocolId,
+                outputName,
+            )
+            objMgr._dao = pgDao
+            objMgr._tables = {}
+            objMgr.getTables()
+            return objMgr
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Metadata",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason="dao_not_available",
+            )
+
+        _, _, metaPath = self._resolveOutputForMetadata(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        return self._getMetadataObjectManager(metaPath)
+
+    def _openMetadataTable(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            mapper=None,
+    ):
+        """
+        Resolve (ObjectManager, Table) for a given output + tableName.
+
+        PostgreSQL persisted outputs and SQLite/STAR outputs are both exposed
+        through ObjectManager.
+        """
+        objMgr = self._getMetadataObjectManagerForOutput(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+        )
+
+        table = objMgr.getTable(tableName)
+        if table is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Metadata table '{tableName}' not found",
+            )
+
+        return objMgr, table
+
+    def _isPropertiesMetadataTable(self, table) -> bool:
+        try:
+            tableName = str(table.getName() or "").strip()
+        except Exception:
+            tableName = ""
+
+        try:
+            tableAlias = str(table.getAlias() or "").strip()
+        except Exception:
+            tableAlias = ""
+
+        return tableName == "Properties" or tableAlias == "Properties"
+
+    def _getMetadataTableActionNames(self, table) -> List[str]:
+        if self._isPropertiesMetadataTable(table):
+            return []
+
+        try:
+            tableActions = table.getActions() or []
+        except Exception:
+            return []
+
+        actionNames: List[str] = []
+        seen = set()
+
+        for action in tableActions:
+            try:
+                actionName = str(action.getName() or "").strip()
+            except Exception:
+                actionName = ""
+
+            if not actionName or actionName in seen:
+                continue
+
+            seen.add(actionName)
+            actionNames.append(actionName)
+
+        return actionNames
+
+    def _rendererTypeFromInstance(self, renderer) -> str:
+        """
+        Map renderer class name to a simple type label for the API.
+        """
+        name = renderer.__class__.__name__
+        mapping = {
+            "IntRenderer": "int",
+            "FloatRenderer": "float",
+            "BoolRenderer": "bool",
+            "MatrixRender": "matrix",
+            "ImageRenderer": "image",
+            "StrRenderer": "str",
+        }
+        return mapping.get(name, "str")
+
+    def _convertCellForPage(self, renderer, rawValue, rowValues):
+        """
+        Convert a raw cell value + renderer into something JSON friendly for page API.
+        - image  -> { kind: "image", path: "..." }
+        - matrix -> { kind: "matrix", value: [[...], ...] }
+        - others -> primitive (int/float/bool/str) when possible
+        """
+        clsName = renderer.__class__.__name__
+
+        if clsName == "ImageRenderer":
+            return {
+                "kind": "image",
+                "path": "" if rawValue is None else str(rawValue),
+            }
+
+        if clsName == "MatrixRender":
+            try:
+                rendered = renderer.render(rawValue, rowValues)
+            except Exception:
+                rendered = rawValue
+            if isinstance(rendered, np.ndarray):
+                renderedVal = rendered.tolist()
+            else:
+                renderedVal = rendered
+            return {
+                "kind": "matrix",
+                "value": renderedVal,
+            }
+
+        try:
+            rendered = renderer.render(rawValue, rowValues)
+        except Exception:
+            rendered = rawValue
+
+        if isinstance(rendered, np.ndarray):
+            rendered = rendered.tolist()
+        if isinstance(rendered, np.generic):
+            rendered = rendered.item()
+
+        return rendered
+
+    # ======================================================================
+    # ANALYZE RESULTS: METADATA TABLES (.sqlite / .star / etc.)
+    # ======================================================================
+
+    def listOutputMetadataTablesService(self, projectId: int,
+                                        protocolId: int,
+                                        outputName: str,
+                                        mapper=None):
+        """
+        List logical metadata tables associated with an output.
+        """
+        with _metadataLock:
+            objMgr = self._getMetadataObjectManagerForOutput(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                mapper=mapper,
+            )
+
+            tables = objMgr.getTables() or {}
+            items = []
+
+            for name, table in tables.items():
+                try:
+                    rowCount = objMgr.getTableRowCount(name) or 0
+                except Exception:
+                    rowCount = 0
+
+                hasColumnId = True
+                try:
+                    hasColumnId = table.hasColumnId()
+                except Exception:
+                    pass
+
+                items.append({
+                    "name": name,
+                    "alias": table.getAlias(),
+                    "rowCount": int(rowCount),
+                    "hasColumnId": bool(hasColumnId),
+                })
+
+            return items
+
+    def getMetadataTableSchemaService(self, projectId: int,
+                                      protocolId: int,
+                                      outputName: str,
+                                      tableName: str,
+                                      mapper=None):
+        """
+        Return logical schema for one metadata table: columns, renderers, flags.
+        """
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
+
+            visibleLabels = []
+            orderLabels = []
+            renderLabels = []
+            actions = self._getMetadataTableActionNames(table)
+
+            try:
+                hasColumnId = table.hasColumnId()
+            except Exception:
+                hasColumnId = True
+
+            columns = list(table.getColumns())
+            columnNames = {str(col.getName()) for col in columns}
+
+            additionalInfoColumns = []
+            try:
+                dao = objMgr.getDAO()
+                getAdditionalInfoFn = getattr(dao, "getTableWithAdditionalInfo", None)
+
+                if callable(getAdditionalInfoFn):
+                    additionalTable, additionalColumns = getAdditionalInfoFn()
+
+                    if hasattr(additionalTable, "getName"):
+                        additionalTableName = str(additionalTable.getName() or "")
+                    else:
+                        additionalTableName = "" if additionalTable is None else str(additionalTable)
+
+                    currentTableNames = {
+                        str(tableName or ""),
+                        str(table.getName() or ""),
+                        str(table.getAlias() or ""),
+                    }
+
+                    appliesToTable = not additionalTableName or additionalTableName in currentTableNames
+
+                    if appliesToTable:
+                        additionalInfoColumns = [
+                            str(columnName)
+                            for columnName in (additionalColumns or [])
+                            if str(columnName) in columnNames
+                        ]
+            except Exception:
+                additionalInfoColumns = []
+
+            schema = {
+                "name": tableName,
+                "alias": table.getAlias(),
+                "hasColumnId": bool(hasColumnId),
+                "actions": actions,
+                "additionalInfoColumns": additionalInfoColumns,
+                # "renderLabels": renderLabels,
+                # "orderLabels": orderLabels,
+                "columns": [],
+            }
+
+            for idx, col in enumerate(columns):
+                try:
+                    col.setIndex(idx)
+                except Exception:
+                    pass
+
+                renderer = col.getRenderer()
+                rendererType = self._rendererTypeFromInstance(renderer)
+
+                decimals = None
+                if hasattr(renderer, "getDecimalsNumber"):
+                    try:
+                        decimals = renderer.getDecimalsNumber()
+                    except Exception:
+                        decimals = None
+
+                hasTransformation = False
+                if hasattr(renderer, "hasTransformation"):
+                    try:
+                        hasTransformation = bool(renderer.hasTransformation())
+                    except Exception:
+                        hasTransformation = False
+
+                sortable = True
+                if hasattr(col, "isSorteable"):
+                    try:
+                        sortable = bool(col.isSorteable())
+                    except Exception:
+                        sortable = True
+
+                try:
+                    visible = col.getName() in visibleLabels if visibleLabels else True
+                except Exception:
+                    visible = True
+
+                schema["columns"].append({
+                    "name": col.getName(),
+                    "alias": col.getAlias() or col.getName(),
+                    "index": idx,
+                    "sortable": sortable,
+                    "visible": visible,
+                    "rendererType": rendererType,
+                    "decimals": decimals,
+                    "hasTransformation": hasTransformation,
+                })
+
+            return schema
+
+    def _normalizeMetadataSelectionIds(self, ids: List[int]) -> List[int]:
+        normalizedIds: List[int] = []
+
+        for rowId in ids or []:
+            try:
+                normalizedIds.append(int(rowId))
+            except Exception:
+                continue
+
+        if not normalizedIds:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing ids",
+            )
+
+        return normalizedIds
+
+    def _writeMetadataSelectionFile(self, ids: List[int]) -> str:
+        timeFormat = "%Y%m%d%H%M%S"
+        timestamp = datetime.now().strftime(timeFormat)
+        relativePath = "Logs/selection_%s.txt" % timestamp
+
+        projectPath = None
+        try:
+            projectPath = self.currentProject.getPath()
+        except Exception:
+            projectPath = None
+
+        if projectPath:
+            absolutePath = os.path.join(projectPath, relativePath)
+        else:
+            absolutePath = relativePath
+
+        directoryPath = os.path.dirname(absolutePath)
+        if directoryPath:
+            os.makedirs(directoryPath, exist_ok=True)
+
+        try:
+            with open(absolutePath, "w") as file:
+                for rowId in ids:
+                    file.write(str(rowId) + " ")
+
+            logger.debug("Metadata selection file was created: %s", absolutePath)
+        except Exception as e:
+            logger.exception("Error creating metadata selection file: %s", absolutePath)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error creating selection file: {e}",
+            )
+
+        return relativePath
+
+    def _buildMetadataSelectionArgument(self, selectionPath: str, tableName: str) -> str:
+        selectionArg = selectionPath + ","
+
+        if tableName != OBJECT_TABLE:
+            selectionArg += tableName.split("_Objects")[0]
+
+        return selectionArg
+
+    def _getMetadataActionAliasForTable(self, dao, table) -> str:
+        getActionAliasFn = getattr(dao, "_getActionAliasForTableName", None)
+        if callable(getActionAliasFn):
+            try:
+                actionAlias = str(getActionAliasFn(table.getName()) or "").strip()
+                if actionAlias:
+                    return actionAlias
+            except Exception:
+                pass
+
+        try:
+            return str(table.getAlias() or "").strip()
+        except Exception:
+            return ""
+
+    def _resolveMetadataActionOutputClassName(self, dao, table, action: str) -> str:
+        actionName = str(action or "").strip()
+        if not actionName:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing action",
+            )
+
+        validActions = self._getMetadataTableActionNames(table)
+        if actionName not in validActions:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unsupported action '{actionName}' for table '{table.getName()}'",
+            )
+
+        actionAlias = self._getMetadataActionAliasForTable(dao, table)
+
+        if actionAlias == "Class2D" and actionName == "Averages":
+            return "SetOfAverages"
+
+        if actionAlias == "Class3D" and actionName == "Volumes":
+            return "SetOfVolumes"
+
+        objectsType = getattr(dao, "_objectsType", {}) or {}
+
+        if actionAlias == "Class2D":
+            objectsType.setdefault("Averages", "SetOfAverages")
+
+        if actionAlias == "Class3D":
+            objectsType.setdefault("Volumes", "SetOfVolumes")
+
+        outputClassName = objectsType.get(actionName)
+
+        if outputClassName:
+            return str(outputClassName)
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not resolve output class for action '{actionName}'",
+        )
+
+    def _resolveMetadataActionInputContext(self, mapper, projectId: int, protocolId: int, outputName: str):
+        protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId,
+                                                               protocolId=protocolId)
+
+        protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
+        protocolRow = protocolIdentityResolver.getProtocolRowByDbId(protocolDbId)
+
+        if protocolRow is None:
+            raise HTTPException(status_code=404, detail=f"Protocol '{protocolId}' not found in PostgreSQL")
+
+        scipionProtocolId = protocolIdentityResolver.toOptionalInt(protocolRow.get("protocolId"))
+
+        if scipionProtocolId is None:
+            raise HTTPException(status_code=404, detail=f"Protocol '{protocolId}' has no Scipion runtime id")
+
+        protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)
+        outputInfo = self._getPostgresqlRuntimeOutputInfo(mapper=mapper, projectId=projectId,
+                                                          parentProtocolDbId=int(protocolDbId), outputName=outputName)
+
+        if not outputInfo.get("exists"):
+            raise HTTPException(status_code=404, detail=f"Output '{outputName}' not found in PostgreSQL")
+
+        runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+        if runtimeMapper is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="PostgreSQL runtime mapper is not available")
+
+        output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(parentProtocol=protocol,
+                                                                                outputName=outputName,
+                                                                                outputInfo=outputInfo,
+                                                                                mapper=runtimeMapper)
+
+        if output is None:
+            raise HTTPException(status_code=404,
+                                detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL")
+
+        return {
+            "output": output,
+            "parentProtocolId": int(scipionProtocolId),
+        }
+
+    def runMetadataTableActionService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            action: str,
+            subsetName: str,
+            ids: List[int],
+            currentUser: Any,
+            mapper: Any,
+    ) -> Any:
+        selectionIds = self._normalizeMetadataSelectionIds(ids)
+
+        inputContext = self._resolveMetadataActionInputContext(mapper=mapper, projectId=projectId, protocolId=protocolId, outputName=outputName)
+        output = inputContext["output"]
+        parentProtocolId = int(inputContext["parentProtocolId"])
+
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                tableName=tableName,
+                mapper=mapper,
+            )
+
+            dao = objMgr.getDAO()
+            outputClassName = self._resolveMetadataActionOutputClassName(
+                dao=dao,
+                table=table,
+                action=action,
+            )
+
+        selectionPath = self._writeMetadataSelectionFile(selectionIds)
+        selectionArg = self._buildMetadataSelectionArgument(
+            selectionPath=selectionPath,
+            tableName=tableName,
+        )
+
+        try:
+            batchProt = self.currentProject.newProtocol(
+                ProtUserSubSet,
+                inputObject=output,
+                sqliteFile=selectionArg,
+                outputClassName=outputClassName,
+                other="",
+                label=subsetName,
+            )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise RuntimeError("PostgreSQL runtime mapper is not available")
+
+            runtimeMapper.store(batchProt)
+            runtimeMapper.commit()
+
+            batchProtocolId = self._getScipionObjectId(batchProt)
+
+            if batchProtocolId is None:
+                raise RuntimeError("Subset protocol was created without a runtime id")
+
+            canonicalInputParams = {
+                "inputObject": f"{parentProtocolId}.{outputName}",
+            }
+
+            preLaunchInputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=batchProt,
+                params=canonicalInputParams,
+            ) or {}
+
+            preLaunchParentProtocolIds = {
+                str(value)
+                for value in preLaunchInputSync.get("parentProtocolIds") or []
+            }
+
+            if (
+                    int(preLaunchInputSync.get("dependencies", 0) or 0) < 1
+                    or int(preLaunchInputSync.get("inputRefsSaved", 0) or 0) < 1
+                    or str(parentProtocolId) not in preLaunchParentProtocolIds
+            ):
+                raise RuntimeError(
+                    f"Could not persist subset dependency on protocol {parentProtocolId}.{outputName} before launch"
+                )
+
+            self.currentProject.launchProtocol(batchProt)
+
+            postgresqlSync = None
+
+            try:
+                protocolSync = self.syncPostgresqlRuntimeProtocol(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=batchProtocolId,
+                    registerOutputs=False,
+                    syncRelations=False,
+                    protocol=batchProt,
+                    authoritativeProtocolState=True,
+                ) or {}
+
+                inputSync = self.syncPostgresqlRuntimeProtocolInputsAndDependencies(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocol=batchProt,
+                    params=canonicalInputParams,
+                ) or {}
+
+                postgresqlSync = {
+                    "protocols": int(protocolSync.get("protocols", 0) or 0),
+                    "dependencies": int(inputSync.get("dependencies", 0) or 0),
+                    "inputRefs": int(inputSync.get("inputRefsSaved", 0) or 0),
+                    "protocolId": str(batchProtocolId),
+                }
+
+            except Exception as syncError:
+                logger.exception(
+                    "Subset protocol was launched but PostgreSQL sync failed. projectId=%s protocolId=%s outputName=%s tableName=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    tableName,
+                )
+
+                return {
+                    "success": True,
+                    "message": "Subset protocol was launched successfully, but PostgreSQL sync failed",
+                    "postgresqlSync": None,
+                    "postgresqlError": str(syncError),
+                }
+
+            return {
+                "success": True,
+                "message": "Subset protocol was launched successfully",
+                "postgresqlSync": postgresqlSync,
+                "postgresqlError": None,
+            }
+
+        except Exception as error:
+            logger.exception(
+                "Failed to launch metadata table action. projectId=%s protocolId=%s outputName=%s tableName=%s action=%s",
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                action,
+            )
+
+            return {
+                "success": False,
+                "errors": [str(error)],
+            }
+
+    def getMetadataTablePageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            page: int,
+            pageSize: int,
+            sortBy: str,
+            asc: bool,
+            selectionOnly: bool,
+            mapper=None,
+    ):
+        """
+        Return one logical page of rows for a metadata table.
+        Sorting is currently delegated to the underlying DAO default order.
+        """
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
+            columns = list(table.getColumns())
+            table.setSortingColumn(sortBy)
+            table.setSortingAsc(asc)
+
+            if selectionOnly:
+                rows: list = []
+                totalRows = 0
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        allIds = sorted(selection.getSelection().keys())
+                        totalRows = len(allIds)
+                        start = max(0, (page - 1) * pageSize)
+                        end = start + pageSize
+                        sliceIds = allIds[start:end]
+                        for rid in sliceIds:
+                            idx0 = max(0, int(rid) - 1)
+                            chunk = objMgr.getRows(tableName, idx0, 1) or []
+                            if chunk:
+                                rows.append(chunk[0])
+                    else:
+                        totalRows = 0
+                        rows = []
+                except Exception:
+                    totalRows = 0
+                    rows = []
+            else:
+                try:
+                    totalRows = objMgr.getTableRowCount(tableName) or 0
+                except Exception:
+                    totalRows = 0
+
+                if totalRows <= 0:
+                    rows = []
+                else:
+                    offset = max(0, (page - 1) * pageSize)
+                    if offset >= totalRows:
+                        rows = []
+                    else:
+                        rows = objMgr.getRows(tableName, offset, pageSize) or []
+
+            resultRows = []
+            for row in rows:
+                try:
+                    rowId = row.getId()
+                except Exception:
+                    rowId = None
+                rowValues = row.getValues()
+
+                valuesPayload = []
+                for idx, rawVal in enumerate(rowValues):
+                    if idx >= len(columns):
+                        break
+                    col = columns[idx]
+                    renderer = col.getRenderer()
+                    cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                    valuesPayload.append(cell)
+
+                resultRows.append({
+                    "id": rowId,
+                    "values": valuesPayload,
+                })
+
+            return {
+                "pageNumber": page,
+                "pageSize": pageSize,
+                "totalRows": int(totalRows),
+                "rows": resultRows,
+            }
+
+    def exportMetadataTableService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            fmt: str,
+            selectionOnly: bool,
+            ids: Optional[List[int]],
+            mapper=None,
+    ) -> Response:
+        """
+        Export metadata table as CSV or XLSX.
+
+        - If ids is provided -> export those ids.
+        - Else if selectionOnly -> try server-side selection.
+        - Else -> export whole table.
+        """
+        import csv
+
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
+            columns = list(table.getColumns())
+            colNames = [c.getName() for c in columns]
+
+            rowIds: Optional[List[int]] = None
+
+            if ids:
+                rowIds = [int(x) for x in ids]
+            elif selectionOnly:
+                try:
+                    selection = table.getSelection()
+                    if selection and not selection.isEmpty():
+                        rowIds = sorted(selection.getSelection().keys())
+                    else:
+                        rowIds = []
+                except Exception:
+                    rowIds = []
+            else:
+                rowIds = None
+
+            rowsToExport = []
+            if rowIds is not None:
+                for rid in rowIds:
+                    idx0 = max(0, int(rid) - 1)
+                    chunk = objMgr.getRows(tableName, idx0, 1) or []
+                    if chunk:
+                        rowsToExport.append(chunk[0])
+            else:
+                try:
+                    totalRows = objMgr.getTableRowCount(tableName) or 0
+                except Exception:
+                    totalRows = 0
+                if totalRows > 0:
+                    rowsToExport = objMgr.getRows(tableName, 0, totalRows) or []
+
+            fmtLower = (fmt or "csv").lower()
+            if fmtLower not in ("csv", "xlsx"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsupported export format. Use 'csv' or 'xlsx'.",
+                )
+
+            if fmtLower == "csv":
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(colNames)
+
+                for row in rowsToExport:
+                    rowValues = row.getValues()
+                    outRow = []
+                    for idx, colName in enumerate(colNames):
+                        if idx >= len(rowValues):
+                            outRow.append("")
+                            continue
+                        rawVal = rowValues[idx]
+                        renderer = columns[idx].getRenderer()
+                        try:
+                            v = renderer.render(rawVal, rowValues)
+                        except Exception:
+                            v = rawVal
+                        if isinstance(v, np.ndarray):
+                            v = v.tolist()
+                        if isinstance(v, np.generic):
+                            v = v.item()
+                        if not isinstance(v, (str, int, float, bool)):
+                            v = str(v)
+                        outRow.append(v)
+                    writer.writerow(outRow)
+
+                contentBytes = buf.getvalue().encode("utf-8")
+                mediaType = "text/csv; charset=utf-8"
+                ext = "csv"
+            else:
+                try:
+                    from openpyxl import Workbook
+                except ImportError:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="XLSX export requires 'openpyxl' to be installed.",
+                    )
+
+                wb = Workbook()
+                ws = wb.active
+                ws.append(colNames)
+
+                for row in rowsToExport:
+                    rowValues = row.getValues()
+                    outRow = []
+                    for idx, colName in enumerate(colNames):
+                        if idx >= len(rowValues):
+                            outRow.append(None)
+                            continue
+                        rawVal = rowValues[idx]
+                        renderer = columns[idx].getRenderer()
+                        try:
+                            v = renderer.render(rawVal, rowValues)
+                        except Exception:
+                            v = rawVal
+                        if isinstance(v, np.ndarray):
+                            v = v.tolist()
+                        if isinstance(v, np.generic):
+                            v = v.item()
+                        if not isinstance(v, (str, int, float, bool)):
+                            v = str(v)
+                        outRow.append(v)
+                    ws.append(outRow)
+
+                bio = io.BytesIO()
+                wb.save(bio)
+                contentBytes = bio.getvalue()
+                mediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ext = "xlsx"
+
+            headers = {
+                "Content-Disposition": f'attachment; filename="{tableName}.{ext}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            }
+            return Response(content=contentBytes, media_type=mediaType, headers=headers)
+
+
+    def _renderMetadataPlaceholderImage(
+            self,
+            size: int,
+            inline: bool,
+            fmt: str,
+            tableName: str,
+            columnName: str,
+            rowId: Optional[Union[int, str]],
+            rowIndex: Optional[int],
+    ) -> Response:
+        """Return a small neutral placeholder image for broken metadata cells."""
+        from PIL import Image as PILImage
+
+        try:
+            sizeInt = int(size)
+        except Exception:
+            sizeInt = 64
+        sizeInt = max(8, sizeInt)
+
+        img = PILImage.new("L", (sizeInt, sizeInt), 0)
+        buf = io.BytesIO()
+
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+
+        img.save(buf, format=pilFormat)
+
+        disp = "inline" if inline else "attachment"
+        ident = rowId if rowId is not None else (rowIndex if rowIndex is not None else "placeholder")
+
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{ident}.{fmtLower}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+            "X-Image-Placeholder": "1",
+        }
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def _isVolumeLikeImageFile(self, filePath: Union[str, Path]) -> bool:
+        try:
+            reader = ImageReadersRegistry.open(str(filePath))
+            data = reader.getImages()
+
+            if isinstance(data, list):
+                data = data[0]
+
+            return getattr(data, "ndim", 0) == 3 and data.shape[0] > 1
+        except Exception:
+            return False
+
+
+    def renderMetadataImageCellService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            rowId: Union[int, str, None],
+            columnName: str,
+            size: int,
+            applyTransform: bool,
+            inline: bool,
+            fmt: str,
+            rowIndex: Optional[int] = None,
+            mapper=None,
+    ) -> Response:
+        """
+        Render one image cell from a metadata table using ImageRenderer.
+
+        Behavior:
+        - If everything is correct -> real thumbnail.
+        - If the image file cannot be resolved or opened -> neutral placeholder.
+        - Only true API misuse (bad column name, bad indices, etc.) returns 4xx.
+        """
+        from PIL import Image as PILImage
+        from pathlib import Path as LocalPath
+        from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
+
+        # Resolve metadata root path for relative image paths
+        objMgr, table = self._openMetadataTable(
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            mapper=mapper,
+        )
+        columns = list(table.getColumns())
+
+        pathResolver = None
+        if mapper is not None and getattr(mapper, "db", None) is not None:
+            pathResolver = PostgresqlProjectPathResolver(
+                db=mapper.db,
+                projectId=projectId,
+            )
+
+        metaDir = None
+        objMgrFileName = str(getattr(objMgr, "_fileName", "") or "")
+
+        if not objMgrFileName.startswith("postgresql://"):
+            try:
+                _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+                metaDir = LocalPath(metaPath).parent
+            except Exception:
+                metaDir = None
+
+        # Resolve column index
+        colIndex = table.getColumnIndexFromLabel(columnName)
+        if colIndex < 0 or colIndex >= len(columns):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Column '{columnName}' not found in table '{tableName}'",
+            )
+
+        # Resolve row index (0-based)
+        if rowIndex is not None:
+            try:
+                idx0 = int(rowIndex)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowIndex must be an integer",
+                )
+            if idx0 < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowIndex must be >= 0",
+                )
+        else:
+            if rowId is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Either rowIndex or rowId must be provided",
+                )
+            try:
+                rowIdInt = int(rowId)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowId must be an integer",
+                )
+            if rowIdInt <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="rowId must be >= 1",
+                )
+            idx0 = rowIdInt - 1
+
+        rows = objMgr.getRows(tableName, idx0, 1) or []
+        if not rows:
+            logger.warning(
+                "Row index %s not found in table '%s' (projectId=%s, protocolId=%s)",
+                idx0,
+                tableName,
+                projectId,
+                protocolId,
+            )
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
+            )
+
+        row = rows[0]
+        rowValues = row.getValues()
+        if colIndex >= len(rowValues):
+            logger.warning(
+                "Column index %s out of range for rowIndex=%s in table '%s'",
+                colIndex,
+                idx0,
+                tableName,
+            )
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
+            )
+
+        rawValue = rowValues[colIndex]
+        column = columns[colIndex]
+        renderer = column.getRenderer()
+
+        if hasattr(renderer, "setSize"):
+            renderer.setSize(size)
+        if hasattr(renderer, "setApplyTransformation"):
+            renderer.setApplyTransformation(applyTransform)
+
+        # Try to render using the metadata renderer
+        try:
+            img = renderer.render(rawValue, rowValues)
+        except Exception as e:
+            logger.error(
+                "Cannot render image cell: table=%s, column=%s, rowIndex=%s, error=%s",
+                tableName,
+                columnName,
+                idx0,
+                e,
+            )
+            img = None
+
+        # Normalize renderer outputs into a PIL image
+        if img is None:
+            pilImg = None
+        else:
+            # Sometimes renderers may return (img, extraInfo) or [img, ...]
+            if isinstance(img, (list, tuple)) and len(img) > 0:
+                img = img[0]
+
+            # Numpy array -> to PIL
+            if isinstance(img, np.ndarray):
+                if img.ndim == 2:
+                    mode = "L"
+                elif img.ndim == 3 and img.shape[-1] == 3:
+                    mode = "RGB"
+                else:
+                    mode = "L"
+                pilImg = PILImage.fromarray(img, mode=mode)
+            else:
+                # PIL-like object
+                if hasattr(img, "save"):
+                    pilImg = img
+                else:
+                    # Path-like result: try to open image from disk
+                    if isinstance(img, (str, os.PathLike)):
+                        imageIndex = 0
+                        imagePathText = str(img)
+
+                        if "@" in imagePathText:
+                            indexText, imagePathText = imagePathText.split("@", 1)
+                            try:
+                                imageIndex = int(float(indexText))
+                            except Exception:
+                                imageIndex = 0
+
+                        imgPath = LocalPath(imagePathText)
+
+                        # Build candidates for relative paths:
+                        resolvedPath = None
+
+                        # First, resolve PostgreSQL project-relative paths:
+                        #   Runs/000002_ProtImportMicrographs/extra/016.mrc
+                        # should become:
+                        #   <projectPath>/Runs/000002_ProtImportMicrographs/extra/016.mrc
+                        if pathResolver is not None:
+                            resolvedText = pathResolver.resolveExistingPath(imagePathText)
+                            if resolvedText:
+                                resolvedPath = LocalPath(resolvedText)
+
+                        # Keep the old runtime/metaDir fallback for legacy/non-PG cases.
+                        if resolvedPath is None:
+                            candidates = []
+
+                            if imgPath.is_absolute():
+                                candidates.append(imgPath)
+                            else:
+                                if metaDir is not None:
+                                    candidates.append(metaDir / imgPath)
+
+                                projPath = None
+                                protPath = None
+                                try:
+                                    if self.currentProject is not None:
+                                        projPath = LocalPath(self.currentProject.getPath())
+
+                                        prot = self._getScipionProtocolForRuntime(
+                                            mapper=mapper,
+                                            projectId=projectId,
+                                            protocolId=protocolId,
+                                        )
+                                        protPath = LocalPath(prot.getPath())
+                                except Exception:
+                                    protPath = None
+
+                                if protPath is not None:
+                                    candidates.append(protPath / imgPath)
+                                if projPath is not None:
+                                    candidates.append(projPath / imgPath)
+
+                                candidates.append(imgPath)
+
+                            for cand in candidates:
+                                try:
+                                    if cand.exists():
+                                        resolvedPath = cand
+                                        break
+                                except Exception:
+                                    continue
+
+                        if resolvedPath is None:
+                            logger.warning(
+                                "Image file not found for metadata cell: raw='%s', table=%s, column=%s, rowIndex=%s",
+                                str(img),
+                                tableName,
+                                columnName,
+                                idx0,
+                            )
+                            pilImg = None
+                        else:
+                            try:
+                                pilImg = PILImage.open(str(resolvedPath))
+                            except Exception as e:
+                                logger.warning(
+                                    "Cannot open image file '%s' for metadata cell with PIL: %s",
+                                    str(resolvedPath),
+                                    e,
+                                )
+                                previewIndex = imageIndex
+                                # PIL cannot read cryo-EM formats such as .mrc/.mrcs.
+                                # Fall back to Scipion/pwem preview rendering.
+                                if previewIndex in (None, 0) and self._isVolumeLikeImageFile(resolvedPath):
+                                    previewIndex = None
+                                try:
+                                    preview = OutputsPreview(
+                                        currentProject=self.currentProject,
+                                        protocol=None,
+                                        output=None,
+                                    )
+
+                                    return preview.renderImageFromFilePath(
+                                        filePath=str(resolvedPath),
+                                        size=size,
+                                        fmt=fmt,
+                                        index=previewIndex,
+                                        applyTransform=False,
+                                        inline=inline,
+                                        rot=None,
+                                        shifts=None,
+                                    )
+                                except Exception as previewError:
+                                    logger.error(
+                                        "Cannot render metadata image file '%s' with Scipion preview: %s",
+                                        str(resolvedPath),
+                                        previewError,
+                                    )
+                                    pilImg = None
+                    else:
+                        # Unsupported type: treat as no image for this cell
+                        logger.warning(
+                            "Renderer returned unsupported type %r for metadata image cell "
+                            "(table=%s, column=%s, rowIndex=%s)",
+                            type(img),
+                            tableName,
+                            columnName,
+                            idx0,
+                        )
+                        pilImg = None
+
+        # If we still have no image, return placeholder instead of 404
+        if pilImg is None:
+            return self._renderMetadataPlaceholderImage(
+                size=size,
+                inline=inline,
+                fmt=fmt,
+                tableName=tableName,
+                columnName=columnName,
+                rowId=rowId,
+                rowIndex=rowIndex,
+            )
+
+        # Resize and normalize contrast a bit
+        try:
+            pilImg.thumbnail((size, size))
+            arr = np.array(pilImg)
+
+            if arr.ndim == 3 and arr.shape[-1] == 3:
+                arrGray = arr.mean(axis=-1)
+            else:
+                arrGray = arr if arr.ndim == 2 else arr.mean(axis=-1)
+
+            im255 = self._normalize2dSlice(arrGray, mode="zscore")
+            pilImg = PILImage.fromarray(im255, mode="L")
+        except Exception:
+            # If any normalization fails, keep whatever pilImg we have
+            pass
+
+        buf = io.BytesIO()
+        fmtLower = (fmt or "png").lower()
+        if fmtLower in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+        elif fmtLower == "webp":
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+        else:
+            pilFormat = "PNG"
+            mediaType = "image/png"
+
+        pilImg.save(buf, format=pilFormat)
+
+        disp = "inline" if inline else "attachment"
+        filenameId = rowId if rowId is not None else (rowIndex if rowIndex is not None else (idx0 + 1))
+        headers = {
+            "Content-Disposition": f'{disp}; filename="{tableName}_{columnName}_{filenameId}.{fmtLower}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+
+        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+
+    def getMetadataTableWindowService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            offset: int,
+            limit: int,
+            selectionOnly: bool,
+            sortBy: str,
+            asc: bool,
+            mapper=None,
+    ):
+        """
+        Return a window of rows for a metadata table using offset + limit.
+
+        IMPORTANT:
+        - `offset` / `limit` are 0-based indices in the current table order.
+        - Each returned row uses:
+            - `id` / `index`: 0-based global index (stable for the viewer)
+            - `rowId`: logical DAO id (which may be sparse)
+        - `totalRows` is the total number of rows in the *current view*:
+            - full table if selectionOnly == False
+            - number of selected rows if selectionOnly == True
+        """
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+            )
+            columns = list(table.getColumns())
+            table.setSortingColumn(sortBy)
+            table.setSortingAsc(asc)
+
+            # Sanitize window parameters
+            offset = max(0, int(offset or 0))
+            limit = max(1, int(limit or 1))
+
+            # Get physical row count once
+            try:
+                totalPhysicalRows = objMgr.getTableRowCount(tableName) or 0
+            except Exception:
+                totalPhysicalRows = 0
+
+            rows = []
+            totalRows = totalPhysicalRows
+
+            if totalPhysicalRows <= 0:
+                rows = []
+                totalRows = 0
+            else:
+                if selectionOnly:
+                    # Window over server-side selection
+                    try:
+                        selection = table.getSelection()
+                        if selection and not selection.isEmpty():
+                            allIds = sorted(selection.getSelection().keys())
+                            totalRows = len(allIds)
+
+                            if offset < totalRows:
+                                end = min(offset + limit, totalRows)
+                                sliceIds = allIds[offset:end]
+                                for rid in sliceIds:
+                                    idx0 = max(0, int(rid) - 1)
+                                    chunk = objMgr.getRows(tableName, idx0, 1) or []
+                                    if chunk:
+                                        rows.append(chunk[0])
+                        else:
+                            # No selection → empty view
+                            rows = []
+                            totalRows = 0
+                    except Exception:
+                        # On any selection error, expose empty view instead of inconsistent totals
+                        rows = []
+                        totalRows = 0
+                else:
+                    # Window over full table
+                    totalRows = totalPhysicalRows
+                    if offset < totalRows:
+                        rows = objMgr.getRows(tableName, offset, limit) or []
+                    else:
+                        rows = []
+
+            # Convert rows to JSON-friendly payload
+            resultRows = []
+            for localIndex, row in enumerate(rows):
+                try:
+                    logicalId = row.getId()
+                except Exception:
+                    logicalId = None
+
+                rowValues = row.getValues()
+
+                valuesPayload = []
+                for idx, rawVal in enumerate(rowValues):
+                    if idx >= len(columns):
+                        break
+                    col = columns[idx]
+                    renderer = col.getRenderer()
+                    cell = self._convertCellForPage(renderer, rawVal, rowValues)
+                    valuesPayload.append(cell)
+
+                globalIndex = offset + localIndex
+
+                resultRows.append({
+                    "id": globalIndex,
+                    "index": globalIndex,
+                    "rowId": logicalId,
+                    "values": valuesPayload,
+                })
+
+            return {
+                "offset": offset,
+                "limit": limit,
+                "totalRows": int(totalRows),
+                "rows": resultRows,
+            }
+
+    # -----------------------------
+    # External viewers methods
+    # -----------------------------
+
+    def _resolveExternalViewerCoords3dTomogram(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        targetId = str(objectId).strip()
+        if not targetId:
+            return None
+
+        cached = getattr(self, "tomoList", {}).get(targetId)
+        if cached is not None:
+            return cached
+
+        getTomogram = getattr(outputObj, "_getTomogram", None)
+        if callable(getTomogram):
+            try:
+                tomo = getTomogram(targetId)
+                if tomo is not None:
+                    return tomo
+            except Exception:
+                pass
+
+        iterTomograms = getattr(outputObj, "iterTomograms", None)
+        if callable(iterTomograms):
+            try:
+                for tomo in iterTomograms():
+                    tomoIds = self._getExternalViewerObjectIds(tomo)
+
+                    getTsId = getattr(tomo, "getTsId", None)
+                    if callable(getTsId):
+                        try:
+                            tomoIds.add(str(getTsId()))
+                        except Exception:
+                            pass
+
+                    getObjLabel = getattr(tomo, "getObjLabel", None)
+                    if callable(getObjLabel):
+                        try:
+                            tomoIds.add(str(getObjLabel()))
+                        except Exception:
+                            pass
+
+                    if targetId in tomoIds:
+                        if not hasattr(self, "tomoList") or self.tomoList is None:
+                            self.tomoList = {}
+                        self.tomoList[targetId] = tomo
+                        return tomo
+            except Exception:
+                pass
+
+        return None
+
+    def _resolveExternalViewerCTFTomoSeries(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        targetId = str(objectId).strip()
+        if not targetId:
+            return None
+
+        try:
+            for item in outputObj:
+                itemIds = self._getExternalViewerObjectIds(item)
+
+                for methodName in (
+                        "getTsId",
+                        "getTomoId",
+                        "getCTFTomoSeriesId",
+                        "getObjId",
+                        "getObjLabel",
+                        "getName",
+                ):
+                    method = getattr(item, methodName, None)
+                    if callable(method):
+                        try:
+                            value = method()
+                            if value is not None:
+                                itemIds.add(str(value))
+                        except Exception:
+                            pass
+
+                if targetId in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        return None
+
+    def _isSingleExternalViewerObject(self, outputObj: Any) -> bool:
+        if outputObj is None:
+            return False
+
+        getItem = getattr(outputObj, "getItem", None)
+        if callable(getItem):
+            return False
+
+        iterItems = getattr(outputObj, "__iter__", None)
+        if callable(iterItems):
+            return False
+
+        getFileName = getattr(outputObj, "getFileName", None)
+        if callable(getFileName):
+            return True
+
+        return False
+
+    def _findExternalViewerClasses(self, targetObj: Any) -> List[Any]:
+        try:
+            viewers = Config.getDomain().findViewers(targetObj, DESKTOP_TKINTER) or []
+            return list(viewers)
+        except BaseException as e:
+            logger.exception(
+                "Failed to find external viewers for object type %s: %s",
+                type(targetObj).__name__,
+                e,
+            )
+            return []
+
+    def _normalizeExternalViewerId(self, viewerClass: Any) -> str:
+        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
+        viewerId = className.strip()
+
+        if viewerId.lower().endswith("viewer"):
+            viewerId = viewerId[:-6]
+
+        viewerId = re.sub(r"[^A-Za-z0-9]+", "-", viewerId).strip("-").lower()
+        return viewerId or "viewer"
+
+    def _buildExternalViewerDescriptor(self, viewerClass: Any) -> Dict[str, Any]:
+        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
+        moduleName = getattr(viewerClass, "__module__", None)
+
+        label = (
+            getattr(viewerClass, "_label", None)
+            or getattr(viewerClass, "label", None)
+            or className
+        )
+
+        label = str(label).replace("Viewer", "").strip() or className
+
+        return {
+            "id": self._normalizeExternalViewerId(viewerClass),
+            "label": label,
+            "className": className,
+            "moduleName": moduleName,
+            "available": True,
+            "reason": None,
+        }
+
+    def _unwrapScipionObject(self, obj: Any) -> Any:
+        if obj is None:
+            return None
+
+        getter = getattr(obj, "get", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if value is not None:
+                    return value
+            except Exception:
+                pass
+
+        return obj
+
+    def _getProtocolOutputObject(
+            self,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Tuple[Any, Any]:
+        protocol = self._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            runtimeObjectId = outputInfo.get("runtimeObjectId")
+            outputObj = None
+
+            selectRuntimeInputObjectById = getattr(runtimeMapper, "selectRuntimeInputObjectById", None)
+
+            if runtimeObjectId not in (None, "") and callable(selectRuntimeInputObjectById):
+                outputObj = selectRuntimeInputObjectById(runtimeObjectId)
+
+            if outputObj is None:
+                outputObj = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                    parentProtocol=protocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    mapper=runtimeMapper,
+                )
+
+            if outputObj is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, outputObj
+
+        outputObj = None
+
+        if hasattr(protocol, outputName):
+            outputObj = getattr(protocol, outputName)
+
+        if outputObj is None:
+            iterator = getattr(protocol, "iterOutputAttributes", None)
+
+            if callable(iterator):
+                try:
+                    for attrName, attrObj in iterator():
+                        if str(attrName) == str(outputName):
+                            outputObj = attrObj
+                            break
+                except Exception:
+                    pass
+
+        outputObj = self._unwrapScipionObject(outputObj)
+
+        if outputObj is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Output not found: {outputName}",
+            )
+
+        return protocol, outputObj
+
+    def _getExternalViewerObjectIds(self, obj: Any) -> TypingSet[str]:
+        values: TypingSet[str] = set()
+
+        def addValue(value: Any):
+            if value is None:
+                return
+
+            getter = getattr(value, "get", None)
+            if callable(getter):
+                try:
+                    value = getter()
+                except Exception:
+                    pass
+
+            if value is None:
+                return
+
+            text = str(value).strip()
+            if text:
+                values.add(text)
+
+        for methodName in (
+            "getTsId",
+            "getObjId",
+            "getId",
+            "getName",
+            "getFileName",
+        ):
+            method = getattr(obj, methodName, None)
+            if callable(method):
+                try:
+                    addValue(method())
+                except Exception:
+                    pass
+
+        for attrName in (
+            "tsId",
+            "id",
+            "objId",
+            "_objId",
+            "name",
+            "label",
+            "filename",
+            "fileName",
+        ):
+            if hasattr(obj, attrName):
+                try:
+                    addValue(getattr(obj, attrName))
+                except Exception:
+                    pass
+
+        return values
+
+    def _resolveExternalViewerTargetObject(
+            self,
+            outputObj: Any,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+    ) -> Any:
+        if objectId is None or str(objectId).strip() == "":
+            return outputObj
+
+        targetId = str(objectId).strip()
+        objectKindText = str(objectKind or "").strip().lower()
+
+        if objectKindText in {"volume", "tomogram"} and self._isSingleExternalViewerObject(outputObj):
+            if targetId in {"0", "1"}:
+                return outputObj
+
+        if objectKindText in {"coords3dtomogram", "coords3d-tomogram", "coordinates3dtomogram"}:
+            resolved = self._resolveExternalViewerCoords3dTomogram(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        if objectKindText in {"ctftomoseries", "ctf-tomo-series", "ctfseries"}:
+            resolved = self._resolveExternalViewerCTFTomoSeries(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        if objectKindText in {"volume", "tomogram"}:
+            resolved = self._resolveExternalViewerSetItemByPublicId(
+                outputObj=outputObj,
+                objectId=objectId,
+            )
+            if resolved is not None:
+                return resolved
+
+        try:
+            for item in outputObj:
+                itemIds = self._getExternalViewerObjectIds(item)
+                if targetId in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Object '{targetId}' not found inside output. "
+                f"objectKind={objectKind or 'unknown'}"
+            ),
+        )
+
+    def _resolveExternalViewerSetItemByPublicId(
+            self,
+            outputObj: Any,
+            objectId: Union[str, int],
+    ) -> Any:
+        try:
+            publicId = int(objectId)
+        except Exception:
+            return None
+
+        getItem = getattr(outputObj, "getItem", None)
+        if callable(getItem):
+            for key, value in (
+                    ("_objId", publicId + 1),
+                    ("_objId", publicId),
+                    ("id", publicId),
+                    ("index", publicId),
+            ):
+                try:
+                    item = getItem(key, value)
+                    if item is not None:
+                        return item
+                except Exception:
+                    pass
+
+        try:
+            for index, item in enumerate(outputObj):
+                if index == publicId:
+                    return item
+
+                itemIds = self._getExternalViewerObjectIds(item)
+                if str(publicId) in itemIds or str(publicId + 1) in itemIds:
+                    return item
+        except Exception:
+            pass
+
+        return None
+
+    def listExternalViewers(
+            self,
+            protocolId: int,
+            outputName: str,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+
+        protocol, outputObj = self._getProtocolOutputObject(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        targetObj = self._resolveExternalViewerTargetObject(
+            outputObj=outputObj,
+            objectId=objectId,
+            objectKind=objectKind,
+        )
+
+        viewerClasses = self._findExternalViewerClasses(targetObj)
+
+        descriptors = []
+        seenIds: TypingSet[str] = set()
+        excludedViewer = ['TomoDataViewer', 'MDViewer', 'DataViewer', 'CtfEstimationTomoViewer']
+        for viewerClass in viewerClasses:
+            descriptor = self._buildExternalViewerDescriptor(viewerClass)
+            viewerId = descriptor["id"]
+            if descriptor['className'] in excludedViewer:
+                continue
+
+            if viewerId in seenIds:
+                className = descriptor.get("className") or viewerId
+                viewerId = f"{viewerId}-{len(seenIds) + 1}"
+                descriptor["id"] = viewerId
+                descriptor["className"] = className
+
+            seenIds.add(viewerId)
+            descriptors.append(descriptor)
+
+        return descriptors
+
+    def _matchExternalViewerClass(
+        self,
+        viewerClasses: List[Any],
+        viewerId: str,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        requested = str(viewerId or "").strip().lower()
+
+        for viewerClass in viewerClasses:
+            descriptor = self._buildExternalViewerDescriptor(viewerClass)
+
+            tokens = {
+                str(descriptor.get("id") or "").lower(),
+                str(descriptor.get("label") or "").lower(),
+                str(descriptor.get("className") or "").lower(),
+                str(descriptor.get("moduleName") or "").lower(),
+            }
+
+            className = str(descriptor.get("className") or "")
+            if className.lower().endswith("viewer"):
+                tokens.add(className[:-6].lower())
+
+            if requested in tokens:
+                return viewerClass, descriptor
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"External viewer not found or not compatible: {viewerId}",
+        )
+
+    def _createExternalViewerInstance(self, viewerClass: Any, protocol: Any) -> Any:
+        attempts = [
+            {"project": self.currentProject, "protocol": protocol},
+            {"protocol": protocol},
+            {"project": self.currentProject},
+            {},
+        ]
+
+        lastError = None
+
+        for kwargs in attempts:
+            try:
+                viewer = viewerClass(**kwargs)
+                return viewer
+            except TypeError as e:
+                lastError = e
+            except Exception as e:
+                lastError = e
+                break
+
+        raise RuntimeError(f"Could not create viewer instance: {lastError}")
+
+    def _showExternalView(self, view: Any):
+        if view is None:
+            return
+
+        for methodName in ("show", "execute", "launch", "run"):
+            method = getattr(view, methodName, None)
+            if callable(method):
+                method()
+                return
+
+        if callable(view):
+            view()
+
+    def _runExternalViewer(self, viewerClass: Any, protocol: Any, targetObj: Any):
+        viewer = self._createExternalViewerInstance(viewerClass, protocol)
+
+        for methodName in ("setProject",):
+            method = getattr(viewer, methodName, None)
+            if callable(method):
+                try:
+                    method(self.currentProject)
+                except Exception:
+                    pass
+
+        for methodName in ("setProtocol",):
+            method = getattr(viewer, methodName, None)
+            if callable(method):
+                try:
+                    method(protocol)
+                except Exception:
+                    pass
+
+        visualize = getattr(viewer, "visualize", None)
+        if not callable(visualize):
+            visualize = getattr(viewer, "_visualize", None)
+
+        if not callable(visualize):
+            raise RuntimeError("Viewer does not expose a visualize method")
+
+        views = visualize(targetObj)
+
+        if views is None:
+            return
+
+        if not isinstance(views, (list, tuple)):
+            views = [views]
+
+        for view in views:
+            self._showExternalView(view)
+
+    def launchExternalViewer(
+            self,
+            protocolId: int,
+            outputName: str,
+            viewerId: str,
+            objectId: Optional[Union[str, int]] = None,
+            objectKind: Optional[str] = None,
+            params: Optional[Dict[str, Any]] = None,
+            mapper=None,
+            projectId: Optional[int] = None,
+    ) -> Dict[str, Any]:
+
+        protocol, outputObj = self._getProtocolOutputObject(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        targetObj = self._resolveExternalViewerTargetObject(
+            outputObj=outputObj,
+            objectId=objectId,
+            objectKind=objectKind,
+        )
+
+        viewerClasses = self._findExternalViewerClasses(targetObj)
+
+        viewerClass, descriptor = self._matchExternalViewerClass(
+            viewerClasses=viewerClasses,
+            viewerId=viewerId,
+        )
+
+        thread = threading.Thread(
+            target=self._safeRunExternalViewer,
+            args=(viewerClass, protocol, targetObj, descriptor),
+            daemon=True,
+        )
+        thread.start()
+
+        return {
+            "success": True,
+            "viewerId": descriptor["id"],
+            "message": f"{descriptor['label']} launch requested.",
+            "pid": None,
+            "data": {
+                "objectId": objectId,
+                "objectKind": objectKind,
+            },
+        }
+
+    def _safeRunExternalViewer(
+        self,
+        viewerClass: Any,
+        protocol: Any,
+        targetObj: Any,
+        descriptor: Dict[str, Any],
+    ):
+        try:
+            self._runExternalViewer(
+                viewerClass=viewerClass,
+                protocol=protocol,
+                targetObj=targetObj,
+            )
+        except Exception as e:
+            logger.exception(
+                "External viewer failed. viewerId=%s className=%s error=%s",
+                descriptor.get("id"),
+                descriptor.get("className"),
+                e,
+            )
+
+    # -----------------------------
+    # Tags Service Methods
+    # -----------------------------
+    def listProjectTags(
+        self,
+        mapper,
+        projectId: int,
+        currentUser: dict,
+    ) -> List[Dict[str, Any]]:
+        # listProjectTags
+        listFn = getattr(mapper, "listProjectTags", None)
+        if callable(listFn):
+            return listFn(projectId=projectId)
+
+        # mapperMethodFallback: keep backward compatibility with older mapper name
+        legacyListFn = getattr(mapper, "listProtocolTags", None)
+        if callable(legacyListFn):
+            return legacyListFn(projectId=projectId)
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Mapper does not implement listProjectTags",
+        )
+
+    def createProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        currentUser: dict,
+        payload,
+    ) -> Dict[str, Any]:
+        # createProjectTag
+        title = (payload.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+
+        tagId = (payload.id or "").strip() if getattr(payload, "id", None) else ""
+        if not tagId:
+            tagId = str(uuid4())
+
+        tag = {
+            "id": tagId,
+            "title": title,
+            "description": getattr(payload, "description", None),
+            "color": getattr(payload, "color", None),
+        }
+
+        try:
+            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create tag: {e}",
+            )
+
+    def updateProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        tagId: str,
+        currentUser: dict,
+        payload,
+    ) -> Dict[str, Any]:
+        # updateProjectTag
+        tagId = (tagId or "").strip()
+        if not tagId:
+            raise HTTPException(status_code=400, detail="tagId is required")
+
+        existing = None
+        for t in self.listProjectTags(mapper=mapper, projectId=projectId, currentUser=currentUser):
+            if str(t.get("id", "")).strip() == tagId:
+                existing = t
+                break
+
+        if not existing:
+            raise HTTPException(status_code=404, detail="Tag not found")
+
+        nextTitle = getattr(payload, "title", None)
+        if nextTitle is None:
+            nextTitle = existing.get("title")
+        nextTitle = (nextTitle or "").strip()
+        if not nextTitle:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+
+        nextDescription = getattr(payload, "description", None)
+        if nextDescription is None:
+            nextDescription = existing.get("description")
+
+        nextColor = getattr(payload, "color", None)
+        if nextColor is None:
+            nextColor = existing.get("color")
+
+        tag = {
+            "id": tagId,
+            "title": nextTitle,
+            "description": nextDescription,
+            "color": nextColor,
+        }
+
+        try:
+            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update tag: {e}",
+            )
+
+    def deleteProjectTag(
+        self,
+        mapper,
+        projectId: int,
+        tagId: str,
+        currentUser: dict,
+    ) -> bool:
+        # deleteProjectTag
+        tagId = (tagId or "").strip()
+        if not tagId:
+            raise HTTPException(status_code=400, detail="tagId is required")
+
+        # cascadeBehavior: protocol_tag_assignments(tagId) has ON DELETE CASCADE
+        try:
+            return bool(mapper.deleteProtocolTag(projectId=projectId, tagId=tagId))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete tag: {e}",
+            )
+
+    def listProtocolTags(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            currentUser: dict,
+    ) -> Dict[str, Any]:
+        # listProtocolTags
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
+        try:
+            tagIds = mapper.getProtocolTagIds(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list protocol tags: {e}",
+            )
+
+        return {
+            "protocolId": str(protocolId),
+            "protocolDbId": protocolDbId,
+            "tagIds": tagIds,
+        }
+
+    def setProtocolTags(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            tagIds: List[str],
+            currentUser: dict,
+    ) -> Dict[str, Any]:
+        # setProtocolTags
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Protocol not found in PostgreSQL: {protocolId}",
+            )
+
+        try:
+            setByDbId = getattr(mapper, "setProtocolTagIdsByProtocolDbId", None)
+            if callable(setByDbId):
+                return setByDbId(
+                    projectId=projectId,
+                    protocolDbId=protocolDbId,
+                    tagIds=tagIds or [],
+                )
+
+            return mapper.setProtocolTagIds(
+                projectId=projectId,
+                protocolId=int(protocolId),
+                tagIds=tagIds or [],
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to set protocol tags: {e}",
+            )
+
+    def getContextMenuVisibilityPolicy(self) -> dict:
+        return {
+               "open":  True,
+               "browse":  True,
+               "rename":  True,
+               "duplicate":  True,
+               "copyWorkflow": True,
+               "pasteWorkflow": True,
+               "delete":  True,
+               "restart":  True,
+               "continue":  True,
+               "reset":  True,
+               "stop":  True,
+               "selectFrom":  True,
+               "selectTo":  True,
+               "manageTags":  True,
+               "export":  True,
+               "upload":  True,
+               "nextSteps":  True,
+        }
+
+    # -------------------------------
+    # Wizards methods
+    # -------------------------------
+    def executeProtocolWizard(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload,
+    ) -> Dict[str, Any]:
+        wizardService = ProtocolWizardService(
+            currentProject=self.currentProject,
+            projectService=self,
+        )
+        return wizardService.executeProtocolWizard(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
+
+

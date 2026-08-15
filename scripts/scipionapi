@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# resolveRepoRootByMarkers
+scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repoRoot="${scriptDir}"
+while [[ "${repoRoot}" != "/" ]]; do
+  if [[ -f "${repoRoot}/pyproject.toml" ]] && [[ -f "${repoRoot}/alembic.ini" ]]; then
+    break
+  fi
+  repoRoot="$(dirname "${repoRoot}")"
+done
+
+if [[ "${repoRoot}" == "/" ]]; then
+  echo "ERROR: Could not locate repo root (pyproject.toml + alembic.ini)." >&2
+  exit 1
+fi
+
+# configDefaults
+effectiveEnvName="${SCIPIONAPI_CONDA_ENV:-${SCIPIONAPI_ENV_NAME:-scipion4Web}}"
+pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
+
+# pipRobustnessDefaults
+pipRetries="${SCIPIONAPI_PIP_RETRIES:-10}"
+pipTimeout="${SCIPIONAPI_PIP_TIMEOUT:-120}"
+pipVerbose="${SCIPIONAPI_PIP_VERBOSE:-0}"
+
+# scipionCoreInstallToggle
+installScipionCore="${SCIPIONAPI_INSTALL_SCIPION_CORE:-1}"
+scipionCorePackages="${SCIPIONAPI_SCIPION_CORE_PACKAGES:-scipion-pyworkflow scipion-em scipion-app}"
+
+# keepExplicitScipionHome
+scipionHomeValue="${SCIPION_HOME:-}"
+
+# ensureConda
+# resolveCondaExe
+condaExe="${SCIPIONAPI_CONDA_EXE:-${CONDA_EXE:-}}"
+if [[ -z "${condaExe}" ]]; then
+  condaExe="$(command -v conda || true)"
+fi
+
+if [[ -z "${condaExe}" ]]; then
+  echo "ERROR: conda is required but was not found in PATH." >&2
+  echo "Set SCIPIONAPI_CONDA_EXE=/path/to/conda if conda is not on PATH." >&2
+  exit 1
+fi
+
+if ! "${condaExe}" --version >/dev/null 2>&1; then
+  echo "ERROR: conda executable is not valid: ${condaExe}" >&2
+  exit 1
+fi
+
+condaCliRun=("${condaExe}" run --live-stream -n "${effectiveEnvName}")
+
+printWrapperHelp() {
+  cat <<EOF
+ScipionAPI wrapper (conda-managed)
+
+This script runs the scipionapi CLI inside a conda env.
+
+Conda executable:
+  ${condaExe}
+
+Conda env:
+  ${effectiveEnvName}
+
+Typical usage:
+  ./scripts/scipionapi bootstrap
+  ./scripts/scipionapi provision --user ... --email ... --pass ... [--web-dist <dir|zip>]
+  ./scripts/scipionapi install --user ... --email ... --pass ...
+  ./scripts/scipionapi update [--version v4.0.0]
+  ./scripts/scipionapi release --upload --version v4.0.0 --downloads-dir <dir>
+  ./scripts/scipionapi uninstall --full
+  ./scripts/scipionapi uninstall-web --yes
+  ./scripts/scipionapi start|stop|restart|status|logs
+
+Notes:
+  - bootstrap installs Python packages in the conda environment
+  - install configures SCIPION_HOME, database, migrations, and admin user
+  - provision combines bootstrap/install/start in one flow
+  - update downloads ScipionAPI/ScipionWeb release ZIPs and preserves current .env/data
+  - release --upload publishes release ZIPs, install.sh, and manifest.json
+  - uninstall/uninstall-web removes runtime resources; --full also removes a guided installation root
+  - To override env name: export SCIPIONAPI_CONDA_ENV=<name>
+  - To force an isolated home: export SCIPION_HOME=<path>
+EOF
+}
+
+envExistsNow() {
+  if "${condaExe}" env list | awk '{print $1}' | grep -qx "${effectiveEnvName}"; then
+    echo "1"
+  else
+    echo "0"
+  fi
+}
+
+runPipInstall() {
+  local pipArgs=("$@")
+  local verboseArgs=()
+
+  if [[ "${pipVerbose}" == "1" ]]; then
+    verboseArgs=(-v)
+  fi
+
+  local cmd=(
+    "${condaExe}" run --live-stream -n "${effectiveEnvName}"
+    python -m pip install
+    --progress-bar on
+    --retries "${pipRetries}"
+    --timeout "${pipTimeout}"
+    "${verboseArgs[@]}"
+    "${pipArgs[@]}"
+  )
+
+  echo "------------------------------------------------------------"
+  echo "pip install"
+  printf 'Command:'
+  printf ' %q' "${cmd[@]}"
+  printf '\n'
+  echo "------------------------------------------------------------"
+
+  "${cmd[@]}"
+}
+
+scipionapiInstalled() {
+  if [[ -n "${scipionHomeValue}" ]]; then
+    env SCIPION_HOME="${scipionHomeValue}" SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
+  else
+    env SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaExe}" run -n "${effectiveEnvName}" scipionapi --help >/dev/null 2>&1
+  fi
+}
+
+ensureScipionCoreInstalled() {
+  if [[ "${installScipionCore}" != "1" ]]; then
+    return 0
+  fi
+
+  if "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Installing Scipion core packages (pyworkflow/em/app)"
+  read -r -a scipionCorePackagesArray <<< "${scipionCorePackages}"
+  runPipInstall "${scipionCorePackagesArray[@]}"
+
+  "${condaExe}" run -n "${effectiveEnvName}" python -c "import pyworkflow" >/dev/null 2>&1 || {
+    echo "ERROR: pyworkflow import still failing after installing Scipion core packages." >&2
+    exit 1
+  }
+}
+
+bootstrapEnv() {
+  cd "${repoRoot}"
+
+  local exists
+  exists="$(envExistsNow)"
+
+  if [[ "${exists}" == "0" ]]; then
+    echo "Creating conda env: ${effectiveEnvName} (python=${pythonVersion})"
+    "${condaExe}" create -y -n "${effectiveEnvName}" "python=${pythonVersion}"
+  fi
+
+  echo "[bootstrap] Upgrading pip"
+  runPipInstall --upgrade pip
+
+  if [[ -f "${repoRoot}/requirements.txt" ]]; then
+    echo "[bootstrap] Installing requirements.txt"
+    runPipInstall -r "${repoRoot}/requirements.txt"
+  fi
+
+  ensureScipionCoreInstalled
+
+  echo "[bootstrap] Installing package in editable mode"
+  runPipInstall -e "${repoRoot}"
+
+  echo "Bootstrap completed."
+}
+
+requireEnvOrExplain() {
+  if [[ "$(envExistsNow)" == "0" ]]; then
+    echo "ERROR: conda env '${effectiveEnvName}' does not exist." >&2
+    echo "Run: ./scripts/scipionapi bootstrap" >&2
+    echo "Or:  ./scripts/scipionapi provision --user ... --email ... --pass ..." >&2
+    exit 1
+  fi
+
+  if ! scipionapiInstalled; then
+    echo "ERROR: scipionapi is not installed in conda env '${effectiveEnvName}'." >&2
+    echo "Run: ./scripts/scipionapi bootstrap" >&2
+    exit 1
+  fi
+}
+
+runInCondaCli() {
+  if [[ -n "${scipionHomeValue}" ]]; then
+    exec env \
+      SCIPION_HOME="${scipionHomeValue}" \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" scipionapi "$@"
+  else
+    exec env \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" scipionapi "$@"
+  fi
+}
+
+runInCondaCliNoExec() {
+  if [[ -n "${scipionHomeValue}" ]]; then
+    env \
+      SCIPION_HOME="${scipionHomeValue}" \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  else
+    env \
+      SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" "$@"
+  fi
+}
+
+removeCondaEnv() {
+  if [[ "$(envExistsNow)" == "0" ]]; then
+    echo "Conda env not found: ${effectiveEnvName}"
+    return 0
+  fi
+
+  echo "Removing conda env: ${effectiveEnvName}"
+  "${condaExe}" env remove -n "${effectiveEnvName}" -y || true
+}
+
+validateFullInstallRoot() {
+  local allowLegacy="${1:-0}"
+  local allowCleanedLegacy="${2:-0}"
+  local markerPath="${repoRoot}/.scipionweb-installation"
+
+  if [[ -f "${markerPath}" ]]; then
+    if ! grep -Fxq "FORMAT=1" "${markerPath}"; then
+      echo "ERROR: Unsupported guided installation marker format: ${markerPath}" >&2
+      return 1
+    fi
+
+    if ! grep -Fxq "INSTALL_TYPE=guided" "${markerPath}"; then
+      echo "ERROR: Invalid guided installation marker: ${markerPath}" >&2
+      return 1
+    fi
+
+    if ! grep -Fxq "INSTALL_ROOT=${repoRoot}" "${markerPath}"; then
+      echo "ERROR: Guided installation marker does not match repo root: ${repoRoot}" >&2
+      return 1
+    fi
+    if ! grep -Fxq "SCIPION_HOME=${repoRoot}/scipion_home" "${markerPath}"; then
+      echo "ERROR: Guided installation marker has an invalid SCIPION_HOME: ${markerPath}" >&2
+      return 1
+    fi
+  else
+    if [[ "${allowLegacy}" != "1" ]]; then
+      echo "ERROR: Full uninstall requires a guided installation marker." >&2
+      echo "If this is a pre-marker packaged installation, rerun with --full --legacy-install." >&2
+      return 1
+    fi
+
+    if [[ -e "${repoRoot}/.git" ]]; then
+      echo "ERROR: Refusing legacy full uninstall for a Git checkout: ${repoRoot}" >&2
+      return 1
+    fi
+
+    if [[ "${allowCleanedLegacy}" != "1" && \
+          ! -f "${repoRoot}/scipion_home/.env" ]]; then
+      echo "ERROR: Legacy full uninstall could not verify SCIPION_HOME/.env: ${repoRoot}" >&2
+      return 1
+    fi
+  fi
+
+  case "${repoRoot}" in
+    /|"${HOME}"|"${HOME}/"|/home|/usr|/opt|/var|/tmp)
+      echo "ERROR: Refusing unsafe full uninstall root: ${repoRoot}" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ ! -f "${repoRoot}/pyproject.toml" ]] || \
+     [[ ! -f "${repoRoot}/alembic.ini" ]] || \
+     [[ ! -x "${repoRoot}/scripts/scipionapi" ]]; then
+    echo "ERROR: Installation root does not have the expected ScipionAPI layout: ${repoRoot}" >&2
+    return 1
+  fi
+}
+
+removeFullInstallRoot() {
+  local allowLegacy="${1:-0}"
+
+  # The Python cleanup has already removed SCIPION_HOME at this point.
+  # Revalidate the root layout, but do not require the legacy .env again.
+  validateFullInstallRoot "${allowLegacy}" "1"
+
+  local rootToRemove="${repoRoot}"
+  cd /
+  rm -rf -- "${rootToRemove}"
+  echo "Removed ScipionWeb installation: ${rootToRemove}"
+}
+
+uninstallWeb() {
+  if has_flag "-h" "$@" || has_flag "--help" "$@" || has_flag "help" "$@"; then
+    if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+      runInCondaCliNoExec python -m scipionapi_cli.uninstall "$@"
+    else
+      cat <<EOF
+Usage: ./scripts/scipionapi uninstall [OPTIONS]
+       ./scripts/scipionapi uninstall-web [OPTIONS]
+
+Safely remove ScipionWeb/ScipionAPI runtime resources.
+
+Options:
+  --full                 Completely remove the installation root after cleanup.
+  --legacy-install       Allow --full for a pre-marker packaged installation.
+  --dry-run              Print the cleanup plan without removing anything.
+  --yes, -y              Run without interactive confirmation.
+  --keep-database        Do not drop the configured PostgreSQL database.
+  --keep-database-role   Drop the database but keep the PostgreSQL role.
+  --keep-web-dist        Do not remove the deployed web dist directory.
+  --remove-scipion-home  Remove SCIPION_HOME.
+  --remove-conda-env     Remove the conda env after cleanup.
+  --keep-conda-env       Keep the conda env.
+  -h, --help             Show this help and exit.
+
+Important:
+  --full uses .scipionweb-installation for guided installs. Older packaged
+  installs may use --full --legacy-install; Git checkouts are always rejected.
+  Full removal deletes SCIPION_HOME, the conda env, and finally the root.
+EOF
+    fi
+    return 0
+  fi
+
+  requireEnvOrExplain
+  cd "${repoRoot}"
+
+  local full="0"
+  if has_flag "--full" "$@"; then
+    full="1"
+  fi
+
+  local legacyInstall="0"
+  if has_flag "--legacy-install" "$@"; then
+    legacyInstall="1"
+  fi
+
+  if [[ "${full}" == "1" ]]; then
+    validateFullInstallRoot "${legacyInstall}"
+  fi
+
+  local dryRun="0"
+  if has_flag "--dry-run" "$@"; then
+    dryRun="1"
+  fi
+
+  local removeConda="0"
+  if [[ "${dryRun}" == "0" ]] && \
+     { [[ "${full}" == "1" ]] || has_flag "--remove-conda-env" "$@"; }; then
+    removeConda="1"
+  fi
+
+  local condaFlag="--keep-conda-env"
+  if [[ "${full}" == "1" || "${removeConda}" == "1" ]]; then
+    condaFlag="--remove-conda-env"
+  fi
+
+  local forwardedArgs=()
+  for arg in "$@"; do
+    case "${arg}" in
+      --remove-conda-env|--keep-conda-env)
+        continue
+        ;;
+      *)
+        forwardedArgs+=("${arg}")
+        ;;
+    esac
+  done
+
+  runInCondaCliNoExec python -m scipionapi_cli.uninstall "${forwardedArgs[@]}" "${condaFlag}"
+
+  if [[ "${removeConda}" == "1" ]]; then
+    removeCondaEnv
+  elif [[ "${full}" == "0" ]]; then
+    echo "Keeping conda env: ${effectiveEnvName}"
+  fi
+
+  if [[ "${full}" == "1" ]]; then
+    if [[ "${dryRun}" == "1" ]]; then
+      echo "Would remove installation root: ${repoRoot}"
+    else
+      removeFullInstallRoot "${legacyInstall}"
+    fi
+  fi
+}
+
+
+has_flag() {
+  local needle="$1"
+  shift
+  for arg in "$@"; do
+    if [[ "${arg}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# routeCommand
+cmd="${1:-}"
+
+if [[ -z "${cmd}" ]] || [[ "${cmd}" == "--help" ]] || [[ "${cmd}" == "-h" ]] || [[ "${cmd}" == "help" ]]; then
+  if [[ "$(envExistsNow)" == "1" ]] && scipionapiInstalled; then
+    if [[ -n "${scipionHomeValue}" ]]; then
+      exec env SCIPION_HOME="${scipionHomeValue}" SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+        "${condaCliRun[@]}" scipionapi --help
+    fi
+    exec env SCIPIONAPI_ENV_NAME="${effectiveEnvName}" \
+      "${condaCliRun[@]}" scipionapi --help
+  fi
+  printWrapperHelp
+  exit 0
+fi
+
+if [[ "${cmd}" == "bootstrap" ]]; then
+  shift || true
+  bootstrapEnv
+  exit 0
+fi
+
+if [[ "${cmd}" == "provision" ]]; then
+  shift || true
+  bootstrapEnv
+  cd "${repoRoot}"
+
+  if ! has_flag "--bootstrap" "$@" && ! has_flag "--no-bootstrap" "$@"; then
+    set -- --no-bootstrap "$@"
+  fi
+
+  if ! has_flag "--env-name" "$@"; then
+    set -- --env-name "${effectiveEnvName}" "$@"
+  fi
+
+  runInCondaCli provision "$@"
+fi
+
+if [[ "${cmd}" == "uninstall-web" || "${cmd}" == "uninstall" ]]; then
+  shift || true
+  uninstallWeb "$@"
+  exit 0
+fi
+
+requireEnvOrExplain
+
+cd "${repoRoot}"
+runInCondaCli "$@"

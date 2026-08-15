@@ -1,0 +1,1281 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+
+# ******************************************************************************
+# * PostgreSQL DAO for persisted Scipion sets.
+# *
+# * This DAO implements the metadata-viewer DAO contract so PostgreSQL can be
+# * consumed through ObjectManager just like SQLite/STAR metadata sources.
+# *
+# ******************************************************************************
+
+import ast
+import json
+import logging
+import re
+from typing import Any, Dict, Iterable, List, Optional
+
+
+import numpy
+
+from metadataviewer.dao.model import IDAO
+from metadataviewer.model import (
+    Table,
+    Column,
+    BoolRenderer,
+    FloatRenderer,
+    ImageRenderer,
+    StrRenderer,
+    MatrixRender,
+)
+
+from pwem.convert.transformations import euler_from_matrix
+
+from app.backend.mapper import ScipionSetPostgresqlMapper
+
+
+logger = logging.getLogger(__name__)
+
+ALLOWED_COLUMNS_TYPES = [
+    "String",
+    "Float",
+    "Integer",
+    "Boolean",
+    "Matrix",
+    "CsvList",
+]
+
+EXCLUDED_COLUMNS = ["label", "comment", "creation", "_streamState"]
+PERMANENT_COLUMNS = ["id", "enabled"]
+
+OBJECT_TABLE = "objects"
+PROPERTIES_TABLE = "Properties"
+ENABLED_COLUMN = "enabled"
+EXTENDED_COLUMN_NAME = "stack"
+PROPERTY_KEY_COLUMN = "key"
+PROPERTY_VALUE_COLUMN = "value"
+ADITIONAL_INFO_DISPLAY_COLUMN_LIST = ["_size", "id"]
+SUBSET_COMPATIBLE_NON_STANDARD_SET_TYPES = {
+    "RelionSetOfPseudoSubtomograms",
+}
+
+
+def _guessType(value):
+    if value is None:
+        return str
+
+    if isinstance(value, bool):
+        return bool
+
+    if isinstance(value, int):
+        return int
+
+    if isinstance(value, float):
+        return float
+
+    try:
+        int(value)
+        return int
+    except Exception:
+        pass
+
+    try:
+        float(value)
+        return float
+    except Exception:
+        pass
+
+    return str
+
+
+class ScipionColumn(Column):
+    def __init__(self, name, renderer=None, callback=None):
+        super().__init__(name, renderer=renderer)
+        self.callback = callback
+
+    def setCallback(self, callback):
+        self.callback = callback
+
+    def calculate(self, row, values):
+        if self.callback is not None:
+            self.callback(row, values)
+
+
+class PostgresqlDAO(IDAO):
+    """
+    DAO compatible with metadata-viewer ObjectManager.
+
+    It reads persisted Scipion SetOf... outputs from PostgreSQL using
+    ScipionSetPostgresqlMapper, but exposes them as metadata-viewer Tables,
+    Columns and Pages.
+    """
+
+    def __init__(
+            self,
+            db,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        self.db = db
+        self.projectId = int(projectId)
+        self.protocolId = int(protocolId)
+        self.outputName = str(outputName)
+
+        self.setMapper = ScipionSetPostgresqlMapper(db)
+
+        self._tables: Dict[str, Table] = {}
+        self._tableCount: Dict[str, int] = {}
+        self._labels: Dict[str, List[str]] = {}
+        self._labelsTypes: Dict[str, List[Any]] = {}
+        self._columns: List[Dict[str, Any]] = []
+        self._storedSet: Optional[Dict[str, Any]] = None
+
+        self._logicalTables: Dict[str, Dict[str, Any]] = {}
+        self._tableColumns: Dict[str, List[Dict[str, Any]]] = {}
+        self._useLogicalTables = False
+        self._tableWithAdditionalInfo = None
+        self._aliases: Dict[str, str] = {}
+        self._objectsType: Dict[str, str] = {}
+
+    # -------------------------------------------------------------------------
+    # metadata-viewer DAO API
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def getCompatibleFileTypes(cls):
+        # Kept for compatibility with ObjectManager.selectDAO(), even though
+        # ScipionWeb injects this DAO directly.
+        return ["pgset"]
+
+    def hasOutput(self) -> bool:
+        try:
+            return self._getStoredSet(limit=0, offset=0) is not None
+        except Exception:
+            return False
+
+    def getTables(self):
+        if self._tables:
+            return self._tables
+
+        storedSet = self._requireStoredSet(limit=0, offset=0)
+        setId = int(storedSet["id"])
+
+        logicalTables = []
+        try:
+            logicalTables = self.setMapper.listStoredSetTables(setId) or []
+        except Exception:
+            logicalTables = []
+
+        if logicalTables:
+            self._useLogicalTables = True
+
+            for logicalTable in logicalTables:
+                tableName = logicalTable.get("name")
+                if not tableName:
+                    continue
+
+                tableAlias = logicalTable.get("alias") or tableName
+
+                table = Table(tableName)
+                table.setAlias(tableAlias)
+
+                self._tables[tableName] = table
+                self._aliases[tableName] = tableAlias
+                self._logicalTables[tableName] = logicalTable
+                self._tableColumns[tableName] = self.setMapper.getStoredSetTableColumns(
+                    int(logicalTable["id"])
+                )
+
+            self._addPropertiesTable()
+            self.composeObjectType()
+            return self._tables
+
+        tableAlias = storedSet.get("setClassName") or self.outputName
+
+        table = Table(OBJECT_TABLE)
+        table.setAlias(tableAlias)
+
+        self._tables[OBJECT_TABLE] = table
+        self._aliases[OBJECT_TABLE] = tableAlias
+        self._columns = self._normalizeColumns(storedSet.get("columns") or [])
+
+        self._addPropertiesTable()
+        self.composeObjectType()
+        return self._tables
+
+    def _addPropertiesTable(self) -> None:
+        if PROPERTIES_TABLE in self._tables:
+            return
+
+        table = Table(PROPERTIES_TABLE)
+        table.setAlias(PROPERTIES_TABLE)
+        self._tables[PROPERTIES_TABLE] = table
+        self._aliases[PROPERTIES_TABLE] = PROPERTIES_TABLE
+
+    def fillTable(self, table, objectManager):
+        tableName = table.getName()
+        if tableName != OBJECT_TABLE and not self._useLogicalTables:
+            return
+
+        firstRow = self.getTableRow(tableName, 0)
+        columns = self._getColumnsForTable(tableName)
+
+        if "id" not in firstRow:
+            table.setHasColumnId(False)
+
+        labels = [
+            key
+            for key in firstRow.keys()
+            if key not in EXCLUDED_COLUMNS
+        ]
+
+        self._labels[tableName] = labels
+        self._labelsTypes[tableName] = [
+            _guessType(firstRow.get(key))
+            for key in labels
+        ]
+
+        imgRenderer = None
+        computedColsCount = 0
+
+        for index, colName in enumerate(labels):
+            value = firstRow.get(colName)
+            isFileNameCol = imgRenderer is None and colName.endswith("_filename")
+            columnDef = next(
+                (
+                    column
+                    for column in columns
+                    if str(column.get("labelProperty") or "").strip() == str(colName)
+                ),
+                None,
+            )
+            columnClassName = self._getColumnClassName(columnDef)
+            columnClassNameLower = columnClassName.lower()
+
+            if colName == ENABLED_COLUMN or columnClassNameLower == "boolean":
+                renderer = BoolRenderer()
+            elif columnClassNameLower == "matrix" or colName.endswith("_matrix") or self._looksLikeMatrix(value):
+                renderer = MatrixRender()
+            elif columnClassNameLower == "float":
+                renderer = FloatRenderer()
+            elif isFileNameCol:
+                renderer = StrRenderer()
+            else:
+                renderer = table.guessRenderer("" if value is None else str(value))
+
+            newCol = ScipionColumn(colName, renderer)
+            newCol.setIsSorteable(True)
+
+            if tableName == OBJECT_TABLE:
+                newCol.setIsVisible(objectManager.isLabelVisible(colName))
+            else:
+                newCol.setIsVisible(True)
+
+            table.addColumn(newCol)
+
+            if isFileNameCol:
+                previousCol = labels[index - 1] if index > 0 else ""
+                if previousCol.endswith("_index"):
+                    extraRenderer = renderer
+                    imageValue = "" if value is None else str(value)
+
+                    try:
+                        if imageValue and ImageRenderer().getImageReader(imageValue) is not None:
+                            extraRenderer = ImageRenderer()
+                            imgRenderer = extraRenderer
+                    except Exception:
+                        pass
+
+                    extraCol = ScipionColumn(EXTENDED_COLUMN_NAME, extraRenderer)
+                    extraCol.setCallback(self.composeImageFilename)
+                    extraCol.setIsVisible(newCol.isVisible())
+                    extraCol.setIsSorteable(False)
+
+                    table.addColumn(extraCol)
+                    newCol.setIsVisible(False)
+                    computedColsCount += 1
+
+            elif colName.endswith("_matrix"):
+
+                def addAlignmentColumn(name, offset, position):
+                    extraCol = ScipionColumn(name, renderer=FloatRenderer())
+                    extraCol.setIsSorteable(False)
+                    extraCol.setIsVisible(newCol.isVisible())
+                    extraCol.setCallback(
+                        lambda row, values, off=offset, pos=position:
+                        self.extractAngularValue(values, off, pos)
+                    )
+                    table.addColumn(extraCol)
+
+                def addShiftColumn(name, offset, position):
+                    extraCol = ScipionColumn(name, renderer=FloatRenderer())
+                    extraCol.setIsVisible(newCol.isVisible())
+                    extraCol.setIsSorteable(False)
+                    extraCol.setCallback(
+                        lambda row, values, off=offset, pos=position:
+                        self.extractShift(values, off, pos)
+                    )
+                    table.addColumn(extraCol)
+
+                colNamePrefix = colName.split("_matrix")[0]
+
+                addAlignmentColumn(colNamePrefix + "_rot", -1, 0)
+                computedColsCount += 1
+
+                if imgRenderer:
+                    imgRenderer.setRotationColumnIndex(index + computedColsCount)
+
+                addAlignmentColumn(colNamePrefix + "_tilt", -2, 1)
+                computedColsCount += 1
+
+                addAlignmentColumn(colNamePrefix + "_psi", -3, 2)
+                computedColsCount += 1
+
+                addShiftColumn(colNamePrefix + "_shiftX", -4, 0)
+                computedColsCount += 1
+
+                addShiftColumn(colNamePrefix + "_shiftY", -5, 1)
+                computedColsCount += 1
+
+        self.generateTableActions(table, objectManager)
+
+        if table.getColumns():
+            table.setSortingColumn(table.getColumns()[0].getName())
+
+    def composeObjectType(self) -> Dict[str, str]:
+        self._objectsType = {}
+
+        rootAlias = self._getActionAliasForTableName(OBJECT_TABLE)
+        rootObjectType = self._getRootObjectType()
+
+        if rootAlias and rootObjectType:
+            self._objectsType[rootAlias] = rootObjectType
+
+        for tableName in list(self._tables.keys()):
+            if tableName == PROPERTIES_TABLE:
+                continue
+
+            aliasText = self._getActionAliasForTableName(tableName)
+            if not aliasText:
+                continue
+
+            aliasParts = aliasText.rsplit("_", 1)
+            if len(aliasParts) != 2:
+                continue
+
+            objectName = aliasParts[1].strip()
+            if not objectName:
+                continue
+
+            objectType = self._composeSetObjectTypeFromAliasPart(objectName)
+            if objectName not in self._objectsType:
+                self._objectsType[objectName] = objectType
+
+        return self._objectsType
+
+    def _getRootObjectType(self) -> str:
+        try:
+            storedSet = self._getStoredSetHeader()
+        except Exception:
+            return self.outputName
+
+        setClassName = storedSet.get("setClassName")
+        if setClassName:
+            return str(setClassName)
+
+        return self.outputName
+
+    def _getActionAliasForTableName(self, tableName: str) -> str:
+        if tableName == PROPERTIES_TABLE:
+            return PROPERTIES_TABLE
+
+        logicalTable = self._logicalTables.get(tableName)
+        if logicalTable:
+            itemClassName = str(logicalTable.get("itemClassName") or "").strip()
+            if itemClassName:
+                if tableName == OBJECT_TABLE:
+                    return itemClassName
+
+                if tableName.endswith("_Objects"):
+                    prefix = tableName[: -len("_Objects")]
+                    return "%s_%s" % (prefix, itemClassName)
+
+        if tableName == OBJECT_TABLE:
+            try:
+                storedSet = self._getStoredSetHeader()
+                itemClassName = str(storedSet.get("itemClassName") or "").strip()
+                if itemClassName:
+                    return itemClassName
+            except Exception:
+                pass
+
+        return str(self._aliases.get(tableName) or tableName)
+
+    def _composeSetObjectTypeFromAliasPart(self, objectName: str) -> str:
+        objectName = str(objectName or "").strip()
+        if not objectName:
+            return ""
+
+        normalizedName = "ParticlesFlex" if objectName == "ParticleFlex" else objectName
+        lastChar = normalizedName[-1]
+
+        suffix = (
+            "s"
+            if lastChar in "aeiouAEIOU" or (lastChar != "s" and lastChar != "x")
+            else ""
+        )
+
+        return "SetOf%s%s" % (normalizedName, suffix)
+
+    def _supportsSubset(self, objectType: str) -> bool:
+        objectType = str(objectType or "").strip()
+        return objectType.startswith("SetOf") or objectType in SUBSET_COMPATIBLE_NON_STANDARD_SET_TYPES
+
+    def generateTableActions(self, table, objectManager) -> None:
+        if table.getName() == PROPERTIES_TABLE:
+            return
+
+        self.composeObjectType()
+
+        alias = self._getActionAliasForTableName(table.getName())
+        if not alias:
+            return
+
+        aliasParts = alias.rsplit("_", 1)
+
+        if alias.startswith("Class") and len(aliasParts) == 1:
+            rootObjectType = self._objectsType.get(alias)
+            if rootObjectType:
+                self._addTableAction(table, alias, rootObjectType, objectManager)
+
+            for actionName, objectType in self._objectsType.items():
+                if actionName == alias:
+                    continue
+
+                self._addTableAction(table, actionName, objectType, objectManager)
+                break
+
+            if alias == "Class2D":
+                self._addTableAction(table, "Averages", "SetOfAverages", objectManager)
+            elif alias == "Class3D":
+                self._addTableAction(table, "Volumes", "SetOfVolumes", objectManager)
+
+        elif alias.startswith("Class") and len(aliasParts) > 1:
+            actionName = aliasParts[1]
+            objectType = self._objectsType.get(actionName)
+            if objectType:
+                self._addTableAction(table, actionName, objectType, objectManager)
+        elif len(aliasParts) > 1:
+            actionName = aliasParts[1]
+            objectType = self._objectsType.get(actionName)
+            if objectType:
+                self._addTableAction(table, actionName, objectType, objectManager)
+
+        elif alias in self._objectsType and self._supportsSubset(self._objectsType[alias]):
+            self._addTableAction(table, alias, self._objectsType[alias], objectManager)
+
+    def _addTableAction(self, table, actionName: str, objectType: str, objectManager) -> None:
+        actionName = str(actionName or "").strip()
+        objectType = str(objectType or "").strip()
+
+        if not actionName or not objectType:
+            return
+
+        try:
+            for action in table.getActions() or []:
+                if action.getName() == actionName:
+                    return
+        except Exception:
+            pass
+
+        try:
+            table.addAction(
+                actionName,
+                lambda table=table, objectType=objectType, objectManager=objectManager:
+                self.createSubsetCallback(table, objectType, objectManager),
+            )
+        except Exception:
+            logger.debug(
+                "Could not add PostgreSQL metadata action '%s' for object type '%s'",
+                actionName,
+                objectType,
+                exc_info=True,
+            )
+
+    def createSubsetCallback(self, table: Table, objectType: str, objectManager) -> bool:
+        logger.info(
+            "PostgreSQL metadata subset action requested. table=%s objectType=%s",
+            table.getName(),
+            objectType,
+        )
+        return False
+
+    def _getColumnsForTable(self, tableName: str) -> List[Dict[str, Any]]:
+        if tableName == PROPERTIES_TABLE:
+            return self._getPropertiesColumns()
+
+        if self._useLogicalTables:
+            return self._normalizeColumns(self._tableColumns.get(tableName) or [])
+
+        return self._columns
+
+    def _getPropertiesColumns(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "labelProperty": PROPERTY_KEY_COLUMN,
+                "position": 0,
+                "className": "String",
+            },
+            {
+                "labelProperty": PROPERTY_VALUE_COLUMN,
+                "position": 1,
+                "className": "String",
+            },
+        ]
+
+    def _getLogicalTable(self, tableName: str) -> Optional[Dict[str, Any]]:
+        if not self._useLogicalTables:
+            return None
+        return self._logicalTables.get(tableName)
+
+    def fillPage(self, page, actualColumn: str, orderAsc=True):
+        table = page.getTable()
+        tableName = table.getName()
+
+        pageNumber = page.getPageNumber()
+        pageSize = page.getPageSize()
+        firstRow = pageNumber * pageSize - pageSize
+
+        columnLabel = actualColumn or "id"
+        mode = "ASC" if orderAsc else "DESC"
+
+        for rowCount, row in enumerate(
+                self.iterTable(
+                    tableName,
+                    start=firstRow,
+                    limit=pageSize,
+                    orderBy=columnLabel,
+                    mode=mode,
+                )
+        ):
+            values = []
+
+            for column in page.getTable().getColumns():
+                if column.isSorteable():
+                    values.append(row.get(column.getName()))
+                else:
+                    column.calculate(row, values)
+
+            idValue = row.get("id", firstRow + rowCount + 1)
+            page.addRow((int(idValue), values))
+
+    def getTableRow(self, tableName, rowIndex):
+        rows = self._getRows(
+            tableName=tableName,
+            start=max(0, int(rowIndex or 0)),
+            limit=1,
+            orderBy="id",
+            orderAsc=True,
+        )
+
+        if rows:
+            return rows[0]
+
+        return self._emptyRow(tableName)
+
+    def getSelectedRangeRowsIds(
+            self,
+            tableName,
+            startRow,
+            numberOfRows,
+            column,
+            reverse=True,
+    ):
+        rows = list(
+            self.iterTable(
+                tableName,
+                start=max(0, int(startRow) - 1),
+                limit=int(numberOfRows),
+                orderBy=column or "id",
+                mode="ASC" if reverse else "DESC",
+            )
+        )
+        return [int(row.get("id")) for row in rows if row.get("id") is not None]
+
+    def getColumnsValues(
+            self,
+            tableName,
+            columns,
+            xAxis,
+            selection,
+            limit,
+            useSelection,
+            reverse=True,
+    ):
+        selectedColumns = list(columns or [])
+        if xAxis and xAxis not in selectedColumns:
+            selectedColumns.append(xAxis)
+        if "id" not in selectedColumns:
+            selectedColumns.append("id")
+
+        rows = list(
+            self.iterTable(
+                tableName,
+                start=0,
+                limit=limit,
+                orderBy=xAxis or "id",
+                mode="ASC" if reverse else "DESC",
+            )
+        )
+
+        if useSelection and selection is not None:
+            try:
+                selectedIds = set(selection.getSelection().keys())
+                rows = [row for row in rows if row.get("id") in selectedIds]
+            except Exception:
+                pass
+
+        values = {col: [] for col in selectedColumns}
+        for row in rows:
+            for col in selectedColumns:
+                values[col].append(row.get(col))
+
+        return values
+
+    def getTableWithAdditionalInfo(self):
+        return self._tableWithAdditionalInfo, ADITIONAL_INFO_DISPLAY_COLUMN_LIST
+
+    def close(self):
+        # Do not close the shared PostgreSQL connection here.
+        pass
+
+    # -------------------------------------------------------------------------
+    # Row/table helpers
+    # -------------------------------------------------------------------------
+
+    def iterTable(self, tableName, **kwargs):
+        start = max(0, int(kwargs.get("start", 0) or 0))
+        limit = kwargs.get("limit", None)
+        limit = int(limit) if limit is not None else None
+
+        orderBy = kwargs.get("orderBy") or "id"
+        mode = str(kwargs.get("mode") or "ASC").upper()
+        orderAsc = mode != "DESC"
+
+        rows = self._getRows(
+            tableName=tableName,
+            start=start,
+            limit=limit,
+            orderBy=orderBy,
+            orderAsc=orderAsc,
+        )
+
+        for row in rows:
+            yield row
+
+    def composeImageFilename(self, row, values):
+        if len(values) < 2:
+            values.append("")
+            return
+
+        indexValue = values[-2]
+        filenameValue = values[-1]
+
+        if filenameValue is None:
+            values.append("")
+            return
+
+        indexStr = ""
+        try:
+            if int(indexValue) != 0:
+                indexStr = "%s@" % indexValue
+        except Exception:
+            if indexValue not in (None, "", 0, "0"):
+                indexStr = "%s@" % indexValue
+
+        values.append("%s%s" % (indexStr, filenameValue))
+
+    def extractAngularValue(self, values, offset, position):
+        matrix = values[offset]
+        matrix = self._toNumpyMatrix(matrix)
+
+        matrixI = numpy.linalg.inv(matrix)
+        eulerData = euler_from_matrix(matrix=matrixI, axes="szyz")
+        values.append(numpy.rad2deg(eulerData[position]))
+
+    def extractShift(self, values, offset, position):
+        matrix = values[offset]
+        matrix = self._toNumpyMatrix(matrix)
+
+        shape = matrix.shape[0]
+        values.append(matrix[position, shape - 1])
+
+    # -------------------------------------------------------------------------
+    # PostgreSQL-backed loading
+    # -------------------------------------------------------------------------
+
+    def _getStoredSet(
+            self,
+            limit: Optional[int],
+            offset: int,
+    ) -> Optional[Dict[str, Any]]:
+        return self.setMapper.getStoredSet(
+            projectId=self.projectId,
+            protocolDbId=self.protocolId,
+            outputName=self.outputName,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _requireStoredSet(
+            self,
+            limit: Optional[int],
+            offset: int,
+    ) -> Dict[str, Any]:
+        storedSet = self._getStoredSet(limit=limit, offset=offset)
+        if storedSet is None:
+            raise ValueError(
+                "Persisted Scipion set was not found: projectId=%s protocolId=%s outputName=%s"
+                % (self.projectId, self.protocolId, self.outputName)
+            )
+        return storedSet
+
+    def _getStoredSetHeader(self) -> Dict[str, Any]:
+        if self._storedSet is None:
+            self._storedSet = self._requireStoredSet(limit=0, offset=0)
+            self._columns = self._normalizeColumns(self._storedSet.get("columns") or [])
+        return self._storedSet
+
+    def _getRows(
+            self,
+            tableName: str,
+            start: int,
+            limit: Optional[int],
+            orderBy: str,
+            orderAsc: bool,
+    ) -> List[Dict[str, Any]]:
+        orderBy = str(orderBy or "id")
+
+        if tableName == PROPERTIES_TABLE:
+            rows = self._getPropertiesRows()
+            rows.sort(
+                key=lambda row: self._sortValue(row.get(orderBy)),
+                reverse=not orderAsc,
+            )
+
+            if limit is None:
+                return rows[start:]
+
+            return rows[start:start + limit]
+
+        if self._useLogicalTables:
+            logicalTable = self._getLogicalTable(tableName)
+            if logicalTable is None:
+                return []
+
+            tableId = int(logicalTable["id"])
+            columns = self._getColumnsForTable(tableName)
+
+            canUsePagedRead = orderAsc and orderBy in ("id", "_objId", "SCIPION_OBJECT_ID")
+
+            if canUsePagedRead:
+                items = self.setMapper.getStoredSetTableItems(
+                    tableId=tableId,
+                    limit=limit,
+                    offset=start,
+                )
+                return [self._itemToRow(item, columns) for item in items]
+
+            items = self.setMapper.getStoredSetTableItems(
+                tableId=tableId,
+                limit=None,
+                offset=0,
+            )
+            rows = [self._itemToRow(item, columns) for item in items]
+            rows.sort(
+                key=lambda row: self._sortValue(row.get(orderBy)),
+                reverse=not orderAsc,
+            )
+
+            if limit is None:
+                return rows[start:]
+
+            return rows[start:start + limit]
+
+        canUsePagedRead = orderAsc and orderBy in ("id", "_objId", "SCIPION_OBJECT_ID")
+
+        if canUsePagedRead:
+            storedSet = self._requireStoredSet(limit=limit, offset=start)
+            items = storedSet.get("items") or []
+            self._columns = self._normalizeColumns(storedSet.get("columns") or self._columns)
+            return [self._itemToRow(item, self._columns) for item in items]
+
+        storedSet = self._requireStoredSet(limit=None, offset=0)
+        items = storedSet.get("items") or []
+        self._columns = self._normalizeColumns(storedSet.get("columns") or self._columns)
+
+        rows = [self._itemToRow(item, self._columns) for item in items]
+        rows.sort(
+            key=lambda row: self._sortValue(row.get(orderBy)),
+            reverse=not orderAsc,
+        )
+
+        if limit is None:
+            return rows[start:]
+
+        return rows[start:start + limit]
+
+    def _itemToRow(
+            self,
+            item: Dict[str, Any],
+            columns: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        values = item.get("values") or {}
+        if not isinstance(values, dict):
+            values = {}
+
+        itemId = item.get("scipionItemId")
+        if itemId is None:
+            itemId = item.get("id")
+
+        row: Dict[str, Any] = {
+            "id": itemId,
+            "enabled": self._toBool(item.get("enabled", True), default=True),
+        }
+
+        for column in columns:
+            label = column.get("labelProperty")
+            if not label:
+                continue
+
+            value = values.get(label)
+            if value is None:
+                value = values.get(str(label).strip())
+
+            row[str(label)] = self._normalizeValue(str(label), value, column)
+
+        return row
+
+    def _emptyRow(self, tableName: str) -> Dict[str, Any]:
+        if tableName == PROPERTIES_TABLE:
+            return {
+                PROPERTY_KEY_COLUMN: "",
+                PROPERTY_VALUE_COLUMN: "",
+            }
+
+        row = {
+            "id": 0,
+            "enabled": True,
+        }
+
+        for column in self._getColumnsForTable(tableName):
+            label = column.get("labelProperty")
+            if label:
+                row[str(label)] = None
+
+        return row
+
+    def getTableRowCount(self, tableName):
+        if tableName not in self._tableCount:
+            if tableName == PROPERTIES_TABLE:
+                self._tableCount[tableName] = len(self._getPropertiesRows())
+            elif self._useLogicalTables:
+                logicalTable = self._getLogicalTable(tableName)
+                if logicalTable is None:
+                    self._tableCount[tableName] = 0
+                else:
+                    self._tableCount[tableName] = self._getStoredSetTableItemsCount(
+                        int(logicalTable["id"])
+                    )
+            else:
+                self._tableCount[tableName] = self._getStoredSetItemsCount()
+
+        return self._tableCount[tableName]
+
+    def _getStoredSetTableItemsCount(self, tableId: int) -> int:
+        row = self.db.fetchOne(
+            """
+            SELECT COUNT(*) AS count
+              FROM scipion_set_table_items
+             WHERE "tableId" = %s
+            """,
+            (tableId,),
+        )
+        if not row:
+            return 0
+        return int(row.get("count") or 0)
+
+    # -------------------------------------------------------------------------
+    # Metadata helpers
+    # -------------------------------------------------------------------------
+
+    def _getPropertiesRows(self) -> List[Dict[str, Any]]:
+        storedSet = self._getStoredSetHeader()
+
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+
+        self._addPropertyRow(
+            rows,
+            seen,
+            "self",
+            storedSet.get("setClassName") or self.outputName,
+        )
+
+        self._addPropertyRow(
+            rows,
+            seen,
+            "_size",
+            self._getStoredSetItemsCount(),
+        )
+
+        for prop in storedSet.get("setProperties") or []:
+            if not isinstance(prop, dict):
+                continue
+
+            self._addPropertyRow(
+                rows,
+                seen,
+                prop.get("key"),
+                prop.get("value"),
+            )
+
+        properties = storedSet.get("properties") or {}
+        if isinstance(properties, dict):
+            for key in sorted(properties.keys()):
+                self._addPropertyRow(
+                    rows,
+                    seen,
+                    key,
+                    properties.get(key),
+                )
+
+        return rows
+
+    def _addPropertyRow(
+            self,
+            rows: List[Dict[str, Any]],
+            seen: set,
+            key: Any,
+            value: Any,
+    ) -> None:
+        keyText = str(key or "").strip()
+        if not keyText or keyText in seen:
+            return
+
+        seen.add(keyText)
+        rows.append(
+            {
+                PROPERTY_KEY_COLUMN: keyText,
+                PROPERTY_VALUE_COLUMN: self._normalizePropertyValue(value),
+            }
+        )
+
+    def _normalizePropertyValue(self, value: Any) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, numpy.ndarray):
+            value = value.tolist()
+
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                return json.dumps(value, sort_keys=True, default=str)
+            except Exception:
+                return str(value)
+
+        return str(value)
+
+    def _normalizeColumns(self, columns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        def sortKey(column: Dict[str, Any]):
+            try:
+                return int(column.get("position") or 0)
+            except Exception:
+                return 0
+
+        return sorted(columns or [], key=sortKey)
+
+    def _getStoredSetItemsCount(self) -> int:
+        storedSet = self._getStoredSetHeader()
+        properties = storedSet.get("properties") or {}
+
+        if isinstance(properties, dict):
+            count = self._toInt(properties.get("itemsCount"))
+            if count is not None:
+                return count
+
+        for prop in storedSet.get("setProperties") or []:
+            if str(prop.get("key")) == "itemsCount":
+                count = self._toInt(prop.get("value"))
+                if count is not None:
+                    return count
+
+        return 0
+
+    @staticmethod
+    def _getColumnClassName(column: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(column, dict):
+            return ""
+
+        for key in ("className", "type", "columnType"):
+            value = column.get(key)
+            if value is not None:
+                return str(value).strip()
+
+        return ""
+
+    @staticmethod
+    def _isBooleanString(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+
+        return value.strip().lower() in {
+            "true",
+            "false",
+            "t",
+            "f",
+            "yes",
+            "no",
+            "y",
+            "n",
+            "1",
+            "0",
+            "on",
+            "off",
+        }
+
+    @staticmethod
+    def _toBool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+
+        if value is None:
+            return default
+
+        if isinstance(value, (int, float)):
+            return bool(value)
+
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "t", "yes", "y", "1", "on"}:
+                return True
+            if text in {"false", "f", "no", "n", "0", "off"}:
+                return False
+
+        return default
+
+    @staticmethod
+    def _toFloat(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _looksLikeMatrix(value: Any) -> bool:
+        if isinstance(value, numpy.ndarray):
+            return value.ndim == 2
+
+        if isinstance(value, (list, tuple)):
+            try:
+                return numpy.asarray(value).ndim == 2
+            except Exception:
+                return False
+
+        if not isinstance(value, str):
+            return False
+
+        text = value.strip()
+        return text.startswith("[[") and text.endswith("]]")
+
+    def _normalizeValue(
+            self,
+            label: str,
+            value: Any,
+            column: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        if value is None:
+            return None
+
+        className = self._getColumnClassName(column)
+        classNameLower = className.lower()
+
+        if classNameLower == "boolean" or label == ENABLED_COLUMN:
+            return self._toBool(value)
+
+        if classNameLower == "integer":
+            parsed = self._toInt(value)
+            return parsed if parsed is not None else value
+
+        if classNameLower == "float":
+            parsed = self._toFloat(value)
+            return parsed if parsed is not None else value
+
+        if classNameLower == "matrix" or label.endswith("_matrix") or self._looksLikeMatrix(value):
+            return self._toNumpyMatrix(value)
+
+        if classNameLower == "csvlist":
+            return self._toListValue(value)
+
+        if isinstance(value, str):
+            if self._isBooleanString(value):
+                return self._toBool(value)
+
+            return value
+
+        if isinstance(value, (int, float, bool)):
+            return value
+
+        if isinstance(value, list):
+            return [
+                self._normalizeValue(label, item, column)
+                for item in value
+            ]
+
+        if isinstance(value, tuple):
+            return [
+                self._normalizeValue(label, item, column)
+                for item in value
+            ]
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._normalizeValue(label, item, column)
+                for key, item in value.items()
+            }
+
+        return str(value)
+
+    def _toListValue(self, value: Any) -> List[Any]:
+        if value is None:
+            return []
+
+        if isinstance(value, numpy.ndarray):
+            return value.tolist()
+
+        if isinstance(value, list):
+            return value
+
+        if isinstance(value, tuple):
+            return list(value)
+
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, (list, tuple)):
+                    return list(parsed)
+            except Exception:
+                pass
+
+            return [item.strip() for item in text.split(",") if item.strip()]
+
+        return [value]
+
+    def _toNumpyMatrix(self, value: Any):
+        if isinstance(value, numpy.ndarray):
+            return value
+
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return numpy.array([])
+
+            parsed = None
+
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+
+            if parsed is None:
+                try:
+                    parsed = ast.literal_eval(text)
+                except Exception:
+                    parsed = None
+
+            if parsed is None:
+                rowTexts = re.findall(r"\[([^\[\]]+)\]", text)
+                rows = []
+
+                for rowText in rowTexts:
+                    numbers = re.findall(
+                        r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?",
+                        rowText,
+                    )
+                    if numbers:
+                        rows.append([float(number) for number in numbers])
+
+                parsed = rows
+
+            try:
+                return numpy.asarray(parsed, dtype=float)
+            except Exception:
+                return numpy.array([])
+
+        try:
+            return numpy.asarray(value, dtype=float)
+        except Exception:
+            return numpy.array([])
+
+    def _sortValue(self, value: Any):
+        if value is None:
+            return ""
+
+        if isinstance(value, numpy.ndarray):
+            return str(value.tolist())
+
+        if isinstance(value, (list, tuple, dict)):
+            return str(value)
+
+        return value
+
+    def _toInt(self, value: Any) -> Optional[int]:
+        if value is None or value == "":
+            return None
+
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+
+# Backward-compatible alias while project_service.py is migrated.
+PostgresqlMetadataDAO = PostgresqlDAO
