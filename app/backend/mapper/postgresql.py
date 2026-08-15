@@ -2066,8 +2066,17 @@ class PostgresqlFlatMapper(Mapper):
                         )
                         || jsonb_build_object(
                             '_scipionWebRuntime',
-                            protocols."params"::jsonb
-                                -> '_scipionWebRuntime'
+                            COALESCE(
+                                protocols."params"::jsonb
+                                    -> '_scipionWebRuntime',
+                                '{}'::jsonb
+                            )
+                            ||
+                            COALESCE(
+                                EXCLUDED."params"::jsonb
+                                    -> '_scipionWebRuntime',
+                                '{}'::jsonb
+                            )
                         )
                     ELSE
                         EXCLUDED."params"::jsonb
