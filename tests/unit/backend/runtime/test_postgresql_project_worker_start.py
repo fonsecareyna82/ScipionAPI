@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import os
+import json
 from pathlib import Path
 
 import app.backend.project.postgresql_project as projectModule
@@ -44,6 +45,7 @@ class FakeProtocol:
         self.scheduleLog = scheduleLog
         self.queueName = queueName
         self.queueParams = queueParams
+        self.pid = 0
 
     def getObjId(self):
         return self.protocolId
@@ -62,6 +64,17 @@ class FakeProtocol:
             self.queueParams or {}
         )
 
+    def setPid(
+            self,
+            pid,
+    ):
+        self.pid = int(
+            pid
+        )
+
+    def getPid(self):
+        return self.pid
+
 
 class FakeProcess:
     def __init__(self, pid=54321, returnCode=0):
@@ -74,6 +87,29 @@ class FakeProcess:
         return self.returnCode
 
 
+class FakeFlatMapper:
+    def __init__(self):
+        self.updateProtocolCalls = []
+
+    def getProjectProtocolByProtocolId(
+            self,
+            projectId,
+            protocolId,
+    ):
+        return {
+            "id": 91,
+            "params": {},
+        }
+
+    def updateProtocol(
+            self,
+            protocolData,
+    ):
+        self.updateProtocolCalls.append(
+            protocolData
+        )
+
+
 def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monkeypatch):
     projectPath = tmp_path / "project"
     projectPath.mkdir()
@@ -81,6 +117,9 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
     project = PostgresqlProject.__new__(PostgresqlProject)
     project.path = str(projectPath)
     project.postgresqlProjectId = 344
+    project.postgresqlFlatMapper = (
+        FakeFlatMapper()
+    )
     process = FakeProcess()
     calls = {}
 
@@ -105,6 +144,45 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
 
     moduleRoot = str(Path(projectModule.__file__).resolve().parents[3])
     assert pid == 54321
+    assert (
+            protocol.getPid()
+            == 54321
+    )
+
+    assert (
+            len(
+                project
+                .postgresqlFlatMapper
+                .updateProtocolCalls
+            )
+            == 1
+    )
+
+    processMetadataUpdate = (
+        project
+        .postgresqlFlatMapper
+        .updateProtocolCalls[0]
+    )
+
+    storedParams = json.loads(
+        processMetadataUpdate[
+            "params"
+        ]
+    )
+
+    assert (
+            storedParams[
+                "_scipionWebRuntime"
+            ]["pid"]
+            == 54321
+    )
+
+    assert (
+            storedParams[
+                "_scipionWebRuntime"
+            ]["jobIds"]
+            == []
+    )
     assert process.waitCalls == 0
     assert calls["commandArgs"] == {"projectId": 344, "protocolId": 41, "runMode": "restart"}
     assert calls["cwd"] == moduleRoot
@@ -113,7 +191,6 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
     assert calls["sameLog"] is True
     assert calls["stdoutPath"] == str(projectPath / "Runs/000041_FakeProtocol/logs/schedule.log")
     assert calls["env"]["PYTHONPATH"].split(os.pathsep)[0] == moduleRoot
-
 
 
 def test_StartPostgresqlProtocolWorkerForwardsTransientQueueOverride(
@@ -142,6 +219,10 @@ def test_StartPostgresqlProtocolWorkerForwardsTransientQueueOverride(
     )
 
     project.postgresqlProjectId = 344
+
+    project.postgresqlFlatMapper = (
+        FakeFlatMapper()
+    )
 
     process = FakeProcess()
     calls = {}

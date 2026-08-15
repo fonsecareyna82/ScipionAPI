@@ -425,6 +425,9 @@ class PostgresqlProject(ScipionProject):
 
     def _startPostgresqlProtocolWorker(self, protocol, runMode: str, wait: bool = False):
         from app.backend.runtime.postgresql_protocol_worker import buildPostgresqlWorkerCommand
+        from app.backend.runtime.protocol_status_sync_service import (
+            RuntimeProtocolStatusSyncService,
+        )
         protocolId = getattr(protocol, "getObjId", lambda: None)()
         if protocolId in (None, ""):
             raise RuntimeError("Cannot start PostgreSQL protocol worker without protocol id")
@@ -454,6 +457,19 @@ class PostgresqlProject(ScipionProject):
         command = buildPostgresqlWorkerCommand(**commandArgs)
         with open(scheduleLogPath, "a", encoding="utf-8") as scheduleLog:
             process = subprocess.Popen(command, cwd=moduleRoot, env=workerEnv, stdin=subprocess.DEVNULL, stdout=scheduleLog, stderr=scheduleLog, start_new_session=True)
+        protocol.setPid(
+            process.pid
+        )
+
+        (
+            RuntimeProtocolStatusSyncService()
+            .persistProtocolProcessIdentity(
+                mapper=self.postgresqlFlatMapper,
+                projectId=self.postgresqlProjectId,
+                protocolId=protocolId,
+                protocol=protocol,
+            )
+        )
         logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)
         return process.wait() if wait else process.pid
 
