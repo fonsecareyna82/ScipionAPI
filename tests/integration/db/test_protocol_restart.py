@@ -36,6 +36,9 @@ from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapp
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
 from app.backend.runtime.protocol_postgresql_restart_launcher_service import RuntimePostgresqlRestartLauncherService
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 class RestartProtocolStub(Protocol):
@@ -366,8 +369,16 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
             workflowProtocolMap=workflowProtocolMap,
             currentProject=currentProject,
             validationInfo=validationInfo,
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedOutputs,
-            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearChildInputRefObjectIds,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                deletePersistedOutputs
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                clearChildInputRefObjectIds
+            ),
+            currentUserId=userId,
+            executionId=(
+                "workflow-execution-123"
+            ),
         )
 
         assert launchInfo["errors"] == []
@@ -418,6 +429,44 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
             "runMode": "restart",
             "wait": False,
         }]
+
+        runtimeRow = (
+            restartMapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=childProtocolId,
+            )
+        )
+
+        assert runtimeRow is not None
+
+        runtimeParams = (
+            RuntimeProtocolStatusSyncService()
+            .normalizeParams(
+                runtimeRow["params"]
+            )
+        )
+
+        runtimeMetadata = runtimeParams[
+            (
+                RuntimeProtocolStatusSyncService
+                .RUNTIME_METADATA_KEY
+            )
+        ]
+
+        assert (
+                runtimeMetadata[
+                    "launchedByUserId"
+                ]
+                == userId
+        )
+
+        assert (
+                runtimeMetadata[
+                    "executionId"
+                ]
+                == "workflow-execution-123"
+        )
 
         runtimeMapper.close()
         runtimeMapper = None

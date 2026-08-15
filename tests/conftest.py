@@ -434,6 +434,17 @@ class FakeProjectService:
         self.launchProtocolError = None
         self.lastLaunchProtocolCall = None
 
+        self.executeProtocolWorkflowError = None
+        self.executeProtocolWorkflowResult = {
+            "status": 0,
+            "errors": [],
+            "workflowExecution": {
+                "mode": "restart",
+                "scope": "all",
+            },
+        }
+        self.lastExecuteProtocolWorkflowCall = None
+
         self.saveProtocolError = None
         self.saveProtocolResult = ({"protocolId": "10"}, [])
         self.lastSaveProtocolCall = None
@@ -1110,6 +1121,33 @@ class FakeProjectService:
         if self.launchProtocolError is not None:
             raise self.launchProtocolError
 
+    def executeProtocolWorkflow(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            mode,
+            scope,
+            currentUserId=None,
+    ):
+        self.lastExecuteProtocolWorkflowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "protocolClassName": protocolClassName,
+            "params": params,
+            "mode": mode,
+            "scope": scope,
+            "currentUserId": currentUserId,
+        }
+
+        if self.executeProtocolWorkflowError is not None:
+            raise self.executeProtocolWorkflowError
+
+        return self.executeProtocolWorkflowResult
+
     def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params):
         self.lastSaveProtocolCall = {
             "mapper": mapper,
@@ -1162,14 +1200,25 @@ class FakeProjectService:
         if self.deleteProtocolError is not None:
             raise self.deleteProtocolError
 
-    def restartProtocolAll(self, mapper, projectId, protocolId):
+    def restartProtocolAll(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            currentUserId=None,
+            executionId=None,
+    ):
         self.lastRestartProtocolAllCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
+            "currentUserId": currentUserId,
+            "executionId": executionId,
         }
+
         if self.restartProtocolAllError is not None:
             raise self.restartProtocolAllError
+
         return self.restartProtocolAllResult
 
     def continueProtocolAll(
@@ -1177,13 +1226,15 @@ class FakeProjectService:
             mapper,
             projectId,
             protocolId,
-            currentUser,
+            currentUserId=None,
+            executionId=None,
     ):
         self.lastContinueProtocolAllCall = {
             "mapper": mapper,
             "projectId": projectId,
             "protocolId": protocolId,
-            "currentUser": currentUser,
+            "currentUserId": currentUserId,
+            "executionId": executionId,
         }
 
         if self.continueProtocolAllError is not None:

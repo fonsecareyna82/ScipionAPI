@@ -3943,3 +3943,155 @@ def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServi
     assert result["protocolContext"]["info"]["status"] == "saved"
 
 
+def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    concurrencyCalls = []
+    workflowAllCalls = []
+
+    expectedResult = {
+        "postgresqlRuntimeRestart": True,
+    }
+
+    def executeWithConcurrencyLimit(
+            mapper,
+            currentUserId,
+            executeCallback,
+    ):
+        concurrencyCalls.append({
+            "mapper": mapper,
+            "currentUserId": currentUserId,
+        })
+
+        return executeCallback(
+            "workflow-execution-123"
+        )
+
+    def executeWorkflowAll(
+            **kwargs,
+    ):
+        workflowAllCalls.append(
+            kwargs
+        )
+
+        return expectedResult
+
+    class FakeWorkflowExecutionService:
+        def executeWorkflow(
+                self,
+                **kwargs,
+        ):
+            return (
+                kwargs[
+                    "executeAllCallback"
+                ](
+                    mapper=(
+                        kwargs["mapper"]
+                    ),
+                    projectId=(
+                        kwargs["projectId"]
+                    ),
+                    protocolId=(
+                        kwargs["protocolId"]
+                    ),
+                    mode=(
+                        kwargs["mode"]
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(
+        service,
+        (
+            "_executeProtocolExecution"
+            "WithConcurrencyLimit"
+        ),
+        executeWithConcurrencyLimit,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_executeProtocolWorkflowAll",
+        executeWorkflowAll,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        (
+            "RuntimeProtocol"
+            "WorkflowExecutionService"
+        ),
+        FakeWorkflowExecutionService,
+    )
+
+    result = (
+        service
+        .executeProtocolWorkflow(
+            mapper=mapper,
+            projectId=1,
+            protocolId=500,
+            protocolClassName=(
+                "ProtClass"
+            ),
+            params={
+                "threshold": 0.5,
+            },
+            mode="restart",
+            scope="all",
+            currentUserId=7,
+        )
+    )
+
+    assert result is expectedResult
+
+    assert concurrencyCalls == [{
+        "mapper": mapper,
+        "currentUserId": 7,
+    }]
+
+    assert len(
+        workflowAllCalls
+    ) == 1
+
+    workflowAllCall = (
+        workflowAllCalls[0]
+    )
+
+    assert (
+        workflowAllCall["mapper"]
+        is mapper
+    )
+
+    assert (
+        workflowAllCall["projectId"]
+        == 1
+    )
+
+    assert (
+        workflowAllCall["protocolId"]
+        == 500
+    )
+
+    assert (
+        workflowAllCall["mode"]
+        == "restart"
+    )
+
+    assert (
+        workflowAllCall[
+            "currentUserId"
+        ]
+        == 7
+    )
+
+    assert (
+        workflowAllCall[
+            "executionId"
+        ]
+        == "workflow-execution-123"
+    )
+
+

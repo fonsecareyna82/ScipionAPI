@@ -1000,7 +1000,13 @@ def test_RestartProtocolAllWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeRestartProtocolAll(mapper, projectId, protocolId):
+    def fakeRestartProtocolAll(
+            mapper,
+            projectId,
+            protocolId,
+            currentUserId=None,
+            executionId=None,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -1052,9 +1058,16 @@ def test_RestartProtocolAllReturnsSuccess(projectClient, fakeProjectService):
     )
 
     assert fakeProjectService.lastRestartProtocolAllCall == {
-        "mapper": fakeProjectService.lastRestartProtocolAllCall["mapper"],
+        "mapper": (
+            fakeProjectService
+            .lastRestartProtocolAllCall[
+                "mapper"
+            ]
+        ),
         "projectId": 1,
         "protocolId": 10,
+        "currentUserId": 1,
+        "executionId": None,
     }
 
 
@@ -1079,7 +1092,13 @@ def test_ContinueProtocolAllWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeContinueProtocolAll(mapper, projectId, protocolId, currentUser):
+    def fakeContinueProtocolAll(
+            mapper,
+            projectId,
+            protocolId,
+            currentUserId=None,
+            executionId=None,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -1130,14 +1149,16 @@ def test_ContinueProtocolAllDelegatesToService(projectClient, fakeProjectService
     )
 
     assert fakeProjectService.lastContinueProtocolAllCall == {
-        "mapper": fakeProjectService.lastContinueProtocolAllCall["mapper"],
+        "mapper": (
+            fakeProjectService
+            .lastContinueProtocolAllCall[
+                "mapper"
+            ]
+        ),
         "projectId": 1,
         "protocolId": 10,
-        "currentUser": {
-            "id": 1,
-            "email": "user@example.com",
-            "role": "user",
-        },
+        "currentUserId": 1,
+        "executionId": None,
     }
 
 
@@ -1347,3 +1368,56 @@ def test_DeleteProtocolReturnsSyncCounts(
         "projectId": 1,
         "protocolIds": ["10"],
     }
+
+
+def test_ExecuteProtocolWorkflowPassesCurrentUserId(
+        projectClient,
+        fakeProjectService,
+        fakeProjectMapper,
+):
+    response = projectClient.post(
+        (
+            "/projects/1/protocols/10/"
+            "workflow-execution"
+        ),
+        json={
+            "protocolClassName": "ProtClass",
+            "params": {
+                "threshold": 0.5,
+            },
+            "mode": "restart",
+            "scope": "all",
+        },
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "workflow": [],
+        "workflowExecution": {
+            "mode": "restart",
+            "scope": "all",
+        },
+    }
+
+    assert (
+        fakeProjectService
+        .lastExecuteProtocolWorkflowCall
+        == {
+            "mapper": fakeProjectMapper,
+            "projectId": 1,
+            "protocolId": 10,
+            "protocolClassName": (
+                "ProtClass"
+            ),
+            "params": {
+                "threshold": 0.5,
+            },
+            "mode": "restart",
+            "scope": "all",
+            "currentUserId": 1,
+        }
+    )
+

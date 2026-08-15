@@ -38,6 +38,9 @@ from app.backend.runtime.protocol_postgresql_continue_launcher_service import (
     CONTINUE_ACTION_RESUME,
     RuntimePostgresqlContinueLauncherService,
 )
+from app.backend.runtime.protocol_status_sync_service import (
+    RuntimeProtocolStatusSyncService,
+)
 
 
 class ContinueProtocolStub(Protocol):
@@ -350,8 +353,16 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
             projectId=projectId,
             currentProject=currentProject,
             plan=plan,
-            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=failOutputCleanup,
-            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=failInputRefCleanup,
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                failOutputCleanup
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                failInputRefCleanup
+            ),
+            currentUserId=userId,
+            executionId=(
+                "workflow-execution-123"
+            ),
         )
 
         assert launchInfo["errors"] == []
@@ -425,6 +436,44 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
             "runMode": CONTINUE_ACTION_RESUME,
             "wait": False,
         }]
+
+        runtimeRow = (
+            continueMapper
+            .getProjectProtocolByProtocolId(
+                projectId=projectId,
+                protocolId=childProtocolId,
+            )
+        )
+
+        assert runtimeRow is not None
+
+        runtimeParams = (
+            RuntimeProtocolStatusSyncService()
+            .normalizeParams(
+                runtimeRow["params"]
+            )
+        )
+
+        runtimeMetadata = runtimeParams[
+            (
+                RuntimeProtocolStatusSyncService
+                .RUNTIME_METADATA_KEY
+            )
+        ]
+
+        assert (
+                runtimeMetadata[
+                    "launchedByUserId"
+                ]
+                == userId
+        )
+
+        assert (
+                runtimeMetadata[
+                    "executionId"
+                ]
+                == "workflow-execution-123"
+        )
 
         runtimeMapper.close()
         runtimeMapper = None
