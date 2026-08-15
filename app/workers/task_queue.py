@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from pathlib import Path
 from typing import List
 
@@ -11,6 +12,7 @@ dotEnvPath = (repoRoot / "scipion_home" / ".env").resolve()
 load_dotenv(dotEnvPath, override=False)
 
 from celery import Celery, Task
+from celery.exceptions import Ignore
 
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.api.services.plugin_task_log import (
@@ -43,6 +45,62 @@ ANSI_GREEN = "\033[32m"
 def ansi(text: str, color: str, bold: bool = False) -> str:
     prefix = f"{ANSI_BOLD}{color}" if bold else color
     return f"{prefix}{text}{ANSI_RESET}"
+
+
+PROTOCOL_SUCCESS_STATUSES = {
+    "finished",
+    "interactive",
+}
+
+PROTOCOL_FAILURE_STATUSES = {
+    "failed",
+}
+
+PROTOCOL_CANCELLED_STATUSES = {
+    "aborted",
+}
+
+PROTOCOL_TERMINAL_STATUSES = (
+    PROTOCOL_SUCCESS_STATUSES
+    | PROTOCOL_FAILURE_STATUSES
+    | PROTOCOL_CANCELLED_STATUSES
+)
+
+
+def _getProtocolStatus(mapper, projectId: int, protocolId: int) -> str:
+    protocolRow = mapper.getProtocolByProtocolId(protocolId=protocolId, projectId=projectId)
+
+    if protocolRow is None:
+        raise RuntimeError(
+            "Protocol was not found in PostgreSQL. "
+            f"projectId={projectId} protocolId={protocolId}"
+        )
+
+    return str(protocolRow.get("status") or "").strip().lower()
+
+
+def _waitForProtocolTerminalStatus(
+    mapper,
+    projectId: int,
+    protocolId: int,
+    timeoutSeconds=None,
+    pollSeconds: float = 1.0,
+) -> str:
+    deadline = None if timeoutSeconds is None else time.monotonic() + max(0.0, float(timeoutSeconds))
+
+    while True:
+        protocolStatus = _getProtocolStatus(mapper, projectId, protocolId)
+
+        if protocolStatus in PROTOCOL_TERMINAL_STATUSES:
+            return protocolStatus
+
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Protocol worker exited but protocol did not reach a terminal state. "
+                f"projectId={projectId} protocolId={protocolId} status={protocolStatus}"
+            )
+
+        time.sleep(max(0.1, float(pollSeconds)))
 
 
 class InstallPluginTask(Task):
@@ -278,3 +336,115 @@ def uninstallPluginTask(self, pip_name: str) -> str:
         self.update_state(state="PROGRESS", meta={"step": "Completed"})
         writePluginTaskStep(taskId, "Completed")
         return f"Plugin {pip_name} uninstalled successfully!"
+
+
+@celeryApp.task(bind=True, name="app.tasks.executeProtocolTask")
+def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str = "resume"):
+    from app.backend.runtime.postgresql_protocol_worker import (
+        RuntimePostgresqlProtocolWorker,
+        normalizePostgresqlRunMode,
+    )
+
+    projectId = int(project_id)
+    protocolId = int(protocol_id)
+    runMode = normalizePostgresqlRunMode(run_mode)
+    originalCwd = os.getcwd()
+    runtimeWorker = None
+
+    try:
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Preparing protocol runtime...",
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "runMode": runMode,
+            },
+        )
+
+        prepareEnvironment()
+
+        runtimeWorker = RuntimePostgresqlProtocolWorker(
+            projectId=projectId,
+            protocolId=protocolId,
+            runMode=runMode,
+        )
+
+        runtimeWorker.load()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Launching protocol...",
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "runMode": runMode,
+            },
+        )
+
+        returnCode = runtimeWorker.project._startPostgresqlProtocolWorker(
+            protocol=runtimeWorker.protocol,
+            runMode=runMode,
+            wait=True,
+        )
+
+        protocolStatus = _getProtocolStatus(runtimeWorker.mapper, projectId, protocolId)
+
+        if protocolStatus not in PROTOCOL_TERMINAL_STATUSES:
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "step": "Waiting for protocol completion...",
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "runMode": runMode,
+                    "protocolStatus": protocolStatus,
+                },
+            )
+
+            protocolStatus = _waitForProtocolTerminalStatus(
+                mapper=runtimeWorker.mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                timeoutSeconds=None if returnCode == 0 else 5.0,
+            )
+
+        if protocolStatus in PROTOCOL_FAILURE_STATUSES:
+            raise RuntimeError(
+                "Protocol execution failed. "
+                f"projectId={projectId} protocolId={protocolId}"
+            )
+
+        if protocolStatus in PROTOCOL_CANCELLED_STATUSES:
+            self.update_state(
+                state="CANCELLED",
+                meta={
+                    "step": "Cancelled",
+                    "projectId": projectId,
+                    "protocolId": protocolId,
+                    "runMode": runMode,
+                    "protocolStatus": protocolStatus,
+                },
+            )
+            raise Ignore()
+
+        return {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "runMode": runMode,
+            "protocolStatus": protocolStatus,
+            "coordinatorReturnCode": int(returnCode),
+        }
+
+    finally:
+        if runtimeWorker is not None:
+            runtimeWorker.close()
+
+        try:
+            os.chdir(originalCwd)
+        except Exception:
+            logger.warning(
+                "Could not restore Celery protocol worker cwd: %s",
+                originalCwd,
+                exc_info=True,
+            )
