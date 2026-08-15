@@ -384,58 +384,45 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
             },
         )
 
-        returnCode = runtimeWorker.project._startPostgresqlProtocolWorker(
-            protocol=runtimeWorker.protocol,
-            runMode=runMode,
-            wait=True,
+        coordinatorPid = (
+            runtimeWorker
+            .project
+            ._startPostgresqlProtocolWorker(
+                protocol=runtimeWorker.protocol,
+                runMode=runMode,
+                wait=False,
+            )
         )
 
-        protocolStatus = _getProtocolStatus(runtimeWorker.mapper, projectId, protocolId)
+        protocolStatus = _getProtocolStatus(
+            runtimeWorker.mapper,
+            projectId,
+            protocolId,
+        )
 
-        if protocolStatus not in PROTOCOL_TERMINAL_STATUSES:
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "step": "Waiting for protocol completion...",
-                    "projectId": projectId,
-                    "protocolId": protocolId,
-                    "runMode": runMode,
-                    "protocolStatus": protocolStatus,
-                },
-            )
-
-            protocolStatus = _waitForProtocolTerminalStatus(
-                mapper=runtimeWorker.mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-                timeoutSeconds=None if returnCode == 0 else 5.0,
-            )
-
-        if protocolStatus in PROTOCOL_FAILURE_STATUSES:
-            raise RuntimeError(
-                "Protocol execution failed. "
-                f"projectId={projectId} protocolId={protocolId}"
-            )
-
-        if protocolStatus in PROTOCOL_CANCELLED_STATUSES:
-            self.update_state(
-                state="CANCELLED",
-                meta={
-                    "step": "Cancelled",
-                    "projectId": projectId,
-                    "protocolId": protocolId,
-                    "runMode": runMode,
-                    "protocolStatus": protocolStatus,
-                },
-            )
-            raise Ignore()
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Protocol dispatched",
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "runMode": runMode,
+                "protocolStatus": protocolStatus,
+                "coordinatorPid": int(
+                    coordinatorPid
+                ),
+            },
+        )
 
         return {
             "projectId": projectId,
             "protocolId": protocolId,
             "runMode": runMode,
             "protocolStatus": protocolStatus,
-            "coordinatorReturnCode": int(returnCode),
+            "coordinatorPid": int(
+                coordinatorPid
+            ),
+            "dispatched": True,
         }
 
     finally:
