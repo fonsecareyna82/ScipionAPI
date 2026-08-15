@@ -837,12 +837,10 @@ class JobMonitoringService:
                     "protocolClassName"
                 ),
                 "runMode": "unknown",
-                "celeryState": "UNKNOWN",
-                "step": (
-                    "Celery worker details temporarily unavailable."
-                ),
+                "celeryState": None,
+                "step": None,
                 "protocolStatus": protocolStatus,
-                "worker": "",
+                "worker": None,
                 "queue": None,
                 "workerPid": None,
                 "protocolPid": self._optionalInt(

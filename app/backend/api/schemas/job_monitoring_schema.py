@@ -45,10 +45,10 @@ class ActiveProtocolJobOut(BaseModel):
     protocolId: str
     protocolClassName: Optional[str] = None
     runMode: str
-    celeryState: str
+    celeryState: Optional[str] = None
     step: Optional[str] = None
     protocolStatus: str
-    worker: str
+    worker: Optional[str] = None
     queue: Optional[str] = None
     workerPid: Optional[int] = None
     protocolPid: Optional[int] = None
