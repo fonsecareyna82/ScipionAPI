@@ -38,7 +38,6 @@ from app.backend.runtime.protocol_postgresql_continue_launcher_service import (
     CONTINUE_ACTION_RESUME,
     RuntimePostgresqlContinueLauncherService,
 )
-import app.backend.runtime.protocol_postgresql_continue_launcher_service as continueLauncherModule
 
 
 class ContinueProtocolStub(Protocol):
@@ -276,9 +275,29 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
         childProtocol.cleanWorkingDir = lambda: workingDirectoryOperations.append("clean")
         childProtocol.makeWorkingDir = lambda: workingDirectoryOperations.append("make")
 
+        enqueueCalls = []
+
+        def enqueueProtocolTask(
+                protocol,
+                runMode,
+                wait=False,
+        ):
+            enqueueCalls.append({
+                "protocol": protocol,
+                "runMode": runMode,
+                "wait": wait,
+            })
+
+            return "celery-continue-task-1"
+
         currentProject = SimpleNamespace(
             path=str(tmp_path),
-            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
+            getPostgresqlRuntimeMapper=(
+                lambda: runtimeMapper
+            ),
+            _enqueuePostgresqlProtocolTask=(
+                enqueueProtocolTask
+            ),
         )
 
         workflowProtocolMap = {
@@ -326,27 +345,6 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
                 "PostgreSQL resume must not clear child input reference object ids."
             )
 
-        popenCalls = []
-
-        class FakeProcess:
-            pid = 54321
-
-        def fakePopen(command, **kwargs):
-            popenCalls.append(
-                {
-                    "command": list(command),
-                    "kwargs": dict(kwargs),
-                }
-            )
-
-            return FakeProcess()
-
-        monkeypatch.setattr(
-            continueLauncherModule.subprocess,
-            "Popen",
-            fakePopen,
-        )
-
         launchInfo = continueService.launchContinueSubworkflow(
             mapper=continueMapper,
             projectId=projectId,
@@ -383,13 +381,37 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
 
         launchedItem = launchInfo["launched"][0]
 
-        assert launchedItem["protocolId"] == str(childProtocolId)
-        assert launchedItem["protocolDbId"] == childProtocolDbId
-        assert launchedItem["action"] == CONTINUE_ACTION_RESUME
+        assert (
+                launchedItem["protocolId"]
+                == str(childProtocolId)
+        )
+
+        assert (
+                launchedItem["protocolDbId"]
+                == childProtocolDbId
+        )
+
+        assert (
+                launchedItem["action"]
+                == CONTINUE_ACTION_RESUME
+        )
+
         assert launchedItem["launched"] is True
-        assert launchedItem["coordinatorPid"] == 54321
-        assert launchedItem["outputsPreserved"] is True
-        assert launchedItem["workingDirectoryPreserved"] is True
+
+        assert (
+                launchedItem["taskId"]
+                == "celery-continue-task-1"
+        )
+
+        assert (
+                launchedItem["outputsPreserved"]
+                is True
+        )
+
+        assert (
+                launchedItem["workingDirectoryPreserved"]
+                is True
+        )
 
         assert workingDirectoryOperations == [
             "make",
@@ -398,22 +420,11 @@ def test_PostgresqlContinueResumesStreamingProtocolWithoutDestroyingRuntimeState
         assert childProtocol.getRunMode() == MODE_RESUME
         assert str(childProtocol.getStatus()).strip().lower() == str(STATUS_SCHEDULED).strip().lower()
 
-        assert len(popenCalls) == 1
-
-        workerCommand = popenCalls[0]["command"]
-
-        assert "--project-id" in workerCommand
-        assert "--protocol-id" in workerCommand
-        assert "--run-mode" in workerCommand
-
-        projectIdIndex = workerCommand.index("--project-id")
-        protocolIdIndex = workerCommand.index("--protocol-id")
-        runModeIndex = workerCommand.index("--run-mode")
-
-        assert workerCommand[projectIdIndex + 1] == str(projectId)
-        assert workerCommand[protocolIdIndex + 1] == str(childProtocolId)
-        assert workerCommand[runModeIndex + 1] == CONTINUE_ACTION_RESUME
-        assert str(childProtocolDbId) != workerCommand[protocolIdIndex + 1]
+        assert enqueueCalls == [{
+            "protocol": childProtocol,
+            "runMode": CONTINUE_ACTION_RESUME,
+            "wait": False,
+        }]
 
         runtimeMapper.close()
         runtimeMapper = None

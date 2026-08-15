@@ -23,7 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import subprocess
 from typing import Any, Dict
 
 from pyworkflow.protocol import (
@@ -48,9 +47,6 @@ from app.backend.runtime.protocol_postgresql_restart_launcher_service import (
 )
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
-)
-from app.backend.runtime.protocol_stop_service import (
-    RuntimeProtocolStopService,
 )
 
 
@@ -660,39 +656,6 @@ class RuntimePostgresqlContinueLauncherService:
             "parentProtocolsModified": False,
         }
 
-    @staticmethod
-    def _buildWorkerCommand(
-            *,
-            projectId: int,
-            protocolId: int,
-            runMode: str,
-    ):
-        from app.backend.runtime.postgresql_protocol_worker import (
-            buildPostgresqlWorkerCommand,
-        )
-
-        return buildPostgresqlWorkerCommand(
-            projectId=projectId,
-            protocolId=protocolId,
-            runMode=runMode,
-        )
-
-    @staticmethod
-    def _spawnWorker(
-            *,
-            command,
-            cwd,
-    ):
-        return subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-
     def launchContinueSubworkflow(
             self,
             *,
@@ -857,58 +820,25 @@ class RuntimePostgresqlContinueLauncherService:
                 "action"
             ]
 
-            command = (
-                self._buildWorkerCommand(
-                    projectId=projectId,
-                    protocolId=protocolId,
-                    runMode=action,
-                )
-            )
-
-            process = None
             try:
-                process = (
-                    self._spawnWorker(
-                        command=command,
-                        cwd=(
-                            currentProject.path
-                        ),
+                taskId = (
+                    currentProject
+                    ._enqueuePostgresqlProtocolTask(
+                        protocol=protocol,
+                        runMode=action,
+                        wait=False,
                     )
                 )
-
-                protocol.setPid(
-                    process.pid
-                )
-
-                protocol.setStatus(
-                    STATUS_SCHEDULED
-                )
-
-                runtimeMapper.store(
-                    protocol
-                )
-
-                runtimeMapper.commit()
 
                 launchedItems.append({
                     **preparedItem,
                     "launched": True,
-                    "coordinatorPid": int(
-                        process.pid
+                    "taskId": str(
+                        taskId
                     ),
-                    "command": command,
                 })
 
             except Exception as error:
-                if process is not None:
-                    try:
-                        RuntimeProtocolStopService()._killProcessGroup(
-                            pid=int(process.pid),
-                            projectId=projectId,
-                            protocolId=protocolId,
-                        )
-                    except Exception:
-                        pass
                 protocol.setFailed(
                     str(error)
                 )

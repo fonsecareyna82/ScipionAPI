@@ -1355,25 +1355,20 @@ def test_PostgresqlLaunchersDoNotExposeLegacyStorageProvenance():
             assert legacyField not in source
 
 
-
-def test_ContinueLaunchStopsSpawnedWorkerWhenPersistenceFails(
+def test_ContinueLaunchMarksProtocolFailedWhenEnqueueFails(
         monkeypatch,
 ):
-    service = RuntimePostgresqlContinueLauncherService()
+    service = (
+        RuntimePostgresqlContinueLauncherService()
+    )
+
     protocol = ProtocolStub(
         10,
         status="finished",
         streaming=True,
     )
 
-    runtimeMapper = FailFirstStoreRuntimeMapperStub()
-    stopService = StopServiceStub()
-
-    monkeypatch.setattr(
-        continueModule,
-        "RuntimeProtocolStopService",
-        lambda: stopService,
-    )
+    runtimeMapper = RuntimeMapperStub()
 
     monkeypatch.setattr(
         service,
@@ -1387,59 +1382,90 @@ def test_ContinueLaunchStopsSpawnedWorkerWhenPersistenceFails(
         },
     )
 
-    monkeypatch.setattr(
-        service,
-        "_spawnWorker",
-        lambda **kwargs: SimpleNamespace(pid=4321),
-    )
+    def failEnqueueProtocolTask(
+            protocol,
+            runMode,
+            wait=False,
+    ):
+        assert protocol is not None
+        assert runMode == CONTINUE_ACTION_RESUME
+        assert wait is False
 
-    result = service.launchContinueSubworkflow(
-        mapper=SimpleNamespace(),
-        projectId=7,
-        currentProject=SimpleNamespace(
-            path="/tmp",
-            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
+        raise RuntimeError(
+            "celery enqueue failed"
+        )
+
+    currentProject = SimpleNamespace(
+        getPostgresqlRuntimeMapper=(
+            lambda: runtimeMapper
         ),
-        plan={
-            "errors": [],
-            "entries": [{
-                "protocol": protocol,
-                "protocolId": 10,
-                "protocolDbId": 110,
-                "level": 0,
-                "action": CONTINUE_ACTION_RESUME,
-                "reason": "streaming_execution_exists",
-            }],
-        },
-        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=lambda **kwargs: {},
-        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=lambda **kwargs: {},
+        _enqueuePostgresqlProtocolTask=(
+            failEnqueueProtocolTask
+        ),
     )
 
-    assert stopService.killCalls == [{
-        "pid": 4321,
-        "projectId": 7,
-        "protocolId": 10,
-    }]
+    result = (
+        service
+        .launchContinueSubworkflow(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            currentProject=currentProject,
+            plan={
+                "errors": [],
+                "entries": [{
+                    "protocol": protocol,
+                    "protocolId": 10,
+                    "protocolDbId": 110,
+                    "level": 0,
+                    "action": (
+                        CONTINUE_ACTION_RESUME
+                    ),
+                    "reason": (
+                        "streaming_execution_exists"
+                    ),
+                }],
+            },
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                lambda **kwargs: {}
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                lambda **kwargs: {}
+            ),
+        )
+    )
 
     assert protocol.status == "failed"
+
     assert result["launched"] == []
-    assert len(result["errors"]) == 1
+
+    assert len(
+        result["errors"]
+    ) == 1
+
+    assert (
+        result["errors"][0]["error"]
+        == "celery enqueue failed"
+    )
+
+    assert runtimeMapper.storeCalls == [
+        protocol,
+    ]
+
+    assert runtimeMapper.commitCalls == 1
 
 
-def test_RestartLaunchStopsSpawnedWorkerWhenPersistenceFails(
+def test_RestartLaunchMarksProtocolFailedWhenEnqueueFails(
         monkeypatch,
 ):
-    service = RuntimePostgresqlRestartLauncherService()
-    protocol = ProtocolStub(10)
-
-    runtimeMapper = FailFirstStoreRuntimeMapperStub()
-    stopService = StopServiceStub()
-
-    monkeypatch.setattr(
-        restartModule,
-        "RuntimeProtocolStopService",
-        lambda: stopService,
+    service = (
+        RuntimePostgresqlRestartLauncherService()
     )
+
+    protocol = ProtocolStub(
+        10
+    )
+
+    runtimeMapper = RuntimeMapperStub()
 
     monkeypatch.setattr(
         service,
@@ -1452,57 +1478,86 @@ def test_RestartLaunchStopsSpawnedWorkerWhenPersistenceFails(
         },
     )
 
-    monkeypatch.setattr(
-        restartModule.subprocess,
-        "Popen",
-        lambda *args, **kwargs: SimpleNamespace(pid=4321),
+    def failEnqueueProtocolTask(
+            protocol,
+            runMode,
+            wait=False,
+    ):
+        assert protocol is not None
+        assert runMode == "restart"
+        assert wait is False
+
+        raise RuntimeError(
+            "celery enqueue failed"
+        )
+
+    currentProject = SimpleNamespace(
+        getPostgresqlRuntimeMapper=(
+            lambda: runtimeMapper
+        ),
+        _enqueuePostgresqlProtocolTask=(
+            failEnqueueProtocolTask
+        ),
     )
 
-    result = service.launchRestartSubworkflow(
-        mapper=SimpleNamespace(),
-        projectId=7,
-        workflowProtocolMap={
-            "10": (
-                protocol,
-                0,
-            ),
-        },
-        currentProject=SimpleNamespace(
-            path="/tmp",
-            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
-        ),
-        validationInfo={
-            "errors": [],
-            "runtimeStructures": {
-                "10": {
-                    "outputNames": [],
-                    "pointerParams": [],
+    result = (
+        service
+        .launchRestartSubworkflow(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            workflowProtocolMap={
+                "10": (
+                    protocol,
+                    0,
+                ),
+            },
+            currentProject=currentProject,
+            validationInfo={
+                "errors": [],
+                "runtimeStructures": {
+                    "10": {
+                        "outputNames": [],
+                        "pointerParams": [],
+                    },
                 },
             },
-        },
-        deletePersistedProtocolOutputsForRuntimeProtocolsCallback=lambda **kwargs: {
-            "protocolsCount": 1,
-            "setsDeleted": 0,
-            "objectsDeleted": 0,
-            "filesDeleted": 0,
-            "fileErrors": [],
-            "items": [],
-        },
-        clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=lambda **kwargs: {
-            "updated": 0,
-            "parentProtocolDbIds": [],
-        },
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                lambda **kwargs: {
+                    "protocolsCount": 1,
+                    "setsDeleted": 0,
+                    "objectsDeleted": 0,
+                    "filesDeleted": 0,
+                    "fileErrors": [],
+                    "items": [],
+                }
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                lambda **kwargs: {
+                    "updated": 0,
+                    "parentProtocolDbIds": [],
+                }
+            ),
+        )
     )
 
-    assert stopService.killCalls == [{
-        "pid": 4321,
-        "projectId": 7,
-        "protocolId": 10,
-    }]
-
     assert protocol.status == "failed"
+
     assert result["launched"] == []
-    assert len(result["errors"]) == 1
+
+    assert len(
+        result["errors"]
+    ) == 1
+
+    assert (
+        result["errors"][0]["error"]
+        == "celery enqueue failed"
+    )
+
+    assert runtimeMapper.storeCalls == [
+        protocol,
+    ]
+
+    assert runtimeMapper.commitCalls == 1
 
 
 def test_ContinuePlanRestartsStreamingProtocolStoppedDuringContinue(monkeypatch):

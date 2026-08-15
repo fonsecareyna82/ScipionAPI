@@ -36,7 +36,6 @@ from app.backend.mapper.scipion_object_mapper import ScipionObjectPostgresqlMapp
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_output_persistence_service import RuntimeProtocolOutputPersistenceService
 from app.backend.runtime.protocol_postgresql_restart_launcher_service import RuntimePostgresqlRestartLauncherService
-import app.backend.runtime.protocol_postgresql_restart_launcher_service as restartLauncherModule
 
 
 class RestartProtocolStub(Protocol):
@@ -295,9 +294,29 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
         childProtocol.cleanWorkingDir = lambda: workingDirectoryOperations.append("clean")
         childProtocol.makeWorkingDir = lambda: workingDirectoryOperations.append("make")
 
+        enqueueCalls = []
+
+        def enqueueProtocolTask(
+                protocol,
+                runMode,
+                wait=False,
+        ):
+            enqueueCalls.append({
+                "protocol": protocol,
+                "runMode": runMode,
+                "wait": wait,
+            })
+
+            return "celery-restart-task-1"
+
         currentProject = SimpleNamespace(
             path=str(tmp_path),
-            getPostgresqlRuntimeMapper=lambda: runtimeMapper,
+            getPostgresqlRuntimeMapper=(
+                lambda: runtimeMapper
+            ),
+            _enqueuePostgresqlProtocolTask=(
+                enqueueProtocolTask
+            ),
         )
 
         workflowProtocolMap = {
@@ -341,27 +360,6 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
                 "parentProtocolDbIds": [],
             }
 
-        popenCalls = []
-
-        class FakeProcess:
-            pid = 43210
-
-        def fakePopen(command, **kwargs):
-            popenCalls.append(
-                {
-                    "command": list(command),
-                    "kwargs": dict(kwargs),
-                }
-            )
-
-            return FakeProcess()
-
-        monkeypatch.setattr(
-            restartLauncherModule.subprocess,
-            "Popen",
-            fakePopen,
-        )
-
         launchInfo = restartService.launchRestartSubworkflow(
             mapper=restartMapper,
             projectId=projectId,
@@ -382,9 +380,20 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
         assert launchInfo["prepared"][0]["level"] == 0
         assert launchInfo["prepared"][0]["interactive"] is False
 
-        assert launchInfo["launched"][0]["protocolId"] == str(childProtocolId)
-        assert launchInfo["launched"][0]["coordinatorPid"] == 43210
-        assert launchInfo["launched"][0]["launched"] is True
+        assert (
+                launchInfo["launched"][0]["protocolId"]
+                == str(childProtocolId)
+        )
+
+        assert (
+                launchInfo["launched"][0]["taskId"]
+                == "celery-restart-task-1"
+        )
+
+        assert (
+                launchInfo["launched"][0]["launched"]
+                is True
+        )
 
         assert launchInfo["outputCleanup"]["protocolsCount"] == 1
         assert launchInfo["outputCleanup"]["setsDeleted"] == 0
@@ -404,19 +413,11 @@ def test_PostgresqlRestartCleansChildRuntimeStateWithoutMutatingParent(
         assert childProtocol.getRunMode() == MODE_RESTART
         assert str(childProtocol.getStatus()).strip().lower() == str(STATUS_SCHEDULED).strip().lower()
 
-        assert len(popenCalls) == 1
-
-        workerCommand = popenCalls[0]["command"]
-
-        assert "--project-id" in workerCommand
-        assert "--protocol-id" in workerCommand
-
-        projectIdIndex = workerCommand.index("--project-id")
-        protocolIdIndex = workerCommand.index("--protocol-id")
-
-        assert workerCommand[projectIdIndex + 1] == str(projectId)
-        assert workerCommand[protocolIdIndex + 1] == str(childProtocolId)
-        assert str(childProtocolDbId) != workerCommand[protocolIdIndex + 1]
+        assert enqueueCalls == [{
+            "protocol": childProtocol,
+            "runMode": "restart",
+            "wait": False,
+        }]
 
         runtimeMapper.close()
         runtimeMapper = None

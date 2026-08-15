@@ -23,7 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import subprocess
 from typing import Any, Dict, List, Tuple
 
 from pyworkflow.object import Pointer, PointerList
@@ -45,9 +44,6 @@ from app.backend.runtime.protocol_identity import (
 )
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
-)
-from app.backend.runtime.protocol_stop_service import (
-    RuntimeProtocolStopService,
 )
 
 
@@ -491,9 +487,6 @@ class RuntimePostgresqlRestartLauncherService:
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
             clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
     ) -> Dict[str, Any]:
-        from app.backend.runtime.postgresql_protocol_worker import (
-            buildPostgresqlWorkerCommand,
-        )
 
         runtimeMapper = (
             currentProject
@@ -607,59 +600,25 @@ class RuntimePostgresqlRestartLauncherService:
                 str(protocolId)
             ]
 
-            command = (
-                buildPostgresqlWorkerCommand(
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-            )
-
-            process = None
-
             try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=currentProject.path,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                    close_fds=True,
+                taskId = (
+                    currentProject
+                    ._enqueuePostgresqlProtocolTask(
+                        protocol=protocol,
+                        runMode="restart",
+                        wait=False,
+                    )
                 )
-
-                protocol.setPid(
-                    process.pid
-                )
-
-                protocol.setStatus(
-                    STATUS_SCHEDULED
-                )
-
-                runtimeMapper.store(
-                    protocol
-                )
-
-                runtimeMapper.commit()
 
                 launchedItems.append({
                     **preparedItem,
                     "launched": True,
-                    "coordinatorPid": int(
-                        process.pid
+                    "taskId": str(
+                        taskId
                     ),
-                    "command": command,
                 })
 
             except Exception as error:
-                if process is not None:
-                    try:
-                        RuntimeProtocolStopService()._killProcessGroup(
-                            pid=int(process.pid),
-                            projectId=projectId,
-                            protocolId=protocolId,
-                        )
-                    except Exception:
-                        pass
                 protocol.setFailed(
                     str(error)
                 )
