@@ -5665,7 +5665,7 @@ class ProjectService:
         self._postgresqlLaunchInputObjectsByRuntimeObjectId = {}
         self._postgresqlLaunchInputObjectIdsResolving = set()
 
-        try:
+        def executeRuntimeLaunch():
             return runtimeProtocolLaunchService.launchProtocol(
                 mapper=mapper,
                 projectId=projectId,
@@ -5682,9 +5682,65 @@ class ProjectService:
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
                     self._deletePersistedProtocolOutputsForRuntimeProtocolsFromPostgresql
                 ),
-                syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
+                syncPostgresqlRuntimeProtocolCallback=(
+                    self.syncPostgresqlRuntimeProtocol
+                ),
                 currentUserId=currentUserId,
             )
+
+        try:
+            if (
+                    currentUserId is None
+                    or executeMode == "stop"
+            ):
+                return executeRuntimeLaunch()
+
+            runtimeInstanceSettings = (
+                SettingsService()
+                .getRuntimeInstanceSettings(
+                    mapper=mapper,
+                    currentUser=None,
+                )
+            )
+
+            maxConcurrentRunsPerUser = int(
+                runtimeInstanceSettings.get(
+                    "maxConcurrentRunsPerUser"
+                )
+                or 2
+            )
+
+            with mapper.protocolLaunchUserLock(
+                    currentUserId
+            ):
+                activeRuns = (
+                    mapper
+                    .countActiveProtocolExecutionsForUser(
+                        currentUserId
+                    )
+                )
+
+                if (
+                        activeRuns
+                        >= maxConcurrentRunsPerUser
+                ):
+                    raise HTTPException(
+                        status_code=(
+                            status.HTTP_409_CONFLICT
+                        ),
+                        detail=(
+                            "Maximum concurrent protocol runs "
+                            "per user reached "
+                            f"({activeRuns}/"
+                            f"{maxConcurrentRunsPerUser}). "
+                            "Wait for an active protocol to "
+                            "finish or stop one before "
+                            "launching another."
+                        ),
+                    )
+
+                return executeRuntimeLaunch()
+
         finally:
             self._releasePostgresqlRuntimeLaunchInputs()
 
