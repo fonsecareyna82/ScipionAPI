@@ -291,27 +291,131 @@ def test_LegacyProtocolContinueCompatibilityIsRemoved():
     assert "workflowProtocolMapToProtocolsCallback" not in parameters
 
 
-def test_ContinueAllForcesRestartForProtocolsStoppedByOperation():
-    runningChild = ProtocolStub(11, status="running")
-    abortedChild = ProtocolStub(11, status="aborted")
-    root = ProtocolStub(10, status="finished")
+def test_ContinueAllDoesNotForceRestartForProtocolsStoppedByOperation():
+    runningChild = ProtocolStub(
+        11,
+        status="running",
+    )
+
+    abortedChild = ProtocolStub(
+        11,
+        status="aborted",
+    )
+
+    root = ProtocolStub(
+        10,
+        status="finished",
+    )
+
     subworkflowCalls = []
     planCalls = []
 
-    def getSubworkflow(**kwargs):
-        subworkflowCalls.append(True)
-        return {"10": (root, 0), "11": ((runningChild if len(subworkflowCalls) == 1 else abortedChild), 1)}
+    def getSubworkflow(
+            **kwargs,
+    ):
+        subworkflowCalls.append(
+            True
+        )
 
-    def stopProtocols(**kwargs):
-        assert kwargs["protocolIds"] == ["11"]
-        return {"errors": [], "stopped": [{"protocolId": "11"}]}
+        return {
+            "10": (
+                root,
+                0,
+            ),
+            "11": (
+                (
+                    runningChild
+                    if len(
+                        subworkflowCalls
+                    ) == 1
+                    else abortedChild
+                ),
+                1,
+            ),
+        }
 
-    def buildPlan(**kwargs):
-        planCalls.append(kwargs)
-        return {"entries": [], "errors": [], "summary": {"protocolsCount": 2, "actionableCount": 0, "restartProtocolIds": [], "resumeProtocolIds": [], "skipped": []}}
+    def stopProtocols(
+            **kwargs,
+    ):
+        assert kwargs[
+            "protocolIds"
+        ] == [
+            "11",
+        ]
 
-    RuntimeProtocolContinueService().continueProtocolSubworkflow(mapper=SimpleNamespace(), projectId=7, protocolId=10, getPostgresqlRuntimeSubworkflowCallback=getSubworkflow, buildPostgresqlContinuePlanCallback=buildPlan, launchPostgresqlContinueSubworkflowCallback=lambda **kwargs: None, deletePersistedProtocolOutputsForRuntimeProtocolsCallback=lambda **kwargs: None, clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=lambda **kwargs: None, buildProtocolMutationResultCallback=buildResult, stopPostgresqlProtocolsCallback=stopProtocols)
+        return {
+            "errors": [],
+            "stopped": [{
+                "protocolId": "11",
+            }],
+        }
 
-    assert len(subworkflowCalls) == 2
-    assert planCalls[0]["forceRestartProtocolIds"] == ["11"]
+    def buildPlan(
+            **kwargs,
+    ):
+        planCalls.append(
+            kwargs
+        )
+
+        return {
+            "entries": [],
+            "errors": [],
+            "summary": {
+                "protocolsCount": 2,
+                "actionableCount": 0,
+                "restartProtocolIds": [],
+                "resumeProtocolIds": [],
+                "skipped": [],
+            },
+        }
+
+    (
+        RuntimeProtocolContinueService()
+        .continueProtocolSubworkflow(
+            mapper=SimpleNamespace(),
+            projectId=7,
+            protocolId=10,
+            getPostgresqlRuntimeSubworkflowCallback=(
+                getSubworkflow
+            ),
+            buildPostgresqlContinuePlanCallback=(
+                buildPlan
+            ),
+            launchPostgresqlContinueSubworkflowCallback=(
+                lambda **kwargs: None
+            ),
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                lambda **kwargs: None
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                lambda **kwargs: None
+            ),
+            buildProtocolMutationResultCallback=(
+                buildResult
+            ),
+            stopPostgresqlProtocolsCallback=(
+                stopProtocols
+            ),
+        )
+    )
+
+    assert len(
+        subworkflowCalls
+    ) == 2
+
+    assert len(
+        planCalls
+    ) == 1
+
+    assert (
+        "forceRestartProtocolIds"
+        not in planCalls[0]
+    )
+
+    assert (
+        planCalls[0][
+            "workflowProtocolMap"
+        ]["11"][0]
+        is abortedChild
+    )
 
