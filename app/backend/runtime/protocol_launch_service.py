@@ -156,24 +156,21 @@ class RuntimeProtocolLaunchService:
 
             self._validateProtocol(protocol=protocol, errors=errors)
 
-            if currentUserId is not None:
-                RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=getattr(
-                        protocol,
-                        "getObjId",
-                        lambda: protocolId,
-                    )(),
-                    userId=currentUserId,
-                )
-
-            return self._executeProtocol(mapper=mapper, projectId=projectId, protocolId=protocolId, protocol=protocol,
-                                         executeMode=executeMode, elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,
-                                         currentProject=currentProject,
-                                         postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
-                                         deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
-                                         syncPostgresqlRuntimeProtocolCallback=syncPostgresqlRuntimeProtocolCallback)
+            return self._executeProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocol=protocol,
+                executeMode=executeMode,
+                elapsedBeforeLaunchSeconds=elapsedBeforeLaunchSeconds,
+                currentProject=currentProject,
+                postgresqlLaunchPointerReport=postgresqlLaunchPointerReport,
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback=
+                deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
+                syncPostgresqlRuntimeProtocolCallback=
+                syncPostgresqlRuntimeProtocolCallback,
+                currentUserId=currentUserId,
+            )
 
         except HTTPException as error:
             if isNewProtocolRequest and createdProtocolId not in (None, ""):
@@ -245,12 +242,25 @@ class RuntimeProtocolLaunchService:
             postgresqlLaunchPointerReport: Optional[Dict[str, Any]],
             deletePersistedProtocolOutputsForRuntimeProtocolsCallback: Callable,
             syncPostgresqlRuntimeProtocolCallback: Callable,
+            currentUserId: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
             if executeMode == "schedule":
                 currentProject.scheduleProtocol(
                     protocol
                 )
+
+                if currentUserId is not None:
+                    RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=getattr(
+                            protocol,
+                            "getObjId",
+                            lambda: protocolId,
+                        )(),
+                        userId=currentUserId,
+                    )
 
                 return self._syncPostgresqlRuntimeAfterLaunch(
                     mapper=mapper,
@@ -294,6 +304,14 @@ class RuntimeProtocolLaunchService:
                 "getObjId",
                 lambda: protocolId,
             )()
+
+            if currentUserId is not None:
+                RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=launchedProtocolId,
+                    userId=currentUserId,
+                )
 
             # The PostgreSQL worker owns the execution lifecycle.
             # While it waits for dependencies, the authoritative
