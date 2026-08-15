@@ -35,6 +35,13 @@ import tempfile
 import threading
 import re
 
+import platform
+import shutil
+import socket
+import subprocess
+
+import psutil
+
 from collections import OrderedDict
 from configparser import RawConfigParser
 from typing import Any, Dict, Optional
@@ -56,6 +63,7 @@ from app.backend.api.schemas.settings_schema import (
     HostSettingsOut,
     HostSettingsIn,
     HostSettingsPatch,
+    InstanceResourcesOut
 )
 
 logger = logging.getLogger(__name__)
@@ -505,6 +513,128 @@ def _getUserRole(currentUser: Any) -> str:
     return str(role or "user")
 
 
+def _getCpuModel() -> str:
+    # getCpuModel
+    try:
+        with open(
+                "/proc/cpuinfo",
+                "r",
+                encoding="utf-8",
+        ) as file:
+            for line in file:
+                key, separator, value = (
+                    line.partition(":")
+                )
+
+                if not separator:
+                    continue
+
+                if (
+                        key.strip().lower()
+                        not in {
+                            "model name",
+                            "hardware",
+                        }
+                ):
+                    continue
+
+                cpuModel = (
+                    value.strip()
+                )
+
+                if cpuModel:
+                    return cpuModel
+
+    except OSError:
+        pass
+
+    return str(
+        platform.processor()
+        or ""
+    ).strip()
+
+
+def _getNvidiaGpuResources():
+    # getNvidiaGpuResources
+    executable = shutil.which(
+        "nvidia-smi"
+    )
+
+    if not executable:
+        return []
+
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                (
+                    "--query-gpu="
+                    "index,name,memory.total"
+                ),
+                (
+                    "--format="
+                    "csv,noheader,nounits"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+
+    except (
+        OSError,
+        subprocess.SubprocessError,
+    ):
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    gpus = []
+
+    for line in (
+            result.stdout
+            .splitlines()
+    ):
+        parts = [
+            part.strip()
+            for part
+            in line.split(
+                ",",
+                2,
+            )
+        ]
+
+        if len(parts) != 3:
+            continue
+
+        try:
+            gpuIndex = int(
+                parts[0]
+            )
+        except ValueError:
+            continue
+
+        try:
+            memoryTotalBytes = int(
+                float(parts[2])
+                * 1024
+                * 1024
+            )
+        except ValueError:
+            memoryTotalBytes = None
+
+        gpus.append({
+            "index": gpuIndex,
+            "name": parts[1],
+            "memoryTotalBytes": (
+                memoryTotalBytes
+            ),
+        })
+
+    return gpus
+
 class SettingsService:
     # settingsService
     def getUserSettings(self, mapper: PostgresqlFlatMapper, currentUser: Any) -> UserSettingsOut:
@@ -561,6 +691,121 @@ class SettingsService:
         self._requireAdmin(currentUser)
         raw = mapper.getInstanceSettings() or {}
         return _modelValidate(InstanceSettingsOut, raw)
+
+    def getInstanceResources(
+            self,
+            currentUser: Any,
+    ) -> InstanceResourcesOut:
+        # getInstanceResources
+        self._requireAdmin(
+            currentUser
+        )
+
+        logicalCores = (
+            psutil.cpu_count(
+                logical=True
+            )
+            or os.cpu_count()
+            or 1
+        )
+
+        physicalCores = (
+            psutil.cpu_count(
+                logical=False
+            )
+            or logicalCores
+        )
+
+        ramTotalBytes = int(
+            psutil
+            .virtual_memory()
+            .total
+            or 0
+        )
+
+        hostAlias = ""
+        schedulerName = ""
+
+        try:
+            with _hostLock:
+                cp = (
+                    _readHostConfigParser()
+                )
+
+                hostAlias = (
+                    _selectPrimaryHostSection(
+                        cp
+                    )
+                )
+
+                schedulerName = (
+                    _toStr(
+                        _getHostOption(
+                            cp,
+                            hostAlias,
+                            "NAME",
+                            "",
+                        )
+                    )
+                    .strip()
+                )
+
+        except Exception:
+            logger.debug(
+                "Could not resolve configured "
+                "host metadata for instance "
+                "resources.",
+                exc_info=True,
+            )
+
+        gpus = (
+            _getNvidiaGpuResources()
+        )
+
+        return _modelValidate(
+            InstanceResourcesOut,
+            {
+                "hostAlias": (
+                    hostAlias
+                ),
+                "hostname": (
+                    socket.gethostname()
+                ),
+                "fqdn": (
+                    socket.getfqdn()
+                ),
+                "schedulerName": (
+                    schedulerName
+                ),
+                "operatingSystem": (
+                    (
+                        f"{platform.system()} "
+                        f"{platform.release()}"
+                    )
+                    .strip()
+                ),
+                "architecture": (
+                    platform.machine()
+                    or ""
+                ),
+                "cpuModel": (
+                    _getCpuModel()
+                ),
+                "physicalCores": int(
+                    physicalCores
+                ),
+                "logicalCores": int(
+                    logicalCores
+                ),
+                "ramTotalBytes": (
+                    ramTotalBytes
+                ),
+                "gpuCount": len(
+                    gpus
+                ),
+                "gpus": gpus,
+            },
+        )
 
     def putInstanceSettings(
         self,
@@ -885,10 +1130,16 @@ class SettingsService:
 
         # runtimeSafeSubset
         return {
-            "defaultQueueName": data.get("defaultQueueName"),
-            "maxConcurrentRunsPerUser": data.get("maxConcurrentRunsPerUser"),
-            "requireConfirmBeforeExecute": data.get("requireConfirmBeforeExecute"),
-            "requireConfirmBeforeDelete": data.get("requireConfirmBeforeDelete"),
+            "defaultQueueName": (
+                data.get(
+                    "defaultQueueName"
+                )
+            ),
+            "maxConcurrentRunsPerUser": (
+                data.get(
+                    "maxConcurrentRunsPerUser"
+                )
+            ),
         }
 
     def getRuntimeHostSettings(

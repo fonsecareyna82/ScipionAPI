@@ -44,6 +44,7 @@ from app.backend.api.schemas.settings_schema import (
     HostSettingsOut,
     HostSettingsIn,
     HostSettingsPatch,
+    InstanceResourcesOut
 )
 from app.backend.api.schemas.job_monitoring_schema import (
     JobMonitoringOverviewOut,
@@ -166,6 +167,49 @@ def getInstanceSettings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load instance settings: {e}",
+        )
+
+
+@router.get(
+    "/instance/resources",
+    response_model=InstanceResourcesOut,
+    status_code=status.HTTP_200_OK,
+)
+def getInstanceResources(
+    currentUser=Depends(
+        requireAdmin
+    ),
+    service: SettingsService = Depends(
+        getSettingsService
+    ),
+):
+    try:
+        return (
+            service
+            .getInstanceResources(
+                currentUser
+            )
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error in "
+            "getInstanceResources: %s",
+            error,
+        )
+
+        raise HTTPException(
+            status_code=(
+                status
+                .HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Failed to load instance "
+                f"resources: {error}"
+            ),
         )
 
 

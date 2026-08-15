@@ -71,13 +71,16 @@ class UserSettingsPatch(BaseModel):
 class InstanceSettingsOut(BaseModel):
     # instanceSettingsOut
     defaultQueueName: str = "default"
-    maxConcurrentRunsPerUser: int = Field(default=2, ge=1, le=64)
+    maxConcurrentRunsPerUser: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+    )
 
-    requireConfirmBeforeExecute: bool = True
-    requireConfirmBeforeDelete: bool = True
 
-
-class InstanceSettingsIn(InstanceSettingsOut):
+class InstanceSettingsIn(
+        InstanceSettingsOut,
+):
     # instanceSettingsIn
     pass
 
@@ -85,10 +88,39 @@ class InstanceSettingsIn(InstanceSettingsOut):
 class InstanceSettingsPatch(BaseModel):
     # instanceSettingsPatch
     defaultQueueName: Optional[str] = None
-    maxConcurrentRunsPerUser: Optional[int] = Field(default=None, ge=1, le=64)
+    maxConcurrentRunsPerUser: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=64,
+    )
 
-    requireConfirmBeforeExecute: Optional[bool] = None
-    requireConfirmBeforeDelete: Optional[bool] = None
+
+class InstanceGpuResourceOut(BaseModel):
+    index: int
+    name: str
+    memoryTotalBytes: Optional[int] = None
+
+
+class InstanceResourcesOut(BaseModel):
+    hostAlias: str = ""
+    hostname: str
+    fqdn: str
+    schedulerName: str = ""
+
+    operatingSystem: str
+    architecture: str
+    cpuModel: str
+
+    physicalCores: int
+    logicalCores: int
+    ramTotalBytes: int
+
+    gpuCount: int
+    gpus: List[
+        InstanceGpuResourceOut
+    ] = Field(
+        default_factory=list
+    )
 
 
 class EnvironmentVariableOut(BaseModel):

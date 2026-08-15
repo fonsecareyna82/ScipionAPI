@@ -65,17 +65,19 @@ class InstanceSettings(BaseModel):
     # instanceSettings
     defaultQueueName: str = "default"
 
-    maxConcurrentRunsPerUser: int = Field(default=2, ge=1, le=64)
-
-    requireConfirmBeforeExecute: bool = True
-    requireConfirmBeforeDelete: bool = True
+    maxConcurrentRunsPerUser: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+    )
 
 
 class InstanceSettingsPatch(BaseModel):
     # instanceSettingsPatch
     defaultQueueName: Optional[str] = None
 
-    maxConcurrentRunsPerUser: Optional[int] = Field(default=None, ge=1, le=64)
-
-    requireConfirmBeforeExecute: Optional[bool] = None
-    requireConfirmBeforeDelete: Optional[bool] = None
+    maxConcurrentRunsPerUser: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=64,
+    )
