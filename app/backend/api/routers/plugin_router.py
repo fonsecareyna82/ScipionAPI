@@ -109,6 +109,14 @@ class InstallPluginsBatchRequest(BaseModel):
     skipBinaries: bool = Field(False, description="Skip binaries when supported by the configured Scipion installer")
 
 
+class AcknowledgePluginTasksRequest(BaseModel):
+    statuses: List[str] = Field(default_factory=list)
+
+
+class AcknowledgePluginTasksResponse(BaseModel):
+    acknowledged: int
+
+
 class SystemTaskResponse(BaseModel):
     id: int
     taskId: str
@@ -496,6 +504,63 @@ def listPluginTasks(
         ]
 
     return reconciledTasks
+
+
+@router.post(
+    "/tasks/acknowledge",
+    response_model=AcknowledgePluginTasksResponse,
+)
+def acknowledgePluginTasks(
+        payload: AcknowledgePluginTasksRequest,
+):
+    allowedStatuses = {
+        "SUCCESS",
+        "FAILURE",
+        "CANCELLED",
+    }
+
+    statuses = []
+
+    for status in payload.statuses:
+        normalizedStatus = str(
+            status or ""
+        ).strip().upper()
+
+        if (
+                normalizedStatus
+                and normalizedStatus not in statuses
+        ):
+            statuses.append(
+                normalizedStatus
+            )
+
+    if not statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one task status is required",
+        )
+
+    invalidStatuses = [
+        status
+        for status in statuses
+        if status not in allowedStatuses
+    ]
+
+    if invalidStatuses:
+        raise HTTPException(
+            status_code=400,
+            detail="Only terminal plugin task statuses can be acknowledged",
+        )
+
+    acknowledged = systemTaskService.acknowledgeTasks(
+        taskType="plugin",
+        statuses=statuses,
+    )
+
+    return AcknowledgePluginTasksResponse(
+        acknowledged=acknowledged,
+    )
+
 
 @router.post(
     "/tasks/{taskId}/acknowledge",

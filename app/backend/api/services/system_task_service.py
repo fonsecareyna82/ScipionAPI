@@ -231,6 +231,55 @@ class SystemTaskService:
 
             return [self._toDict(task) for task in tasks]
 
+    def acknowledgeTasks(
+            self,
+            taskType: Optional[str] = None,
+            statuses: Optional[List[str]] = None,
+    ) -> int:
+        normalizedStatuses = []
+
+        if statuses is not None:
+            for status in statuses:
+                normalizedStatus = str(status or "").strip().upper()
+
+                if (
+                        normalizedStatus
+                        and normalizedStatus not in normalizedStatuses
+                ):
+                    normalizedStatuses.append(normalizedStatus)
+
+            if not normalizedStatuses:
+                return 0
+
+        with SessionLocal() as session:
+            query = (
+                session
+                .query(SystemTask)
+                .filter(SystemTask.acknowledged.is_(False))
+            )
+
+            if taskType:
+                query = query.filter(
+                    SystemTask.taskType == str(taskType)
+                )
+
+            if normalizedStatuses:
+                query = query.filter(
+                    SystemTask.status.in_(normalizedStatuses)
+                )
+
+            updatedCount = query.update(
+                {
+                    SystemTask.acknowledged: True,
+                    SystemTask.updatedAt: _now(),
+                },
+                synchronize_session=False,
+            )
+
+            session.commit()
+
+            return int(updatedCount or 0)
+
     def acknowledgeTask(self, taskId: str) -> Optional[Dict[str, Any]]:
         with SessionLocal() as session:
             task = (

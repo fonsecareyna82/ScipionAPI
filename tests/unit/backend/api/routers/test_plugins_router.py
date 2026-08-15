@@ -127,6 +127,7 @@ class FakeSystemTaskService:
         self.listCalls = []
         self.getCalls = []
         self.acknowledgeCalls = []
+        self.acknowledgeManyCalls = []
         self.tasksById = {}
 
     def createTask(self, **kwargs):
@@ -210,6 +211,46 @@ class FakeSystemTaskService:
             ]
 
         return tasks
+
+    def acknowledgeTasks(
+            self,
+            taskType=None,
+            statuses=None,
+    ):
+        self.acknowledgeManyCalls.append({
+            "taskType": taskType,
+            "statuses": statuses,
+        })
+
+        normalizedStatuses = {
+            str(status).upper()
+            for status in (statuses or [])
+        }
+
+        acknowledged = 0
+
+        for task in self.tasksById.values():
+            if (
+                    taskType
+                    and task.get("taskType") != taskType
+            ):
+                continue
+
+            if (
+                    normalizedStatuses
+                    and str(
+                        task.get("status") or ""
+                    ).upper() not in normalizedStatuses
+            ):
+                continue
+
+            if task.get("acknowledged"):
+                continue
+
+            task["acknowledged"] = True
+            acknowledged += 1
+
+        return acknowledged
 
     def acknowledgeTask(self, taskId):
         self.acknowledgeCalls.append(taskId)
@@ -1002,3 +1043,77 @@ def test_terminal_task_log_refreshes_plugin_catalog_once(pluginClient, pluginRou
     assert first.json()["completed"] is True
     assert first.json()["status"] == "FAILURE"
     assert fakePluginService.clearCacheCalls == 1
+
+
+def test_AcknowledgePluginTasksClearsRequestedHistory(
+        pluginClient,
+        fakeSystemTaskService,
+):
+    fakeSystemTaskService.tasksById["success-task"] = {
+        "taskId": "success-task",
+        "taskType": "plugin",
+        "status": "SUCCESS",
+        "acknowledged": False,
+    }
+
+    fakeSystemTaskService.tasksById["cancelled-task"] = {
+        "taskId": "cancelled-task",
+        "taskType": "plugin",
+        "status": "CANCELLED",
+        "acknowledged": False,
+    }
+
+    fakeSystemTaskService.tasksById["failed-task"] = {
+        "taskId": "failed-task",
+        "taskType": "plugin",
+        "status": "FAILURE",
+        "acknowledged": False,
+    }
+
+    fakeSystemTaskService.tasksById["running-task"] = {
+        "taskId": "running-task",
+        "taskType": "plugin",
+        "status": "PROGRESS",
+        "acknowledged": False,
+    }
+
+    response = pluginClient.post(
+        "/plugins/tasks/acknowledge",
+        json={
+            "statuses": [
+                "SUCCESS",
+                "CANCELLED",
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "acknowledged": 2,
+    }
+
+    assert fakeSystemTaskService.tasksById["success-task"]["acknowledged"] is True
+    assert fakeSystemTaskService.tasksById["cancelled-task"]["acknowledged"] is True
+
+    assert fakeSystemTaskService.tasksById["failed-task"]["acknowledged"] is False
+    assert fakeSystemTaskService.tasksById["running-task"]["acknowledged"] is False
+
+
+def test_AcknowledgePluginTasksRejectsRunningStatus(
+        pluginClient,
+):
+    response = pluginClient.post(
+        "/plugins/tasks/acknowledge",
+        json={
+            "statuses": [
+                "PROGRESS",
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Only terminal plugin task statuses can be acknowledged"
+    )
+
+
