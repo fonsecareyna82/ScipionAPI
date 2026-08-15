@@ -6585,8 +6585,8 @@ class ProjectService:
                 plan=plan,
                 deletePersistedProtocolOutputsForRuntimeProtocolsCallback=deletePersistedProtocolOutputsForRuntimeProtocolsCallback,
                 clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback,
-                currentUserId=None,
-                executionId=None,
+                currentUserId=currentUserId,
+                executionId=executionId,
 
         )
 

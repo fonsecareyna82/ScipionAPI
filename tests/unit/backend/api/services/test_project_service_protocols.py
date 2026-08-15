@@ -4096,3 +4096,86 @@ def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(
     )
 
 
+def test_LaunchPostgresqlContinueSubworkflowForwardsExecutionMetadata(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    launchCalls = []
+
+    expectedResult = {
+        "postgresqlRuntimeContinue": True,
+    }
+
+    class FakeContinueLauncherService:
+        def launchContinueSubworkflow(
+                self,
+                **kwargs,
+        ):
+            launchCalls.append(
+                kwargs
+            )
+
+            return expectedResult
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimePostgresqlContinueLauncherService",
+        FakeContinueLauncherService,
+    )
+
+    result = (
+        service
+        ._launchPostgresqlContinueSubworkflow(
+            mapper=mapper,
+            projectId=1,
+            plan={
+                "errors": [],
+                "entries": [],
+            },
+            deletePersistedProtocolOutputsForRuntimeProtocolsCallback=(
+                lambda **kwargs: {}
+            ),
+            clearPostgresqlChildInputRefObjectIdsForOutputProtocolsCallback=(
+                lambda **kwargs: {}
+            ),
+            currentUserId=7,
+            executionId=(
+                "workflow-execution-123"
+            ),
+        )
+    )
+
+    assert result is expectedResult
+
+    assert len(
+        launchCalls
+    ) == 1
+
+    launchCall = launchCalls[0]
+
+    assert (
+        launchCall["mapper"]
+        is mapper
+    )
+
+    assert (
+        launchCall["projectId"]
+        == 1
+    )
+
+    assert (
+        launchCall["currentProject"]
+        is service.currentProject
+    )
+
+    assert (
+        launchCall["currentUserId"]
+        == 7
+    )
+
+    assert (
+        launchCall["executionId"]
+        == "workflow-execution-123"
+    )
