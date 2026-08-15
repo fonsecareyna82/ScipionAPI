@@ -526,6 +526,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
                 "WEB_API_BASE_URL",
                 "CELERY_APP",
                 "CELERY_LOGLEVEL",
+                "PROTOCOL_WORKER_CONCURRENCY",
             ],
         )
     )
@@ -554,7 +555,8 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
 
     runDir = repoRoot / ".run"
     rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
-    rows.append(_checkPidFile(runDir / "worker.pid", "Worker PID"))
+    rows.append(_checkPidFile(runDir / "worker.pid", "Plugin worker PID"))
+    rows.append(_checkPidFile(runDir / "protocol-worker.pid", "Protocol worker PID"))
 
     if envExists:
         rows.append(_checkWebDist(env))

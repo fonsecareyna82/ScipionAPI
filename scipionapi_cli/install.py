@@ -452,6 +452,7 @@ def installCommand(
         "API_PORT": apiPort,
         "CELERY_APP": existing.get("CELERY_APP") or "app.workers.task_queue",
         "CELERY_LOGLEVEL": existing.get("CELERY_LOGLEVEL") or "info",
+        "PROTOCOL_WORKER_CONCURRENCY": existing.get("PROTOCOL_WORKER_CONCURRENCY") or "4",
         "SERVE_WEB": existing.get("SERVE_WEB") or "0",
         "API_MOUNT_PATH": existing.get("API_MOUNT_PATH") or "/api",
         "WEB_DIST_PATH": existing.get("WEB_DIST_PATH") or str((scipionHome / "web" / "dist").resolve()),

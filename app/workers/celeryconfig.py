@@ -29,10 +29,16 @@ result_backend = "redis://localhost:6379/0"   # backend to store results
 accept_content = ["json"]
 task_serializer = "json"
 result_serializer = "json"
-worker_concurrency = 1
-worker_prefetch_multiplier = 1
 timezone = "UTC"
 enable_utc = True
 worker_redirect_stdouts = False
 worker_hijack_root_logger = False
+
+task_routes = {
+    "app.tasks.installPluginTask": {"queue": "plugins"},
+    "app.tasks.installPluginsBatchTask": {"queue": "plugins"},
+    "app.tasks.installDevelPluginTask": {"queue": "plugins"},
+    "app.tasks.uninstallPluginTask": {"queue": "plugins"},
+    "app.tasks.executeProtocolTask": {"queue": "protocols"},
+}
 

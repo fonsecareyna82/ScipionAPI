@@ -321,7 +321,7 @@ What this does (one-shot):
 * Creates local PostgreSQL DB/user if missing (via ``sudo -u postgres psql``)
 * Runs Alembic migrations
 * Ensures an admin user exists (creates or updates)
-* Starts FastAPI (uvicorn) and Celery worker (detached), writing logs under ``LOGS_PATH``
+* Starts FastAPI (uvicorn) and separate plugin/protocol Celery workers (detached), writing logs under ``LOGS_PATH``
 
 ----------------------------------------------------------
 7.2 Integrated mode (API + compiled Web at /)
@@ -374,7 +374,7 @@ Install only (create/update .env + folders + DB/user + migrations + admin):
 
     ./scripts/scipionapi install --user "admin" --email "admin@local" --pass "changeMe"
 
-Start/stop/restart/status/logs (detached uvicorn + celery):
+Start/stop/restart/status/logs (detached uvicorn + plugin/protocol Celery workers):
 
 ::
 
@@ -536,6 +536,7 @@ Services:
 * ``API_PORT`` (a free port is selected automatically on first install; the persisted value is reused afterwards; override with ``--api-port``)
 * ``CELERY_APP`` (default: ``app.workers.task_queue``)
 * ``CELERY_LOGLEVEL`` (default: ``info``)
+* ``PROTOCOL_WORKER_CONCURRENCY`` (default: ``4``; maximum number of protocol wrapper tasks executed concurrently)
 
 Conda integration (auto-detected when possible):
 

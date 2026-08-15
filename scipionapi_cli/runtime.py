@@ -437,7 +437,7 @@ def _printSummaryTable(rows: List[Tuple[str, Any]]) -> None:
     for key, value in rows:
         valueText = str(value)
         style = None
-        if key in {"API", "Worker"}:
+        if key in {"API", "Worker", "Plugin worker", "Protocol worker"}:
             style = _statusStyle(valueText)
 
         if style:
@@ -458,8 +458,35 @@ def _printSuccess(message: str) -> None:
     console.print("[bold green]SUCCESS[/bold green] " + message)
 
 
+def _buildCeleryWorkerCommand(
+    celeryApp: str,
+    celeryLogLevel: str,
+    queueName: str,
+    concurrency: int,
+    hostname: str,
+) -> List[str]:
+    return [
+        sys.executable,
+        "-m",
+        "celery",
+        "-A",
+        celeryApp,
+        "worker",
+        "--loglevel",
+        celeryLogLevel,
+        "--hostname",
+        hostname,
+        "-Q",
+        queueName,
+        "--concurrency",
+        str(concurrency),
+        "--prefetch-multiplier",
+        "1",
+    ]
+
+
 def startCommand() -> None:
-    # startApiAndWorker
+    # startApiAndWorkers
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
@@ -467,18 +494,19 @@ def startCommand() -> None:
     runDir = _pidDir(repoRoot)
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
+    protocolWorkerPidPath = runDir / "protocol-worker.pid"
 
     logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
     logsDir.mkdir(exist_ok=True, parents=True)
     apiLogPath = logsDir / "app.log"
     workerLogPath = logsDir / "celery.log"
+    protocolWorkerLogPath = logsDir / "celery-protocols.log"
 
     apiHost = env.get("API_HOST", "0.0.0.0")
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
-    celeryConcurrency = (env.get("CELERY_CONCURRENCY") or "").strip()
-    celeryQueue = (env.get("CELERY_QUEUE") or env.get("CELERY_QUEUES") or "").strip()
+    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
 
     apiStartupTimeout = _envFloat(env, "API_STARTUP_TIMEOUT", 20.0)
     workerStartupWait = _envFloat(env, "WORKER_STARTUP_WAIT", 2.0)
@@ -558,41 +586,32 @@ def startCommand() -> None:
         _safeUnlink(workerPidPath)
 
     _printServiceStatusTable(
-        "Worker service",
+        "Plugin worker service",
         [
             ("State", workerState),
             ("PID", workerPid if workerPid is not None else "-"),
             ("Celery app", celeryApp),
             ("Log level", celeryLogLevel),
-            ("Concurrency", celeryConcurrency or "default"),
-            ("Queue", celeryQueue or "default"),
+            ("Concurrency", 1),
+            ("Queue", "plugins"),
             ("PID file", workerPidPath),
             ("Log file", workerLogPath),
         ],
     )
 
     if not workerPidPath.exists():
-        _printInfo("Launching celery worker")
+        _printInfo("Launching plugin Celery worker")
         workerEnv = os.environ.copy()
         workerEnv["PYTHONPATH"] = str(repoRoot)
         workerEnv["PYTHONUNBUFFERED"] = "1"
 
-        workerCommand = [
-            sys.executable,
-            "-m",
-            "celery",
-            "-A",
-            celeryApp,
-            "worker",
-            "--loglevel",
-            celeryLogLevel,
-        ]
-
-        if celeryConcurrency:
-            workerCommand.extend(["--concurrency", celeryConcurrency])
-
-        if celeryQueue:
-            workerCommand.extend(["-Q", celeryQueue])
+        workerCommand = _buildCeleryWorkerCommand(
+            celeryApp=celeryApp,
+            celeryLogLevel=celeryLogLevel,
+            queueName="plugins",
+            concurrency=1,
+            hostname="plugins@%h",
+        )
 
         workerPid = _startDetachedProcess(
             workerCommand,
@@ -602,14 +621,58 @@ def startCommand() -> None:
             sanityWaitSec=workerStartupWait,
         )
         _writePid(workerPidPath, workerPid)
-        _printSuccess(f"Worker started (pid={workerPid})")
+        _printSuccess(f"Plugin worker started (pid={workerPid})")
+
+    protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
+    if protocolWorkerState in {"STALE PID", "INVALID PID FILE"}:
+        _safeUnlink(protocolWorkerPidPath)
+
+    _printServiceStatusTable(
+        "Protocol worker service",
+        [
+            ("State", protocolWorkerState),
+            ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
+            ("Celery app", celeryApp),
+            ("Log level", celeryLogLevel),
+            ("Concurrency", protocolWorkerConcurrency),
+            ("Queue", "protocols"),
+            ("PID file", protocolWorkerPidPath),
+            ("Log file", protocolWorkerLogPath),
+        ],
+    )
+
+    if not protocolWorkerPidPath.exists():
+        _printInfo("Launching protocol Celery worker")
+        protocolWorkerEnv = os.environ.copy()
+        protocolWorkerEnv["PYTHONPATH"] = str(repoRoot)
+        protocolWorkerEnv["PYTHONUNBUFFERED"] = "1"
+
+        protocolWorkerCommand = _buildCeleryWorkerCommand(
+            celeryApp=celeryApp,
+            celeryLogLevel=celeryLogLevel,
+            queueName="protocols",
+            concurrency=protocolWorkerConcurrency,
+            hostname="protocols@%h",
+        )
+
+        protocolWorkerPid = _startDetachedProcess(
+            protocolWorkerCommand,
+            cwd=repoRoot,
+            env=protocolWorkerEnv,
+            logPath=protocolWorkerLogPath,
+            sanityWaitSec=workerStartupWait,
+        )
+        _writePid(protocolWorkerPidPath, protocolWorkerPid)
+        _printSuccess(f"Protocol worker started (pid={protocolWorkerPid})")
 
     finalApiState, finalApiPid = _describePidState(apiPidPath)
     finalWorkerState, finalWorkerPid = _describePidState(workerPidPath)
+    finalProtocolWorkerState, finalProtocolWorkerPid = _describePidState(protocolWorkerPidPath)
 
     summaryRows = [
         ("API", finalApiState if finalApiPid is None else f"{finalApiState} (pid={finalApiPid})"),
-        ("Worker", finalWorkerState if finalWorkerPid is None else f"{finalWorkerState} (pid={finalWorkerPid})"),
+        ("Plugin worker", finalWorkerState if finalWorkerPid is None else f"{finalWorkerState} (pid={finalWorkerPid})"),
+        ("Protocol worker", finalProtocolWorkerState if finalProtocolWorkerPid is None else f"{finalProtocolWorkerState} (pid={finalProtocolWorkerPid})"),
         ("Docs", docsUrl),
     ]
 
@@ -622,7 +685,7 @@ def startCommand() -> None:
 
 
 def stopCommand() -> None:
-    # stopApiAndWorker
+    # stopApiAndWorkers
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     runDir = _pidDir(repoRoot)
@@ -640,6 +703,7 @@ def stopCommand() -> None:
 
     apiStatus, apiPid = _stopPid(runDir / "api.pid")
     workerStatus, workerPid = _stopPid(runDir / "worker.pid")
+    protocolWorkerStatus, protocolWorkerPid = _stopPid(runDir / "protocol-worker.pid")
 
     _printServiceStatusTable(
         "Stop results",
@@ -652,10 +716,17 @@ def stopCommand() -> None:
                 else "Already stopped",
             ),
             (
-                "Worker",
+                "Plugin worker",
                 f"Stopped pid={workerPid}" if workerStatus == "stopped"
                 else f"Removed stale pid={workerPid}" if workerStatus == "stale"
                 else "Removed invalid PID file" if workerStatus == "invalid"
+                else "Already stopped",
+            ),
+            (
+                "Protocol worker",
+                f"Stopped pid={protocolWorkerPid}" if protocolWorkerStatus == "stopped"
+                else f"Removed stale pid={protocolWorkerPid}" if protocolWorkerStatus == "stale"
+                else "Removed invalid PID file" if protocolWorkerStatus == "invalid"
                 else "Already stopped",
             ),
         ],
@@ -676,7 +747,7 @@ def restartCommand() -> None:
 
 
 def statusCommand() -> None:
-    # statusApiAndWorker
+    # statusApiAndWorkers
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
@@ -684,26 +755,29 @@ def statusCommand() -> None:
 
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
+    protocolWorkerPidPath = runDir / "protocol-worker.pid"
 
     logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
     appLogPath = logsDir / "app.log"
     celeryLogPath = logsDir / "celery.log"
+    protocolCeleryLogPath = logsDir / "celery-protocols.log"
 
     apiHost = env.get("API_HOST", "0.0.0.0")
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
-    celeryConcurrency = (env.get("CELERY_CONCURRENCY") or "").strip()
-    celeryQueue = (env.get("CELERY_QUEUE") or env.get("CELERY_QUEUES") or "").strip()
+    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
 
     docsUrl = _docsUrl(env)
     webUrl = _webUrl(env)
 
     apiState, apiPid = _describePidState(apiPidPath)
     workerState, workerPid = _describePidState(workerPidPath)
+    protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
 
     apiUptime = _getProcessElapsedTime(apiPid) if apiPid is not None and apiState == "RUNNING" else None
     workerUptime = _getProcessElapsedTime(workerPid) if workerPid is not None and workerState == "RUNNING" else None
+    protocolWorkerUptime = _getProcessElapsedTime(protocolWorkerPid) if protocolWorkerPid is not None and protocolWorkerState == "RUNNING" else None
 
     apiTcpOk = _tcpReachable(apiHost, apiPort)
     docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
@@ -737,23 +811,39 @@ def statusCommand() -> None:
     )
 
     _printServiceStatusTable(
-        "Worker service",
+        "Plugin worker service",
         [
             ("State", workerState),
             ("PID", workerPid if workerPid is not None else "-"),
             ("Uptime", workerUptime or "-"),
             ("Celery app", celeryApp),
             ("Log level", celeryLogLevel),
-            ("Concurrency", celeryConcurrency or "default"),
-            ("Queue", celeryQueue or "default"),
+            ("Concurrency", 1),
+            ("Queue", "plugins"),
             ("PID file", workerPidPath),
             ("Log file", celeryLogPath),
         ],
     )
 
+    _printServiceStatusTable(
+        "Protocol worker service",
+        [
+            ("State", protocolWorkerState),
+            ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
+            ("Uptime", protocolWorkerUptime or "-"),
+            ("Celery app", celeryApp),
+            ("Log level", celeryLogLevel),
+            ("Concurrency", protocolWorkerConcurrency),
+            ("Queue", "protocols"),
+            ("PID file", protocolWorkerPidPath),
+            ("Log file", protocolCeleryLogPath),
+        ],
+    )
+
     summaryRows = [
         ("API", apiState if apiPid is None else f"{apiState} (pid={apiPid})"),
-        ("Worker", workerState if workerPid is None else f"{workerState} (pid={workerPid})"),
+        ("Plugin worker", workerState if workerPid is None else f"{workerState} (pid={workerPid})"),
+        ("Protocol worker", protocolWorkerState if protocolWorkerPid is None else f"{protocolWorkerState} (pid={protocolWorkerPid})"),
         ("Docs", docsUrl),
     ]
 
@@ -772,18 +862,21 @@ def logsCommand() -> None:
     logsDir = Path(env.get("LOGS_PATH", str(_resolveScipionHome(repoRoot) / "logs")))
     appLog = logsDir / "app.log"
     celeryLog = logsDir / "celery.log"
+    protocolCeleryLog = logsDir / "celery-protocols.log"
 
     _ensureLogFile(appLog)
     _ensureLogFile(celeryLog)
+    _ensureLogFile(protocolCeleryLog)
 
     _printPanel("Following logs")
     _printKeyValueTable(
         "Log files",
         [
             ("App log", appLog),
-            ("Celery log", celeryLog),
+            ("Plugin Celery log", celeryLog),
+            ("Protocol Celery log", protocolCeleryLog),
         ],
     )
     console.print("Press Ctrl+C to stop.\n")
 
-    subprocess.run(["tail", "-n", "200", "-f", str(appLog), str(celeryLog)])
+    subprocess.run(["tail", "-n", "200", "-f", str(appLog), str(celeryLog), str(protocolCeleryLog)])
