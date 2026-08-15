@@ -2692,9 +2692,10 @@ def test_ContinueProtocolAllUsesPostgresqlRuntimeService(
         mapper=mapper,
         projectId=1,
         protocolId=500,
-        currentUser={
-            "id": 1,
-        },
+        currentUserId=1,
+        executionId=(
+            "workflow-execution-123"
+        ),
     )
 
     assert result is expectedResult
