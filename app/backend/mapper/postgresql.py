@@ -13,6 +13,7 @@ from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
 POSTGRESQL_PROTOCOL_ID_START = 2
 POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
+PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE = 21335
 
 PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
     CASE
@@ -2432,6 +2433,75 @@ class PostgresqlFlatMapper(Mapper):
                 limit,
             ),
         )
+
+    def countActiveProtocolExecutionsForUser(
+            self,
+            userId: int,
+    ) -> int:
+        row = self.db.fetchOne(
+            """
+            SELECT COUNT(*)::integer AS count
+              FROM protocols
+             WHERE LOWER(COALESCE(status, '')) IN (
+                 'scheduled',
+                 'launched',
+                 'running'
+             )
+               AND (
+                   params::jsonb
+                       -> '_scipionWebRuntime'
+                       ->> 'launchedByUserId'
+               ) = %s
+            """,
+            (
+                str(int(userId)),
+            ),
+        )
+
+        if not row:
+            return 0
+
+        return int(
+            row.get("count")
+            or 0
+        )
+
+    @contextmanager
+    def protocolLaunchUserLock(
+            self,
+            userId: int,
+    ):
+        userId = int(userId)
+
+        self.db.execute(
+            """
+            SELECT pg_advisory_lock(
+                %s,
+                %s
+            )
+            """,
+            (
+                PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+                userId,
+            ),
+        )
+
+        try:
+            yield
+
+        finally:
+            self.db.execute(
+                """
+                SELECT pg_advisory_unlock(
+                    %s,
+                    %s
+                )
+                """,
+                (
+                    PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+                    userId,
+                ),
+            )
 
     def listActiveProtocolExecutions(
             self,
