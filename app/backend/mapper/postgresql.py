@@ -2056,7 +2056,21 @@ class PostgresqlFlatMapper(Mapper):
             ON CONFLICT ("projectId", "protocolId")
             DO UPDATE SET
                 "status" = EXCLUDED."status",
-                "params" = EXCLUDED."params",
+                "params" = CASE
+                    WHEN protocols."params" -> '_scipionWebRuntime' IS NOT NULL
+                    THEN
+                        COALESCE(
+                            EXCLUDED."params"::jsonb,
+                            '{}'::jsonb
+                        )
+                        || jsonb_build_object(
+                            '_scipionWebRuntime',
+                            protocols."params"::jsonb
+                                -> '_scipionWebRuntime'
+                        )
+                    ELSE
+                        EXCLUDED."params"::jsonb
+                END,
                 "parentIds" = EXCLUDED."parentIds",
                 "childIds" = EXCLUDED."childIds"
             RETURNING id

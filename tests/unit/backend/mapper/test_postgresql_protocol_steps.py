@@ -367,6 +367,12 @@ def test_SaveProtocolCanJoinExistingTransaction():
     assert len(mapper.db.executeCalls) == 1
     assert mapper.db.executeCalls[0]["commit"] is False
     assert "INSERT INTO protocols" in mapper.db.executeCalls[0]["query"]
+    query = mapper.db.executeCalls[0]["query"]
+
+    assert "'_scipionWebRuntime'" in query
+    assert "jsonb_build_object" in query
+    assert 'protocols."params"' in query
+    assert 'EXCLUDED."params"' in query
 
 
 def test_ReplaceProtocolStepsCanJoinExistingTransaction():
