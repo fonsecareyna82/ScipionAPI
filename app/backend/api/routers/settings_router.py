@@ -41,9 +41,12 @@ from app.backend.api.schemas.settings_schema import (
     InstanceSettingsIn,
     InstanceSettingsPatch,
     EnvironmentVariableOut,
-HostSettingsOut,
+    HostSettingsOut,
     HostSettingsIn,
     HostSettingsPatch,
+)
+from app.backend.api.schemas.job_monitoring_schema import (
+    JobMonitoringOverviewOut,
 )
 from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.job_monitoring_service import (
