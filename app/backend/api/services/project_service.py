@@ -5828,6 +5828,9 @@ class ProjectService:
             )
         )
 
+        persistedOutputsByProtocolId = RuntimeProtocolOutputPersistenceService().loadPersistedOutputsByProtocolId(mapper=mapper,
+                                                                                                                  projectId=projectId)
+
         result = []
 
         for row in rows:
@@ -5910,6 +5913,26 @@ class ProjectService:
                     or {}
             )
 
+            persistedOutputs = persistedOutputsByProtocolId.get(protocolId) or {}
+            runtimeOutputs = []
+
+            for outputName, outputInfo in sorted(persistedOutputs.items()):
+                normalizedOutputName = str(outputName or "").strip()
+
+                if not normalizedOutputName:
+                    continue
+
+                pointerClass = str(outputInfo.get("className") or outputInfo.get("rootObjectClassName") or outputInfo.get("itemClassName") or "")
+
+                runtimeOutputs.append({
+                    "outputName": normalizedOutputName,
+                    "paramClass": "PointerParam",
+                    "pointerClass": pointerClass,
+                    "info": str(outputInfo.get("info") or ""),
+                    "value": f"{protocolId}.{normalizedOutputName}",
+                    "parentId": int(protocolId) if protocolId.isdigit() else protocolId,
+                })
+
             result.append({
                 "protocolId": protocolId,
                 "status": statusValue,
@@ -5942,6 +5965,7 @@ class ProjectService:
                     )
                     or 0
                 ),
+                "outputs": runtimeOutputs,
             })
 
         return result
