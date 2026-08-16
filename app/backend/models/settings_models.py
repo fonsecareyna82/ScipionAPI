@@ -36,6 +36,12 @@ class UserSettings(BaseModel):
     theme: Literal["system", "light", "dark"] = "system"
     uiDensity: Literal["comfortable", "compact"] = "comfortable"
     fontScale: float = Field(default=1.0, ge=0.85, le=1.25)
+    workflowViewMode: Literal[
+        "treeTb",
+        "treeLr",
+        "grid",
+        "table",
+    ] = "treeTb"
 
     language: Literal["en", "es"] = "en"
     timeZone: str = "Europe/Madrid"
@@ -51,6 +57,15 @@ class UserSettingsPatch(BaseModel):
     theme: Optional[Literal["system", "light", "dark"]] = None
     uiDensity: Optional[Literal["comfortable", "compact"]] = None
     fontScale: Optional[float] = Field(default=None, ge=0.85, le=1.25)
+
+    workflowViewMode: Optional[
+        Literal[
+            "treeTb",
+            "treeLr",
+            "grid",
+            "table",
+        ]
+    ] = None
 
     language: Optional[Literal["en", "es"]] = None
     timeZone: Optional[str] = None
