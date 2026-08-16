@@ -5800,6 +5800,138 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
+    def getProtocolRuntimeSummaries(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolIds,
+    ) -> List[Dict[str, Any]]:
+        runtimeStatusService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        rows = (
+            mapper
+            .getProjectProtocolRuntimeRows(
+                projectId=projectId,
+                protocolIds=protocolIds,
+            )
+        )
+
+        if not rows:
+            return []
+
+        stepSummaries = (
+            mapper
+            .getProjectProtocolStepSummaryByProtocolId(
+                projectId=projectId,
+            )
+        )
+
+        result = []
+
+        for row in rows:
+            protocolId = str(
+                row.get(
+                    "protocolId"
+                )
+                or ""
+            ).strip()
+
+            if not protocolId:
+                continue
+
+            statusValue = str(
+                row.get(
+                    "status"
+                )
+                or ""
+            ).strip().lower()
+
+            params = (
+                runtimeStatusService
+                .normalizeParams(
+                    row.get(
+                        "params"
+                    )
+                )
+            )
+
+            runtimeMetadata = (
+                    params.get(
+                        runtimeStatusService
+                        .RUNTIME_METADATA_KEY
+                    )
+                    or {}
+            )
+
+            if not isinstance(
+                    runtimeMetadata,
+                    dict,
+            ):
+                runtimeMetadata = {}
+
+            cpuTimeSeconds = (
+                runtimeStatusService
+                .toSeconds(
+                    runtimeMetadata.get(
+                        "cpuTimeSeconds"
+                    )
+                )
+            )
+
+            elapsedTimeSeconds = (
+                runtimeStatusService
+                .getEffectiveElapsedTimeSeconds(
+                    runtimeMetadata=(
+                        runtimeMetadata
+                    ),
+                    statusValue=(
+                        statusValue
+                    ),
+                )
+            )
+
+            stepSummary = (
+                    stepSummaries.get(
+                        protocolId
+                    )
+                    or {}
+            )
+
+            result.append({
+                "protocolId": protocolId,
+                "status": statusValue,
+                "cpuTimeSeconds": max(
+                    0.0,
+                    float(
+                        cpuTimeSeconds
+                        or 0.0
+                    ),
+                ),
+                "elapsedTimeSeconds": max(
+                    0.0,
+                    float(
+                        elapsedTimeSeconds
+                        or 0.0
+                    ),
+                ),
+                "stepsDone": int(
+                    stepSummary.get(
+                        "stepsDone"
+                    )
+                    or 0
+                ),
+                "numberOfSteps": int(
+                    stepSummary.get(
+                        "numberOfSteps"
+                    )
+                    or 0
+                ),
+            })
+
+        return result
+
     def getProtocols(
             self,
             mapper: PostgresqlFlatMapper,

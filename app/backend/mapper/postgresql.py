@@ -3026,6 +3026,61 @@ class PostgresqlFlatMapper(Mapper):
                 commit=commit,
             )
 
+    def getProjectProtocolRuntimeRows(
+            self,
+            projectId: int,
+            protocolIds,
+    ) -> List[Dict[str, Any]]:
+        normalizedProtocolIds = []
+
+        seen = set()
+
+        for protocolId in (
+                protocolIds
+                or []
+        ):
+            value = str(
+                protocolId
+                or ""
+            ).strip()
+
+            if (
+                    not value
+                    or value in seen
+            ):
+                continue
+
+            seen.add(
+                value
+            )
+
+            normalizedProtocolIds.append(
+                value
+            )
+
+        if not normalizedProtocolIds:
+            return []
+
+        return self.db.fetchAll(
+            """
+            SELECT
+                "protocolId",
+                status,
+                params,
+                "updatedAt"
+            FROM protocols
+            WHERE "projectId" = %s
+              AND "protocolId" = ANY(
+                  %s::text[]
+              )
+            ORDER BY "protocolId" ASC
+            """,
+            (
+                projectId,
+                normalizedProtocolIds,
+            ),
+        )
+
     def listProtocolSteps(
             self,
             projectId: int,

@@ -377,6 +377,62 @@ def loadProtocols(
     return protocols
 
 
+@router.get(
+    "/{projectId}/runtime/protocols",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolRuntimeSummaries(
+        projectId: int,
+        protocolIds: List[int] = Query(...),
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
+):
+    project = (
+        service
+        .getProjectDbRow(
+            mapper,
+            projectId,
+            currentUser,
+        )
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+            ),
+            detail="Project not found",
+        )
+
+    if len(protocolIds) > 256:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail=(
+                "Too many protocol ids "
+                "requested."
+            ),
+        )
+
+    return (
+        service
+        .getProtocolRuntimeSummaries(
+            mapper=mapper,
+            projectId=projectId,
+            protocolIds=protocolIds,
+        )
+    )
+
+
 @router.get("/{projectId}/protocols/{protocolId}", response_model=Any)
 async def loadProtocol(
     projectId: int,
