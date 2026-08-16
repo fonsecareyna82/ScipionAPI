@@ -26,6 +26,7 @@
 import json
 import logging
 import time
+from uuid import uuid4
 from typing import Any, Dict, Optional
 
 from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED
@@ -56,6 +57,10 @@ class RuntimeProtocolStatusSyncService:
     FINAL_SYNC_PENDING_KEY = "finalSyncPending"
     ELAPSED_UPDATED_AT_KEY = (
         "elapsedUpdatedAtEpochSeconds"
+    )
+
+    ELAPSED_SESSION_ID_KEY = (
+        "elapsedSessionId"
     )
 
     ELAPSED_ACTIVE_STATUS_TEXTS = {
@@ -371,6 +376,11 @@ class RuntimeProtocolStatusSyncService:
         )
 
         runtimeMetadata.pop(
+            self.ELAPSED_SESSION_ID_KEY,
+            None,
+        )
+
+        runtimeMetadata.pop(
             self.FINAL_SYNC_PENDING_KEY,
             None,
         )
@@ -393,6 +403,7 @@ class RuntimeProtocolStatusSyncService:
             ),
             "cpuTimeSeconds": 0.0,
             "elapsedTimeSeconds": 0.0,
+            "elapsedSessionId": None,
             "pid": None,
             "jobIds": [],
         }
@@ -680,7 +691,28 @@ class RuntimeProtocolStatusSyncService:
         if not isinstance(runtimeMetadata, dict):
             runtimeMetadata = {}
 
-        runtimeMetadata = dict(runtimeMetadata)
+        runtimeMetadata = dict(
+            runtimeMetadata
+        )
+
+        elapsedSessionId = str(
+            runtimeMetadata.get(
+                self.ELAPSED_SESSION_ID_KEY
+            )
+            or ""
+        ).strip()
+
+        if (
+                resetElapsed
+                or not elapsedSessionId
+        ):
+            elapsedSessionId = (
+                uuid4().hex
+            )
+
+        runtimeMetadata[
+            self.ELAPSED_SESSION_ID_KEY
+        ] = elapsedSessionId
 
         elapsedSeconds = (
             0.0
@@ -715,9 +747,18 @@ class RuntimeProtocolStatusSyncService:
         })
 
         return {
-            "protocolId": str(protocolId),
-            "elapsedTimeSeconds": elapsedSeconds,
-            "resetElapsed": bool(resetElapsed),
+            "protocolId": str(
+                protocolId
+            ),
+            "elapsedTimeSeconds": (
+                elapsedSeconds
+            ),
+            "elapsedSessionId": (
+                elapsedSessionId
+            ),
+            "resetElapsed": bool(
+                resetElapsed
+            ),
         }
 
     def updateElapsedTimeMetadata(

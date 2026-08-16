@@ -5892,6 +5892,17 @@ class ProjectService:
                 )
             )
 
+            elapsedSessionId = str(
+                runtimeMetadata.get(
+                    runtimeStatusService
+                    .ELAPSED_SESSION_ID_KEY
+                )
+                or ""
+            ).strip()
+
+            if not elapsedSessionId:
+                elapsedSessionId = None
+
             stepSummary = (
                     stepSummaries.get(
                         protocolId
@@ -5915,6 +5926,9 @@ class ProjectService:
                         elapsedTimeSeconds
                         or 0.0
                     ),
+                ),
+                "elapsedSessionId": (
+                    elapsedSessionId
                 ),
                 "stepsDone": int(
                     stepSummary.get(
