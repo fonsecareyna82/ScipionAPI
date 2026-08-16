@@ -38,6 +38,7 @@ from pyworkflow import Config
 from pyworkflow.object import Pointer, PointerList
 from pyworkflow.protocol import (
     LegacyProtocol,
+    Protocol,
     MODE_RESTART,
     MODE_RESUME,
     Set,
@@ -1419,6 +1420,15 @@ class RuntimePostgresqlProtocolWorker:
 
         return activeInputRefs, inactiveInputRefs
 
+    def canConsumeStreamingInputs(self) -> bool:
+        if not bool(self.protocol.worksInStreaming()):
+            return False
+
+        protocolStepsCheck = getattr(type(self.protocol), "_stepsCheck", None)
+        baseStepsCheck = getattr(Protocol, "_stepsCheck", None)
+
+        return protocolStepsCheck is not None and protocolStepsCheck is not baseStepsCheck
+
     def validateProtocolInputs(
             self,
     ) -> List[str]:
@@ -1486,10 +1496,7 @@ class RuntimePostgresqlProtocolWorker:
 
         activeInputRefs, inactiveInputRefs = self.partitionInputRefsByCondition(inputRefs)
 
-        streaming = bool(
-            self.protocol
-            .worksInStreaming()
-        )
+        streaming = self.canConsumeStreamingInputs()
 
         prerequisiteIds = (
             self

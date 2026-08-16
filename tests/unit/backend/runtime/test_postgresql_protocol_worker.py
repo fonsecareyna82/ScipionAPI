@@ -66,6 +66,23 @@ class ProtocolStub:
     def evalParamCondition(self, paramName):
         return self.inputConditions.get(paramName, True)
 
+    def _stepsCheck(self):
+        pass
+
+
+class StreamingCapabilityOnlyProtocolStub:
+    def worksInStreaming(self):
+        return True
+
+    def getPrerequisites(self):
+        return []
+
+    def getParam(self, paramName):
+        return SimpleNamespace()
+
+    def evalParamCondition(self, paramName):
+        return True
+
 
 def buildWorker(
         streaming,
@@ -654,6 +671,28 @@ def test_NonStreamingProtocolWaitsForRunningParent():
             "reason": (
                 "input_parent_not_finished"
             ),
+        },
+    ]
+
+
+def test_StreamingCapabilityWithoutInputRefreshWaitsForRunningParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        outputExists=True,
+    )
+
+    worker.protocol = StreamingCapabilityOnlyProtocolStub()
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["streaming"] is False
+    assert readiness["pendingParents"] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "running",
+            "reason": "input_parent_not_finished",
         },
     ]
 
