@@ -511,6 +511,7 @@ def test_PostgresqlResetCleansOwnedRuntimeStateAndPreservesExternalParent(
             "protocolId": str(childProtocolId),
             "cpuTimeSeconds": 0.0,
             "elapsedTimeSeconds": 0.0,
+            "elapsedSessionId": None,
             "pid": None,
             "jobIds": [],
         }

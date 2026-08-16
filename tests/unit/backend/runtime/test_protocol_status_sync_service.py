@@ -228,6 +228,7 @@ def test_ResetProtocolRuntimeMetadataClearsExecutionState():
         "protocolId": "10",
         "cpuTimeSeconds": 0.0,
         "elapsedTimeSeconds": 0.0,
+        "elapsedSessionId": None,
         "pid": None,
         "jobIds": [],
     }
