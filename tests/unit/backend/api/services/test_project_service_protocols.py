@@ -3023,10 +3023,9 @@ def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
     )
     monkeypatch.setattr(
         runtimeProtocolLaunchServiceModule,
-        "MODE_RESUME",
-        "resume-mode",
+        "MODE_RESTART",
+        "restart-mode",
     )
-
     protocol = FakeProtocol(objId=10, className="ProtClass", validateErrors=[])
     protocol.addParam("runName", FakeStringParam(label="Run name"))
     protocol.addParam("iterations", FakeIntParam(label="Iterations"))
