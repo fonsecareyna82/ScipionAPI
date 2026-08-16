@@ -2013,13 +2013,29 @@ def test_LaunchProtocolRaises422WhenValidationFails(service, mapper, monkeypatch
 @pytest.mark.parametrize(
     "executeMode, expectedRunMode",
     [
-        (None, "resume-mode"),
-        ("launch", "resume-mode"),
-        ("resume", "resume-mode"),
-        ("restart", "restart-mode"),
-        ("continue", "resume-mode"),
+        (
+            None,
+            "restart-mode",
+        ),
+        (
+            "launch",
+            "restart-mode",
+        ),
+        (
+            "resume",
+            "resume-mode",
+        ),
+        (
+            "restart",
+            "restart-mode",
+        ),
+        (
+            "continue",
+            "resume-mode",
+        ),
     ],
 )
+
 def test_LaunchProtocolRunsProtocolWithExpectedRunMode(
     service,
     mapper,
@@ -3032,7 +3048,7 @@ def test_LaunchProtocolLaunchResolvesPostgresqlProtocolId(
 
     assert protocol.runName.get() == "Launch protocol"
     assert protocol.attributeValues["iterations"] == 7
-    assert protocol.runMode.get() == "resume-mode"
+    assert protocol.runMode.get() == "restart-mode"
     assert service.currentProject.storedProtocols == [protocol]
     assert service.currentProject.launchedProtocols == [protocol]
     assert service.currentProject.scheduledProtocols == []

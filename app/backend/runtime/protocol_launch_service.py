@@ -78,16 +78,41 @@ class RuntimeProtocolLaunchService:
         """
         modeAliases = {
             None: "launch",
-            "resume": "launch",
-            "continue": "launch",
+            "resume": "continue",
         }
 
-        executeMode = modeAliases.get(executeMode, executeMode)
-        params = params or {}
-        protocolIdToken = "" if protocolId is None else str(protocolId).strip().lower()
-        isNewProtocolRequest = protocolIdToken in {"", "none", "null", "undefined"}
+        executeMode = modeAliases.get(
+            executeMode,
+            executeMode,
+        )
 
-        allowedModes = {"launch", "restart", "schedule", "stop"}
+        params = params or {}
+
+        protocolIdToken = (
+            ""
+            if protocolId is None
+            else str(
+                protocolId
+            ).strip().lower()
+        )
+
+        isNewProtocolRequest = (
+                protocolIdToken
+                in {
+                    "",
+                    "none",
+                    "null",
+                    "undefined",
+                }
+        )
+
+        allowedModes = {
+            "launch",
+            "continue",
+            "restart",
+            "schedule",
+            "stop",
+        }
 
         if executeMode not in allowedModes:
             raise HTTPException(
@@ -105,9 +130,8 @@ class RuntimeProtocolLaunchService:
 
         elapsedBeforeLaunchSeconds = 0.0
 
-        if (
-                executeMode in {"launch", "restart"}
-                and protocolId not in (None, "")
+        if (executeMode in {"launch", "continue", "restart",}
+                and protocolId not in (None, "",)
         ):
             elapsedBeforeLaunchSeconds = RuntimeProtocolStatusSyncService().getStoredElapsedTimeSeconds(
                 mapper=mapper,
@@ -277,12 +301,15 @@ class RuntimeProtocolLaunchService:
                 )
 
             modeToRunMode = {
-                "launch": MODE_RESUME,
+                "launch": MODE_RESTART,
+                "continue": MODE_RESUME,
                 "restart": MODE_RESTART,
             }
 
             protocol.runMode.set(
-                modeToRunMode[executeMode]
+                modeToRunMode[
+                    executeMode
+                ]
             )
 
             if executeMode == "restart":
@@ -341,11 +368,9 @@ class RuntimeProtocolLaunchService:
                 "protocolId": str(launchedProtocolId),
                 "protocolStatus": currentStatus,
                 "postgresqlLaunchPointerReport": postgresqlLaunchPointerReport,
-                "elapsedTiming": {
-                    "deferredToWorker": True,
-                    "baseElapsedTimeSeconds": elapsedBeforeLaunchSeconds,
-                    "resetElapsed": executeMode == "restart",
-                },
+                "elapsedTiming": {"deferredToWorker": True,
+                                  "baseElapsedTimeSeconds": elapsedBeforeLaunchSeconds,
+                                  "resetElapsed": executeMode in {"launch", "restart"}},
             }
 
         except HTTPException:
