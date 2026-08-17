@@ -1128,6 +1128,13 @@ class TableViewerService:
 
             nViews = self._safeInt(nViews, 0)
 
+            excluded = bool(
+                item.get(
+                    "excluded",
+                    False,
+                )
+            )
+
             dimensions = self._formatDimensions(
                 item.get("dims")
                 or item.get("shape")
@@ -1154,6 +1161,7 @@ class TableViewerService:
                     "dimensions": dimensions,
                     "pixelSize": pixelSize,
                     "tiltAxisAngle": tiltAxisAngle,
+                    "excluded": excluded,
                     "tiltImages": nViews,
                         },
                 "data": {
@@ -1176,6 +1184,12 @@ class TableViewerService:
                         "defaultAction": {
                             "id": "view-tiltseries",
                             "label": "View",
+                        },
+                    },
+                    "excluded": {
+                        "edit": {
+                            "type": "boolean",
+                            "field": "excluded",
                         },
                     },
                 },
@@ -1224,13 +1238,19 @@ class TableViewerService:
                     {
                         "id": "tiltAxisAngle",
                         "label": "Tilt axis",
-                        "width": "17%",
+                        "width": "14%",
                         "align": "right",
+                    },
+                    {
+                        "id": "excluded",
+                        "label": "Excl.",
+                        "width": "9%",
+                        "align": "center",
                     },
                     {
                         "id": "tiltImages",
                         "label": "Tilt images",
-                        "width": "15%",
+                        "width": "12%",
                         "align": "right",
                     },
                 ],
@@ -1350,6 +1370,14 @@ class TableViewerService:
                         "viewId": viewId,
                         "frameIndex": frameIndex,
                     },
+                    "cellContexts": {
+                        "excluded": {
+                            "edit": {
+                                "type": "boolean",
+                                "field": "excluded",
+                            },
+                        },
+                    },
                     "defaultAction": {
                         "id": "view-tiltseries",
                         "label": "View",
@@ -1392,7 +1420,7 @@ class TableViewerService:
                     {
                         "id": "path",
                         "label": "Path",
-                        "width": "28%",
+                        "width": "25%",
                     },
                     {
                         "id": "rot",

@@ -460,6 +460,13 @@ class PostgresqlTiltSeriesReader:
             "label": "TiltSeries %s" % str(tiltSeriesId),
         }
 
+        summary["excluded"] = (
+            self._getFrameExcluded(
+                item,
+                values,
+            )
+        )
+
         childTable = self._findChildTableForParentItem(itemId)
         if childTable is not None:
             nViews = self._countChildTableItems(int(childTable["id"]))

@@ -10075,8 +10075,19 @@ class ProjectService:
         dims = ts.getDim()
         pixelSize = ts.getSamplingRate()
         tiltAxisAngle = ts.getAcquisition().getTiltAxisAngle()
+
+        try:
+            excluded = (
+                not bool(
+                    ts.isEnabled()
+                )
+            )
+        except Exception:
+            excluded = False
+
         item: Dict[str, Any] = {
             "tiltSeriesId": tsId,
+            "excluded": excluded,
             "label": str(label),
         }
         if nViews is not None:
