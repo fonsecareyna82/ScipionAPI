@@ -31,6 +31,7 @@ from app.backend.api.services.output_viewer_descriptor import (
     VIEWER_CAPABILITY_SET,
     VIEWER_CAPABILITY_COORDINATES3D,
     VIEWER_CAPABILITY_TILT_SERIES,
+    VIEWER_CAPABILITY_CTF_TOMO,
     VIEWER_CAPABILITY_TOMOGRAMS,
 )
 
@@ -371,21 +372,21 @@ class TableViewerService:
 
         return result
 
-
     def resolveOutput(
-        self,
-        *,
-        projectId: int,
-        protocolId: int,
-        ctx: Dict[str, Any],
-        descriptor: OutputViewerDescriptor,
-        mapper,
-        listTablesCallback: Callable,
-        getSchemaCallback: Callable,
-        getPageCallback: Callable,
-        listCoordinates3dTomogramsCallback: Callable,
-        listTiltSeriesCallback: Callable,
-        listVolumesCallback: Callable,
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            ctx: Dict[str, Any],
+            descriptor: OutputViewerDescriptor,
+            mapper,
+            listTablesCallback: Callable,
+            getSchemaCallback: Callable,
+            getPageCallback: Callable,
+            listCoordinates3dTomogramsCallback: Callable,
+            listTiltSeriesCallback: Callable,
+            listCtftomoSeriesCallback: Callable,
+            listVolumesCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
@@ -436,6 +437,20 @@ class TableViewerService:
                     mapper=mapper,
                     listTiltSeriesCallback=(
                         listTiltSeriesCallback
+                    ),
+                ),
+            ),
+            (
+                VIEWER_CAPABILITY_CTF_TOMO,
+                lambda:
+                self._resolveCtftomoRoot(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    pointerClass=pointerClass,
+                    mapper=mapper,
+                    listCtftomoSeriesCallback=(
+                        listCtftomoSeriesCallback
                     ),
                 ),
             ),
@@ -1068,6 +1083,315 @@ class TableViewerService:
             },
         }
 
+    def _resolveCtftomoRoot(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            pointerClass: str,
+            mapper,
+            listCtftomoSeriesCallback: Callable,
+    ) -> Dict[str, Any]:
+        seriesItems = (
+                listCtftomoSeriesCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+                or []
+        )
+
+        rows = []
+
+        for index, item in enumerate(
+                seriesItems
+        ):
+            if not isinstance(
+                    item,
+                    dict,
+            ):
+                continue
+
+            seriesId = item.get(
+                "ctfSeriesId"
+            )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "tiltSeriesId"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "tsId"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "id"
+                )
+
+            if seriesId is None:
+                seriesId = index
+
+            tiltSeriesId = item.get(
+                "tiltSeriesId"
+            )
+
+            if tiltSeriesId is None:
+                tiltSeriesId = item.get(
+                    "tsId"
+                )
+
+            if tiltSeriesId is None:
+                tiltSeriesId = seriesId
+
+            label = (
+                    item.get("label")
+                    or item.get("name")
+                    or str(seriesId)
+            )
+
+            nViews = item.get(
+                "nViews"
+            )
+
+            if nViews is None:
+                nViews = item.get(
+                    "count"
+                )
+
+            if nViews is None:
+                nViews = item.get(
+                    "nTilts"
+                )
+
+            nViews = self._safeInt(
+                nViews,
+                0,
+            )
+
+            excluded = bool(
+                item.get(
+                    "excluded",
+                    False,
+                )
+            )
+
+            dimensions = (
+                self._formatDimensions(
+                    item.get("dims")
+                    or item.get("shape")
+                    or item.get("size")
+                )
+            )
+
+            pixelSize = item.get(
+                "pixelSize"
+            )
+
+            if pixelSize is None:
+                pixelSize = item.get(
+                    "samplingRate"
+                )
+
+            rows.append({
+                "id": seriesId,
+
+                "cells": {
+                    "ctfSeries": str(
+                        label
+                    ),
+                    "dimensions":
+                        dimensions,
+                    "pixelSize":
+                        pixelSize,
+                    "excluded":
+                        excluded,
+                    "ctfViews":
+                        nViews,
+                },
+
+                "data": {
+                    "kind": "ctfTomo",
+                    "ctfSeriesId":
+                        seriesId,
+                    "tiltSeriesId":
+                        tiltSeriesId,
+                    "excluded":
+                        excluded,
+                    "label":
+                        str(label),
+                },
+
+                "cellContexts": {
+                    "ctfSeries": {
+                        "target": {
+                            "protocolId":
+                                protocolId,
+                            "outputName":
+                                outputName,
+                            "pointerClass":
+                                pointerClass,
+                        },
+                        "data": {
+                            "kind":
+                                "ctfTomo",
+                            "ctfSeriesId":
+                                seriesId,
+                            "tiltSeriesId":
+                                tiltSeriesId,
+                            "label":
+                                str(label),
+                        },
+                        "defaultAction": {
+                            "id":
+                                "view-ctftomo",
+                            "label":
+                                "View",
+                        },
+                    },
+
+                    "excluded": {
+                        "edit": {
+                            "type":
+                                "boolean",
+                            "field":
+                                "excluded",
+
+                            "cascadeToChildren": {
+                                "childrenId":
+                                    "ctfViews",
+                                "columnId":
+                                    "excluded",
+                            },
+                        },
+                    },
+                },
+
+                "defaultAction": {
+                    "id":
+                        "view-ctftomo",
+                    "label":
+                        "View",
+                },
+
+                "children": {
+                    "id":
+                        "ctfViews",
+                    "label":
+                        "CTF views",
+                    "count":
+                        nViews,
+                },
+            })
+
+        return {
+            "handled": True,
+            "viewer": "table",
+            "title": outputName,
+
+            "context": {
+                "projectId":
+                    projectId,
+                "protocolId":
+                    protocolId,
+                "outputName":
+                    outputName,
+                "pointerClass":
+                    pointerClass,
+                "tableKey":
+                    "ctfTomo",
+            },
+
+            "table": {
+                "title":
+                    "CTF tomography",
+
+                "columns": [
+                    {
+                        "id":
+                            "ctfSeries",
+                        "label":
+                            "CTF series",
+                        "width":
+                            "31%",
+                        "sortable":
+                            True,
+                    },
+                    {
+                        "id":
+                            "dimensions",
+                        "label":
+                            "Dimensions",
+                        "width":
+                            "24%",
+                    },
+                    {
+                        "id":
+                            "pixelSize",
+                        "label":
+                            "Pixel size (Å/px)",
+                        "width":
+                            "20%",
+                        "align":
+                            "right",
+                    },
+                    {
+                        "id":
+                            "excluded",
+                        "label":
+                            "Excl.",
+                        "width":
+                            "9%",
+                        "align":
+                            "center",
+                    },
+                    {
+                        "id":
+                            "ctfViews",
+                        "label":
+                            "CTF views",
+                        "width":
+                            "16%",
+                        "align":
+                            "right",
+                    },
+                ],
+
+                "rows":
+                    rows,
+
+                "actions": [
+                    {
+                        "id":
+                            "metadata",
+                        "label":
+                            "Metadata",
+                    },
+                ],
+
+                "editActions": [
+                    {
+                        "id":
+                            "create-filtered-output",
+                        "label":
+                            "Generate subsets",
+                        "requiresChanges":
+                            True,
+                    },
+                ],
+
+                "page": {
+                    "offset": 0,
+                    "limit": len(rows),
+                    "total": len(rows),
+                },
+            },
+        }
+
     def _resolveTiltSeriesRoot(
             self,
             *,
@@ -1298,6 +1622,7 @@ class TableViewerService:
             descriptor: OutputViewerDescriptor,
             mapper,
             getTiltSeriesFramesCallback: Callable,
+            getCtftomoSeriesViewsCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(payload.get("outputName") or "").strip()
         childrenId = str(payload.get("childrenId") or "").strip()
@@ -1462,6 +1787,256 @@ class TableViewerService:
                     },
                 ],
                 "rows": rows,
+            }
+
+        if (
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_CTF_TOMO
+                )
+                and childrenId
+                == "ctfViews"
+        ):
+            ctfSeriesId = rowData.get(
+                "ctfSeriesId"
+            )
+
+            if ctfSeriesId is None:
+                ctfSeriesId = rowData.get(
+                    "tiltSeriesId"
+                )
+
+            if ctfSeriesId is None:
+                ctfSeriesId = rowId
+
+            if ctfSeriesId is None:
+                return {
+                    "columns": [],
+                    "rows": [],
+                }
+
+            raw = (
+                    getCtftomoSeriesViewsCallback(
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        tiltSeriesId=str(
+                            ctfSeriesId
+                        ),
+                        mapper=mapper,
+                    )
+                    or {}
+            )
+
+            if isinstance(
+                    raw,
+                    list,
+            ):
+                frames = raw
+
+            elif isinstance(
+                    raw,
+                    dict,
+            ):
+                frames = (
+                        raw.get("frames")
+                        or raw.get("views")
+                        or raw.get("items")
+                        or []
+                )
+
+            else:
+                frames = []
+
+            parentExcluded = bool(
+                rowData.get(
+                    "excluded",
+                    False,
+                )
+            )
+
+            rows = []
+
+            for localIndex, frame in enumerate(
+                    frames
+            ):
+                if not isinstance(
+                        frame,
+                        dict,
+                ):
+                    continue
+
+                viewId = frame.get(
+                    "viewId"
+                )
+
+                if viewId is None:
+                    viewId = frame.get(
+                        "id"
+                    )
+
+                if viewId is None:
+                    viewId = localIndex
+
+                ctfIndex = frame.get(
+                    "index"
+                )
+
+                if ctfIndex is None:
+                    ctfIndex = localIndex
+
+                ccValue = frame.get(
+                    "ccValue"
+                )
+
+                if ccValue is None:
+                    ccValue = frame.get(
+                        "cc"
+                    )
+
+                rows.append({
+                    "id": (
+                        f"{ctfSeriesId}:"
+                        f"{viewId}"
+                    ),
+
+                    "cells": {
+                        "index":
+                            ctfIndex,
+                        "order":
+                            frame.get(
+                                "order"
+                            ),
+                        "tiltAngle":
+                            frame.get(
+                                "tiltAngle"
+                            ),
+                        "excluded": (
+                            True
+                            if parentExcluded
+                            else bool(
+                                frame.get(
+                                    "excluded",
+                                    False,
+                                )
+                            )
+                        ),
+                        "defocusU":
+                            frame.get(
+                                "defocusU"
+                            ),
+                        "defocusV":
+                            frame.get(
+                                "defocusV"
+                            ),
+                        "astigmatism":
+                            frame.get(
+                                "astigmatism"
+                            ),
+                        "resolution":
+                            frame.get(
+                                "resolution"
+                            ),
+                        "ccValue":
+                            ccValue,
+                    },
+
+                    "data": {
+                        "kind":
+                            "ctfTomoView",
+                        "ctfSeriesId":
+                            ctfSeriesId,
+                        "tiltSeriesId":
+                            rowData.get(
+                                "tiltSeriesId"
+                            ),
+                        "viewId":
+                            viewId,
+                        "ctfIndex":
+                            ctfIndex,
+                    },
+
+                    "cellContexts": {
+                        "excluded": {
+                            "edit": {
+                                "type":
+                                    "boolean",
+                                "field":
+                                    "excluded",
+                            },
+                        },
+                    },
+
+                    "defaultAction": {
+                        "id":
+                            "view-ctftomo",
+                        "label":
+                            "View",
+                    },
+                })
+
+            return {
+                "title":
+                    "CTF views",
+
+                "columns": [
+                    {
+                        "id": "index",
+                        "label": "Index",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "order",
+                        "label": "Order",
+                        "width": "8%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "tiltAngle",
+                        "label": "Tilt angle",
+                        "width": "11%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "excluded",
+                        "label": "Excl.",
+                        "width": "7%",
+                        "align": "center",
+                    },
+                    {
+                        "id": "defocusU",
+                        "label": "Defocus U",
+                        "width": "14%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "defocusV",
+                        "label": "Defocus V",
+                        "width": "14%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "astigmatism",
+                        "label": "Astigmatism",
+                        "width": "14%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "resolution",
+                        "label": "Resolution",
+                        "width": "13%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "ccValue",
+                        "label": "CC",
+                        "width": "12%",
+                        "align": "right",
+                    },
+                ],
+
+                "rows":
+                    rows,
             }
 
         return {
@@ -1897,6 +2472,438 @@ class TableViewerService:
 
         return exclusions
 
+    def _buildCtftomoExclusionsFromEdits(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            edits: List[
+                Dict[str, Any]
+            ],
+            mapper,
+            listCtftomoSeriesCallback:
+            Callable,
+            getCtftomoSeriesViewsCallback:
+            Callable,
+    ) -> Dict[str, Any]:
+
+        seriesItems = (
+                listCtftomoSeriesCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+                or []
+        )
+
+        exclusions = {}
+
+        allFrameIndexes = {}
+        baselineFrameExclusions = {}
+
+        for seriesPosition, item in enumerate(
+                seriesItems
+        ):
+            if not isinstance(
+                    item,
+                    dict,
+            ):
+                continue
+
+            seriesId = item.get(
+                "ctfSeriesId"
+            )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "tiltSeriesId"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "tsId"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "id"
+                )
+
+            if seriesId is None:
+                seriesId = (
+                    seriesPosition
+                )
+
+            seriesKey = str(
+                seriesId
+            )
+
+            raw = (
+                    getCtftomoSeriesViewsCallback(
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        tiltSeriesId=seriesKey,
+                        mapper=mapper,
+                    )
+                    or {}
+            )
+
+            if isinstance(
+                    raw,
+                    list,
+            ):
+                frames = raw
+
+            elif isinstance(
+                    raw,
+                    dict,
+            ):
+                frames = (
+                        raw.get("frames")
+                        or raw.get("views")
+                        or raw.get("items")
+                        or []
+                )
+
+            else:
+                frames = []
+
+            indexes = []
+            excludedIndexes = []
+
+            for framePosition, frame in enumerate(
+                    frames
+            ):
+                if not isinstance(
+                        frame,
+                        dict,
+                ):
+                    continue
+
+                frameIndex = frame.get(
+                    "index"
+                )
+
+                if frameIndex is None:
+                    frameIndex = (
+                        framePosition
+                    )
+
+                frameIndex = (
+                    self._safeInt(
+                        frameIndex,
+                        framePosition,
+                    )
+                )
+
+                indexes.append(
+                    frameIndex
+                )
+
+                if bool(
+                        frame.get(
+                            "excluded",
+                            False,
+                        )
+                ):
+                    excludedIndexes.append(
+                        frameIndex
+                    )
+
+            indexes = sorted(
+                set(indexes)
+            )
+
+            excludedIndexes = sorted(
+                set(
+                    excludedIndexes
+                )
+            )
+
+            allFrameIndexes[
+                seriesKey
+            ] = indexes
+
+            baselineFrameExclusions[
+                seriesKey
+            ] = excludedIndexes
+
+            seriesExcluded = bool(
+                item.get(
+                    "excluded",
+                    False,
+                )
+            )
+
+            exclusions[
+                seriesKey
+            ] = {
+                "excluded":
+                    seriesExcluded,
+
+                "tiltimages": (
+                    list(indexes)
+                    if seriesExcluded
+                    else list(
+                        excludedIndexes
+                    )
+                ),
+            }
+
+        rootEdits = {}
+        childEdits = {}
+
+        for edit in edits:
+            if not isinstance(
+                    edit,
+                    dict,
+            ):
+                continue
+
+            if str(
+                    edit.get(
+                        "field"
+                    )
+                    or ""
+            ) != "excluded":
+                continue
+
+            value = bool(
+                edit.get(
+                    "value"
+                )
+            )
+
+            rowData = edit.get(
+                "rowData"
+            )
+
+            if not isinstance(
+                    rowData,
+                    dict,
+            ):
+                rowData = {}
+
+            childrenId = str(
+                edit.get(
+                    "childrenId"
+                )
+                or ""
+            )
+
+            parentRowId = (
+                edit.get(
+                    "parentRowId"
+                )
+            )
+
+            isChildEdit = (
+                    childrenId
+                    == "ctfViews"
+                    or parentRowId
+                    not in (
+                        None,
+                        "",
+                    )
+            )
+
+            if isChildEdit:
+                seriesId = (
+                    rowData.get(
+                        "ctfSeriesId"
+                    )
+                )
+
+                if seriesId is None:
+                    seriesId = (
+                        rowData.get(
+                            "tiltSeriesId"
+                        )
+                    )
+
+                if seriesId is None:
+                    seriesId = (
+                        parentRowId
+                    )
+
+                frameIndex = (
+                    rowData.get(
+                        "ctfIndex"
+                    )
+                )
+
+                if frameIndex is None:
+                    frameIndex = (
+                        rowData.get(
+                            "index"
+                        )
+                    )
+
+                if (
+                        seriesId
+                        in (
+                        None,
+                        "",
+                )
+                        or frameIndex
+                        is None
+                ):
+                    continue
+
+                seriesKey = str(
+                    seriesId
+                )
+
+                if (
+                        seriesKey
+                        not in exclusions
+                ):
+                    continue
+
+                frameIndex = (
+                    self._safeInt(
+                        frameIndex,
+                        -1,
+                    )
+                )
+
+                if frameIndex < 0:
+                    continue
+
+                childEdits.setdefault(
+                    seriesKey,
+                    {},
+                )[
+                    frameIndex
+                ] = value
+
+                continue
+
+            seriesId = rowData.get(
+                "ctfSeriesId"
+            )
+
+            if seriesId is None:
+                seriesId = (
+                    rowData.get(
+                        "tiltSeriesId"
+                    )
+                )
+
+            if seriesId is None:
+                seriesId = edit.get(
+                    "rowId"
+                )
+
+            if seriesId in (
+                    None,
+                    "",
+            ):
+                continue
+
+            seriesKey = str(
+                seriesId
+            )
+
+            if (
+                    seriesKey
+                    not in exclusions
+            ):
+                continue
+
+            rootEdits[
+                seriesKey
+            ] = value
+
+        for seriesKey, entry in (
+                exclusions.items()
+        ):
+            parentExcluded = (
+                rootEdits.get(
+                    seriesKey,
+                    bool(
+                        entry.get(
+                            "excluded",
+                            False,
+                        )
+                    ),
+                )
+            )
+
+            indexes = list(
+                allFrameIndexes.get(
+                    seriesKey,
+                    [],
+                )
+            )
+
+            if parentExcluded:
+                entry[
+                    "excluded"
+                ] = True
+
+                entry[
+                    "tiltimages"
+                ] = indexes
+
+                continue
+
+            selectedIndexes = set(
+                baselineFrameExclusions.get(
+                    seriesKey,
+                    [],
+                )
+            )
+
+            for (
+                    frameIndex,
+                    excluded,
+            ) in childEdits.get(
+                seriesKey,
+                {},
+            ).items():
+
+                if excluded:
+                    selectedIndexes.add(
+                        frameIndex
+                    )
+                else:
+                    selectedIndexes.discard(
+                        frameIndex
+                    )
+
+            if (
+                    indexes
+                    and set(
+                indexes
+            ).issubset(
+                selectedIndexes
+            )
+            ):
+                entry[
+                    "excluded"
+                ] = True
+
+                entry[
+                    "tiltimages"
+                ] = indexes
+
+            else:
+                entry[
+                    "excluded"
+                ] = False
+
+                entry[
+                    "tiltimages"
+                ] = sorted(
+                    selectedIndexes
+                )
+
+        return exclusions
+
     def executeEditAction(
             self,
             *,
@@ -1908,6 +2915,9 @@ class TableViewerService:
             listTiltSeriesCallback: Callable,
             getTiltSeriesFramesCallback: Callable,
             createTiltSeriesSetCallback: Callable,
+            listCtftomoSeriesCallback: Callable,
+            getCtftomoSeriesViewsCallback: Callable,
+            createCtftomoSetCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             payload.get(
@@ -2021,6 +3031,78 @@ class TableViewerService:
                     if restack
                     else
                     "New TiltSeries "
+                    "output created."
+                )
+
+            return {
+                "success": True,
+                "message": message,
+                "clearEdits": True,
+                "data": result,
+            }
+
+        if (
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_CTF_TOMO
+                )
+                and actionId
+                == "create-filtered-output"
+        ):
+            if not edits:
+                return {
+                    "success": False,
+                    "message": (
+                        "There are no "
+                        "pending changes."
+                    ),
+                }
+
+            exclusions = (
+                self
+                ._buildCtftomoExclusionsFromEdits(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    edits=edits,
+                    mapper=mapper,
+                    listCtftomoSeriesCallback=(
+                        listCtftomoSeriesCallback
+                    ),
+                    getCtftomoSeriesViewsCallback=(
+                        getCtftomoSeriesViewsCallback
+                    ),
+                )
+            )
+
+            result = (
+                createCtftomoSetCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    exclusions=exclusions,
+                    restack=False,
+                    mapper=mapper,
+                )
+            )
+
+            message = None
+
+            if isinstance(
+                    result,
+                    dict,
+            ):
+                rawMessage = result.get(
+                    "message"
+                )
+
+                if rawMessage:
+                    message = str(
+                        rawMessage
+                    )
+
+            if not message:
+                message = (
+                    "New CTF tomography "
                     "output created."
                 )
 
@@ -2216,6 +3298,99 @@ class TableViewerService:
                     f"Tilt image · "
                     f"{tiltSeriesId} · "
                     f"{frameIndex}"
+                )
+
+            return content
+
+        if (
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_CTF_TOMO
+                )
+                and actionId
+                == "view-ctftomo"
+        ):
+            ctfSeriesId = actionData.get(
+                "ctfSeriesId"
+            )
+
+            if ctfSeriesId in (
+                    None,
+                    "",
+            ):
+                ctfSeriesId = (
+                    actionData.get(
+                        "tiltSeriesId"
+                    )
+                )
+
+            if ctfSeriesId in (
+                    None,
+                    "",
+            ):
+                ctfSeriesId = rowId
+
+            if ctfSeriesId in (
+                    None,
+                    "",
+            ):
+                return {
+                    "kind": "empty",
+                    "message": (
+                        "CTF series id "
+                        "is missing."
+                    ),
+                }
+
+            viewId = actionData.get(
+                "viewId"
+            )
+
+            ctfIndex = actionData.get(
+                "ctfIndex"
+            )
+
+            content = {
+                "kind":
+                    "ctfTomo",
+
+                "title": (
+                    f"CTF series · "
+                    f"{ctfSeriesId}"
+                ),
+
+                "projectId":
+                    projectId,
+
+                "protocolId":
+                    protocolId,
+
+                "outputName":
+                    outputName,
+
+                "ctfSeriesId":
+                    ctfSeriesId,
+            }
+
+            if viewId not in (
+                    None,
+                    "",
+            ):
+                content[
+                    "viewId"
+                ] = viewId
+
+                displayIndex = (
+                    ctfIndex
+                    if ctfIndex is not None
+                    else viewId
+                )
+
+                content[
+                    "title"
+                ] = (
+                    f"CTF view · "
+                    f"{ctfSeriesId} · "
+                    f"{displayIndex}"
                 )
 
             return content

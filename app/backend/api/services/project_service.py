@@ -9429,6 +9429,10 @@ class ProjectService:
                 listTiltSeriesCallback=(
                     self.listOutputTiltSeriesService
                 ),
+                listCtftomoSeriesCallback=(
+                    self
+                    .listOutputCtftomoSeriesService
+                ),
                 listVolumesCallback=(
                     self.listOutputVolumesService
                 ),
@@ -9624,6 +9628,18 @@ class ProjectService:
                     self
                     .createNewSetOfTiltSeriesService
                 ),
+                listCtftomoSeriesCallback=(
+                    self
+                    .listOutputCtftomoSeriesService
+                ),
+                getCtftomoSeriesViewsCallback=(
+                    self
+                    .getCtftomoSeriesViewsService
+                ),
+                createCtftomoSetCallback=(
+                    self
+                    .createNewSetOfCtftomoSeriesService
+                ),
             )
         )
 
@@ -9662,6 +9678,10 @@ class ProjectService:
                 getTiltSeriesFramesCallback=(
                     self
                     .getTiltSeriesFramesService
+                ),
+                getCtftomoSeriesViewsCallback=(
+                    self
+                    .getCtftomoSeriesViewsService
                 ),
             )
         )
