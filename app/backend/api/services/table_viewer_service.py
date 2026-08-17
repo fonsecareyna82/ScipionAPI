@@ -986,6 +986,25 @@ class TableViewerService:
                     }.items()
                     if value is not None
                 },
+                "cellContexts": {
+                    "tomogram": {
+                        "target": {
+                            "protocolId": protocolId,
+                            "outputName": outputName,
+                            "pointerClass": pointerClass,
+                        },
+                        "data": {
+                            "kind": "tomogram",
+                            "volumeId": volumeId,
+                            "tomogramId": tomogramId,
+                            "label": str(label),
+                        },
+                        "defaultAction": {
+                            "id": "view-volume",
+                            "label": "View",
+                        },
+                    },
+                },
                 "defaultAction": {
                     "id": "view-volume",
                     "label": "View",
@@ -1131,6 +1150,24 @@ class TableViewerService:
                     "kind": "tiltSeries",
                     "tiltSeriesId": seriesId,
                     "label": str(label),
+                },
+                "cellContexts": {
+                    "tiltSeries": {
+                        "target": {
+                            "protocolId": protocolId,
+                            "outputName": outputName,
+                            "pointerClass": pointerClass,
+                        },
+                        "data": {
+                            "kind": "tiltSeries",
+                            "tiltSeriesId": seriesId,
+                            "label": str(label),
+                        },
+                        "defaultAction": {
+                            "id": "view-tiltseries",
+                            "label": "View",
+                        },
+                    },
                 },
                 "defaultAction": {
                     "id": "view-tiltseries",
@@ -1402,6 +1439,34 @@ class TableViewerService:
         ):
             rowData = {}
 
+        cellContext = payload.get(
+            "cellContext"
+        )
+
+        if not isinstance(
+                cellContext,
+                dict,
+        ):
+            cellContext = {}
+
+        cellData = cellContext.get(
+            "data"
+        )
+
+        if not isinstance(
+                cellData,
+                dict,
+        ):
+            cellData = {}
+
+        actionData = dict(
+            rowData
+        )
+
+        actionData.update(
+            cellData
+        )
+
         if not outputName or not actionId:
             return {
                 "kind": "empty",
@@ -1417,12 +1482,31 @@ class TableViewerService:
                 and actionId
                 == "view-coordinates3d"
         ):
-            tomogramId = (
-                    rowData.get("tomoId")
-                    or rowData.get("tomogramId")
-                    or rowData.get("tsId")
-                    or rowId
+            tomogramId = actionData.get(
+                "tomoId"
             )
+
+            if tomogramId in (
+                    None,
+                    "",
+            ):
+                tomogramId = actionData.get(
+                    "tomogramId"
+                )
+
+            if tomogramId in (
+                    None,
+                    "",
+            ):
+                tomogramId = actionData.get(
+                    "tsId"
+                )
+
+            if tomogramId in (
+                    None,
+                    "",
+            ):
+                tomogramId = rowId
 
             if tomogramId in (
                     None,
@@ -1451,10 +1535,15 @@ class TableViewerService:
                 and actionId
                 == "view-tiltseries"
         ):
-            tiltSeriesId = (
-                    rowData.get("tiltSeriesId")
-                    or rowId
+            tiltSeriesId = actionData.get(
+                "tiltSeriesId"
             )
+
+            if tiltSeriesId in (
+                    None,
+                    "",
+            ):
+                tiltSeriesId = rowId
 
             if tiltSeriesId in (
                     None,
@@ -1467,7 +1556,7 @@ class TableViewerService:
                     ),
                 }
 
-            frameIndex = rowData.get(
+            frameIndex = actionData.get(
                 "frameIndex"
             )
 
@@ -1504,7 +1593,7 @@ class TableViewerService:
                 )
                 and actionId == "view-volume"
         ):
-            volumeId = rowData.get(
+            volumeId = actionData.get(
                 "volumeId"
             )
 
@@ -1512,7 +1601,7 @@ class TableViewerService:
                     None,
                     "",
             ):
-                volumeId = rowData.get(
+                volumeId = actionData.get(
                     "objectId"
                 )
 

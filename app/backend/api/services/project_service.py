@@ -9442,33 +9442,118 @@ class ProjectService:
             payload: Dict[str, Any],
             mapper=None,
     ) -> Dict[str, Any]:
-        tableViewerService = (
-            TableViewerService()
+        payload = payload or {}
+
+        cellContext = payload.get(
+            "cellContext"
         )
 
-        payload = payload or {}
+        if not isinstance(
+                cellContext,
+                dict,
+        ):
+            cellContext = {}
+
+        target = cellContext.get(
+            "target"
+        )
+
+        if not isinstance(
+                target,
+                dict,
+        ):
+            target = {}
+
+        rootOutputName = str(
+            payload.get("outputName")
+            or ""
+        ).strip()
+
+        targetOutputName = str(
+            target.get("outputName")
+            or rootOutputName
+            or ""
+        ).strip()
+
+        targetProtocolIdValue = (
+            target.get("protocolId")
+        )
+
+        if targetProtocolIdValue in (
+                None,
+                "",
+        ):
+            targetProtocolId = protocolId
+
+        else:
+            try:
+                targetProtocolId = int(
+                    targetProtocolIdValue
+                )
+            except Exception:
+                return {
+                    "kind": "empty",
+                    "message": (
+                        "Invalid target protocol id."
+                    ),
+                }
+
+        targetPointerClass = str(
+            target.get("pointerClass")
+            or ""
+        ).strip()
+
+        if (
+                not targetPointerClass
+                and targetOutputName
+                == rootOutputName
+        ):
+            targetPointerClass = str(
+                payload.get(
+                    "pointerClass"
+                )
+                or ""
+            ).strip()
+
+        resolvedPayload = dict(
+            payload
+        )
+
+        resolvedPayload[
+            "outputName"
+        ] = targetOutputName
+
+        resolvedPayload[
+            "pointerClass"
+        ] = targetPointerClass
+
+        resolvedPayload[
+            "cellContext"
+        ] = cellContext
 
         descriptor = (
             self
             ._buildTableViewerOutputDescriptor(
                 projectId=projectId,
-                protocolId=protocolId,
-                outputName=payload.get(
-                    "outputName"
-                ),
+                protocolId=targetProtocolId,
+                outputName=targetOutputName,
                 mapper=mapper,
-                fallbackClassName=payload.get(
-                    "pointerClass"
+                fallbackClassName=(
+                    targetPointerClass
                 ),
             )
+        )
+
+        tableViewerService = (
+            TableViewerService()
         )
 
         return (
             tableViewerService
             .resolveAction(
                 projectId=projectId,
-                protocolId=protocolId,
-                payload=payload,
+                protocolId=targetProtocolId,
+                payload=resolvedPayload,
                 mapper=mapper,
                 descriptor=descriptor,
             )
