@@ -395,6 +395,13 @@ class PostgresqlCtftomoReader:
             "index": index,
         }
 
+        summary["excluded"] = (
+            self._getFrameExcluded(
+                item=item,
+                values=values,
+            )
+        )
+
         childTable = self._findChildTableForParentItem(itemId)
         if childTable is not None:
             childItems = self.setMapper.getStoredSetTableItems(int(childTable["id"]))
@@ -468,11 +475,44 @@ class PostgresqlCtftomoReader:
 
     def _buildCtftomoMeasurementFrame(self, item: Dict[str, Any], position: int) -> Dict[str, Any]:
         values = item.get("values") or {}
-        viewId = item.get("scipionItemId") or position
+
+        viewId = item.get(
+            "scipionItemId"
+        )
+
+        if viewId is None:
+            viewId = position
+
+        ctfIndex = self._firstValue(
+            values,
+            [
+                "_index",
+                "index",
+            ],
+        )
+
+        if ctfIndex is None:
+            ctfIndex = (
+                self._firstValueBySuffix(
+                    values,
+                    [
+                        "index",
+                    ],
+                )
+            )
+
+        ctfIndex = (
+            self._toOptionalInt(
+                ctfIndex
+            )
+        )
+
+        if ctfIndex is None:
+            ctfIndex = position
 
         frame: Dict[str, Any] = {
             "viewId": viewId,
-            "index": position,
+            "index": ctfIndex,
             "viewIndex": position,
         }
 

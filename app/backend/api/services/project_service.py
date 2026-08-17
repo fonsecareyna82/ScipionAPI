@@ -9759,9 +9759,24 @@ class ProjectService:
         pixelSize = tiltSeries.getSamplingRate()
         nViews = tiltSeries.getSize()
 
+        try:
+            excluded = (
+                not bool(
+                    ctfSeries.isEnabled()
+                )
+            )
+        except Exception:
+            excluded = False
+
         item: Dict[str, Any] = {
+            "ctfSeriesId": tsId,
             "tiltSeriesId": tsId,
-            "label": str(label) if label is not None else "",
+            "excluded": excluded,
+            "label": (
+                str(label)
+                if label is not None
+                else ""
+            ),
         }
         if nViews is not None:
             item["nViews"] = nViews
@@ -9807,8 +9822,22 @@ class ProjectService:
                     dose = None
 
         row: Dict[str, Any] = {}
-        row["index"] = ctfObj.getObjId()
-        row["viewIndex"] = ctfObj.getObjId()
+
+        viewId = ctfObj.getObjId()
+
+        try:
+            ctfIndex = (
+                ctfObj.getIndex()
+            )
+        except Exception:
+            ctfIndex = viewId
+
+        if ctfIndex is None:
+            ctfIndex = viewId
+
+        row["viewId"] = viewId
+        row["index"] = ctfIndex
+        row["viewIndex"] = viewId
         if tiltAngle is not None:
             row["tiltAngle"] = tiltAngle
         if dose is not None:
