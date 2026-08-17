@@ -9264,12 +9264,24 @@ class ProjectService:
             if currentDepth >= maxDepth:
                 continue
 
-            relations = graphRepository.loadRuntimeOutputRelationNeighbors(
-                mapper=mapper,
-                projectId=projectId,
-                protocolDbId=currentProtocolDbId,
-                outputName=currentOutputName,
-            )
+            try:
+                relations = graphRepository.loadRuntimeOutputRelationNeighbors(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolDbId=currentProtocolDbId,
+                    outputName=currentOutputName,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not traverse related table viewer output. "
+                    "projectId=%s protocolDbId=%s outputName=%s depth=%s",
+                    projectId,
+                    currentProtocolDbId,
+                    currentOutputName,
+                    currentDepth,
+                    exc_info=True,
+                )
+                continue
 
             for relation in relations:
                 relatedProtocolDbId = relation.get("relatedProtocolDbId")
@@ -9305,16 +9317,28 @@ class ProjectService:
                 if targetKey in seenTargets:
                     continue
 
-                descriptor = self._buildTableViewerOutputDescriptor(
-                    projectId=projectId,
-                    protocolId=int(relatedProtocolDbId),
-                    outputName=relatedOutputName,
-                    mapper=mapper,
-                    fallbackClassName=str(
-                        relation.get("relatedClassName")
-                        or ""
-                    ),
-                )
+                try:
+                    descriptor = self._buildTableViewerOutputDescriptor(
+                        projectId=projectId,
+                        protocolId=int(relatedProtocolDbId),
+                        outputName=relatedOutputName,
+                        mapper=mapper,
+                        fallbackClassName=str(
+                            relation.get("relatedClassName")
+                            or ""
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not classify related table viewer output. "
+                        "projectId=%s protocolDbId=%s outputName=%s depth=%s",
+                        projectId,
+                        relatedProtocolDbId,
+                        relatedOutputName,
+                        nextDepth,
+                        exc_info=True,
+                    )
+                    continue
 
                 if not descriptor.capabilities:
                     continue

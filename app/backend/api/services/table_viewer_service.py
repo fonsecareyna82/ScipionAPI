@@ -953,15 +953,40 @@ class TableViewerService:
             if len(matchedItems) != 1:
                 continue
 
+            distance = catalog.get("distance")
+
+            try:
+                distance = int(distance)
+            except (TypeError, ValueError):
+                distance = 1
+
+            if distance < 1:
+                distance = 1
+
             matches.append({
                 "target": catalog.get("target") or {},
                 "item": next(iter(matchedItems.values())),
+                "distance": distance,
             })
 
-        if len(matches) != 1:
+        if not matches:
             return None
 
-        return matches[0]
+        minimumDistance = min(
+            match["distance"]
+            for match in matches
+        )
+
+        nearestMatches = [
+            match
+            for match in matches
+            if match["distance"] == minimumDistance
+        ]
+
+        if len(nearestMatches) != 1:
+            return None
+
+        return nearestMatches[0]
 
     def _resolveTomogramsRoot(
             self,
@@ -1098,6 +1123,7 @@ class TableViewerService:
                 relatedCatalogs[capability].append({
                     "target": dict(target),
                     "index": itemIndex,
+                    "distance": relatedOutput.get("distance", 1),
                 })
 
         rows = []
