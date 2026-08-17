@@ -1265,6 +1265,22 @@ class TableViewerService:
                         "label": "Metadata",
                     },
                 ],
+                "editActions": [
+                    {
+                        "id": (
+                            "create-filtered-output"
+                        ),
+                        "label": "Save",
+                        "requiresChanges": True,
+                    },
+                    {
+                        "id": (
+                            "create-restacked-output"
+                        ),
+                        "label": "Re-stack",
+                        "requiresChanges": True,
+                    },
+                ],
                 "page": {
                     "offset": 0,
                     "limit": len(rows),
