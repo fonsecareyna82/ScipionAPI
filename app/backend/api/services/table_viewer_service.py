@@ -1190,6 +1190,10 @@ class TableViewerService:
                         "edit": {
                             "type": "boolean",
                             "field": "excluded",
+                            "cascadeToChildren": {
+                                "childrenId": "tiltImages",
+                                "columnId": "excluded",
+                            },
                         },
                     },
                 },
@@ -1221,7 +1225,7 @@ class TableViewerService:
                     {
                         "id": "tiltSeries",
                         "label": "Tilt series",
-                        "width": "28%",
+                        "width": "25%",
                         "sortable": True,
                     },
                     {
