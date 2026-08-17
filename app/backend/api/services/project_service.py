@@ -9429,6 +9429,9 @@ class ProjectService:
                 listTiltSeriesCallback=(
                     self.listOutputTiltSeriesService
                 ),
+                listVolumesCallback=(
+                    self.listOutputVolumesService
+                ),
             )
         )
 

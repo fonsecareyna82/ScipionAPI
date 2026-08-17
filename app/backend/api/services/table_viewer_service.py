@@ -31,6 +31,7 @@ from app.backend.api.services.output_viewer_descriptor import (
     VIEWER_CAPABILITY_SET,
     VIEWER_CAPABILITY_COORDINATES3D,
     VIEWER_CAPABILITY_TILT_SERIES,
+    VIEWER_CAPABILITY_TOMOGRAMS,
 )
 
 
@@ -384,6 +385,7 @@ class TableViewerService:
         getPageCallback: Callable,
         listCoordinates3dTomogramsCallback: Callable,
         listTiltSeriesCallback: Callable,
+        listVolumesCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
@@ -434,6 +436,20 @@ class TableViewerService:
                     mapper=mapper,
                     listTiltSeriesCallback=(
                         listTiltSeriesCallback
+                    ),
+                ),
+            ),
+            (
+                VIEWER_CAPABILITY_TOMOGRAMS,
+                lambda:
+                self._resolveTomogramsRoot(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    pointerClass=pointerClass,
+                    mapper=mapper,
+                    listVolumesCallback=(
+                        listVolumesCallback
                     ),
                 ),
             ),
@@ -826,6 +842,186 @@ class TableViewerService:
                                 "label": "View",
                             },
                         ],
+                    },
+                ],
+                "rows": rows,
+                "actions": [
+                    {
+                        "id": "metadata",
+                        "label": "Metadata",
+                    },
+                ],
+                "page": {
+                    "offset": 0,
+                    "limit": len(rows),
+                    "total": len(rows),
+                },
+            },
+        }
+
+    def _resolveTomogramsRoot(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            pointerClass: str,
+            mapper,
+            listVolumesCallback: Callable,
+    ) -> Dict[str, Any]:
+        volumes = (
+                listVolumesCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+                or []
+        )
+
+        rows = []
+
+        for index, volume in enumerate(
+                volumes
+        ):
+            if not isinstance(
+                    volume,
+                    dict,
+            ):
+                continue
+
+            volumeId = volume.get("id")
+
+            if volumeId is None:
+                volumeId = volume.get(
+                    "index"
+                )
+
+            if volumeId is None:
+                volumeId = index
+
+            tomogramId = volume.get(
+                "tomoId"
+            )
+
+            if tomogramId is None:
+                tomogramId = volume.get(
+                    "tomogramId"
+                )
+
+            if tomogramId is None:
+                tomogramId = volume.get(
+                    "tsId"
+                )
+
+            if tomogramId is None:
+                tomogramId = volume.get(
+                    "tiltSeriesId"
+                )
+
+            if tomogramId is None:
+                tomogramId = volume.get(
+                    "label"
+                )
+
+            if tomogramId is None:
+                tomogramId = volume.get(
+                    "name"
+                )
+
+            if tomogramId is None:
+                tomogramId = volumeId
+
+            label = (
+                    volume.get("label")
+                    or volume.get("name")
+                    or str(tomogramId)
+            )
+
+            voxelSize = volume.get(
+                "samplingRate"
+            )
+
+            if voxelSize is None:
+                voxelSize = volume.get(
+                    "pixelSize"
+                )
+
+            if voxelSize is None:
+                voxelSize = volume.get(
+                    "voxelSize"
+                )
+
+            rows.append({
+                "id": tomogramId,
+                "cells": {
+                    "tomogram": str(label),
+                    "dimensions": (
+                        self._formatDimensions(
+                            volume.get("dims")
+                        )
+                    ),
+                    "voxelSize": (
+                        self._formatVoxelSize(
+                            voxelSize
+                        )
+                    ),
+                },
+                "data": {
+                    key: value
+                    for key, value in {
+                        "kind": "tomogram",
+                        "volumeId": volumeId,
+                        "tomogramId": tomogramId,
+                        "tomoId": volume.get(
+                            "tomoId"
+                        ),
+                        "tsId": volume.get(
+                            "tsId"
+                        ),
+                        "objectId": volume.get(
+                            "objectId"
+                        ),
+                        "label": str(label),
+                    }.items()
+                    if value is not None
+                },
+                "defaultAction": {
+                    "id": "view-volume",
+                    "label": "View",
+                },
+            })
+
+        return {
+            "handled": True,
+            "viewer": "table",
+            "title": outputName,
+            "context": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "pointerClass": pointerClass,
+                "tableKey": "tomograms",
+            },
+            "table": {
+                "title": "Tomograms",
+                "columns": [
+                    {
+                        "id": "tomogram",
+                        "label": "Tomogram",
+                        "width": "38%",
+                        "sortable": True,
+                    },
+                    {
+                        "id": "dimensions",
+                        "label": "Dimensions",
+                        "width": "34%",
+                    },
+                    {
+                        "id": "voxelSize",
+                        "label": "Voxel size (Å/px)",
+                        "width": "28%",
+                        "align": "right",
                     },
                 ],
                 "rows": rows,
@@ -1301,6 +1497,62 @@ class TableViewerService:
                 )
 
             return content
+
+        if (
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_TOMOGRAMS
+                )
+                and actionId == "view-volume"
+        ):
+            volumeId = rowData.get(
+                "volumeId"
+            )
+
+            if volumeId in (
+                    None,
+                    "",
+            ):
+                volumeId = rowData.get(
+                    "objectId"
+                )
+
+            if volumeId in (
+                    None,
+                    "",
+            ):
+                volumeId = rowId
+
+            if volumeId in (
+                    None,
+                    "",
+            ):
+                return {
+                    "kind": "empty",
+                    "message": (
+                        "Tomogram volume id "
+                        "is missing."
+                    ),
+                }
+
+            label = (
+                    rowData.get("label")
+                    or rowData.get(
+                "tomogramId"
+            )
+                    or rowId
+                    or volumeId
+            )
+
+            return {
+                "kind": "volume",
+                "title": (
+                    f"Tomogram · {label}"
+                ),
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "volumeId": volumeId,
+            }
 
         return {
             "kind": "empty",

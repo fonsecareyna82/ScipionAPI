@@ -31,13 +31,16 @@ from tomo.objects import (
     Coordinate3D,
     SetOfCoordinates3D,
     SetOfTiltSeries,
+    SetOfTomograms,
     TiltSeries,
+    Tomogram,
 )
 
 
 VIEWER_CAPABILITY_SET = "set"
 VIEWER_CAPABILITY_COORDINATES3D = "coordinates3d"
 VIEWER_CAPABILITY_TILT_SERIES = "tiltSeries"
+VIEWER_CAPABILITY_TOMOGRAMS = "tomograms"
 
 
 @dataclass(frozen=True)
@@ -434,6 +437,37 @@ class OutputViewerDescriptorBuilder:
         if isTiltSeriesSet:
             capabilities.add(
                 VIEWER_CAPABILITY_TILT_SERIES
+            )
+
+        isTomogramsSet = (
+                isinstance(
+                    output,
+                    SetOfTomograms,
+                )
+                or cls._isSubclass(
+            resolvedSetClass,
+            SetOfTomograms,
+        )
+        )
+
+        if (
+                not isTomogramsSet
+                and resolvedSetClass is None
+        ):
+            isTomogramsSet = (
+                    cls._isSubclass(
+                        itemType,
+                        Tomogram,
+                    )
+                    or cls._isSubclass(
+                registeredItemClass,
+                Tomogram,
+            )
+            )
+
+        if isTomogramsSet:
+            capabilities.add(
+                VIEWER_CAPABILITY_TOMOGRAMS
             )
 
         return OutputViewerDescriptor(
