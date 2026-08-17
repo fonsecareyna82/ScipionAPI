@@ -393,6 +393,7 @@ class TableViewerService:
             getSchemaCallback: Callable,
             getPageCallback: Callable,
             listCoordinates3dTomogramsCallback: Callable,
+            listTiltSeriesCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
@@ -433,6 +434,18 @@ class TableViewerService:
                         listCoordinates3dTomogramsCallback
                     ),
                 )
+            )
+        if (
+                normalizedClass != "setoftiltseriesm"
+                and "setoftiltseries" in normalizedClass
+        ):
+            return self._resolveTiltSeriesRoot(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                pointerClass=pointerClass,
+                mapper=mapper,
+                listTiltSeriesCallback=listTiltSeriesCallback,
             )
 
         tables = (
@@ -738,11 +751,6 @@ class TableViewerService:
                         "label": "View coordinates",
                     },
                 ],
-                "children": {
-                    "id": "coordinates",
-                    "label": "Coordinates",
-                    "count": coordinatesCount,
-                },
             })
 
         return {
@@ -807,6 +815,270 @@ class TableViewerService:
                     "total": len(rows),
                 },
             },
+        }
+
+    def _resolveTiltSeriesRoot(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            pointerClass: str,
+            mapper,
+            listTiltSeriesCallback: Callable,
+    ) -> Dict[str, Any]:
+        seriesItems = listTiltSeriesCallback(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+        ) or []
+
+        rows = []
+
+        for index, item in enumerate(seriesItems):
+            if not isinstance(item, dict):
+                continue
+
+            seriesId = item.get("tiltSeriesId")
+
+            if seriesId is None:
+                seriesId = item.get("tsId")
+
+            if seriesId is None:
+                seriesId = item.get("id")
+
+            if seriesId is None:
+                seriesId = item.get("name")
+
+            if seriesId is None:
+                seriesId = item.get("label")
+
+            if seriesId is None:
+                seriesId = index
+
+            label = (
+                    item.get("label")
+                    or item.get("name")
+                    or item.get("tsLabel")
+                    or str(seriesId)
+            )
+
+            nViews = item.get("nViews")
+
+            if nViews is None:
+                nViews = item.get("count")
+
+            if nViews is None:
+                nViews = item.get("nTilts")
+
+            if nViews is None:
+                nViews = item.get("n")
+
+            nViews = self._safeInt(nViews, 0)
+
+            rows.append({
+                "id": seriesId,
+                "cells": {
+                    "tiltSeries": str(label),
+                },
+                "data": {
+                    "kind": "tiltSeries",
+                    "tiltSeriesId": seriesId,
+                    "label": str(label),
+                },
+                "children": {
+                    "id": "tiltImages",
+                    "label": "Tilt images",
+                    "count": nViews,
+                },
+            })
+
+        return {
+            "handled": True,
+            "viewer": "table",
+            "title": outputName,
+            "context": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "pointerClass": pointerClass,
+                "tableKey": "tiltSeries",
+            },
+            "table": {
+                "title": "Tilt series",
+                "columns": [
+                    {
+                        "id": "tiltSeries",
+                        "label": "Tilt series",
+                        "width": "16%",
+                        "sortable": True,
+                    },
+                    {
+                        "id": "order",
+                        "label": "Order",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "tiltAngle",
+                        "label": "Tilt angle",
+                        "width": "9%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "excluded",
+                        "label": "Excl.",
+                        "width": "6%",
+                        "align": "center",
+                    },
+                    {
+                        "id": "dose",
+                        "label": "Dose",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "path",
+                        "label": "Path",
+                        "width": "27%",
+                    },
+                    {
+                        "id": "rot",
+                        "label": "Rot",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "shiftX",
+                        "label": "Shift X",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "shiftY",
+                        "label": "Shift Y",
+                        "width": "7%",
+                        "align": "right",
+                    },
+                ],
+                "rows": rows,
+                "actions": [
+                    {
+                        "id": "metadata",
+                        "label": "Metadata",
+                    },
+                ],
+                "page": {
+                    "offset": 0,
+                    "limit": len(rows),
+                    "total": len(rows),
+                },
+            },
+        }
+
+    def resolveChildren(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            mapper,
+            getTiltSeriesFramesCallback: Callable,
+    ) -> Dict[str, Any]:
+        outputName = str(payload.get("outputName") or "").strip()
+        pointerClass = str(payload.get("pointerClass") or "").strip()
+        childrenId = str(payload.get("childrenId") or "").strip()
+        rowId = payload.get("rowId")
+
+        rowData = payload.get("rowData")
+
+        if not isinstance(rowData, dict):
+            rowData = {}
+
+        normalizedClass = self._normalizeClassName(pointerClass)
+
+        if (
+                normalizedClass != "setoftiltseriesm"
+                and "setoftiltseries" in normalizedClass
+                and childrenId == "tiltImages"
+        ):
+            tiltSeriesId = rowData.get("tiltSeriesId") or rowId
+
+            if tiltSeriesId is None:
+                return {"rows": []}
+
+            raw = getTiltSeriesFramesCallback(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                tiltSeriesId=str(tiltSeriesId),
+                mapper=mapper,
+            ) or {}
+
+            if isinstance(raw, list):
+                frames = raw
+            elif isinstance(raw, dict):
+                frames = (
+                        raw.get("frames")
+                        or raw.get("views")
+                        or raw.get("items")
+                        or []
+                )
+            else:
+                frames = []
+
+            rows = []
+
+            for localIndex, frame in enumerate(frames):
+                if not isinstance(frame, dict):
+                    continue
+
+                viewId = frame.get("viewId")
+
+                if viewId is None:
+                    viewId = frame.get("id")
+
+                if viewId is None:
+                    viewId = frame.get("index")
+
+                if viewId is None:
+                    viewId = localIndex
+
+                frameIndex = frame.get("index")
+
+                if frameIndex is None:
+                    frameIndex = localIndex
+
+                rows.append({
+                    "id": f"{tiltSeriesId}:{viewId}",
+                    "cells": {
+                        "tiltSeries": frameIndex,
+                        "order": frame.get("order"),
+                        "tiltAngle": frame.get("tiltAngle"),
+                        "excluded": bool(
+                            frame.get("excluded", False)
+                        ),
+                        "dose": frame.get("dose"),
+                        "path": frame.get("path"),
+                        "rot": frame.get("rot"),
+                        "shiftX": frame.get("shiftX"),
+                        "shiftY": frame.get("shiftY"),
+                    },
+                    "data": {
+                        "kind": "tiltImage",
+                        "tiltSeriesId": tiltSeriesId,
+                        "viewId": viewId,
+                        "frameIndex": frameIndex,
+                    },
+                })
+
+            return {
+                "rows": rows,
+            }
+
+        return {
+            "rows": [],
         }
 
     def resolveAction(

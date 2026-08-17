@@ -2024,6 +2024,56 @@ def resolveTableViewerAction(
             ),
         )
 
+@router.post(
+    "/{projectId}/protocols/{protocolId}/viewer/table/children",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def resolveTableViewerChildren(
+        projectId: int,
+        protocolId: int,
+        payload: Dict[str, Any] = Body(...),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(
+        mapper,
+        projectId,
+        currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+    try:
+        return service.resolveTableViewerChildren(
+            projectId=projectId,
+            protocolId=protocolId,
+            payload=payload,
+            mapper=mapper,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Failed to resolve table viewer children. "
+            "projectId=%s protocolId=%s payload=%s",
+            projectId,
+            protocolId,
+            payload,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resolve table viewer children: {error}",
+        )
+
 # ==============================================================================
 #                ANALYZE RESULTS: VOLUMES (Volume / VolumeMask / SetOfVolumes)
 # ==============================================================================

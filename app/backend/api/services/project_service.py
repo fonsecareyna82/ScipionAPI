@@ -9245,6 +9245,9 @@ class ProjectService:
                     self
                     .listCoordinates3dTomogramsService
                 ),
+                listTiltSeriesCallback=(
+                    self.listOutputTiltSeriesService
+                ),
             )
         )
 
@@ -9267,6 +9270,21 @@ class ProjectService:
                 payload=payload or {},
                 mapper=mapper,
             )
+        )
+
+    def resolveTableViewerChildren(
+            self,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        return TableViewerService().resolveChildren(
+            projectId=projectId,
+            protocolId=protocolId,
+            payload=payload or {},
+            mapper=mapper,
+            getTiltSeriesFramesCallback=self.getTiltSeriesFramesService,
         )
 
     # ======================================================================
