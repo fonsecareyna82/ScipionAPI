@@ -141,6 +141,7 @@ from app.backend.api.schemas.project_schema import ProjectCreate, ProjectUpdate
 from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
+from app.backend.api.services.table_viewer_service import TableViewerService
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
@@ -9217,9 +9218,31 @@ class ProjectService:
             ctx: Dict[str, Any],
             mapper=None,
     ) -> Dict[str, Any]:
-        # This resolver is reserved for external developer-provided viewers.
-        # Built-in React viewers are selected on the frontend side.
-        return {"handled": False}
+        tableViewerService = (
+            TableViewerService()
+        )
+
+        return (
+            tableViewerService
+            .resolveOutput(
+                projectId=projectId,
+                protocolId=protocolId,
+                ctx=ctx or {},
+                mapper=mapper,
+                listTablesCallback=(
+                    self
+                    .listOutputMetadataTablesService
+                ),
+                getSchemaCallback=(
+                    self
+                    .getMetadataTableSchemaService
+                ),
+                getPageCallback=(
+                    self
+                    .getMetadataTablePageService
+                ),
+            )
+        )
 
     # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
