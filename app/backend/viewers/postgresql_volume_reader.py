@@ -7,7 +7,10 @@ import numpy as np
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
-from app.backend.utils.volume_utils import readVolumeArray3d
+from app.backend.utils.volume_utils import (
+    readVolumeArray3d,
+    readVolumeDimensions,
+)
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 
@@ -235,6 +238,10 @@ class PostgresqlVolumeReader:
         if samplingRate is not None:
             self._attachSamplingRate(volume, samplingRate)
 
+        self._ensureVolumeDimensionsFromFileHeader(
+            volume
+        )
+
         return volume
 
     def _buildSingleVolumeFromObjectTree(
@@ -313,6 +320,10 @@ class PostgresqlVolumeReader:
         if samplingRate is not None:
             self._attachSamplingRate(volume, samplingRate)
 
+        self._ensureVolumeDimensionsFromFileHeader(
+            volume
+        )
+
         return volume
 
     def _findVolume(
@@ -360,6 +371,47 @@ class PostgresqlVolumeReader:
         sampled = np.asarray(flat[::step], dtype=np.float32)
 
         return sampled[np.isfinite(sampled)]
+
+    def _ensureVolumeDimensionsFromFileHeader(
+            self,
+            volume: Dict[str, Any],
+    ) -> None:
+        if volume.get("dims") is not None:
+            return
+
+        fileName = (
+                volume.get("fileName")
+                or volume.get("path")
+        )
+
+        if not fileName:
+            return
+
+        resolvedPath = (
+            self._resolveExistingPath(
+                fileName
+            )
+        )
+
+        if resolvedPath is None:
+            return
+
+        dimensions = (
+            readVolumeDimensions(
+                resolvedPath
+            )
+        )
+
+        if dimensions is None:
+            return
+
+        volume["dims"] = list(
+            dimensions
+        )
+
+        volume["xyzDims"] = list(
+            dimensions
+        )
 
     def _ensureVolumeInfoFromFile(self, volume: Dict[str, Any]) -> None:
         fileName = volume.get("fileName") or volume.get("path")

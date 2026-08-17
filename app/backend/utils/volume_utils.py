@@ -187,6 +187,51 @@ def _readVolumeCached(sig: VolumeSignature) -> Tuple[np.ndarray, Dict[str, Any]]
     return data, props
 
 
+def readVolumeDimensions(
+        volumePath: str,
+) -> Optional[Tuple[int, int, int]]:
+    """
+    Read volume dimensions from the file header without
+    loading the complete volume into memory.
+
+    Returns dimensions in X, Y, Z order.
+    """
+    p = Path(volumePath)
+
+    if not p.exists():
+        return None
+
+    if p.suffix.lower() not in MRC_LIKE_EXTENSIONS:
+        return None
+
+    try:
+        import mrcfile
+
+        with mrcfile.mmap(
+                str(p),
+                mode="r",
+                permissive=True,
+        ) as mrc:
+            xDim = int(mrc.header.nx)
+            yDim = int(mrc.header.ny)
+            zDim = int(mrc.header.nz)
+
+        if (
+                xDim <= 0
+                or yDim <= 0
+                or zDim <= 0
+        ):
+            return None
+
+        return (
+            xDim,
+            yDim,
+            zDim,
+        )
+
+    except Exception:
+        return None
+
 def readVolumeArray3d(volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
     p = Path(volumePath)
     if not p.exists():
