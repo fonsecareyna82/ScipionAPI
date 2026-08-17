@@ -29,7 +29,9 @@ from typing import Any, Dict, FrozenSet, Optional
 from pyworkflow.object import Set as ScipionSet
 from tomo.objects import (
     Coordinate3D,
+    CTFTomoSeries,
     SetOfCoordinates3D,
+    SetOfCTFTomoSeries,
     SetOfTiltSeries,
     SetOfTomograms,
     TiltSeries,
@@ -40,6 +42,7 @@ from tomo.objects import (
 VIEWER_CAPABILITY_SET = "set"
 VIEWER_CAPABILITY_COORDINATES3D = "coordinates3d"
 VIEWER_CAPABILITY_TILT_SERIES = "tiltSeries"
+VIEWER_CAPABILITY_CTF_TOMO = "ctfTomo"
 VIEWER_CAPABILITY_TOMOGRAMS = "tomograms"
 
 
@@ -437,6 +440,37 @@ class OutputViewerDescriptorBuilder:
         if isTiltSeriesSet:
             capabilities.add(
                 VIEWER_CAPABILITY_TILT_SERIES
+            )
+
+        isCtftomoSet = (
+                isinstance(
+                    output,
+                    SetOfCTFTomoSeries,
+                )
+                or cls._isSubclass(
+            resolvedSetClass,
+            SetOfCTFTomoSeries,
+        )
+        )
+
+        if (
+                not isCtftomoSet
+                and resolvedSetClass is None
+        ):
+            isCtftomoSet = (
+                    cls._isSubclass(
+                        itemType,
+                        CTFTomoSeries,
+                    )
+                    or cls._isSubclass(
+                registeredItemClass,
+                CTFTomoSeries,
+            )
+            )
+
+        if isCtftomoSet:
+            capabilities.add(
+                VIEWER_CAPABILITY_CTF_TOMO
             )
 
         isTomogramsSet = (
