@@ -719,12 +719,22 @@ class TableViewerService:
             ):
                 continue
 
-            tomogramId = (
-                    tomogram.get("id")
-                    or tomogram.get("tomoId")
-                    or tomogram.get("tsId")
-                    or index
+            tomogramId = tomogram.get(
+                "id"
             )
+
+            if tomogramId is None:
+                tomogramId = tomogram.get(
+                    "tomoId"
+                )
+
+            if tomogramId is None:
+                tomogramId = tomogram.get(
+                    "tsId"
+                )
+
+            if tomogramId is None:
+                tomogramId = index
 
             name = (
                     tomogram.get("label")
@@ -1264,7 +1274,12 @@ class TableViewerService:
                 )
                 and childrenId == "tiltImages"
         ):
-            tiltSeriesId = rowData.get("tiltSeriesId") or rowId
+            tiltSeriesId = rowData.get(
+                "tiltSeriesId"
+            )
+
+            if tiltSeriesId is None:
+                tiltSeriesId = rowId
 
             if tiltSeriesId is None:
                 return {
@@ -1624,8 +1639,8 @@ class TableViewerService:
                 }
 
             label = (
-                    rowData.get("label")
-                    or rowData.get(
+                    actionData.get("label")
+                    or actionData.get(
                 "tomogramId"
             )
                     or rowId
