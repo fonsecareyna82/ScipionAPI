@@ -877,11 +877,34 @@ class TableViewerService:
 
             nViews = self._safeInt(nViews, 0)
 
+            dimensions = self._formatDimensions(
+                item.get("dims")
+                or item.get("shape")
+                or item.get("size")
+            )
+
+            pixelSize = item.get("pixelSize")
+
+            if pixelSize is None:
+                pixelSize = item.get("samplingRate")
+
+            tiltAxisAngle = item.get("tiltAxisAngle")
+
+            if tiltAxisAngle is None:
+                tiltAxisAngle = item.get("tilt_axis_angle")
+
+            if tiltAxisAngle is None:
+                tiltAxisAngle = item.get("axisAngle")
+
             rows.append({
                 "id": seriesId,
                 "cells": {
                     "tiltSeries": str(label),
-                },
+                    "dimensions": dimensions,
+                    "pixelSize": pixelSize,
+                    "tiltAxisAngle": tiltAxisAngle,
+                    "tiltImages": nViews,
+                        },
                 "data": {
                     "kind": "tiltSeries",
                     "tiltSeriesId": seriesId,
@@ -911,54 +934,30 @@ class TableViewerService:
                     {
                         "id": "tiltSeries",
                         "label": "Tilt series",
-                        "width": "16%",
+                        "width": "28%",
                         "sortable": True,
                     },
                     {
-                        "id": "order",
-                        "label": "Order",
-                        "width": "7%",
+                        "id": "dimensions",
+                        "label": "Dimensions",
+                        "width": "22%",
+                    },
+                    {
+                        "id": "pixelSize",
+                        "label": "Pixel size (Å/px)",
+                        "width": "18%",
                         "align": "right",
                     },
                     {
-                        "id": "tiltAngle",
-                        "label": "Tilt angle",
-                        "width": "9%",
+                        "id": "tiltAxisAngle",
+                        "label": "Tilt axis",
+                        "width": "17%",
                         "align": "right",
                     },
                     {
-                        "id": "excluded",
-                        "label": "Excl.",
-                        "width": "6%",
-                        "align": "center",
-                    },
-                    {
-                        "id": "dose",
-                        "label": "Dose",
-                        "width": "7%",
-                        "align": "right",
-                    },
-                    {
-                        "id": "path",
-                        "label": "Path",
-                        "width": "27%",
-                    },
-                    {
-                        "id": "rot",
-                        "label": "Rot",
-                        "width": "7%",
-                        "align": "right",
-                    },
-                    {
-                        "id": "shiftX",
-                        "label": "Shift X",
-                        "width": "7%",
-                        "align": "right",
-                    },
-                    {
-                        "id": "shiftY",
-                        "label": "Shift Y",
-                        "width": "7%",
+                        "id": "tiltImages",
+                        "label": "Tilt images",
+                        "width": "15%",
                         "align": "right",
                     },
                 ],
@@ -1053,7 +1052,7 @@ class TableViewerService:
                 rows.append({
                     "id": f"{tiltSeriesId}:{viewId}",
                     "cells": {
-                        "tiltSeries": frameIndex,
+                        "index": frameIndex,
                         "order": frame.get("order"),
                         "tiltAngle": frame.get("tiltAngle"),
                         "excluded": bool(
@@ -1074,10 +1073,67 @@ class TableViewerService:
                 })
 
             return {
+                "title": "Tilt images",
+                "columns": [
+                    {
+                        "id": "index",
+                        "label": "Index",
+                        "width": "8%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "order",
+                        "label": "Order",
+                        "width": "8%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "tiltAngle",
+                        "label": "Tilt angle",
+                        "width": "11%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "excluded",
+                        "label": "Excl.",
+                        "width": "8%",
+                        "align": "center",
+                    },
+                    {
+                        "id": "dose",
+                        "label": "Dose",
+                        "width": "9%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "path",
+                        "label": "Path",
+                        "width": "28%",
+                    },
+                    {
+                        "id": "rot",
+                        "label": "Rot",
+                        "width": "9%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "shiftX",
+                        "label": "Shift X",
+                        "width": "9%",
+                        "align": "right",
+                    },
+                    {
+                        "id": "shiftY",
+                        "label": "Shift Y",
+                        "width": "10%",
+                        "align": "right",
+                    },
+                ],
                 "rows": rows,
             }
 
         return {
+            "columns": [],
             "rows": [],
         }
 
