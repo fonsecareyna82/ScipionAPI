@@ -1469,6 +1469,576 @@ class TableViewerService:
             "rows": [],
         }
 
+    @staticmethod
+    def _normalizeTiltSeriesFrames(
+            raw: Any,
+    ) -> List[Dict[str, Any]]:
+        if isinstance(
+                raw,
+                list,
+        ):
+            return [
+                frame
+                for frame in raw
+                if isinstance(
+                    frame,
+                    dict,
+                )
+            ]
+
+        if isinstance(
+                raw,
+                dict,
+        ):
+            frames = (
+                    raw.get("frames")
+                    or raw.get("views")
+                    or raw.get("items")
+                    or []
+            )
+
+            if isinstance(
+                    frames,
+                    list,
+            ):
+                return [
+                    frame
+                    for frame in frames
+                    if isinstance(
+                        frame,
+                        dict,
+                    )
+                ]
+
+        return []
+
+    def _buildTiltSeriesExclusionsFromEdits(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            edits: List[Dict[str, Any]],
+            mapper,
+            listTiltSeriesCallback: Callable,
+            getTiltSeriesFramesCallback: Callable,
+    ) -> Dict[str, Any]:
+        seriesItems = (
+                listTiltSeriesCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+                or []
+        )
+
+        exclusions = {}
+
+        allFrameIndexes = {}
+        baselineFrameExclusions = {}
+
+        for seriesIndex, item in enumerate(
+                seriesItems
+        ):
+            if not isinstance(
+                    item,
+                    dict,
+            ):
+                continue
+
+            seriesId = item.get(
+                "tiltSeriesId"
+            )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "tsId"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "id"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "name"
+                )
+
+            if seriesId is None:
+                seriesId = item.get(
+                    "label"
+                )
+
+            if seriesId is None:
+                seriesId = (
+                    seriesIndex
+                )
+
+            seriesKey = str(
+                seriesId
+            )
+
+            rawFrames = (
+                getTiltSeriesFramesCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    tiltSeriesId=seriesKey,
+                    mapper=mapper,
+                )
+                or {}
+            )
+
+            frames = (
+                self
+                ._normalizeTiltSeriesFrames(
+                    rawFrames
+                )
+            )
+
+            indexes = []
+            excludedIndexes = []
+
+            for framePosition, frame in enumerate(
+                    frames
+            ):
+                frameIndex = frame.get(
+                    "index"
+                )
+
+                if frameIndex is None:
+                    frameIndex = (
+                        framePosition
+                    )
+
+                frameIndex = (
+                    self._safeInt(
+                        frameIndex,
+                        framePosition,
+                    )
+                )
+
+                indexes.append(
+                    frameIndex
+                )
+
+                if bool(
+                        frame.get(
+                            "excluded",
+                            False,
+                        )
+                ):
+                    excludedIndexes.append(
+                        frameIndex
+                    )
+
+            indexes = sorted(
+                set(indexes)
+            )
+
+            excludedIndexes = sorted(
+                set(
+                    excludedIndexes
+                )
+            )
+
+            allFrameIndexes[
+                seriesKey
+            ] = indexes
+
+            baselineFrameExclusions[
+                seriesKey
+            ] = excludedIndexes
+
+            seriesExcluded = bool(
+                item.get(
+                    "excluded",
+                    False,
+                )
+            )
+
+            exclusions[
+                seriesKey
+            ] = {
+                "excluded":
+                    seriesExcluded,
+
+                "tiltimages": (
+                    list(indexes)
+                    if seriesExcluded
+                    else list(
+                        excludedIndexes
+                    )
+                ),
+            }
+
+        rootEdits = {}
+        childEdits = {}
+
+        for edit in edits:
+            if not isinstance(
+                    edit,
+                    dict,
+            ):
+                continue
+
+            if str(
+                    edit.get("field")
+                    or ""
+            ) != "excluded":
+                continue
+
+            value = bool(
+                edit.get(
+                    "value"
+                )
+            )
+
+            rowData = edit.get(
+                "rowData"
+            )
+
+            if not isinstance(
+                    rowData,
+                    dict,
+            ):
+                rowData = {}
+
+            childrenId = str(
+                edit.get(
+                    "childrenId"
+                )
+                or ""
+            )
+
+            parentRowId = (
+                edit.get(
+                    "parentRowId"
+                )
+            )
+
+            isChildEdit = (
+                    childrenId
+                    == "tiltImages"
+                    or parentRowId
+                    not in (
+                        None,
+                        "",
+                    )
+            )
+
+            if isChildEdit:
+                seriesId = (
+                        rowData.get(
+                            "tiltSeriesId"
+                        )
+                        or parentRowId
+                )
+
+                frameIndex = (
+                    rowData.get(
+                        "frameIndex"
+                    )
+                )
+
+                if (
+                        seriesId
+                        in (
+                            None,
+                            "",
+                        )
+                        or frameIndex
+                        is None
+                ):
+                    continue
+
+                seriesKey = str(
+                    seriesId
+                )
+
+                if (
+                        seriesKey
+                        not in exclusions
+                ):
+                    continue
+
+                frameIndex = (
+                    self._safeInt(
+                        frameIndex,
+                        -1,
+                    )
+                )
+
+                if frameIndex < 0:
+                    continue
+
+                childEdits.setdefault(
+                    seriesKey,
+                    {},
+                )[
+                    frameIndex
+                ] = value
+
+                continue
+
+            seriesId = (
+                    rowData.get(
+                        "tiltSeriesId"
+                    )
+                    or edit.get(
+                        "rowId"
+                    )
+            )
+
+            if seriesId in (
+                    None,
+                    "",
+            ):
+                continue
+
+            seriesKey = str(
+                seriesId
+            )
+
+            if (
+                    seriesKey
+                    not in exclusions
+            ):
+                continue
+
+            rootEdits[
+                seriesKey
+            ] = value
+
+        for seriesKey, entry in (
+                exclusions.items()
+        ):
+            parentExcluded = (
+                rootEdits.get(
+                    seriesKey,
+                    bool(
+                        entry.get(
+                            "excluded",
+                            False,
+                        )
+                    ),
+                )
+            )
+
+            indexes = list(
+                allFrameIndexes.get(
+                    seriesKey,
+                    [],
+                )
+            )
+
+            if parentExcluded:
+                entry[
+                    "excluded"
+                ] = True
+
+                entry[
+                    "tiltimages"
+                ] = indexes
+
+                continue
+
+            selectedIndexes = set(
+                baselineFrameExclusions.get(
+                    seriesKey,
+                    [],
+                )
+            )
+
+            for (
+                    frameIndex,
+                    excluded,
+            ) in childEdits.get(
+                seriesKey,
+                {},
+            ).items():
+                if excluded:
+                    selectedIndexes.add(
+                        frameIndex
+                    )
+                else:
+                    selectedIndexes.discard(
+                        frameIndex
+                    )
+
+            if (
+                    indexes
+                    and set(
+                        indexes
+                    ).issubset(
+                        selectedIndexes
+                    )
+            ):
+                entry[
+                    "excluded"
+                ] = True
+
+                entry[
+                    "tiltimages"
+                ] = indexes
+
+            else:
+                entry[
+                    "excluded"
+                ] = False
+
+                entry[
+                    "tiltimages"
+                ] = sorted(
+                    selectedIndexes
+                )
+
+        return exclusions
+
+    def executeEditAction(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            descriptor: OutputViewerDescriptor,
+            mapper,
+            listTiltSeriesCallback: Callable,
+            getTiltSeriesFramesCallback: Callable,
+            createTiltSeriesSetCallback: Callable,
+    ) -> Dict[str, Any]:
+        outputName = str(
+            payload.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        actionId = str(
+            payload.get(
+                "actionId"
+            )
+            or ""
+        ).strip()
+
+        edits = payload.get(
+            "edits"
+        )
+
+        if not isinstance(
+                edits,
+                list,
+        ):
+            edits = []
+
+        if (
+                not outputName
+                or not actionId
+        ):
+            return {
+                "success": False,
+                "message": (
+                    "Missing output "
+                    "or edit action."
+                ),
+            }
+
+        if (
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_TILT_SERIES
+                )
+                and actionId
+                in (
+                    "create-filtered-output",
+                    "create-restacked-output",
+                )
+        ):
+            if not edits:
+                return {
+                    "success": False,
+                    "message": (
+                        "There are no "
+                        "pending changes."
+                    ),
+                }
+
+            exclusions = (
+                self
+                ._buildTiltSeriesExclusionsFromEdits(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    edits=edits,
+                    mapper=mapper,
+                    listTiltSeriesCallback=(
+                        listTiltSeriesCallback
+                    ),
+                    getTiltSeriesFramesCallback=(
+                        getTiltSeriesFramesCallback
+                    ),
+                )
+            )
+
+            restack = (
+                    actionId
+                    == "create-restacked-output"
+            )
+
+            result = (
+                createTiltSeriesSetCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    exclusions=exclusions,
+                    restack=restack,
+                    mapper=mapper,
+                )
+            )
+
+            message = None
+
+            if isinstance(
+                    result,
+                    dict,
+            ):
+                rawMessage = (
+                    result.get(
+                        "message"
+                    )
+                )
+
+                if rawMessage:
+                    message = str(
+                        rawMessage
+                    )
+
+            if not message:
+                message = (
+                    "New restacked "
+                    "TiltSeries output created."
+                    if restack
+                    else
+                    "New TiltSeries "
+                    "output created."
+                )
+
+            return {
+                "success": True,
+                "message": message,
+                "clearEdits": True,
+                "data": result,
+            }
+
+        return {
+            "success": False,
+            "message": (
+                "No handler is registered "
+                f"for edit action '{actionId}'."
+            ),
+        }
+
     def resolveAction(
             self,
             *,

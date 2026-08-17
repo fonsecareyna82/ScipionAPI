@@ -2025,6 +2025,74 @@ def resolveTableViewerAction(
         )
 
 @router.post(
+    "/{projectId}/protocols/{protocolId}/viewer/table/edit-action",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def executeTableViewerEditAction(
+        projectId: int,
+        protocolId: int,
+        payload: Dict[str, Any] = Body(...),
+        currentUser=Depends(
+            getCurrentUser
+        ),
+        mapper: PostgresqlFlatMapper = Depends(
+            getMapper
+        ),
+        service: ProjectService = Depends(
+            getProjectService
+        ),
+):
+    project = (
+        service
+        .loadPostgresqlRuntimeProjectForMutation(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+        )
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+            ),
+            detail="Project not found",
+        )
+
+    try:
+        return (
+            service
+            .executeTableViewerEditAction(
+                projectId=projectId,
+                protocolId=protocolId,
+                payload=payload,
+                mapper=mapper,
+            )
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error executing table "
+            "viewer edit action: %s",
+            error,
+        )
+
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Failed to execute "
+                f"table edit action: {error}"
+            ),
+        )
+
+
+@router.post(
     "/{projectId}/protocols/{protocolId}/viewer/table/children",
     response_model=Any,
     status_code=status.HTTP_200_OK,

@@ -9559,6 +9559,74 @@ class ProjectService:
             )
         )
 
+    def executeTableViewerEditAction(
+            self,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        payload = payload or {}
+
+        outputName = str(
+            payload.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        pointerClass = str(
+            payload.get(
+                "pointerClass"
+            )
+            or ""
+        ).strip()
+
+        if not outputName:
+            return {
+                "success": False,
+                "message": (
+                    "Output name "
+                    "is missing."
+                ),
+            }
+
+        descriptor = (
+            self
+            ._buildTableViewerOutputDescriptor(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                mapper=mapper,
+                fallbackClassName=(
+                    pointerClass
+                ),
+            )
+        )
+
+        return (
+            TableViewerService()
+            .executeEditAction(
+                projectId=projectId,
+                protocolId=protocolId,
+                payload=payload,
+                descriptor=descriptor,
+                mapper=mapper,
+                listTiltSeriesCallback=(
+                    self
+                    .listOutputTiltSeriesService
+                ),
+                getTiltSeriesFramesCallback=(
+                    self
+                    .getTiltSeriesFramesService
+                ),
+                createTiltSeriesSetCallback=(
+                    self
+                    .createNewSetOfTiltSeriesService
+                ),
+            )
+        )
+
     def resolveTableViewerChildren(
             self,
             projectId: int,
