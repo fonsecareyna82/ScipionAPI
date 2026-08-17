@@ -255,15 +255,112 @@ class PostgresqlTiltSeriesReader:
             )
         return self._storedSet
 
-    def _isTiltSeriesStoredSet(self, storedSet: Dict[str, Any]) -> bool:
-        classText = self._getStoredSetClassText(storedSet)
-        return "tiltseries" in classText and "ctftomo" not in classText
+    def _isTiltSeriesStoredSet(
+            self,
+            storedSet: Dict[str, Any],
+    ) -> bool:
+        rootItems = (
+                storedSet.get("items")
+                or []
+        )
 
-    def _getStoredSetClassText(self, storedSet: Dict[str, Any]) -> str:
-        return ("%s %s" % (
-            storedSet.get("setClassName") or "",
-            storedSet.get("itemClassName") or "",
-        )).replace(" ", "").lower()
+        if not rootItems:
+            return False
+
+        for rootItem in rootItems[:5]:
+            parentItemId = (
+                rootItem.get(
+                    "scipionItemId"
+                )
+            )
+
+            if parentItemId is None:
+                continue
+
+            childTable = (
+                self
+                ._findChildTableForParentItem(
+                    parentItemId
+                )
+            )
+
+            if childTable is None:
+                continue
+
+            try:
+                childItems = (
+                    self.setMapper
+                    .getStoredSetTableItems(
+                        int(
+                            childTable["id"]
+                        ),
+                        limit=3,
+                        offset=0,
+                    )
+                )
+            except Exception:
+                continue
+
+            for childItem in childItems or []:
+                if not isinstance(
+                        childItem,
+                        dict,
+                ):
+                    continue
+
+                values = (
+                        childItem.get(
+                            "values"
+                        )
+                        or {}
+                )
+
+                tiltAngle = (
+                    self
+                    ._firstValueBySuffix(
+                        values,
+                        [
+                            "tiltangle",
+                        ],
+                    )
+                )
+
+                imagePath = (
+                    self
+                    ._firstValueBySuffix(
+                        values,
+                        [
+                            "filename",
+                            "filepath",
+                            "path",
+                        ],
+                    )
+                )
+
+                acquisitionOrder = (
+                    self
+                    ._firstValueBySuffix(
+                        values,
+                        [
+                            "acquisitionorder",
+                            "acqorder",
+                            "order",
+                        ],
+                    )
+                )
+
+                if (
+                        tiltAngle is not None
+                        and (
+                        imagePath
+                        is not None
+                        or acquisitionOrder
+                        is not None
+                )
+                ):
+                    return True
+
+        return False
 
     def _getLogicalTables(self) -> List[Dict[str, Any]]:
         if self._logicalTables is None:

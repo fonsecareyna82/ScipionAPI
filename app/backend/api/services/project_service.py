@@ -142,6 +142,9 @@ from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.table_viewer_service import TableViewerService
+from app.backend.api.services.output_viewer_descriptor import (
+    OutputViewerDescriptorBuilder,
+)
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
@@ -9208,6 +9211,166 @@ class ProjectService:
         # They must be resolved against the project path, not against cwd/scipion_home.
         return str(Path(str(imagePath)).expanduser()), imageIndex
 
+    def _buildTableViewerOutputDescriptor(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+            fallbackClassName: str = "",
+    ):
+        outputNameText = str(
+            outputName or ""
+        ).strip()
+
+        outputInfo: Dict[
+            str,
+            Any,
+        ] = {}
+
+        runtimeOutput = None
+
+        if (
+                mapper is not None
+                and outputNameText
+        ):
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+
+            if protocolDbId is not None:
+                outputInfo = (
+                        self
+                        ._getPostgresqlRuntimeOutputInfo(
+                            mapper=mapper,
+                            projectId=projectId,
+                            parentProtocolDbId=int(
+                                protocolDbId
+                            ),
+                            outputName=outputNameText,
+                        )
+                        or {}
+                )
+
+                runtimeObjectId = (
+                    outputInfo.get(
+                        "runtimeObjectId"
+                    )
+                )
+
+                if (
+                        outputInfo.get(
+                            "exists"
+                        )
+                        and runtimeObjectId
+                        not in (
+                        None,
+                        "",
+                )
+                ):
+                    try:
+                        currentProject = getattr(
+                            self,
+                            "currentProject",
+                            None,
+                        )
+
+                        runtimeMapper = None
+
+                        getRuntimeMapper = getattr(
+                            currentProject,
+                            "getPostgresqlRuntimeMapper",
+                            None,
+                        )
+
+                        if callable(
+                                getRuntimeMapper
+                        ):
+                            runtimeMapper = (
+                                getRuntimeMapper()
+                            )
+
+                        if runtimeMapper is None:
+                            runtimeMapper = getattr(
+                                currentProject,
+                                "mapper",
+                                None,
+                            )
+
+                        selectById = getattr(
+                            runtimeMapper,
+                            "selectById",
+                            None,
+                        )
+
+                        if callable(selectById):
+                            runtimeOutput = (
+                                selectById(
+                                    int(
+                                        runtimeObjectId
+                                    )
+                                )
+                            )
+
+                    except Exception:
+                        logger.debug(
+                            "Could not reconstruct runtime output "
+                            "while building table viewer descriptor. "
+                            "projectId=%s protocolId=%s "
+                            "outputName=%s runtimeObjectId=%s",
+                            projectId,
+                            protocolId,
+                            outputNameText,
+                            runtimeObjectId,
+                            exc_info=True,
+                        )
+
+        if runtimeOutput is None and outputNameText:
+            try:
+                protocol = (
+                    self
+                    ._getScipionProtocolForRuntime(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+
+                runtimeOutput = getattr(
+                    protocol,
+                    outputNameText,
+                    None,
+                )
+
+            except Exception:
+                logger.debug(
+                    "Runtime protocol output is not available "
+                    "for table viewer descriptor. "
+                    "projectId=%s protocolId=%s outputName=%s",
+                    projectId,
+                    protocolId,
+                    outputNameText,
+                    exc_info=True,
+                )
+
+        return (
+            OutputViewerDescriptorBuilder
+            .build(
+                outputName=outputNameText,
+                output=runtimeOutput,
+                outputInfo=outputInfo,
+                fallbackClassName=(
+                    fallbackClassName
+                ),
+            )
+        )
+
     # ======================================================================
     # Analyze Results: Resolve viewer
     # ======================================================================
@@ -9222,12 +9385,30 @@ class ProjectService:
             TableViewerService()
         )
 
+        ctx = ctx or {}
+
+        descriptor = (
+            self
+            ._buildTableViewerOutputDescriptor(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=ctx.get(
+                    "outputName"
+                ),
+                mapper=mapper,
+                fallbackClassName=ctx.get(
+                    "pointerClass"
+                ),
+            )
+        )
+
         return (
             tableViewerService
             .resolveOutput(
                 projectId=projectId,
                 protocolId=protocolId,
-                ctx=ctx or {},
+                ctx=ctx,
+                descriptor=descriptor,
                 mapper=mapper,
                 listTablesCallback=(
                     self
@@ -9262,13 +9443,31 @@ class ProjectService:
             TableViewerService()
         )
 
+        payload = payload or {}
+
+        descriptor = (
+            self
+            ._buildTableViewerOutputDescriptor(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=payload.get(
+                    "outputName"
+                ),
+                mapper=mapper,
+                fallbackClassName=payload.get(
+                    "pointerClass"
+                ),
+            )
+        )
+
         return (
             tableViewerService
             .resolveAction(
                 projectId=projectId,
                 protocolId=protocolId,
-                payload=payload or {},
+                payload=payload,
                 mapper=mapper,
+                descriptor=descriptor,
             )
         )
 
@@ -9279,12 +9478,36 @@ class ProjectService:
             payload: Dict[str, Any],
             mapper=None,
     ) -> Dict[str, Any]:
-        return TableViewerService().resolveChildren(
-            projectId=projectId,
-            protocolId=protocolId,
-            payload=payload or {},
-            mapper=mapper,
-            getTiltSeriesFramesCallback=self.getTiltSeriesFramesService,
+        payload = payload or {}
+
+        descriptor = (
+            self
+            ._buildTableViewerOutputDescriptor(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=payload.get(
+                    "outputName"
+                ),
+                mapper=mapper,
+                fallbackClassName=payload.get(
+                    "pointerClass"
+                ),
+            )
+        )
+
+        return (
+            TableViewerService()
+            .resolveChildren(
+                projectId=projectId,
+                protocolId=protocolId,
+                payload=payload,
+                descriptor=descriptor,
+                mapper=mapper,
+                getTiltSeriesFramesCallback=(
+                    self
+                    .getTiltSeriesFramesService
+                ),
+            )
         )
 
     # ======================================================================

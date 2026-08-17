@@ -24,33 +24,21 @@
 # *
 # ******************************************************************************
 import json
+import logging
 from typing import Any, Callable, Dict, List, Optional
+from app.backend.api.services.output_viewer_descriptor import (
+    OutputViewerDescriptor,
+    VIEWER_CAPABILITY_SET,
+    VIEWER_CAPABILITY_COORDINATES3D,
+    VIEWER_CAPABILITY_TILT_SERIES,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class TableViewerService:
     DEFAULT_PAGE_SIZE = 100
-
-    @staticmethod
-    def _normalizeClassName(className: Any) -> str:
-        return "".join(
-            str(className or "").split()
-        ).lower()
-
-    @classmethod
-    def _isSupportedSetClass(
-            cls,
-            className: Any,
-    ) -> bool:
-        normalized = cls._normalizeClassName(
-            className
-        )
-
-        return (
-            normalized.startswith("setof")
-            or normalized.startswith(
-                "relionsetof"
-            )
-        )
 
     @staticmethod
     def _safeInt(
@@ -382,49 +370,49 @@ class TableViewerService:
 
         return result
 
+
     def resolveOutput(
-            self,
-            *,
-            projectId: int,
-            protocolId: int,
-            ctx: Dict[str, Any],
-            mapper,
-            listTablesCallback: Callable,
-            getSchemaCallback: Callable,
-            getPageCallback: Callable,
-            listCoordinates3dTomogramsCallback: Callable,
-            listTiltSeriesCallback: Callable,
+        self,
+        *,
+        projectId: int,
+        protocolId: int,
+        ctx: Dict[str, Any],
+        descriptor: OutputViewerDescriptor,
+        mapper,
+        listTablesCallback: Callable,
+        getSchemaCallback: Callable,
+        getPageCallback: Callable,
+        listCoordinates3dTomogramsCallback: Callable,
+        listTiltSeriesCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
             or ""
         ).strip()
 
-        pointerClass = str(
+        pointerClass = (
+                descriptor.className
+                or str(
             ctx.get("pointerClass")
             or ""
         ).strip()
+        )
 
         if (
                 not outputName
-                or not self._isSupportedSetClass(
-                    pointerClass
-                )
+                or not descriptor.hasCapability(
+            VIEWER_CAPABILITY_SET
+        )
         ):
             return {
                 "handled": False
             }
 
-        normalizedClass = (
-            self._normalizeClassName(
-                pointerClass
-            )
-        )
-
-        if "setofcoordinates3d" in normalizedClass:
-            return (
-                self
-                ._resolveCoordinates3dRoot(
+        resolverRegistry = (
+            (
+                VIEWER_CAPABILITY_COORDINATES3D,
+                lambda:
+                self._resolveCoordinates3dRoot(
                     projectId=projectId,
                     protocolId=protocolId,
                     outputName=outputName,
@@ -433,20 +421,58 @@ class TableViewerService:
                     listTomogramsCallback=(
                         listCoordinates3dTomogramsCallback
                     ),
+                ),
+            ),
+            (
+                VIEWER_CAPABILITY_TILT_SERIES,
+                lambda:
+                self._resolveTiltSeriesRoot(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    pointerClass=pointerClass,
+                    mapper=mapper,
+                    listTiltSeriesCallback=(
+                        listTiltSeriesCallback
+                    ),
+                ),
+            ),
+        )
+
+        for capability, resolver in resolverRegistry:
+            if not descriptor.hasCapability(
+                    capability
+            ):
+                continue
+
+            try:
+                decision = resolver()
+
+                if (
+                        isinstance(
+                            decision,
+                            dict,
+                        )
+                        and decision.get(
+                    "handled"
                 )
-            )
-        if (
-                normalizedClass != "setoftiltseriesm"
-                and "setoftiltseries" in normalizedClass
-        ):
-            return self._resolveTiltSeriesRoot(
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-                pointerClass=pointerClass,
-                mapper=mapper,
-                listTiltSeriesCallback=listTiltSeriesCallback,
-            )
+                ):
+                    return decision
+
+            except Exception:
+                logger.warning(
+                    "Specialized table viewer failed. "
+                    "Falling back to generic table. "
+                    "projectId=%s protocolId=%s "
+                    "outputName=%s capability=%s "
+                    "className=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    capability,
+                    descriptor.className,
+                    exc_info=True,
+                )
 
         tables = (
             listTablesCallback(
@@ -986,11 +1012,11 @@ class TableViewerService:
             projectId: int,
             protocolId: int,
             payload: Dict[str, Any],
+            descriptor: OutputViewerDescriptor,
             mapper,
             getTiltSeriesFramesCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(payload.get("outputName") or "").strip()
-        pointerClass = str(payload.get("pointerClass") or "").strip()
         childrenId = str(payload.get("childrenId") or "").strip()
         rowId = payload.get("rowId")
 
@@ -999,17 +1025,19 @@ class TableViewerService:
         if not isinstance(rowData, dict):
             rowData = {}
 
-        normalizedClass = self._normalizeClassName(pointerClass)
-
         if (
-                normalizedClass != "setoftiltseriesm"
-                and "setoftiltseries" in normalizedClass
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_TILT_SERIES
+                )
                 and childrenId == "tiltImages"
         ):
             tiltSeriesId = rowData.get("tiltSeriesId") or rowId
 
             if tiltSeriesId is None:
-                return {"rows": []}
+                return {
+                    "columns": [],
+                    "rows": [],
+                }
 
             raw = getTiltSeriesFramesCallback(
                 projectId=projectId,
@@ -1151,15 +1179,11 @@ class TableViewerService:
             projectId: int,
             protocolId: int,
             payload: Dict[str, Any],
+            descriptor: OutputViewerDescriptor,
             mapper=None,
     ) -> Dict[str, Any]:
         outputName = str(
             payload.get("outputName")
-            or ""
-        ).strip()
-
-        pointerClass = str(
-            payload.get("pointerClass")
             or ""
         ).strip()
 
@@ -1190,15 +1214,10 @@ class TableViewerService:
                 ),
             }
 
-        normalizedClass = (
-            self._normalizeClassName(
-                pointerClass
-            )
-        )
-
         if (
-                "setofcoordinates3d"
-                in normalizedClass
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_COORDINATES3D
+                )
                 and actionId
                 == "view-coordinates3d"
         ):
@@ -1230,8 +1249,9 @@ class TableViewerService:
             }
 
         if (
-                "setoftiltseries"
-                in normalizedClass
+                descriptor.hasCapability(
+                    VIEWER_CAPABILITY_TILT_SERIES
+                )
                 and actionId
                 == "view-tiltseries"
         ):
