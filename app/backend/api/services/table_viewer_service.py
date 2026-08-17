@@ -910,6 +910,10 @@ class TableViewerService:
                     "tiltSeriesId": seriesId,
                     "label": str(label),
                 },
+                "defaultAction": {
+                    "id": "view-tiltseries",
+                    "label": "View",
+                },
                 "children": {
                     "id": "tiltImages",
                     "label": "Tilt images",
@@ -1070,6 +1074,10 @@ class TableViewerService:
                         "viewId": viewId,
                         "frameIndex": frameIndex,
                     },
+                    "defaultAction": {
+                        "id": "view-tiltseries",
+                        "label": "View",
+                    },
                 })
 
             return {
@@ -1220,6 +1228,59 @@ class TableViewerService:
                 "outputName": outputName,
                 "tomogramId": tomogramId,
             }
+
+        if (
+                "setoftiltseries"
+                in normalizedClass
+                and actionId
+                == "view-tiltseries"
+        ):
+            tiltSeriesId = (
+                    rowData.get("tiltSeriesId")
+                    or rowId
+            )
+
+            if tiltSeriesId in (
+                    None,
+                    "",
+            ):
+                return {
+                    "kind": "empty",
+                    "message": (
+                        "Tilt series id is missing."
+                    ),
+                }
+
+            frameIndex = rowData.get(
+                "frameIndex"
+            )
+
+            content = {
+                "kind": "tiltSeries",
+                "title": (
+                    f"Tilt series · {tiltSeriesId}"
+                ),
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "tiltSeriesId": tiltSeriesId,
+            }
+
+            if frameIndex is not None:
+                content["frameIndex"] = (
+                    self._safeInt(
+                        frameIndex,
+                        0,
+                    )
+                )
+
+                content["title"] = (
+                    f"Tilt image · "
+                    f"{tiltSeriesId} · "
+                    f"{frameIndex}"
+                )
+
+            return content
 
         return {
             "kind": "empty",
