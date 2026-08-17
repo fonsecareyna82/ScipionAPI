@@ -672,8 +672,9 @@ class TableViewerService:
             )
 
             name = (
-                    tomogram.get("name")
-                    or tomogram.get("label")
+                    tomogram.get("label")
+                    or tomogram.get("tsId")
+                    or tomogram.get("name")
                     or str(tomogramId)
             )
 
@@ -885,10 +886,7 @@ class TableViewerService:
 
             return {
                 "kind": "coords3d",
-                "title": str(
-                    rowData.get("tomoId")
-                    or tomogramId
-                ),
+                "title": "Coordinates 3D · "f"{tomogramId}",
                 "projectId": projectId,
                 "protocolId": protocolId,
                 "outputName": outputName,
