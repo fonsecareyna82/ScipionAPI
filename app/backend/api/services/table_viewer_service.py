@@ -387,6 +387,7 @@ class TableViewerService:
             listTiltSeriesCallback: Callable,
             listCtftomoSeriesCallback: Callable,
             listVolumesCallback: Callable,
+            listRelatedOutputsCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
@@ -466,6 +467,10 @@ class TableViewerService:
                     listVolumesCallback=(
                         listVolumesCallback
                     ),
+                    listRelatedOutputsCallback=listRelatedOutputsCallback,
+                    listCoordinates3dTomogramsCallback=listCoordinates3dTomogramsCallback,
+                    listTiltSeriesCallback=listTiltSeriesCallback,
+                    listCtftomoSeriesCallback=listCtftomoSeriesCallback,
                 ),
             ),
         )
@@ -884,6 +889,80 @@ class TableViewerService:
             },
         }
 
+    @staticmethod
+    def _normalizeRelationKey(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text if text else None
+
+    @classmethod
+    def _buildRelationKeys(
+            cls,
+            item: Dict[str, Any],
+            fields: List[str],
+    ) -> List[str]:
+        result = []
+        seen = set()
+
+        for field in fields:
+            key = cls._normalizeRelationKey(item.get(field))
+
+            if key is None or key in seen:
+                continue
+
+            seen.add(key)
+            result.append(key)
+
+        return result
+
+    @classmethod
+    def _buildRelatedItemIndex(
+            cls,
+            items: List[Dict[str, Any]],
+            fields: List[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        result = {}
+
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+
+            for key in cls._buildRelationKeys(item, fields):
+                result.setdefault(key, []).append(item)
+
+        return result
+
+    @classmethod
+    def _findUniqueRelatedMatch(
+            cls,
+            sourceKeys: List[str],
+            catalogs: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        matches = []
+
+        for catalog in catalogs:
+            index = catalog.get("index") or {}
+            matchedItems = {}
+
+            for key in sourceKeys:
+                for item in index.get(key, []):
+                    matchedItems[id(item)] = item
+
+            if len(matchedItems) != 1:
+                continue
+
+            matches.append({
+                "target": catalog.get("target") or {},
+                "item": next(iter(matchedItems.values())),
+            })
+
+        if len(matches) != 1:
+            return None
+
+        return matches[0]
+
     def _resolveTomogramsRoot(
             self,
             *,
@@ -893,148 +972,405 @@ class TableViewerService:
             pointerClass: str,
             mapper,
             listVolumesCallback: Callable,
+            listRelatedOutputsCallback: Callable,
+            listCoordinates3dTomogramsCallback: Callable,
+            listTiltSeriesCallback: Callable,
+            listCtftomoSeriesCallback: Callable,
     ) -> Dict[str, Any]:
-        volumes = (
-                listVolumesCallback(
-                    projectId=projectId,
-                    protocolId=protocolId,
-                    outputName=outputName,
-                    mapper=mapper,
-                )
-                or []
+        volumes = listVolumesCallback(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+        ) or []
+
+        relatedCatalogs = {
+            VIEWER_CAPABILITY_TILT_SERIES: [],
+            VIEWER_CAPABILITY_CTF_TOMO: [],
+            VIEWER_CAPABILITY_COORDINATES3D: [],
+        }
+
+        relationConfigs = (
+            (
+                VIEWER_CAPABILITY_TILT_SERIES,
+                listTiltSeriesCallback,
+                [
+                    "tiltSeriesId",
+                    "tsId",
+                    "label",
+                    "name",
+                ],
+            ),
+            (
+                VIEWER_CAPABILITY_CTF_TOMO,
+                listCtftomoSeriesCallback,
+                [
+                    "ctfSeriesId",
+                    "tiltSeriesId",
+                    "tsId",
+                    "label",
+                    "name",
+                ],
+            ),
+            (
+                VIEWER_CAPABILITY_COORDINATES3D,
+                listCoordinates3dTomogramsCallback,
+                [
+                    "tomoId",
+                    "tomogramId",
+                    "sourceTomoId",
+                    "coordinatesTomogramId",
+                    "id",
+                    "tsId",
+                    "tiltSeriesId",
+                    "label",
+                    "name",
+                ],
+            ),
         )
+
+        try:
+            relatedOutputs = listRelatedOutputsCallback(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                mapper=mapper,
+            ) or []
+        except Exception:
+            logger.warning(
+                "Could not resolve related outputs for tomogram table. "
+                "projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+            relatedOutputs = []
+
+        for relatedOutput in relatedOutputs:
+            if not isinstance(relatedOutput, dict):
+                continue
+
+            target = relatedOutput.get("target")
+
+            if not isinstance(target, dict):
+                continue
+
+            targetProtocolId = target.get("protocolId")
+            targetOutputName = str(target.get("outputName") or "").strip()
+
+            if targetProtocolId is None or targetProtocolId == "" or not targetOutputName:
+                continue
+
+            capabilities = set(relatedOutput.get("capabilities") or [])
+
+            for capability, callback, fields in relationConfigs:
+                if capability not in capabilities:
+                    continue
+
+                try:
+                    items = callback(
+                        projectId=projectId,
+                        protocolId=targetProtocolId,
+                        outputName=targetOutputName,
+                        mapper=mapper,
+                    ) or []
+                except Exception:
+                    logger.warning(
+                        "Could not load related output for tomogram table. "
+                        "projectId=%s protocolId=%s outputName=%s capability=%s",
+                        projectId,
+                        targetProtocolId,
+                        targetOutputName,
+                        capability,
+                        exc_info=True,
+                    )
+                    continue
+
+                itemIndex = self._buildRelatedItemIndex(
+                    items,
+                    fields,
+                )
+
+                if not itemIndex:
+                    continue
+
+                relatedCatalogs[capability].append({
+                    "target": dict(target),
+                    "index": itemIndex,
+                })
 
         rows = []
 
-        for index, volume in enumerate(
-                volumes
-        ):
-            if not isinstance(
-                    volume,
-                    dict,
-            ):
+        hasTiltSeries = False
+        hasCtf = False
+        hasCoordinates = False
+
+        for index, volume in enumerate(volumes):
+            if not isinstance(volume, dict):
                 continue
 
             volumeId = volume.get("id")
 
             if volumeId is None:
-                volumeId = volume.get(
-                    "index"
-                )
+                volumeId = volume.get("index")
 
             if volumeId is None:
                 volumeId = index
 
-            tomogramId = volume.get(
-                "tomoId"
-            )
+            tomogramId = volume.get("tomoId")
 
             if tomogramId is None:
-                tomogramId = volume.get(
-                    "tomogramId"
-                )
+                tomogramId = volume.get("tomogramId")
 
             if tomogramId is None:
-                tomogramId = volume.get(
-                    "tsId"
-                )
+                tomogramId = volume.get("tsId")
 
             if tomogramId is None:
-                tomogramId = volume.get(
-                    "tiltSeriesId"
-                )
+                tomogramId = volume.get("tiltSeriesId")
 
             if tomogramId is None:
-                tomogramId = volume.get(
-                    "label"
-                )
+                tomogramId = volume.get("label")
 
             if tomogramId is None:
-                tomogramId = volume.get(
-                    "name"
-                )
+                tomogramId = volume.get("name")
 
             if tomogramId is None:
                 tomogramId = volumeId
 
-            label = (
-                    volume.get("label")
-                    or volume.get("name")
-                    or str(tomogramId)
-            )
+            label = volume.get("label")
 
-            voxelSize = volume.get(
-                "samplingRate"
-            )
+            if label is None or label == "":
+                label = volume.get("name")
 
-            if voxelSize is None:
-                voxelSize = volume.get(
-                    "pixelSize"
-                )
+            if label is None or label == "":
+                label = str(tomogramId)
+
+            voxelSize = volume.get("samplingRate")
 
             if voxelSize is None:
-                voxelSize = volume.get(
-                    "voxelSize"
-                )
+                voxelSize = volume.get("pixelSize")
 
-            rows.append({
-                "id": tomogramId,
-                "cells": {
-                    "tomogram": str(label),
-                    "dimensions": (
-                        self._formatDimensions(
-                            volume.get("dims")
-                        )
-                    ),
-                    "voxelSize": (
-                        self._formatVoxelSize(
-                            voxelSize
-                        )
-                    ),
-                },
-                "data": {
-                    key: value
-                    for key, value in {
+            if voxelSize is None:
+                voxelSize = volume.get("voxelSize")
+
+            sourceKeys = self._buildRelationKeys(
+                volume,
+                [
+                    "tiltSeriesId",
+                    "tsId",
+                    "tomoId",
+                    "tomogramId",
+                    "label",
+                    "name",
+                ],
+            )
+
+            cells = {
+                "tomogram": str(label),
+                "dimensions": self._formatDimensions(volume.get("dims")),
+                "voxelSize": self._formatVoxelSize(voxelSize),
+            }
+
+            cellContexts = {
+                "tomogram": {
+                    "target": {
+                        "protocolId": protocolId,
+                        "outputName": outputName,
+                        "pointerClass": pointerClass,
+                    },
+                    "data": {
                         "kind": "tomogram",
                         "volumeId": volumeId,
                         "tomogramId": tomogramId,
-                        "tomoId": volume.get(
-                            "tomoId"
-                        ),
-                        "tsId": volume.get(
-                            "tsId"
-                        ),
-                        "objectId": volume.get(
-                            "objectId"
-                        ),
                         "label": str(label),
-                    }.items()
-                    if value is not None
-                },
-                "cellContexts": {
-                    "tomogram": {
-                        "target": {
-                            "protocolId": protocolId,
-                            "outputName": outputName,
-                            "pointerClass": pointerClass,
-                        },
-                        "data": {
-                            "kind": "tomogram",
-                            "volumeId": volumeId,
-                            "tomogramId": tomogramId,
-                            "label": str(label),
-                        },
-                        "defaultAction": {
-                            "id": "view-volume",
-                            "label": "View",
-                        },
+                    },
+                    "defaultAction": {
+                        "id": "view-volume",
+                        "label": "View",
                     },
                 },
+            }
+
+            tiltMatch = self._findUniqueRelatedMatch(
+                sourceKeys,
+                relatedCatalogs[VIEWER_CAPABILITY_TILT_SERIES],
+            )
+
+            if tiltMatch is not None:
+                tiltItem = tiltMatch["item"]
+                tiltSeriesId = tiltItem.get("tiltSeriesId")
+
+                if tiltSeriesId is None:
+                    tiltSeriesId = tiltItem.get("tsId")
+
+                if tiltSeriesId is not None:
+                    tiltLabel = tiltItem.get("label")
+
+                    if tiltLabel is None or tiltLabel == "":
+                        tiltLabel = tiltItem.get("name")
+
+                    if tiltLabel is None or tiltLabel == "":
+                        tiltLabel = str(tiltSeriesId)
+
+                    cells["tiltSeries"] = str(tiltLabel)
+                    cellContexts["tiltSeries"] = {
+                        "target": tiltMatch["target"],
+                        "data": {
+                            "tiltSeriesId": tiltSeriesId,
+                        },
+                        "defaultAction": {
+                            "id": "view-tiltseries",
+                            "label": "View",
+                        },
+                    }
+                    hasTiltSeries = True
+
+            ctfMatch = self._findUniqueRelatedMatch(
+                sourceKeys,
+                relatedCatalogs[VIEWER_CAPABILITY_CTF_TOMO],
+            )
+
+            if ctfMatch is not None:
+                ctfItem = ctfMatch["item"]
+                ctfSeriesId = ctfItem.get("ctfSeriesId")
+
+                if ctfSeriesId is None:
+                    ctfSeriesId = ctfItem.get("tiltSeriesId")
+
+                if ctfSeriesId is None:
+                    ctfSeriesId = ctfItem.get("tsId")
+
+                if ctfSeriesId is not None:
+                    ctfLabel = ctfItem.get("label")
+
+                    if ctfLabel is None or ctfLabel == "":
+                        ctfLabel = str(ctfSeriesId)
+
+                    cells["ctf"] = str(ctfLabel)
+                    cellContexts["ctf"] = {
+                        "target": ctfMatch["target"],
+                        "data": {
+                            "ctfSeriesId": ctfSeriesId,
+                        },
+                        "defaultAction": {
+                            "id": "view-ctftomo",
+                            "label": "View",
+                        },
+                    }
+                    hasCtf = True
+
+            coordinatesMatch = self._findUniqueRelatedMatch(
+                sourceKeys,
+                relatedCatalogs[VIEWER_CAPABILITY_COORDINATES3D],
+            )
+
+            if coordinatesMatch is not None:
+                coordinatesItem = coordinatesMatch["item"]
+                coordinatesTomogramId = coordinatesItem.get("tomoId")
+
+                if coordinatesTomogramId is None:
+                    coordinatesTomogramId = coordinatesItem.get("tomogramId")
+
+                if coordinatesTomogramId is None:
+                    coordinatesTomogramId = coordinatesItem.get("id")
+
+                if coordinatesTomogramId is not None:
+                    coordinatesCount = coordinatesItem.get("nCoords")
+
+                    if coordinatesCount is None:
+                        coordinatesCount = coordinatesItem.get("count")
+
+                    if coordinatesCount is None:
+                        coordinatesCount = coordinatesTomogramId
+
+                    cells["coordinates"] = coordinatesCount
+                    cellContexts["coordinates"] = {
+                        "target": coordinatesMatch["target"],
+                        "data": {
+                            "tomoId": coordinatesTomogramId,
+                            "tomogramId": coordinatesTomogramId,
+                        },
+                        "defaultAction": {
+                            "id": "view-coordinates3d",
+                            "label": "View",
+                        },
+                    }
+                    hasCoordinates = True
+
+            rowData = {
+                "kind": "tomogram",
+                "volumeId": volumeId,
+                "tomogramId": tomogramId,
+                "label": str(label),
+            }
+
+            for key in (
+                    "tomoId",
+                    "tsId",
+                    "tiltSeriesId",
+                    "objectId",
+            ):
+                value = volume.get(key)
+
+                if value is not None:
+                    rowData[key] = value
+
+            rows.append({
+                "id": tomogramId,
+                "cells": cells,
+                "data": rowData,
+                "cellContexts": cellContexts,
                 "defaultAction": {
                     "id": "view-volume",
                     "label": "View",
                 },
             })
+
+        columns = [
+            {
+                "id": "tomogram",
+                "label": "Tomogram",
+                "width": "24%",
+                "sortable": True,
+            },
+        ]
+
+        if hasTiltSeries:
+            columns.append({
+                "id": "tiltSeries",
+                "label": "Tilt series",
+                "width": "17%",
+            })
+
+        if hasCtf:
+            columns.append({
+                "id": "ctf",
+                "label": "CTF",
+                "width": "17%",
+            })
+
+        if hasCoordinates:
+            columns.append({
+                "id": "coordinates",
+                "label": "Coordinates",
+                "width": "12%",
+                "align": "right",
+            })
+
+        columns.extend([
+            {
+                "id": "dimensions",
+                "label": "Dimensions",
+                "width": "18%",
+            },
+            {
+                "id": "voxelSize",
+                "label": "Voxel size (Å/px)",
+                "width": "12%",
+                "align": "right",
+            },
+        ])
 
         return {
             "handled": True,
@@ -1049,25 +1385,7 @@ class TableViewerService:
             },
             "table": {
                 "title": "Tomograms",
-                "columns": [
-                    {
-                        "id": "tomogram",
-                        "label": "Tomogram",
-                        "width": "38%",
-                        "sortable": True,
-                    },
-                    {
-                        "id": "dimensions",
-                        "label": "Dimensions",
-                        "width": "34%",
-                    },
-                    {
-                        "id": "voxelSize",
-                        "label": "Voxel size (Å/px)",
-                        "width": "28%",
-                        "align": "right",
-                    },
-                ],
+                "columns": columns,
                 "rows": rows,
                 "actions": [
                     {

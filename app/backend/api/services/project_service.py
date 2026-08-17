@@ -9211,6 +9211,87 @@ class ProjectService:
         # They must be resolved against the project path, not against cwd/scipion_home.
         return str(Path(str(imagePath)).expanduser()), imageIndex
 
+    def listTableViewerRelatedOutputsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ) -> List[Dict[str, Any]]:
+        if mapper is None:
+            return []
+
+        outputNameText = str(outputName or "").strip()
+
+        if not outputNameText:
+            return []
+
+        protocolDbId = self._resolvePostgresqlProtocolDbId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if protocolDbId is None:
+            return []
+
+        relations = ProtocolGraphRepository().loadRuntimeOutputRelationNeighbors(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=int(protocolDbId),
+            outputName=outputNameText,
+        )
+
+        result = []
+        seenTargets = set()
+
+        for relation in relations:
+            relatedProtocolDbId = relation.get("relatedProtocolDbId")
+            relatedOutputName = str(relation.get("relatedOutputName") or "").strip()
+
+            if relatedProtocolDbId is None or not relatedOutputName:
+                continue
+
+            targetKey = (
+                str(relatedProtocolDbId),
+                relatedOutputName,
+            )
+
+            if targetKey in seenTargets:
+                continue
+
+            descriptor = self._buildTableViewerOutputDescriptor(
+                projectId=projectId,
+                protocolId=int(relatedProtocolDbId),
+                outputName=relatedOutputName,
+                mapper=mapper,
+                fallbackClassName=str(relation.get("relatedClassName") or ""),
+            )
+
+            if not descriptor.capabilities:
+                continue
+
+            targetProtocolId = relation.get("relatedProtocolId")
+
+            if targetProtocolId is None or targetProtocolId == "":
+                targetProtocolId = relatedProtocolDbId
+
+            seenTargets.add(targetKey)
+
+            result.append({
+                "target": {
+                    "protocolId": targetProtocolId,
+                    "outputName": relatedOutputName,
+                    "pointerClass": descriptor.className,
+                },
+                "capabilities": sorted(descriptor.capabilities),
+                "direction": relation.get("direction"),
+                "relationId": relation.get("relationId"),
+                "relationName": relation.get("relationName"),
+            })
+
+        return result
+
     def _buildTableViewerOutputDescriptor(
             self,
             *,
@@ -9436,6 +9517,7 @@ class ProjectService:
                 listVolumesCallback=(
                     self.listOutputVolumesService
                 ),
+                listRelatedOutputsCallback=self.listTableViewerRelatedOutputsService,
             )
         )
 

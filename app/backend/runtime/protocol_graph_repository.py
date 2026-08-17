@@ -750,6 +750,109 @@ class ProtocolGraphRepository:
 
         return result
 
+    def loadRuntimeOutputRelationNeighbors(
+            self,
+            mapper,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+    ) -> List[Dict[str, Any]]:
+        rows = mapper.db.fetchAll(
+            """
+            WITH root_output AS (
+                SELECT
+                    s."projectId",
+                    s."protocolDbId",
+                    s."outputName",
+                    o."scipionObjId" AS "runtimeObjectId"
+                FROM scipion_sets s
+                JOIN scipion_objects o
+                  ON o."projectId" = s."projectId"
+                 AND o.id = s."objectId"
+                WHERE s."projectId" = %s
+                  AND s."protocolDbId" = %s
+                  AND s."outputName" = %s
+                LIMIT 1
+            )
+
+            SELECT
+                r.id AS "relationId",
+                r.name AS "relationName",
+                'outgoing' AS "direction",
+                r.metadata,
+                related_set.id AS "relatedSetId",
+                related_set."protocolDbId" AS "relatedProtocolDbId",
+                related_protocol."protocolId" AS "relatedProtocolId",
+                related_set."outputName" AS "relatedOutputName",
+                related_set."setClassName" AS "relatedClassName",
+                related_set."itemClassName" AS "relatedItemClassName"
+            FROM root_output root
+            JOIN scipion_relations r
+              ON r."projectId" = root."projectId"
+             AND r."parentObjId" = root."runtimeObjectId"
+            JOIN scipion_objects related_object
+              ON related_object."projectId" = r."projectId"
+             AND related_object."scipionObjId" = r."childObjId"
+            JOIN scipion_sets related_set
+              ON related_set."projectId" = related_object."projectId"
+             AND related_set."objectId" = related_object.id
+            JOIN protocols related_protocol
+              ON related_protocol."projectId" = related_set."projectId"
+             AND related_protocol.id = related_set."protocolDbId"
+
+            UNION ALL
+
+            SELECT
+                r.id AS "relationId",
+                r.name AS "relationName",
+                'incoming' AS "direction",
+                r.metadata,
+                related_set.id AS "relatedSetId",
+                related_set."protocolDbId" AS "relatedProtocolDbId",
+                related_protocol."protocolId" AS "relatedProtocolId",
+                related_set."outputName" AS "relatedOutputName",
+                related_set."setClassName" AS "relatedClassName",
+                related_set."itemClassName" AS "relatedItemClassName"
+            FROM root_output root
+            JOIN scipion_relations r
+              ON r."projectId" = root."projectId"
+             AND r."childObjId" = root."runtimeObjectId"
+            JOIN scipion_objects related_object
+              ON related_object."projectId" = r."projectId"
+             AND related_object."scipionObjId" = r."parentObjId"
+            JOIN scipion_sets related_set
+              ON related_set."projectId" = related_object."projectId"
+             AND related_set."objectId" = related_object.id
+            JOIN protocols related_protocol
+              ON related_protocol."projectId" = related_set."projectId"
+             AND related_protocol.id = related_set."protocolDbId"
+
+            ORDER BY "relationId", "direction", "relatedSetId"
+            """,
+            (
+                int(projectId),
+                int(protocolDbId),
+                outputName,
+            ),
+        )
+
+        result = []
+
+        for row in rows or []:
+            item = dict(row)
+            metadata = item.get("metadata") or {}
+
+            if not isinstance(metadata, dict):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+
+            item["metadata"] = metadata
+            result.append(item)
+
+        return result
+
     def getPersistedOutputInfoForInputRef(
             self,
             mapper,
