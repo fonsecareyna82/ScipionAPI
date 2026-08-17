@@ -136,6 +136,125 @@ class OutputViewerDescriptorBuilder:
         except Exception:
             return False
 
+    @staticmethod
+    def _loadClassRegistry() -> Dict[str, type]:
+        registry: Dict[str, type] = {}
+
+        try:
+            from pwem import Domain
+
+            domainObjects = (
+                    Domain.getObjects()
+                    or {}
+            )
+
+            if hasattr(
+                    domainObjects,
+                    "items",
+            ):
+                registry.update(
+                    domainObjects
+                )
+
+        except Exception:
+            pass
+
+        try:
+            from pyworkflow.config import Config
+
+            domain = Config.getDomain()
+
+            getMapperDict = getattr(
+                domain,
+                "getMapperDict",
+                None,
+            )
+
+            if callable(getMapperDict):
+                mapperDict = (
+                        getMapperDict()
+                        or {}
+                )
+
+                if hasattr(
+                        mapperDict,
+                        "items",
+                ):
+                    registry.update(
+                        mapperDict
+                    )
+
+        except Exception:
+            pass
+
+        return registry
+
+    @staticmethod
+    def _resolveRegisteredClass(
+            className: Any,
+            registry: Dict[str, type],
+    ):
+        classNameText = str(
+            className or ""
+        ).strip()
+
+        if not classNameText:
+            return None
+
+        candidate = registry.get(
+            classNameText
+        )
+
+        return (
+            candidate
+            if isinstance(
+                candidate,
+                type,
+            )
+            else None
+        )
+
+    @staticmethod
+    def _getNativeRuntimeClass(
+            output: Any,
+    ):
+        if output is None:
+            return None
+
+        getClass = getattr(
+            output,
+            "getClass",
+            None,
+        )
+
+        if callable(getClass):
+            try:
+                candidate = getClass()
+
+                if isinstance(
+                        candidate,
+                        type,
+                ):
+                    return candidate
+
+            except Exception:
+                pass
+
+        try:
+            candidate = output.__class__
+
+            return (
+                candidate
+                if isinstance(
+                    candidate,
+                    type,
+                )
+                else None
+            )
+
+        except Exception:
+            return None
+
     @classmethod
     def build(
             cls,
@@ -183,17 +302,50 @@ class OutputViewerDescriptorBuilder:
             or ""
         ).strip()
 
+        classRegistry = (
+            cls._loadClassRegistry()
+        )
+
+        registeredSetClass = (
+            cls._resolveRegisteredClass(
+                className,
+                classRegistry,
+            )
+        )
+
+        registeredItemClass = (
+            cls._resolveRegisteredClass(
+                itemClassName,
+                classRegistry,
+            )
+        )
+
+        runtimeNativeClass = (
+            cls._getNativeRuntimeClass(
+                output
+            )
+        )
+
+        resolvedSetClass = (
+                registeredSetClass
+                or runtimeNativeClass
+        )
+
         kind = str(
             info.get("kind")
             or ""
         ).strip().lower()
 
         isSet = (
-            kind == "set"
-            or isinstance(
-                output,
-                ScipionSet,
-            )
+                kind == "set"
+                or isinstance(
+            output,
+            ScipionSet,
+        )
+                or cls._isSubclass(
+            resolvedSetClass,
+            ScipionSet,
+        )
         )
 
         if not kind:
@@ -222,34 +374,67 @@ class OutputViewerDescriptorBuilder:
                 VIEWER_CAPABILITY_SET
             )
 
-        if output is not None:
-            if (
-                    isinstance(
-                        output,
-                        SetOfCoordinates3D,
-                    )
-                    or cls._isSubclass(
+        isCoordinates3dSet = (
+                isinstance(
+                    output,
+                    SetOfCoordinates3D,
+                )
+                or cls._isSubclass(
+            resolvedSetClass,
+            SetOfCoordinates3D,
+        )
+        )
+
+        if (
+                not isCoordinates3dSet
+                and resolvedSetClass is None
+        ):
+            isCoordinates3dSet = (
+                    cls._isSubclass(
                         itemType,
                         Coordinate3D,
                     )
-            ):
-                capabilities.add(
-                    VIEWER_CAPABILITY_COORDINATES3D
-                )
-
-            if (
-                    isinstance(
-                        output,
-                        SetOfTiltSeries,
-                    )
                     or cls._isSubclass(
+                registeredItemClass,
+                Coordinate3D,
+            )
+            )
+
+        if isCoordinates3dSet:
+            capabilities.add(
+                VIEWER_CAPABILITY_COORDINATES3D
+            )
+
+        isTiltSeriesSet = (
+                isinstance(
+                    output,
+                    SetOfTiltSeries,
+                )
+                or cls._isSubclass(
+            resolvedSetClass,
+            SetOfTiltSeries,
+        )
+        )
+
+        if (
+                not isTiltSeriesSet
+                and resolvedSetClass is None
+        ):
+            isTiltSeriesSet = (
+                    cls._isSubclass(
                         itemType,
                         TiltSeries,
                     )
-            ):
-                capabilities.add(
-                    VIEWER_CAPABILITY_TILT_SERIES
-                )
+                    or cls._isSubclass(
+                registeredItemClass,
+                TiltSeries,
+            )
+            )
+
+        if isTiltSeriesSet:
+            capabilities.add(
+                VIEWER_CAPABILITY_TILT_SERIES
+            )
 
         return OutputViewerDescriptor(
             outputName=str(
