@@ -9283,6 +9283,45 @@ class ProjectService:
                 )
                 continue
 
+            if currentDepth == 0:
+                try:
+                    inputRefs = graphRepository.loadInputRefsForProtocol(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolDbId=currentProtocolDbId,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not load producer protocol inputs for relational table context. "
+                        "projectId=%s protocolDbId=%s outputName=%s",
+                        projectId,
+                        currentProtocolDbId,
+                        currentOutputName,
+                        exc_info=True,
+                    )
+                    inputRefs = []
+
+                for inputRef in inputRefs:
+                    parentProtocolDbId = inputRef.get("parentProtocolDbId")
+                    parentOutputName = str(inputRef.get("parentOutputName") or "").strip()
+
+                    if parentProtocolDbId is None or not parentOutputName:
+                        continue
+
+                    if int(parentProtocolDbId) == int(currentProtocolDbId):
+                        continue
+
+                    relations.append({
+                        "relatedProtocolDbId": parentProtocolDbId,
+                        "relatedProtocolId": inputRef.get("parentProtocolId"),
+                        "relatedOutputName": parentOutputName,
+                        "relatedClassName": inputRef.get("objectClassName") or "",
+                        "relatedItemClassName": "",
+                        "direction": "protocol_input",
+                        "relationId": None,
+                        "relationName": inputRef.get("inputName"),
+                    })
+
             for relation in relations:
                 relatedProtocolDbId = relation.get("relatedProtocolDbId")
                 relatedOutputName = str(
