@@ -700,6 +700,43 @@ class TableViewerService:
                     ),
                     "coordinates": coordinatesCount,
                 },
+                "data": {
+                    key: value
+                    for key, value in {
+                        "tomoId": tomogramId,
+                        "tomogramId": tomogram.get(
+                            "tomoId"
+                        ),
+                        "tsId": tomogram.get(
+                            "tsId"
+                        ),
+                        "tiltSeriesId": tomogram.get(
+                            "tiltSeriesId"
+                        ),
+                        "objectId": tomogram.get(
+                            "objectId"
+                        ),
+                        "volumeId": tomogram.get(
+                            "volumeId"
+                        ),
+                        "fileName": tomogram.get(
+                            "fileName"
+                        ),
+                        "sourceProtocolId": tomogram.get(
+                            "sourceProtocolId"
+                        ),
+                        "sourceOutputName": tomogram.get(
+                            "sourceOutputName"
+                        ),
+                    }.items()
+                    if value is not None
+                },
+                "actions": [
+                    {
+                        "id": "view-coordinates3d",
+                        "label": "View coordinates",
+                    },
+                ],
                 "children": {
                     "id": "coordinates",
                     "label": "Coordinates",
@@ -725,6 +762,12 @@ class TableViewerService:
                         "id": "tomogram",
                         "label": "Tomogram",
                         "sortable": True,
+                        "actions": [
+                            {
+                                "id": "view-coordinates3d",
+                                "label": "View",
+                            },
+                        ],
                     },
                     {
                         "id": "dimensions",
@@ -742,6 +785,12 @@ class TableViewerService:
                         "label": "Coordinates",
                         "align": "right",
                         "sortable": True,
+                        "actions": [
+                            {
+                                "id": "view-coordinates3d",
+                                "label": "View",
+                            },
+                        ],
                     },
                 ],
                 "rows": rows,
@@ -757,4 +806,99 @@ class TableViewerService:
                     "total": len(rows),
                 },
             },
+        }
+
+    def resolveAction(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        outputName = str(
+            payload.get("outputName")
+            or ""
+        ).strip()
+
+        pointerClass = str(
+            payload.get("pointerClass")
+            or ""
+        ).strip()
+
+        actionId = str(
+            payload.get("actionId")
+            or ""
+        ).strip()
+
+        rowId = payload.get(
+            "rowId"
+        )
+
+        rowData = payload.get(
+            "rowData"
+        )
+
+        if not isinstance(
+                rowData,
+                dict,
+        ):
+            rowData = {}
+
+        if not outputName or not actionId:
+            return {
+                "kind": "empty",
+                "message": (
+                    "Missing output or action."
+                ),
+            }
+
+        normalizedClass = (
+            self._normalizeClassName(
+                pointerClass
+            )
+        )
+
+        if (
+                "setofcoordinates3d"
+                in normalizedClass
+                and actionId
+                == "view-coordinates3d"
+        ):
+            tomogramId = (
+                    rowData.get("tomoId")
+                    or rowData.get("tomogramId")
+                    or rowData.get("tsId")
+                    or rowId
+            )
+
+            if tomogramId in (
+                    None,
+                    "",
+            ):
+                return {
+                    "kind": "empty",
+                    "message": (
+                        "Tomogram id is missing."
+                    ),
+                }
+
+            return {
+                "kind": "coords3d",
+                "title": str(
+                    rowData.get("tomoId")
+                    or tomogramId
+                ),
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "tomogramId": tomogramId,
+            }
+
+        return {
+            "kind": "empty",
+            "message": (
+                "No viewer is registered "
+                f"for action '{actionId}'."
+            ),
         }

@@ -9248,6 +9248,27 @@ class ProjectService:
             )
         )
 
+    def resolveTableViewerAction(
+            self,
+            projectId: int,
+            protocolId: int,
+            payload: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        tableViewerService = (
+            TableViewerService()
+        )
+
+        return (
+            tableViewerService
+            .resolveAction(
+                projectId=projectId,
+                protocolId=protocolId,
+                payload=payload or {},
+                mapper=mapper,
+            )
+        )
+
     # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
     # ======================================================================
