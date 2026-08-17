@@ -9241,6 +9241,10 @@ class ProjectService:
                     self
                     .getMetadataTablePageService
                 ),
+                listCoordinates3dTomogramsCallback=(
+                    self
+                    .listCoordinates3dTomogramsService
+                ),
             )
         )
 

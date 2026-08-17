@@ -392,6 +392,7 @@ class TableViewerService:
             listTablesCallback: Callable,
             getSchemaCallback: Callable,
             getPageCallback: Callable,
+            listCoordinates3dTomogramsCallback: Callable,
     ) -> Dict[str, Any]:
         outputName = str(
             ctx.get("outputName")
@@ -412,6 +413,27 @@ class TableViewerService:
             return {
                 "handled": False
             }
+
+        normalizedClass = (
+            self._normalizeClassName(
+                pointerClass
+            )
+        )
+
+        if "setofcoordinates3d" in normalizedClass:
+            return (
+                self
+                ._resolveCoordinates3dRoot(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    pointerClass=pointerClass,
+                    mapper=mapper,
+                    listTomogramsCallback=(
+                        listCoordinates3dTomogramsCallback
+                    ),
+                )
+            )
 
         tables = (
             listTablesCallback(
@@ -551,6 +573,188 @@ class TableViewerService:
                     ),
                     "limit": pageSize,
                     "total": totalRows,
+                },
+            },
+        }
+
+    @staticmethod
+    def _formatDimensions(
+            dimensions: Any,
+    ) -> str:
+        if not isinstance(
+                dimensions,
+                (
+                        list,
+                        tuple,
+                ),
+        ):
+            return str(
+                dimensions or ""
+            )
+
+        values = [
+            str(value)
+            for value in dimensions
+            if value is not None
+        ]
+
+        return " × ".join(values)
+
+    @staticmethod
+    def _formatVoxelSize(
+            voxelSize: Any,
+    ) -> Any:
+        if not isinstance(
+                voxelSize,
+                (
+                        list,
+                        tuple,
+                ),
+        ):
+            return voxelSize
+
+        values = [
+            value
+            for value in voxelSize
+            if value is not None
+        ]
+
+        if not values:
+            return None
+
+        if all(
+                value == values[0]
+                for value in values
+        ):
+            return values[0]
+
+        return " × ".join(
+            str(value)
+            for value in values
+        )
+
+    def _resolveCoordinates3dRoot(
+            self,
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            pointerClass: str,
+            mapper,
+            listTomogramsCallback: Callable,
+    ) -> Dict[str, Any]:
+        tomograms = (
+                listTomogramsCallback(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+                or []
+        )
+
+        rows = []
+
+        for index, tomogram in enumerate(
+                tomograms
+        ):
+            if not isinstance(
+                    tomogram,
+                    dict,
+            ):
+                continue
+
+            tomogramId = (
+                    tomogram.get("id")
+                    or tomogram.get("tomoId")
+                    or tomogram.get("tsId")
+                    or index
+            )
+
+            name = (
+                    tomogram.get("name")
+                    or tomogram.get("label")
+                    or str(tomogramId)
+            )
+
+            coordinatesCount = self._safeInt(
+                tomogram.get(
+                    "nCoords",
+                    tomogram.get(
+                        "count",
+                        0,
+                    ),
+                ),
+                0,
+            )
+
+            rows.append({
+                "id": tomogramId,
+                "cells": {
+                    "tomogram": str(name),
+                    "dimensions": self._formatDimensions(
+                        tomogram.get("dims")
+                    ),
+                    "voxelSize": self._formatVoxelSize(
+                        tomogram.get("voxelSize")
+                    ),
+                    "coordinates": coordinatesCount,
+                },
+                "children": {
+                    "id": "coordinates",
+                    "label": "Coordinates",
+                    "count": coordinatesCount,
+                },
+            })
+
+        return {
+            "handled": True,
+            "viewer": "table",
+            "title": outputName,
+            "context": {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "pointerClass": pointerClass,
+                "tableKey": "tomograms",
+            },
+            "table": {
+                "title": "Tomograms",
+                "columns": [
+                    {
+                        "id": "tomogram",
+                        "label": "Tomogram",
+                        "sortable": True,
+                    },
+                    {
+                        "id": "dimensions",
+                        "label": "Dimensions",
+                        "sortable": False,
+                    },
+                    {
+                        "id": "voxelSize",
+                        "label": "Voxel size",
+                        "align": "right",
+                        "sortable": False,
+                    },
+                    {
+                        "id": "coordinates",
+                        "label": "Coordinates",
+                        "align": "right",
+                        "sortable": True,
+                    },
+                ],
+                "rows": rows,
+                "actions": [
+                    {
+                        "id": "metadata",
+                        "label": "Metadata",
+                    },
+                ],
+                "page": {
+                    "offset": 0,
+                    "limit": len(rows),
+                    "total": len(rows),
                 },
             },
         }
