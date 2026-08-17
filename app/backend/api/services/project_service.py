@@ -9226,69 +9226,120 @@ class ProjectService:
         if not outputNameText:
             return []
 
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
+        rootProtocolDbId = self._resolvePostgresqlProtocolDbId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
         )
 
-        if protocolDbId is None:
+        if rootProtocolDbId is None:
             return []
 
-        relations = ProtocolGraphRepository().loadRuntimeOutputRelationNeighbors(
-            mapper=mapper,
-            projectId=projectId,
-            protocolDbId=int(protocolDbId),
-            outputName=outputNameText,
+        graphRepository = ProtocolGraphRepository()
+        maxDepth = 2
+
+        rootKey = (
+            str(rootProtocolDbId),
+            outputNameText,
         )
 
-        result = []
+        queue = [
+            (
+                int(rootProtocolDbId),
+                outputNameText,
+                0,
+            ),
+        ]
+
+        visitedNodes = {
+            rootKey,
+        }
+
         seenTargets = set()
+        result = []
 
-        for relation in relations:
-            relatedProtocolDbId = relation.get("relatedProtocolDbId")
-            relatedOutputName = str(relation.get("relatedOutputName") or "").strip()
+        while queue:
+            currentProtocolDbId, currentOutputName, currentDepth = queue.pop(0)
 
-            if relatedProtocolDbId is None or not relatedOutputName:
+            if currentDepth >= maxDepth:
                 continue
 
-            targetKey = (
-                str(relatedProtocolDbId),
-                relatedOutputName,
-            )
-
-            if targetKey in seenTargets:
-                continue
-
-            descriptor = self._buildTableViewerOutputDescriptor(
-                projectId=projectId,
-                protocolId=int(relatedProtocolDbId),
-                outputName=relatedOutputName,
+            relations = graphRepository.loadRuntimeOutputRelationNeighbors(
                 mapper=mapper,
-                fallbackClassName=str(relation.get("relatedClassName") or ""),
+                projectId=projectId,
+                protocolDbId=currentProtocolDbId,
+                outputName=currentOutputName,
             )
 
-            if not descriptor.capabilities:
-                continue
+            for relation in relations:
+                relatedProtocolDbId = relation.get("relatedProtocolDbId")
+                relatedOutputName = str(
+                    relation.get("relatedOutputName")
+                    or ""
+                ).strip()
 
-            targetProtocolId = relation.get("relatedProtocolId")
+                if relatedProtocolDbId is None or not relatedOutputName:
+                    continue
 
-            if targetProtocolId is None or targetProtocolId == "":
-                targetProtocolId = relatedProtocolDbId
+                targetKey = (
+                    str(relatedProtocolDbId),
+                    relatedOutputName,
+                )
 
-            seenTargets.add(targetKey)
+                if targetKey == rootKey:
+                    continue
 
-            result.append({
-                "target": {
-                    "protocolId": targetProtocolId,
-                    "outputName": relatedOutputName,
-                    "pointerClass": descriptor.className,
-                },
-                "capabilities": sorted(descriptor.capabilities),
-                "direction": relation.get("direction"),
-                "relationId": relation.get("relationId"),
-                "relationName": relation.get("relationName"),
-            })
+                nextDepth = currentDepth + 1
+
+                if targetKey not in visitedNodes:
+                    visitedNodes.add(targetKey)
+
+                    queue.append(
+                        (
+                            int(relatedProtocolDbId),
+                            relatedOutputName,
+                            nextDepth,
+                        )
+                    )
+
+                if targetKey in seenTargets:
+                    continue
+
+                descriptor = self._buildTableViewerOutputDescriptor(
+                    projectId=projectId,
+                    protocolId=int(relatedProtocolDbId),
+                    outputName=relatedOutputName,
+                    mapper=mapper,
+                    fallbackClassName=str(
+                        relation.get("relatedClassName")
+                        or ""
+                    ),
+                )
+
+                if not descriptor.capabilities:
+                    continue
+
+                targetProtocolId = relation.get("relatedProtocolId")
+
+                if targetProtocolId is None or targetProtocolId == "":
+                    targetProtocolId = relatedProtocolDbId
+
+                seenTargets.add(targetKey)
+
+                result.append({
+                    "target": {
+                        "protocolId": targetProtocolId,
+                        "outputName": relatedOutputName,
+                        "pointerClass": descriptor.className,
+                    },
+                    "capabilities": sorted(
+                        descriptor.capabilities
+                    ),
+                    "direction": relation.get("direction"),
+                    "relationId": relation.get("relationId"),
+                    "relationName": relation.get("relationName"),
+                    "distance": nextDepth,
+                })
 
         return result
 
