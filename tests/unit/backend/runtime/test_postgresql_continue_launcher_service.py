@@ -127,15 +127,26 @@ class ProtocolStub:
 
 
 class IdentityResolverStub:
-    def __init__(self, **kwargs):
-        pass
+    def __init__(self, mapper=None, **kwargs):
+        self.mapper = mapper
 
     def resolvePostgresqlProtocolDbIdFromScipionProtocolId(
             self,
             protocolId,
     ):
-        return 100 + int(
-            protocolId
+        return 100 + int(protocolId)
+
+    def getProtocolRowByDbId(
+            self,
+            protocolDbId,
+    ):
+        return (
+            getattr(
+                self.mapper,
+                "protocolRowsByDbId",
+                {},
+            )
+            .get(int(protocolDbId))
         )
 
 
@@ -820,6 +831,115 @@ def test_RestartValidationRejectsInputEnumerationFailure(
     }]
 
     assert result["runtimeStructures"] == {}
+
+
+def test_RestartValidationAllowsMissingOutputFromSavedExternalParent(
+        monkeypatch,
+):
+    graphRepository = installRestartValidationStubs(monkeypatch)
+
+    graphRepository.refsByProtocolDbId[110] = [{
+        "inputName": "inputParticles",
+        "itemIndex": 0,
+        "parentProtocolDbId": 120,
+        "parentProtocolId": "20",
+        "parentOutputName": "outputParticles",
+        "objectClassName": "SetOfParticles",
+        "objectId": None,
+    }]
+
+    graphRepository.getPostgresqlRuntimeOutputInfo = (
+        lambda **kwargs: {
+            "exists": False,
+        }
+    )
+
+    mapper = SimpleNamespace(
+        protocolRowsByDbId={
+            120: {
+                "id": 120,
+                "protocolId": "20",
+                "status": "saved",
+            },
+        }
+    )
+
+    protocol = ProtocolStub(
+        10,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=mapper,
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: object()
+        ),
+    )
+
+    assert result["errors"] == []
+
+
+def test_RestartValidationRejectsMissingOutputFromFinishedExternalParent(
+        monkeypatch,
+):
+    graphRepository = installRestartValidationStubs(monkeypatch)
+
+    graphRepository.refsByProtocolDbId[110] = [{
+        "inputName": "inputParticles",
+        "itemIndex": 0,
+        "parentProtocolDbId": 120,
+        "parentProtocolId": "20",
+        "parentOutputName": "outputParticles",
+        "objectClassName": "SetOfParticles",
+        "objectId": None,
+    }]
+
+    graphRepository.getPostgresqlRuntimeOutputInfo = (
+        lambda **kwargs: {
+            "exists": False,
+        }
+    )
+
+    mapper = SimpleNamespace(
+        protocolRowsByDbId={
+            120: {
+                "id": 120,
+                "protocolId": "20",
+                "status": "finished",
+            },
+        }
+    )
+
+    protocol = ProtocolStub(
+        10,
+        status="finished",
+    )
+
+    result = RuntimePostgresqlRestartLauncherService().validateRestartSubworkflow(
+        mapper=mapper,
+        projectId=7,
+        workflowProtocolMap={
+            "10": (
+                protocol,
+                0,
+            ),
+        },
+        currentProject=SimpleNamespace(
+            getPostgresqlRuntimeMapper=lambda: object()
+        ),
+    )
+
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["error"] == (
+        "External parent output outputParticles was not found"
+    )
 
 
 def test_RestartPreparationUsesStrictScipionProtocolIdentity():

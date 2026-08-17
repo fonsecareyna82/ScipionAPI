@@ -1168,7 +1168,24 @@ class ProtocolGraphRepository:
     ) -> List[Dict[str, Any]]:
         rows = mapper.db.fetchAll(
             """
-            WITH RECURSIVE subworkflow("protocolDbId", "level", path) AS (
+            WITH RECURSIVE graph_edges("parentProtocolDbId", "childProtocolDbId") AS (
+                SELECT
+                    d."parentProtocolDbId",
+                    d."childProtocolDbId"
+                  FROM protocol_dependencies d
+                 WHERE d."projectId" = %s
+
+                UNION
+
+                SELECT
+                    r."parentProtocolDbId",
+                    r."protocolDbId"
+                  FROM protocol_input_refs r
+                 WHERE r."projectId" = %s
+                   AND r."parentProtocolDbId" IS NOT NULL
+                   AND r."parentProtocolDbId" <> r."protocolDbId"
+            ),
+            subworkflow("protocolDbId", "level", path) AS (
                 SELECT
                     p.id,
                     0,
@@ -1180,14 +1197,13 @@ class ProtocolGraphRepository:
                 UNION ALL
 
                 SELECT
-                    d."childProtocolDbId",
+                    edge."childProtocolDbId",
                     sw."level" + 1,
-                    sw.path || d."childProtocolDbId"
+                    sw.path || edge."childProtocolDbId"
                   FROM subworkflow sw
-                  JOIN protocol_dependencies d
-                    ON d."projectId" = %s
-                   AND d."parentProtocolDbId" = sw."protocolDbId"
-                 WHERE NOT d."childProtocolDbId" = ANY(sw.path)
+                  JOIN graph_edges edge
+                    ON edge."parentProtocolDbId" = sw."protocolDbId"
+                 WHERE NOT edge."childProtocolDbId" = ANY(sw.path)
             )
             SELECT
                 p.id AS "protocolDbId",
@@ -1202,8 +1218,9 @@ class ProtocolGraphRepository:
             """,
             (
                 int(projectId),
-                int(rootProtocolDbId),
                 int(projectId),
+                int(projectId),
+                int(rootProtocolDbId),
                 int(projectId),
             ),
         )

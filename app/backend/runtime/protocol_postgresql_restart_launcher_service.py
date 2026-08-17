@@ -49,6 +49,20 @@ from app.backend.runtime.protocol_status_sync_service import (
 
 class RuntimePostgresqlRestartLauncherService:
     @staticmethod
+    def _canWaitForExternalParentOutput(statusValue) -> bool:
+        statusText = str(statusValue or "").strip().lower()
+
+        return (
+            statusText in RuntimeProtocolStatusSyncService.ACTIVE_STATUS_TEXTS
+            or statusText in {
+                str(STATUS_SAVED).strip().lower(),
+                str(STATUS_SCHEDULED).strip().lower(),
+                "new",
+                "interactive",
+            }
+        )
+
+    @staticmethod
     def _workflowItems(
             workflowProtocolMap,
     ) -> List[Tuple[Any, int]]:
@@ -307,16 +321,16 @@ class RuntimePostgresqlRestartLauncherService:
                 )
 
                 if not outputInfo.get("exists"):
+                    parentProtocolRow = identityResolver.getProtocolRowByDbId(parentProtocolDbId) or {}
+                    parentStatus = parentProtocolRow.get("status")
+
+                    if self._canWaitForExternalParentOutput(parentStatus):
+                        continue
+
                     errors.append({
                         **dict(ref),
-                        "protocolId": str(
-                            protocolId
-                        ),
-                        "error": (
-                            "External parent output "
-                            "%s was not found"
-                            % parentOutputName
-                        ),
+                        "protocolId": str(protocolId),
+                        "error": "External parent output %s was not found" % parentOutputName,
                     })
 
         return {

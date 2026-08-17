@@ -431,21 +431,17 @@ class RuntimePostgresqlContinueLauncherService:
                     )
                 )
 
-                if not outputInfo.get(
-                        "exists"
-                ):
+                if not outputInfo.get("exists"):
+                    parentProtocolRow = identityResolver.getProtocolRowByDbId(parentProtocolDbId) or {}
+                    parentStatus = parentProtocolRow.get("status")
+
+                    if self.restartLauncher._canWaitForExternalParentOutput(parentStatus):
+                        continue
+
                     errors.append({
                         **dict(ref),
-                        "protocolId": str(
-                            entry[
-                                "protocolId"
-                            ]
-                        ),
-                        "error": (
-                            "External parent output "
-                            "%s was not found"
-                            % parentOutputName
-                        ),
+                        "protocolId": str(entry["protocolId"]),
+                        "error": "External parent output %s was not found" % parentOutputName,
                     })
 
         restartProtocolIds = [

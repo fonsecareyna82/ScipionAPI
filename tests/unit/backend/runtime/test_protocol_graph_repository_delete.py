@@ -340,6 +340,55 @@ def test_LoadAffectedChildrenUsesRefsDependenciesAndParentIds():
     )
 
 
+def test_LoadSubworkflowUsesDependenciesAndInputRefs():
+    mapper = makeMapper()
+    repository = ProtocolGraphRepository()
+
+    mapper.db.fetchAllHandler = lambda **kwargs: [
+        {
+            "protocolDbId": 1305,
+            "protocolId": "410",
+            "level": 0,
+        },
+        {
+            "protocolDbId": 1306,
+            "protocolId": "411",
+            "level": 1,
+        },
+        {
+            "protocolDbId": 1307,
+            "protocolId": "412",
+            "level": 2,
+        },
+    ]
+
+    result = repository.loadSubworkflowRows(
+        mapper=mapper,
+        projectId=7,
+        rootProtocolDbId=1305,
+    )
+
+    assert [row["protocolId"] for row in result] == [
+        "410",
+        "411",
+        "412",
+    ]
+
+    call = mapper.db.fetchAllCalls[0]
+    normalizedQuery = " ".join(str(call["query"]).split())
+
+    assert "FROM protocol_dependencies" in normalizedQuery
+    assert "FROM protocol_input_refs" in normalizedQuery
+
+    assert call["params"] == (
+        7,
+        7,
+        7,
+        1305,
+        7,
+    )
+
+
 def test_DeleteRuntimeRelationsMatchesEveryRuntimeIdentityColumn():
     mapper = makeMapper()
     repository = ProtocolGraphRepository()
