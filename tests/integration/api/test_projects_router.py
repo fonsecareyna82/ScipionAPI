@@ -1238,6 +1238,7 @@ def test_GetVolumeData3dUsesProjectDbRow(projectClient, fakeProjectService):
         "maxDim": 96,
         "method": "stride",
         "mapper": fakeProjectService.lastGetVolumeData3dCall["mapper"],
+        "binary": False
     }
 
 

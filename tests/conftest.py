@@ -1665,6 +1665,7 @@ class FakeProjectService:
             maxDim=160,
             method="binning",
             mapper=None,
+            binary=False,
     ):
         self.lastGetVolumeData3dCall = {
             "projectId": projectId,
@@ -1674,6 +1675,7 @@ class FakeProjectService:
             "maxDim": maxDim,
             "method": method,
             "mapper": mapper,
+            "binary": binary
         }
         return self.volumeData3dResult
 
