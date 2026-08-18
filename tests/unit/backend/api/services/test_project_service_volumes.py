@@ -610,7 +610,10 @@ def test_GetVolumeData3dServiceReturnsDimsAndFlattenedValues(projectServiceModul
     monkeypatch.setattr(
         projectServiceModule,
         "readVolumeArray3d",
-        lambda path: (np.arange(8, dtype=np.float32).reshape((2, 2, 2)), {"source": path}),
+        lambda path: (
+            np.arange(24, dtype=np.float32).reshape((2, 3, 4)),
+            {"source": path},
+        ),
     )
     monkeypatch.setattr(
         service,
@@ -628,8 +631,11 @@ def test_GetVolumeData3dServiceReturnsDimsAndFlattenedValues(projectServiceModul
     )
 
     assert result == {
-        "dims": [2, 2, 2],
-        "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "dims": [4, 3, 2],
+        "order": "zyx",
+        "values": [float(value) for value in range(24)],
+        "min": 0.0,
+        "max": 23.0,
     }
 
 

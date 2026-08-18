@@ -10225,6 +10225,30 @@ class ProjectService:
             quality=quality,
         )
 
+    def _buildVolumeData3dPayload(
+            self,
+            volume: np.ndarray,
+    ) -> Dict[str, Any]:
+        arr = np.asarray(volume, dtype=np.float32)
+
+        if arr.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
+
+        finiteMask = np.isfinite(arr)
+        if not finiteMask.all():
+            fillValue = float(np.nanmedian(arr[finiteMask])) if finiteMask.any() else 0.0
+            arr = np.where(finiteMask, arr, fillValue).astype(np.float32, copy=False)
+
+        z, y, x = arr.shape
+
+        return {
+            "dims": [int(x), int(y), int(z)],
+            "order": "zyx",
+            "values": arr.ravel(order="C").tolist(),
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+        }
+
     def getVolumeData3dService(
             self,
             projectId: int,
@@ -10247,20 +10271,13 @@ class ProjectService:
             if result is not None:
                 volume, _props, _info = result
 
-                if (method or "").lower() == "none":
-                    volumeSmall = np.asarray(volume, dtype=np.float32)
-                else:
-                    volumeSmall = self._downsampleVolumePreview(
-                        np.asarray(volume, dtype=np.float32),
-                        maxDim=maxDim,
-                        method=method,
-                    )
+                volumeSmall = self._downsampleVolumeForSurface(
+                    np.asarray(volume, dtype=np.float32),
+                    maxDim=maxDim,
+                    method=method,
+                )
 
-                z, y, x = volumeSmall.shape
-                return {
-                    "dims": [int(z), int(y), int(x)],
-                    "values": volumeSmall.ravel(order="C").astype(np.float32).tolist(),
-                }
+                return self._buildVolumeData3dPayload(volumeSmall)
 
             logger.info(
                 "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
@@ -10298,16 +10315,13 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
 
-        if (method or "").lower() == "none":
-            volSmall = np.asarray(vol, dtype=np.float32)
-        else:
-            volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
+        volumeSmall = self._downsampleVolumeForSurface(
+            np.asarray(volume, dtype=np.float32),
+            maxDim=maxDim,
+            method=method,
+        )
 
-        z, y, x = volSmall.shape
-        return {
-            "dims": [int(z), int(y), int(x)],
-            "values": volSmall.ravel(order="C").astype(np.float32).tolist(),
-        }
+        return self._buildVolumeData3dPayload(volumeSmall)
 
     def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
         """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
