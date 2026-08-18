@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from app.backend.bootstrap import bootstrapEnv
-from app.backend.database import getMapper
+from app.backend.database import getMapperDependency as getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 # OAuth2 scheme to extract token from Authorization header
