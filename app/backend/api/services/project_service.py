@@ -10316,7 +10316,7 @@ class ProjectService:
             raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
 
         volumeSmall = self._downsampleVolumeForSurface(
-            np.asarray(volume, dtype=np.float32),
+            np.asarray(vol, dtype=np.float32),
             maxDim=maxDim,
             method=method,
         )
