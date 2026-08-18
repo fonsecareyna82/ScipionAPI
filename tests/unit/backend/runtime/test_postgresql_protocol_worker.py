@@ -735,6 +735,128 @@ def test_StreamingProtocolStartsWhenInputsValidate():
     ] == []
 
 
+def test_StreamingProtocolStartsWithExistingOutputFromFailedParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="failed",
+        outputExists=True,
+        validationErrors=[],
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
+def test_StreamingProtocolStartsWithExistingOutputFromAbortedParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="aborted",
+        outputExists=True,
+        validationErrors=[],
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
+def test_StreamingProtocolFailsWhenFailedParentOutputDoesNotExist():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="failed",
+        outputExists=False,
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "failed",
+        },
+    ]
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
+def test_StreamingDirectProtocolInputFailsWhenParentFailed():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="failed",
+        parentOutputName=None,
+    )
+
+    worker.getRuntimeOutputInfo = lambda inputRef: (
+        pytest.fail(
+            "Direct protocol pointers must not resolve a parent output"
+        )
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == [
+        {
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "failed",
+        },
+    ]
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
+def test_StreamingProtocolValidatesExistingOutputFromFailedParent():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="failed",
+        outputExists=True,
+        validationErrors=[
+            "Input set does not contain enough items",
+        ],
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == [
+        "Input set does not contain enough items",
+    ]
+
+
+def test_NonStreamingProtocolStartsWithExistingOutputFromFailedParent():
+    worker = buildWorker(
+        streaming=False,
+        parentStatus="failed",
+        outputExists=True,
+        validationErrors=[],
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
 def test_StreamingDirectProtocolInputWaitsForParentToFinish():
     worker = buildWorker(
         streaming=True,
