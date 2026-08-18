@@ -1668,32 +1668,16 @@ class RuntimePostgresqlProtocolWorker:
                 or ""
             ).strip().lower()
 
-            if (
-                    parentStatus
-                    in FAILED_INPUT_PARENT_STATUSES
-            ):
-                addFailed(
-                    parentRow
-                )
+            parentOutputName = str(inputRef.get("parentOutputName") or "").strip()
+            directProtocolPointer = not parentOutputName
 
+            parentFailed = parentStatus in FAILED_INPUT_PARENT_STATUSES
+
+            if directProtocolPointer and parentFailed:
+                addFailed(parentRow)
                 continue
 
-            parentOutputName = str(
-                inputRef.get(
-                    "parentOutputName"
-                )
-                or ""
-            ).strip()
-
-            directProtocolPointer = (
-                not parentOutputName
-            )
-
-            if (
-                    directProtocolPointer
-                    and parentStatus
-                    not in FINISHED_INPUT_PARENT_STATUSES
-            ):
+            if not streaming and not parentFailed and parentStatus not in FINISHED_INPUT_PARENT_STATUSES:
                 addPending(
                     parentRow,
                     "input_parent_not_finished",
@@ -1764,6 +1748,9 @@ class RuntimePostgresqlProtocolWorker:
                         "",
                     )
             ):
+                if parentFailed:
+                    addFailed(parentRow)
+                    continue
                 missingInputs.append({
                     "inputName": (
                         inputRef.get(
