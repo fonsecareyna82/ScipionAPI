@@ -1239,17 +1239,65 @@ class TableViewerService:
                     if tiltLabel is None or tiltLabel == "":
                         tiltLabel = str(tiltSeriesId)
 
-                    cells["tiltSeries"] = str(tiltLabel)
+                    tiltViewsCount = tiltItem.get(
+                        "nViews"
+                    )
+
+                    if tiltViewsCount is None:
+                        tiltViewsCount = tiltItem.get(
+                            "count"
+                        )
+
+                    if tiltViewsCount is None:
+                        tiltViewsCount = tiltItem.get(
+                            "nTilts"
+                        )
+
+                    tiltViewsCount = self._safeInt(
+                        tiltViewsCount,
+                        0,
+                    )
+
+                    tiltExcluded = bool(
+                        tiltItem.get(
+                            "excluded",
+                            False,
+                        )
+                    )
+
+                    cells["tiltSeries"] = str(
+                        tiltLabel
+                    )
+
                     cellContexts["tiltSeries"] = {
-                        "target": tiltMatch["target"],
+                        "target": tiltMatch[
+                            "target"
+                        ],
                         "data": {
-                            "tiltSeriesId": tiltSeriesId,
+                            "kind": "tiltSeries",
+                            "tiltSeriesId":
+                                tiltSeriesId,
+                            "excluded":
+                                tiltExcluded,
                         },
                         "defaultAction": {
-                            "id": "view-tiltseries",
-                            "label": "View",
+                            "id":
+                                "view-tiltseries",
+                            "label":
+                                "View",
+                        },
+                        "children": {
+                            "id":
+                                "tiltImages",
+                            "label":
+                                "Tilt images",
+                            "count":
+                                tiltViewsCount,
+                            "readOnly":
+                                True,
                         },
                     }
+
                     hasTiltSeries = True
 
             ctfMatch = self._findUniqueRelatedMatch(
@@ -1273,17 +1321,81 @@ class TableViewerService:
                     if ctfLabel is None or ctfLabel == "":
                         ctfLabel = str(ctfSeriesId)
 
-                    cells["ctf"] = str(ctfLabel)
+                    ctfTiltSeriesId = (
+                        ctfItem.get(
+                            "tiltSeriesId"
+                        )
+                    )
+
+                    if ctfTiltSeriesId is None:
+                        ctfTiltSeriesId = (
+                            ctfItem.get(
+                                "tsId"
+                            )
+                        )
+
+                    ctfViewsCount = ctfItem.get(
+                        "nViews"
+                    )
+
+                    if ctfViewsCount is None:
+                        ctfViewsCount = ctfItem.get(
+                            "count"
+                        )
+
+                    if ctfViewsCount is None:
+                        ctfViewsCount = ctfItem.get(
+                            "nTilts"
+                        )
+
+                    ctfViewsCount = self._safeInt(
+                        ctfViewsCount,
+                        0,
+                    )
+
+                    ctfExcluded = bool(
+                        ctfItem.get(
+                            "excluded",
+                            False,
+                        )
+                    )
+
+                    cells["ctf"] = str(
+                        ctfLabel
+                    )
+
                     cellContexts["ctf"] = {
-                        "target": ctfMatch["target"],
+                        "target": ctfMatch[
+                            "target"
+                        ],
                         "data": {
-                            "ctfSeriesId": ctfSeriesId,
+                            "kind":
+                                "ctfTomo",
+                            "ctfSeriesId":
+                                ctfSeriesId,
+                            "tiltSeriesId":
+                                ctfTiltSeriesId,
+                            "excluded":
+                                ctfExcluded,
                         },
                         "defaultAction": {
-                            "id": "view-ctftomo",
-                            "label": "View",
+                            "id":
+                                "view-ctftomo",
+                            "label":
+                                "View",
+                        },
+                        "children": {
+                            "id":
+                                "ctfViews",
+                            "label":
+                                "CTF views",
+                            "count":
+                                ctfViewsCount,
+                            "readOnly":
+                                True,
                         },
                     }
+
                     hasCtf = True
 
             coordinatesMatch = self._findUniqueRelatedMatch(

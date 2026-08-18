@@ -9848,17 +9848,141 @@ class ProjectService:
     ) -> Dict[str, Any]:
         payload = payload or {}
 
+        cellContext = payload.get(
+            "cellContext"
+        )
+
+        if not isinstance(
+                cellContext,
+                dict,
+        ):
+            cellContext = {}
+
+        target = cellContext.get(
+            "target"
+        )
+
+        if not isinstance(
+                target,
+                dict,
+        ):
+            target = {}
+
+        rootOutputName = str(
+            payload.get(
+                "outputName"
+            )
+            or ""
+        ).strip()
+
+        targetOutputName = str(
+            target.get(
+                "outputName"
+            )
+            or rootOutputName
+            or ""
+        ).strip()
+
+        targetProtocolIdValue = (
+            target.get(
+                "protocolId"
+            )
+        )
+
+        if targetProtocolIdValue in (
+                None,
+                "",
+        ):
+            targetProtocolId = protocolId
+
+        else:
+            try:
+                targetProtocolId = int(
+                    targetProtocolIdValue
+                )
+
+            except Exception:
+                return {
+                    "columns": [],
+                    "rows": [],
+                }
+
+        targetPointerClass = str(
+            target.get(
+                "pointerClass"
+            )
+            or ""
+        ).strip()
+
+        if (
+                not targetPointerClass
+                and targetOutputName
+                == rootOutputName
+        ):
+            targetPointerClass = str(
+                payload.get(
+                    "pointerClass"
+                )
+                or ""
+            ).strip()
+
+        rowData = payload.get(
+            "rowData"
+        )
+
+        if not isinstance(
+                rowData,
+                dict,
+        ):
+            rowData = {}
+
+        cellData = cellContext.get(
+            "data"
+        )
+
+        if not isinstance(
+                cellData,
+                dict,
+        ):
+            cellData = {}
+
+        resolvedRowData = dict(
+            rowData
+        )
+
+        resolvedRowData.update(
+            cellData
+        )
+
+        resolvedPayload = dict(
+            payload
+        )
+
+        resolvedPayload[
+            "outputName"
+        ] = targetOutputName
+
+        resolvedPayload[
+            "pointerClass"
+        ] = targetPointerClass
+
+        resolvedPayload[
+            "rowData"
+        ] = resolvedRowData
+
+        resolvedPayload[
+            "cellContext"
+        ] = cellContext
+
         descriptor = (
             self
             ._buildTableViewerOutputDescriptor(
                 projectId=projectId,
-                protocolId=protocolId,
-                outputName=payload.get(
-                    "outputName"
-                ),
+                protocolId=targetProtocolId,
+                outputName=targetOutputName,
                 mapper=mapper,
-                fallbackClassName=payload.get(
-                    "pointerClass"
+                fallbackClassName=(
+                    targetPointerClass
                 ),
             )
         )
@@ -9867,8 +9991,8 @@ class ProjectService:
             TableViewerService()
             .resolveChildren(
                 projectId=projectId,
-                protocolId=protocolId,
-                payload=payload,
+                protocolId=targetProtocolId,
+                payload=resolvedPayload,
                 descriptor=descriptor,
                 mapper=mapper,
                 getTiltSeriesFramesCallback=(
