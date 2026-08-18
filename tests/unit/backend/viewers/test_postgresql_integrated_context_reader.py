@@ -476,6 +476,42 @@ def test_PostgresqlIntegratedContextReaderSkipsDependencyCandidatesByRootKind(
 ):
     reader = _makeReader(authTestEnv)
 
+    assert reader._shouldSkipDependencyCandidate(
+        "ctf",
+        "tomogram",
+        "child",
+    ) is True
+
+    assert reader._shouldSkipDependencyCandidate(
+        "ctf",
+        "coordinates3d",
+        "child",
+    ) is True
+
+    assert reader._shouldSkipDependencyCandidate(
+        "tiltSeries",
+        "ctf",
+        "child",
+    ) is True
+
+    assert reader._shouldSkipDependencyCandidate(
+        "tomogram",
+        "coordinates3d",
+        "child",
+    ) is True
+
+    assert reader._shouldSkipDependencyCandidate(
+        "ctf",
+        "tiltSeries",
+        "parent",
+    ) is False
+
+    assert reader._shouldSkipDependencyCandidate(
+        "tomogram",
+        "ctf",
+        "parent",
+    ) is False
+
     assert reader._shouldSkipDependencyCandidate("coordinates3d", "tomogram") is True
     assert reader._shouldSkipDependencyCandidate("coordinates3d", "tiltSeries") is True
     assert reader._shouldSkipDependencyCandidate("coordinates3d", "ctf") is True

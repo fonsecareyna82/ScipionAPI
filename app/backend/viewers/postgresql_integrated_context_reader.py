@@ -1402,7 +1402,11 @@ class PostgresqlIntegratedContextReader:
             self,
             rootKind: Optional[str],
             candidateKind: str,
+            relationRole: Optional[str] = None,
     ) -> bool:
+        if str(relationRole or "").strip().lower() == "child":
+            return True
+
         if rootKind == "coordinates3d" and candidateKind == "tomogram":
             return True
 
@@ -1431,7 +1435,11 @@ class PostgresqlIntegratedContextReader:
             if candidateKind is None or candidateKind not in links:
                 continue
 
-            if self._shouldSkipDependencyCandidate(rootKind, candidateKind):
+            if self._shouldSkipDependencyCandidate(
+                    rootKind,
+                    candidateKind,
+                    candidate.get("relationRole"),
+            ):
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):
