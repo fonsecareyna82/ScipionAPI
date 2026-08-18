@@ -1217,3 +1217,59 @@ def test_PostgresqlIntegratedContextReaderDelegatesInputRefReads(authTestEnv, mo
     assert ".fetchOne(" not in source
     assert ".fetchAll(" not in source
     assert ".execute(" not in source
+
+
+def test_PostgresqlIntegratedContextReaderBuildLinkResolvesMissingPublicProtocolId(
+    authTestEnv,
+    monkeypatch,
+):
+    module = importlib.import_module(
+        "app.backend.viewers.postgresql_integrated_context_reader"
+    )
+    reader = _makeReader(authTestEnv)
+
+    resolverCalls = []
+
+    class ProtocolIdentityResolverStub:
+        def __init__(self, db, projectId):
+            assert db is reader.db
+            assert projectId == 1
+
+        def getProtocolRowByDbId(self, protocolDbId):
+            resolverCalls.append(protocolDbId)
+            return {
+                "id": 700,
+                "protocolId": 120,
+            }
+
+    monkeypatch.setattr(
+        module,
+        "ProtocolIdentityResolver",
+        ProtocolIdentityResolverStub,
+    )
+
+    link = reader._buildLink(
+        protocolId=700,
+        outputName="TiltSeries",
+        storedSet={
+            "id": 20,
+            "objectId": 200,
+            "protocolDbId": 700,
+            "outputName": "TiltSeries",
+            "setClassName": "SetOfTiltSeries",
+            "itemClassName": "TiltSeries",
+        },
+        statusValue="inferred",
+    )
+
+    assert link == {
+        "protocolId": 700,
+        "publicProtocolId": 120,
+        "outputName": "TiltSeries",
+        "itemId": 200,
+        "label": "TiltSeries",
+        "status": "inferred",
+    }
+    assert resolverCalls == [700]
+
+
