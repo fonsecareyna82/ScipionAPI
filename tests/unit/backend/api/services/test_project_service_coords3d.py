@@ -570,6 +570,61 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
     assert len(response.body) > 0
 
 
+def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    volumePath = tmp_path / "tomo.mrc"
+    volumePath.write_bytes(b"placeholder")
+
+    registryCalls = []
+
+    def registryOpen(*args, **kwargs):
+        registryCalls.append((args, kwargs))
+        raise RuntimeError("ImageReadersRegistry must not be used for volume slices")
+
+    monkeypatch.setattr(
+        projectServiceModule.ImageReadersRegistry,
+        "open",
+        registryOpen,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeSlice2d",
+        lambda volumePath, sliceIndex, axis, maxSide: (
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
+            {},
+            {
+                "dims": (8, 4, 4),
+                "index": int(sliceIndex),
+                "step": 1,
+            },
+        ),
+    )
+
+    response = service._renderTomogramSliceFromPath(
+        volumePath=str(volumePath),
+        tomogramId=0,
+        sliceIndex=3,
+        axis="z",
+        colormap="gray",
+        normalize="minmax",
+        scale=1.0,
+        inline=True,
+        fmt="png",
+        thumb=384,
+        fast=True,
+        quality=55,
+    )
+
+    assert registryCalls == []
+    assert response.media_type == "image/png"
+    assert response.headers["x-preview-depth"] == "8"
+    assert response.headers["x-preview-tomogramid"] == "0"
+
+
 def test_CreateCoords3dOutputFromPointsServiceCreatesNewPostgresqlOutput(
     projectServiceModule,
     service,

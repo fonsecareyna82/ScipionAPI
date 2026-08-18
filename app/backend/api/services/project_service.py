@@ -31,6 +31,7 @@ import re
 from uuid import uuid4
 import copy
 import json
+import hashlib
 import threading
 import struct
 import shutil
@@ -10070,13 +10071,30 @@ class ProjectService:
                 return None
 
             _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+            cacheEntries = len(_VOLUME_SLICE_CACHE)
 
         headers = dict(cached.get("headers") or {})
         headers.pop("content-length", None)
         headers.pop("Content-Length", None)
 
         headers["X-Preview-Cache"] = "hit"
-        self._exposeHeader(headers, "X-Preview-Cache")
+        headers["X-Preview-Cache-Key"] = hashlib.sha1(
+            repr(cacheKey).encode("utf-8")
+        ).hexdigest()[:12]
+        headers["X-Preview-Cache-Pid"] = str(os.getpid())
+        headers["X-Preview-Cache-Entries"] = str(cacheEntries)
+        headers["X-Preview-Volume-MTimeNs"] = str(cacheKey[1])
+        headers["X-Preview-Volume-Size"] = str(cacheKey[2])
+
+        for headerName in (
+                "X-Preview-Cache",
+                "X-Preview-Cache-Key",
+                "X-Preview-Cache-Pid",
+                "X-Preview-Cache-Entries",
+                "X-Preview-Volume-MTimeNs",
+                "X-Preview-Volume-Size",
+        ):
+            self._exposeHeader(headers, headerName)
 
         return Response(
             content=cached["body"],
@@ -10107,7 +10125,25 @@ class ProjectService:
                 _VOLUME_SLICE_CACHE.popitem(last=False)
 
         response.headers["X-Preview-Cache"] = "miss"
-        self._exposeHeader(response.headers, "X-Preview-Cache")
+        response.headers["X-Preview-Cache-Key"] = hashlib.sha1(
+            repr(cacheKey).encode("utf-8")
+        ).hexdigest()[:12]
+        response.headers["X-Preview-Cache-Pid"] = str(os.getpid())
+        response.headers["X-Preview-Cache-Entries"] = str(len(_VOLUME_SLICE_CACHE))
+        response.headers["X-Preview-Volume-MTimeNs"] = str(cacheKey[1])
+        response.headers["X-Preview-Volume-Size"] = str(cacheKey[2])
+
+        for headerName in (
+                "X-Preview-Cache",
+                "X-Preview-Cache-Key",
+                "X-Preview-Cache-Pid",
+                "X-Preview-Cache-Entries",
+                "X-Preview-Volume-MTimeNs",
+                "X-Preview-Volume-Size",
+        ):
+            self._exposeHeader(response.headers, headerName)
+
+        return response
 
         return response
 
@@ -10182,6 +10218,25 @@ class ProjectService:
                         thumb=thumb,
                         fast=fast,
                         quality=quality,
+                    )
+
+                    try:
+                        mtimeAfterRender = os.stat(str(volumePath)).st_mtime_ns
+                    except Exception:
+                        mtimeAfterRender = None
+
+                    response.headers["X-Preview-Volume-MTimeNs-After"] = str(mtimeAfterRender)
+                    response.headers["X-Preview-Volume-MTime-Changed"] = str(
+                        mtimeAfterRender != cacheKey[1]
+                    ).lower()
+
+                    self._exposeHeader(
+                        response.headers,
+                        "X-Preview-Volume-MTimeNs-After",
+                    )
+                    self._exposeHeader(
+                        response.headers,
+                        "X-Preview-Volume-MTime-Changed",
                     )
 
                     return self._storeCachedVolumeSliceResponse(cacheKey, response)
@@ -12633,53 +12688,6 @@ class ProjectService:
         requestedIndex = max(0, requestedIndex)
 
         sliceUsed = requestedIndex
-        if axis == "z" and fast:
-            try:
-                reader = ImageReadersRegistry.open(volumePath)
-
-                try:
-                    images = reader.getImages()
-                    if hasattr(images, "ndim") and images.ndim == 3:
-                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
-                    elif hasattr(images, "ndim") and images.ndim == 2:
-                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
-                    else:
-                        zdim, ydim, xdim = 1, 0, 0
-                except Exception:
-                    zdim, ydim, xdim = 1, 0, 0
-
-                depth = max(zdim, 1)
-
-                k = requestedIndex
-                if zdim > 0:
-                    k = max(0, min(k, zdim - 1))
-
-                try:
-                    pilImg = reader.getImage(index=k, pilImage=True)
-                except Exception:
-                    try:
-                        pilImg = reader.getCentralImage(pilImage=True)
-                        if zdim > 0:
-                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
-                        else:
-                            k = 0
-                    except Exception:
-                        pilImg = reader.getImage(index=0, pilImage=True)
-                        k = 0
-
-                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
-                if arr2d is None:
-                    arrRaw = np.asarray(pilImg)
-                    if arrRaw.ndim == 3:
-                        arr2d = arrRaw.mean(axis=-1)
-                    else:
-                        arr2d = arrRaw.astype(np.float32, copy=False)
-
-                gray = self._normalize2dSlice(arr2d, mode=normalize)
-                sliceUsed = k
-            except Exception:
-                gray = None
-
         if gray is None:
             try:
                 slice2d, _props, sliceMeta = readVolumeSlice2d(
