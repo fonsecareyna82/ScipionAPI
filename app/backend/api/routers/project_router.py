@@ -2139,6 +2139,7 @@ def getVolumeData3d(
     outputName: str,
     volumeId: Union[int, str],
     maxDim: int = Query(160, ge=32, le=512, alias="maxDim"),
+    binary: bool = Query(False),
     method: Literal["binning", "stride", "none"] = Query("binning"),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
@@ -2154,6 +2155,7 @@ def getVolumeData3d(
         outputName=outputName,
         volumeId=volumeId,
         maxDim=maxDim,
+        binary=binary,
         method=method,
         mapper=mapper,
     )

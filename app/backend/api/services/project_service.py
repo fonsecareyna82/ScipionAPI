@@ -32,6 +32,7 @@ from uuid import uuid4
 import copy
 import json
 import threading
+import struct
 import shutil
 import sqlite3
 
@@ -10225,10 +10226,10 @@ class ProjectService:
             quality=quality,
         )
 
-    def _buildVolumeData3dPayload(
+    def _normalizeVolumeData3dArray(
             self,
             volume: np.ndarray,
-    ) -> Dict[str, Any]:
+    ) -> np.ndarray:
         arr = np.asarray(volume, dtype=np.float32)
 
         if arr.ndim != 3:
@@ -10237,8 +10238,15 @@ class ProjectService:
         finiteMask = np.isfinite(arr)
         if not finiteMask.all():
             fillValue = float(np.nanmedian(arr[finiteMask])) if finiteMask.any() else 0.0
-            arr = np.where(finiteMask, arr, fillValue).astype(np.float32, copy=False)
+            arr = np.where(finiteMask, arr, fillValue)
 
+        return np.ascontiguousarray(arr, dtype="<f4")
+
+    def _buildVolumeData3dPayload(
+            self,
+            volume: np.ndarray,
+    ) -> Dict[str, Any]:
+        arr = self._normalizeVolumeData3dArray(volume)
         z, y, x = arr.shape
 
         return {
@@ -10249,6 +10257,30 @@ class ProjectService:
             "max": float(arr.max()),
         }
 
+    def _buildVolumeData3dBinaryResponse(
+            self,
+            volume: np.ndarray,
+    ) -> Response:
+        arr = self._normalizeVolumeData3dArray(volume)
+        z, y, x = arr.shape
+
+        header = struct.pack(
+            "<4sIIIIff",
+            b"SCV3",
+            1,
+            int(x),
+            int(y),
+            int(z),
+            float(arr.min()),
+            float(arr.max()),
+        )
+
+        return Response(
+            content=header + arr.tobytes(order="C"),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+
     def getVolumeData3dService(
             self,
             projectId: int,
@@ -10258,6 +10290,7 @@ class ProjectService:
             maxDim: int = 160,
             method: str = "binning",
             mapper=None,
+            binary: bool = False,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
@@ -10277,7 +10310,11 @@ class ProjectService:
                     method=method,
                 )
 
-                return self._buildVolumeData3dPayload(volumeSmall)
+                return (
+                    self._buildVolumeData3dBinaryResponse(volumeSmall)
+                    if binary
+                    else self._buildVolumeData3dPayload(volumeSmall)
+                )
 
             logger.info(
                 "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
@@ -10321,7 +10358,11 @@ class ProjectService:
             method=method,
         )
 
-        return self._buildVolumeData3dPayload(volumeSmall)
+        return (
+            self._buildVolumeData3dBinaryResponse(volumeSmall)
+            if binary
+            else self._buildVolumeData3dPayload(volumeSmall)
+        )
 
     def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
         """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
