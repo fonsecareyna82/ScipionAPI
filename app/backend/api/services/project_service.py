@@ -10145,8 +10145,6 @@ class ProjectService:
 
         return response
 
-        return response
-
     def _exposeHeader(self, headers, headerName: str) -> None:
         exposeKey = "Access-Control-Expose-Headers"
         current = headers.get(exposeKey, "")
