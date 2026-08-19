@@ -161,8 +161,51 @@ class HostSettingsIn(BaseModel):
     queues: List[HostQueue] = Field(default_factory=list, description="Configured queues")
 
 
-class HostSettingsOut(HostSettingsIn):
-    pass
+class HostSettingsOut(BaseModel):
+    hostAlias: str = Field(
+        ...,
+        min_length=1,
+        description="Host alias or section name",
+    )
+    schedulerName: str = Field(
+        "",
+        description="Scheduler display name",
+    )
+    mandatory: bool = Field(
+        False,
+        description="Whether queue usage is mandatory",
+    )
+
+    parallelCommand: str = Field(
+        "",
+        description="Parallel execution command",
+    )
+    submitCommand: str = Field(
+        "",
+        description="Queue submit command",
+    )
+    cancelCommand: str = Field(
+        "",
+        description="Queue cancel command",
+    )
+    checkCommand: str = Field(
+        "",
+        description="Queue status command",
+    )
+
+    jobDoneRegex: str = Field(
+        "",
+        description="Optional regex used to detect finished jobs",
+    )
+    submitTemplate: str = Field(
+        "",
+        description="Submit script template",
+    )
+
+    queues: List[HostQueue] = Field(
+        default_factory=list,
+        description="Configured queues",
+    )
 
 
 class HostSettingsPatch(BaseModel):
