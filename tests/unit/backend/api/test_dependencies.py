@@ -23,22 +23,38 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import importlib
 from inspect import signature
 
-from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.routers.project_router import renderVolumeSlice
-from app.backend.database import getMapperDependency
 
+def test_volume_slice_auth_reuses_request_scoped_mapper_dependency(
+    authTestEnv,
+    projectRouterModule,
+):
+    dependenciesModule = importlib.import_module(
+        "app.backend.api.dependencies"
+    )
+    databaseModule = importlib.import_module(
+        "app.backend.database"
+    )
 
-def test_volume_slice_auth_reuses_request_scoped_mapper_dependency():
     authDependency = signature(
-        getCurrentUser
+        dependenciesModule.getCurrentUser
     ).parameters["mapper"].default
 
     sliceDependency = signature(
-        renderVolumeSlice
+        projectRouterModule.renderVolumeSlice
     ).parameters["mapper"].default
 
-    assert authDependency.dependency is getMapperDependency
-    assert sliceDependency.dependency is getMapperDependency
-    assert authDependency.dependency is sliceDependency.dependency
+    assert (
+        authDependency.dependency
+        is databaseModule.getMapperDependency
+    )
+    assert (
+        sliceDependency.dependency
+        is databaseModule.getMapperDependency
+    )
+    assert (
+        authDependency.dependency
+        is sliceDependency.dependency
+    )
