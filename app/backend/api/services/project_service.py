@@ -12710,6 +12710,19 @@ class ProjectService:
             zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
             depth = max(int(zdim), 1)
 
+            if axis == "z" and fast:
+                sliceArray = np.asarray(slice2d, dtype=np.float32)
+                sliceMean = float(np.mean(sliceArray))
+                sliceStd = float(np.std(sliceArray))
+
+                if np.isfinite(sliceMean) and np.isfinite(sliceStd) and sliceStd > 0:
+                    offset = 2.0 * sliceStd
+                    slice2d = np.clip(
+                        sliceArray,
+                        sliceMean - offset,
+                        sliceMean + offset,
+                    )
+
             gray = self._normalize2dSlice(slice2d, mode=normalize)
             sliceUsed = int(sliceMeta.get("index", requestedIndex))
 
