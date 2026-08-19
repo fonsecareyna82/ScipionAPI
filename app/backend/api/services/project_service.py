@@ -149,6 +149,9 @@ from app.backend.api.services.settings_service import SettingsService
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
+_VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
+_VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
+_VOLUME_SURFACE_MAX_TRIANGLES = 500_000
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
@@ -10591,7 +10594,11 @@ class ProjectService:
         requestedMaxDim = max(32, int(maxDim or 192))
         largestDim = max(int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2]))
         voxelCount = int(volume.size)
-        maxInteractiveVoxels = 8_000_000
+        maxInteractiveVoxels = (
+            _VOLUME_SURFACE_QUALITY_MAX_VOXELS
+            if methodLower == "none"
+            else _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS
+        )
         effectiveMaxDim = requestedMaxDim
 
         if voxelCount > maxInteractiveVoxels:
@@ -10619,7 +10626,10 @@ class ProjectService:
             currentUser,
             mapper=None,
     ):
-        effectiveMaxTriangles = min(250000, max(1000, int(maxTriangles or 220000)))
+        effectiveMaxTriangles = min(
+            _VOLUME_SURFACE_MAX_TRIANGLES,
+            max(1000, int(maxTriangles or 220000)),
+        )
 
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,

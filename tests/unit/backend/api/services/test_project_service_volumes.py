@@ -668,13 +668,47 @@ def test_GetVolumeData3dServiceReturns404WhenFileMissing(projectServiceModule, s
     assert exc.value.detail == "Volume file not found on disk"
 
 
-def test_DownsampleVolumeForSurfaceEnforcesInteractiveLimitForNone(service):
+def test_DownsampleVolumeForSurfaceHonorsMaxDimForNone(service):
     volume = np.zeros((96, 80, 64), dtype=np.float32)
 
     result = service._downsampleVolumeForSurface(volume, maxDim=48, method="none")
 
     assert result.shape == (48, 40, 32)
     assert result.dtype == np.float32
+
+
+def test_DownsampleVolumeForSurfaceUsesLargerQualityBudgetForNone(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        projectServiceModule,
+        "_VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS",
+        8_000,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "_VOLUME_SURFACE_QUALITY_MAX_VOXELS",
+        80_000,
+    )
+
+    volume = np.zeros((40, 40, 40), dtype=np.float32)
+
+    qualityResult = service._downsampleVolumeForSurface(
+        volume,
+        maxDim=64,
+        method="none",
+    )
+
+    interactiveResult = service._downsampleVolumeForSurface(
+        volume,
+        maxDim=64,
+        method="stride",
+    )
+
+    assert qualityResult.shape == (40, 40, 40)
+    assert interactiveResult.shape == (20, 20, 20)
 
 
 def test_BinVolumeAveragesBlocks(service):
