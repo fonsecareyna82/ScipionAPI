@@ -10039,6 +10039,8 @@ class ProjectService:
             axis: str,
             colormap: Optional[str],
             normalize: Optional[str],
+            windowMin: Optional[float],
+            windowMax: Optional[float],
             scale: float,
             fmt: str,
             thumb: Optional[int],
@@ -10062,6 +10064,8 @@ class ProjectService:
             str(axis or "z").lower(),
             str(colormap or ""),
             str(normalize or "minmax").lower(),
+            None if windowMin is None else float(windowMin),
+            None if windowMax is None else float(windowMax),
             float(scale or 1.0),
             str(fmt or "webp").lower(),
             int(thumb or 0),
@@ -10176,6 +10180,8 @@ class ProjectService:
             thumb: Optional[int] = None,
             fast: bool = True,
             quality: int = 75,
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
             mapper=None,
     ) -> Response:
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
@@ -10197,6 +10203,8 @@ class ProjectService:
                         axis=axis,
                         colormap=colormap,
                         normalize=normalize or "minmax",
+                        windowMin=windowMin,
+                        windowMax=windowMax,
                         scale=scale,
                         fmt=fmt,
                         thumb=thumb,
@@ -10215,6 +10223,8 @@ class ProjectService:
                         axis=axis,
                         colormap=colormap,
                         normalize=normalize or "minmax",
+                        windowMin=windowMin,
+                        windowMax=windowMax,
                         scale=scale,
                         inline=inline,
                         fmt=fmt,
@@ -10276,6 +10286,8 @@ class ProjectService:
             axis=axis,
             colormap=colormap,
             normalize=normalize,
+            windowMin=windowMin,
+            windowMax=windowMax,
             scale=scale,
             inline=inline,
             fmt=fmt,
@@ -12258,25 +12270,36 @@ class ProjectService:
 
         return points
 
-    def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        """
-        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
-
-        Safeguards:
-        - Accepts any numeric dtype.
-        - If already uint8 and mode in ('minmax', 'none'), returns a copy directly.
-        - Handles NaNs and constant arrays without blowing up.
-        """
+    def _normalize2dSlice(
+            self,
+            a: np.ndarray,
+            mode: str = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
+    ) -> np.ndarray:
+        """Normalize a 2D slice into uint8 using either a shared window or a local mode."""
         if a.ndim != 2:
             raise ValueError("Expected 2D slice")
 
         arr = np.asarray(a)
+        modeLower = (mode or "minmax").lower()
 
-        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
+        hasWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
+        if (
+                arr.dtype == np.uint8
+                and not hasWindow
+                and modeLower in ("minmax", "none")
+        ):
             return arr.copy()
 
         arr = arr.astype(np.float32, copy=False)
-        mode = (mode or "minmax").lower()
 
         finiteMask = np.isfinite(arr)
         if not finiteMask.all():
@@ -12286,24 +12309,49 @@ class ProjectService:
                 fillVal = 0.0
             arr = np.where(finiteMask, arr, fillVal)
 
-        if mode == "zscore":
+        if hasWindow:
+            low = float(windowMin)
+            high = float(windowMax)
+
+            arr = np.clip(arr, low, high)
+            arr = (arr - low) / (high - low)
+
+            return (
+                    255.0 * np.clip(arr, 0.0, 1.0)
+            ).astype(np.uint8)
+
+        if modeLower == "zscore":
             mu = float(np.mean(arr))
             sd = float(np.std(arr))
+
             if sd == 0.0 or not np.isfinite(sd):
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - mu) / sd
             arr = np.clip(arr, -3.0, 3.0)
-            amin, amax = float(arr.min()), float(arr.max())
+
+            amin = float(arr.min())
+            amax = float(arr.max())
+
             if amax <= amin:
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - amin) / (amax - amin + 1e-12)
+
             return (255.0 * arr).astype(np.uint8)
 
-        amin, amax = float(arr.min()), float(arr.max())
-        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
+        amin = float(arr.min())
+        amax = float(arr.max())
+
+        if (
+                not np.isfinite(amin)
+                or not np.isfinite(amax)
+                or amax <= amin
+        ):
             return np.zeros_like(arr, dtype=np.uint8)
 
         arr = (arr - amin) / (amax - amin + 1e-12)
+
         return (255.0 * arr).astype(np.uint8)
 
     def renderCoords3dTomogramSliceService(
@@ -12433,8 +12481,6 @@ class ProjectService:
             quality=quality,
         )
 
-
-
     def _renderTomogramSliceFromPath(
             self,
             volumePath: str,
@@ -12443,6 +12489,8 @@ class ProjectService:
             axis: str = "z",
             colormap: Optional[str] = None,
             normalize: Optional[str] = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
             scale: float = 1.0,
             inline: bool = True,
             fmt: str = "webp",
@@ -12481,6 +12529,14 @@ class ProjectService:
             requestedIndex = 0
         requestedIndex = max(0, requestedIndex)
 
+        hasIntensityWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
         sliceUsed = requestedIndex
         if gray is None:
             try:
@@ -12506,7 +12562,7 @@ class ProjectService:
             zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
             depth = max(int(zdim), 1)
 
-            if axis == "z" and fast:
+            if axis == "z" and fast and not hasIntensityWindow:
                 sliceArray = np.asarray(slice2d, dtype=np.float32)
                 sliceMean = float(np.mean(sliceArray))
                 sliceStd = float(np.std(sliceArray))
@@ -12519,7 +12575,12 @@ class ProjectService:
                         sliceMean + offset,
                     )
 
-            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            gray = self._normalize2dSlice(
+                slice2d,
+                mode=normalize,
+                windowMin=windowMin,
+                windowMax=windowMax,
+            )
             sliceUsed = int(sliceMeta.get("index", requestedIndex))
 
         if thumb is not None and thumb > 0:

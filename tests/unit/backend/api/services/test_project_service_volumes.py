@@ -126,6 +126,8 @@ class FakeOutputsPreview:
         axis,
         colormap,
         normalize,
+        windowMin,
+        windowMax,
         scale,
         inline,
         fmt,
@@ -139,6 +141,8 @@ class FakeOutputsPreview:
             "axis": axis,
             "colormap": colormap,
             "normalize": normalize,
+            "windowMin": windowMin,
+            "windowMax": windowMax,
             "scale": scale,
             "inline": inline,
             "fmt": fmt,
@@ -540,6 +544,8 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         axis="y",
         colormap="viridis",
         normalize="minmax",
+        windowMin=-0.25,
+        windowMax=0.75,
         scale=1.5,
         inline=False,
         fmt="png",
@@ -557,6 +563,8 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         "axis": "y",
         "colormap": "viridis",
         "normalize": "minmax",
+        "windowMin": -0.25,
+        "windowMax": 0.75,
         "scale": 1.5,
         "inline": False,
         "fmt": "png",
@@ -564,6 +572,61 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         "fast": False,
         "quality": 80,
     }
+
+
+def test_Normalize2dSliceUsesSharedIntensityWindow(service):
+    sliceData = np.array(
+        [
+            [0.0, 5.0],
+            [10.0, 20.0],
+        ],
+        dtype=np.float32,
+    )
+
+    result = service._normalize2dSlice(
+        sliceData,
+        mode="minmax",
+        windowMin=0.0,
+        windowMax=20.0,
+    )
+
+    assert result.tolist() == [
+        [0, 63],
+        [127, 255],
+    ]
+
+
+def test_VolumeSliceCacheKeyIncludesIntensityWindow(service, tmp_path):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_bytes(b"volume")
+
+    commonArgs = {
+        "volumePath": str(volumePath),
+        "tomogramId": 1,
+        "sliceIndex": 10,
+        "axis": "z",
+        "colormap": "gray",
+        "normalize": "minmax",
+        "scale": 1.0,
+        "fmt": "webp",
+        "thumb": 512,
+        "fast": True,
+        "quality": 70,
+    }
+
+    keyA = service._buildVolumeSliceCacheKey(
+        **commonArgs,
+        windowMin=0.0,
+        windowMax=1.0,
+    )
+
+    keyB = service._buildVolumeSliceCacheKey(
+        **commonArgs,
+        windowMin=0.0,
+        windowMax=2.0,
+    )
+
+    assert keyA != keyB
 
 
 def test_GetVolumePathFromOutputReturnsPathForSingleVolume(service, tmp_path):

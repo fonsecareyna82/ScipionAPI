@@ -1678,7 +1678,10 @@ class OutputsPreview(FileHandlers):
             return None
 
     def _applyColormap(
-        self, grayTile: np.ndarray, cmapName: str = "inferno"
+            self,
+            grayTile: np.ndarray,
+            cmapName: str = "inferno",
+            normalizeInput: bool = True,
     ) -> np.ndarray:
         """
         Apply a matplotlib colormap to a 2D tile (uint8 or float).
@@ -1695,16 +1698,20 @@ class OutputsPreview(FileHandlers):
             else:
                 arr = np.zeros_like(arr, dtype=np.float32)
 
-        aMin = float(np.nanmin(arr))
-        aMax = float(np.nanmax(arr))
-        if (
-            not np.isfinite(aMin)
-            or not np.isfinite(aMax)
-            or aMax <= aMin
-        ):
-            arr = np.zeros_like(arr, dtype=np.float32)
+        if normalizeInput:
+            aMin = float(np.nanmin(arr))
+            aMax = float(np.nanmax(arr))
+
+            if (
+                    not np.isfinite(aMin)
+                    or not np.isfinite(aMax)
+                    or aMax <= aMin
+            ):
+                arr = np.zeros_like(arr, dtype=np.float32)
+            else:
+                arr = (arr - aMin) / (aMax - aMin)
         else:
-            arr = (arr - aMin) / (aMax - aMin)
+            arr = np.clip(arr / 255.0, 0.0, 1.0)
 
         try:
             from matplotlib import cm as mpl_cm
@@ -1936,6 +1943,8 @@ class OutputsPreview(FileHandlers):
         axis: str = "z",
         colormap: Optional[str] = None,
         normalize: str = "minmax",
+        windowMin: Optional[float] = None,
+        windowMax: Optional[float] = None,
         scale: float = 1.0,
         inline: bool = True,
         fmt: str = "png",
@@ -1992,8 +2001,16 @@ class OutputsPreview(FileHandlers):
         zdim = ydim = xdim = 0
         k = max(0, int(sliceIndex))
 
+        hasIntensityWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
         # Fast path: z axis + fast
-        if axis == "z" and fast:
+        if axis == "z" and fast and not hasIntensityWindow:
             try:
                 reader = ImageReadersRegistry.open(str(absPath))
 
@@ -2053,7 +2070,12 @@ class OutputsPreview(FileHandlers):
                 zdim, ydim, xdim = sliceMeta["dims"]
                 k = sliceMeta["index"]
 
-                gray = self._normMode2D(slice2d, mode=normalize or "minmax")
+                gray = self._normMode2D(
+                    slice2d,
+                    mode=normalize or "minmax",
+                    windowMin=windowMin,
+                    windowMax=windowMax,
+                )
             except Exception as e:
                 try:
                     return self.previewProtocolImageFile(
@@ -2071,7 +2093,11 @@ class OutputsPreview(FileHandlers):
             gray = np.array(pilTmp, copy=False)
 
         # Colormap + scale
-        rgb = self._applyColormap(gray, usedCmap)
+        rgb = self._applyColormap(
+            gray,
+            usedCmap,
+            normalizeInput=not hasIntensityWindow,
+        )
         rgb = self._resizeIfNeeded(rgb, scale or 1.0)
 
         img = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
@@ -2215,25 +2241,36 @@ class OutputsPreview(FileHandlers):
                     continue
         return (None, None, None)
 
-    def _normMode2D(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        """
-        Normalize a 2D slice into uint8: 'minmax' | 'zscore' | 'none'.
-
-        If input is already uint8 and mode in ('minmax', 'none'),
-        it is returned as is.
-        """
+    def _normMode2D(
+            self,
+            a: np.ndarray,
+            mode: str = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
+    ) -> np.ndarray:
+        """Normalize a 2D slice into uint8 using a shared window when provided."""
         if a.ndim != 2:
             raise ValueError("Expected 2D slice")
-        arr = np.asarray(a)
 
-        if arr.dtype == np.uint8 and (mode or "minmax").lower() in (
-            "minmax",
-            "none",
+        arr = np.asarray(a)
+        modeLower = (mode or "minmax").lower()
+
+        hasWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
+        if (
+                arr.dtype == np.uint8
+                and not hasWindow
+                and modeLower in ("minmax", "none")
         ):
             return arr.copy()
 
         arr = arr.astype(np.float32, copy=False)
-        mode = (mode or "minmax").lower()
 
         finiteMask = np.isfinite(arr)
         if not finiteMask.all():
@@ -2243,28 +2280,49 @@ class OutputsPreview(FileHandlers):
                 fillVal = 0.0
             arr = np.where(finiteMask, arr, fillVal)
 
-        if mode == "zscore":
+        if hasWindow:
+            low = float(windowMin)
+            high = float(windowMax)
+
+            arr = np.clip(arr, low, high)
+            arr = (arr - low) / (high - low)
+
+            return (
+                    255.0 * np.clip(arr, 0.0, 1.0)
+            ).astype(np.uint8)
+
+        if modeLower == "zscore":
             mu = float(np.mean(arr))
             sd = float(np.std(arr))
+
             if sd == 0.0 or not np.isfinite(sd):
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - mu) / sd
             arr = np.clip(arr, -3.0, 3.0)
-            amin, amax = float(arr.min()), float(arr.max())
+
+            amin = float(arr.min())
+            amax = float(arr.max())
+
             if amax <= amin:
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - amin) / (amax - amin + 1e-12)
+
             return (255.0 * arr).astype(np.uint8)
 
-        amin, amax = float(arr.min()), float(arr.max())
+        amin = float(arr.min())
+        amax = float(arr.max())
+
         if (
-            not np.isfinite(amin)
-            or not np.isfinite(amax)
-            or amax <= amin
+                not np.isfinite(amin)
+                or not np.isfinite(amax)
+                or amax <= amin
         ):
             return np.zeros_like(arr, dtype=np.uint8)
 
         arr = (arr - amin) / (amax - amin + 1e-12)
+
         return (255.0 * arr).astype(np.uint8)
 
     def _resizeIfNeeded(self, imgArr: np.ndarray, scale: float) -> np.ndarray:
