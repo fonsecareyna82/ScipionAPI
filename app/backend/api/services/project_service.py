@@ -61,7 +61,6 @@ from app.backend.api.services.scipion_domain_refresh_service import refreshScipi
 from pwem.emlib.image.image_readers import (
     ImageReadersRegistry,
     ImageStack,
-    PILImageReader,
 )
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
@@ -14368,21 +14367,16 @@ class ProjectService:
                             )
                             pilImg = None
                         else:
-                            extension = resolvedPath.suffix.lower().lstrip(".")
+                            extension = resolvedPath.suffix.lower()
 
                             try:
-                                registryExtensions = ImageReadersRegistry.getAvailableExtensions()
-                                registryReader = (
-                                    ImageReadersRegistry.getReader(str(resolvedPath))
-                                    if extension in registryExtensions
-                                    else None
-                                )
+                                pillowExtensions = PILImage.registered_extensions()
                             except Exception:
-                                registryReader = None
+                                pillowExtensions = {}
 
                             useScipionPreview = (
-                                    registryReader is not None
-                                    and registryReader is not PILImageReader
+                                    imageIndex not in (None, 0)
+                                    or extension not in pillowExtensions
                             )
 
                             if not useScipionPreview:
