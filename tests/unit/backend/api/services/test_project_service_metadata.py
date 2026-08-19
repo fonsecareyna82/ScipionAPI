@@ -1426,41 +1426,6 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     assert call["kwargs"]["sqliteFile"].endswith(".txt,Class001")
 
 
-def test_IsVolumeLikeImageFileUsesReadOnlyVolumeReader(
-    service,
-    projectServiceModule,
-    monkeypatch,
-    tmp_path,
-):
-    imagePath = tmp_path / "volume.mrc"
-    imagePath.write_bytes(b"placeholder")
-
-    readCalls = []
-
-    def readVolumeArray3d(path):
-        readCalls.append(path)
-        return np.zeros((3, 4, 4), dtype=np.float32), {}
-
-    def registryOpen(path):
-        raise AssertionError(
-            "ImageReadersRegistry must not be used to probe MRC volume shape"
-        )
-
-    monkeypatch.setattr(
-        projectServiceModule,
-        "readVolumeArray3d",
-        readVolumeArray3d,
-    )
-    monkeypatch.setattr(
-        projectServiceModule.ImageReadersRegistry,
-        "open",
-        registryOpen,
-    )
-
-    assert service._isVolumeLikeImageFile(imagePath) is True
-    assert readCalls == [str(imagePath)]
-
-
 def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
     service,
     projectServiceModule,

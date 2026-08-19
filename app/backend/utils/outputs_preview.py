@@ -30,12 +30,8 @@ from app.backend.utils.constants import (
     maxThumbSize,
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
-from app.backend.utils.volume_utils import (
-    MRC_LIKE_EXTENSIONS,
-    readVolumeArray3d,
-    readVolumeSlice2d,
-)
-from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack, ROT_MODE
+from app.backend.utils.volume_utils import readVolumeSlice2d
+from pwem.emlib.image.image_readers import ImageReadersRegistry, ROT_MODE
 from pwem.objects import (
     SetOfClasses2D,
     SetOfParticles,
@@ -684,11 +680,7 @@ class OutputsPreview(FileHandlers):
             )
 
         try:
-            if p.suffix.lower() in MRC_LIKE_EXTENSIONS:
-                data, _props = readVolumeArray3d(str(p))
-                reader = ImageStack(data)
-            else:
-                reader = ImageReadersRegistry.open(str(p))
+            reader = ImageReadersRegistry.open(str(p))
         except Exception as e:
             raise HTTPException(
                 status_code=500,
