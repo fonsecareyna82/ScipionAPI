@@ -539,10 +539,15 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
 
     monkeypatch.setattr(
         projectServiceModule,
-        "readVolumeArray3d",
-        lambda volumePath: (
-            np.arange(64, dtype=np.float32).reshape((4, 4, 4)),
+        "readVolumeSlice2d",
+        lambda volumePath, sliceIndex, axis, maxSide: (
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
             {},
+            {
+                "dims": (4, 4, 4),
+                "index": int(sliceIndex),
+                "step": 1,
+            },
         ),
     )
 
