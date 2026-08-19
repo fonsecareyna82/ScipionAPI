@@ -14100,16 +14100,10 @@ class ProjectService:
 
     def _isVolumeLikeImageFile(self, filePath: Union[str, Path]) -> bool:
         try:
-            reader = ImageReadersRegistry.open(str(filePath))
-            data = reader.getImages()
-
-            if isinstance(data, list):
-                data = data[0]
-
+            data, _props = readVolumeArray3d(str(filePath))
             return getattr(data, "ndim", 0) == 3 and data.shape[0] > 1
         except Exception:
             return False
-
 
     def renderMetadataImageCellService(
             self,

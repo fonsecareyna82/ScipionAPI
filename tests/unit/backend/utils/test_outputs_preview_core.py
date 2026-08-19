@@ -32,6 +32,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import numpy as np
 from fastapi.responses import Response
 
 
@@ -348,3 +349,55 @@ def test_PreviewDispatchesToImageDelegate(preview, monkeypatch, tmp_path):
     result = preview.preview(protocolId=10, path=str(imgPath), objectManager=FakeObjectManager())
 
     assert result == {"kind": "image", "path": str(imgPath), "inline": True}
+
+
+def test_RenderImageFromFilePathUsesReadOnlyVolumeReaderForMrc(
+    outputsPreviewModule,
+    preview,
+    monkeypatch,
+    tmp_path,
+):
+    imagePath = tmp_path / "stack.mrc"
+    imagePath.write_bytes(b"placeholder")
+
+    volume = np.arange(
+        48,
+        dtype=np.float32,
+    ).reshape((3, 4, 4))
+
+    readCalls = []
+
+    def readVolumeArray3d(path):
+        readCalls.append(path)
+        return volume, {}
+
+    def registryOpen(path):
+        raise AssertionError(
+            "ImageReadersRegistry must not open MRC metadata previews"
+        )
+
+    monkeypatch.setattr(
+        outputsPreviewModule,
+        "readVolumeArray3d",
+        readVolumeArray3d,
+    )
+    monkeypatch.setattr(
+        outputsPreviewModule.ImageReadersRegistry,
+        "open",
+        registryOpen,
+    )
+
+    response = preview.renderImageFromFilePath(
+        filePath=imagePath,
+        size=64,
+        fmt="png",
+        index=1,
+        inline=True,
+        applyTransform=False,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert readCalls == [str(imagePath.resolve())]
+    assert len(response.body) > 0
+
