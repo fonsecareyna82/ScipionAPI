@@ -29,10 +29,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Tuple, Dict, Any, Optional
 import numpy as np
-from pwem.emlib.image.image_readers import ImageReadersRegistry
-
-
-MRC_LIKE_EXTENSIONS = {".mrc", ".map", ".mrcs", ".rec", ".ali", ".st"}
+from pwem.emlib.image.image_readers import (
+    ImageReadersRegistry,
+    MRCImageReader,
+)
 
 
 @dataclass(frozen=True)
@@ -194,7 +194,12 @@ def readVolumeArray3d(volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
 
     sig = buildVolumeSignature(p)
 
-    if p.suffix.lower() in MRC_LIKE_EXTENSIONS:
+    try:
+        readerClass = ImageReadersRegistry.getReader(str(p))
+    except Exception:
+        readerClass = None
+
+    if readerClass is MRCImageReader:
         try:
             arr, props, _mrcHandle = _readMrcVolumeMapped(sig)
             return arr, props
