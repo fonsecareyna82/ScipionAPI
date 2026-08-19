@@ -58,7 +58,11 @@ from app.backend.api.services.protocol_catalog_service import ProtocolCatalogSer
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
 from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
 
-from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
+from pwem.emlib.image.image_readers import (
+    ImageReadersRegistry,
+    ImageStack,
+    PILImageReader,
+)
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -14364,19 +14368,43 @@ class ProjectService:
                             )
                             pilImg = None
                         else:
+                            extension = resolvedPath.suffix.lower().lstrip(".")
+
                             try:
-                                pilImg = PILImage.open(str(resolvedPath))
-                            except Exception as e:
-                                logger.warning(
-                                    "Cannot open image file '%s' for metadata cell with PIL: %s",
-                                    str(resolvedPath),
-                                    e,
+                                registryExtensions = ImageReadersRegistry.getAvailableExtensions()
+                                registryReader = (
+                                    ImageReadersRegistry.getReader(str(resolvedPath))
+                                    if extension in registryExtensions
+                                    else None
                                 )
+                            except Exception:
+                                registryReader = None
+
+                            useScipionPreview = (
+                                    registryReader is not None
+                                    and registryReader is not PILImageReader
+                            )
+
+                            if not useScipionPreview:
+                                try:
+                                    pilImg = PILImage.open(str(resolvedPath))
+                                except Exception as e:
+                                    logger.warning(
+                                        "Cannot open image file '%s' for metadata cell with PIL: %s",
+                                        str(resolvedPath),
+                                        e,
+                                    )
+                                    useScipionPreview = True
+
+                            if useScipionPreview:
                                 previewIndex = imageIndex
-                                # PIL cannot read cryo-EM formats such as .mrc/.mrcs.
-                                # Fall back to Scipion/pwem preview rendering.
-                                if previewIndex in (None, 0) and self._isVolumeLikeImageFile(resolvedPath):
+
+                                if (
+                                        previewIndex in (None, 0)
+                                        and self._isVolumeLikeImageFile(resolvedPath)
+                                ):
                                     previewIndex = None
+
                                 try:
                                     preview = OutputsPreview(
                                         currentProject=self.currentProject,

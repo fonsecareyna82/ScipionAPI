@@ -1433,6 +1433,21 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
     tmp_path,
 ):
     from starlette.responses import Response
+    from PIL import Image as PILImage
+
+    pilOpenCalls = []
+
+    def pilOpen(*args, **kwargs):
+        pilOpenCalls.append(args)
+        raise AssertionError(
+            "PIL must not be tried for registered MRC formats"
+        )
+
+    monkeypatch.setattr(
+        PILImage,
+        "open",
+        pilOpen,
+    )
 
     projectPath = tmp_path / "project"
     imagePath = (
@@ -1542,3 +1557,4 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
         "rot": None,
         "shifts": None,
     }
+    assert pilOpenCalls == []
