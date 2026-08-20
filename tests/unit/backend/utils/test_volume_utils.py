@@ -178,3 +178,25 @@ def test_ReadVolumeArray3dFallsBackToRegistryWhenMrcMmapFails(
     assert props == {
         "source": "registry",
     }
+
+
+def test_ReadVolumeDimensionsUsesScipionReaderSelection(
+    volumeUtilsModule,
+    monkeypatch,
+    tmp_path,
+):
+    volumePath = tmp_path / "volume.map"
+    volumePath.write_bytes(b"placeholder")
+
+    monkeypatch.setattr(
+        volumeUtilsModule.ImageReadersRegistry,
+        "getReader",
+        lambda path: object,
+    )
+
+    assert (
+        volumeUtilsModule.readVolumeDimensions(
+            str(volumePath)
+        )
+        is None
+    )
