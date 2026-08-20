@@ -1210,6 +1210,8 @@ def test_RenderVolumeSliceUsesProjectDbRow(projectClient, fakeProjectService):
         "axis": "y",
         "colormap": "gray",
         "normalize": "zscore",
+        "windowMin": None,
+        "windowMax": None,
         "scale": 1.5,
         "inline": False,
         "fmt": "png",
@@ -1238,6 +1240,7 @@ def test_GetVolumeData3dUsesProjectDbRow(projectClient, fakeProjectService):
         "maxDim": 96,
         "method": "stride",
         "mapper": fakeProjectService.lastGetVolumeData3dCall["mapper"],
+        "binary": False
     }
 
 
@@ -1260,6 +1263,8 @@ def test_GetVolumeSurfaceMeshUsesProjectDbRow(projectClient, fakeProjectService)
         "maxDim": 96,
         "method": "stride",
         "maxTriangles": 1234,
+        "minComponentTriangles": 0,
+        "smoothingIterations": 0,
         "currentUser": {
             "id": 1,
             "email": "user@example.com",

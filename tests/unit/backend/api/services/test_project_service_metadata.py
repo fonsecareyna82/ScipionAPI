@@ -1426,6 +1426,119 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
     assert call["kwargs"]["sqliteFile"].endswith(".txt,Class001")
 
 
+def test_RenderMetadataImageCellServicePrefersPillowForTiffFiles(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    from PIL import Image as PILImage
+
+    imagePath = tmp_path / "frame.tif"
+    imagePath.write_bytes(b"fake tiff content")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    columns = [
+        FakeColumn(
+            "stack",
+            "Stack",
+            PathRenderer(),
+        )
+    ]
+
+    table = FakeTable(
+        name="objects",
+        alias="Images",
+        columns=columns,
+    )
+
+    objMgr = FakeObjectManager(
+        tables={
+            "objects": table,
+        },
+        rowsByTable={
+            "objects": [
+                FakeRow(
+                    1,
+                    [str(imagePath)],
+                )
+            ],
+        },
+        rowCounts={
+            "objects": 1,
+        },
+        fileName=(
+            "postgresql://project/8/"
+            "protocol/2/output/outputTiltSeriesM"
+        ),
+    )
+
+    patchOpenMetadataTable(
+        service,
+        monkeypatch,
+        objMgr,
+        table,
+    )
+
+    sourceImage = PILImage.new(
+        "L",
+        (32, 32),
+        128,
+    )
+
+    pilOpenCalls = []
+
+    def pilOpen(path):
+        pilOpenCalls.append(str(path))
+        return sourceImage.copy()
+
+    monkeypatch.setattr(
+        PILImage,
+        "open",
+        pilOpen,
+    )
+
+    class FailOutputsPreview:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "Pillow-supported TIFF files must not "
+                "use Scipion preview first"
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "OutputsPreview",
+        FailOutputsPreview,
+    )
+
+    response = service.renderMetadataImageCellService(
+        projectId=8,
+        protocolId=2,
+        outputName="outputTiltSeriesM",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=200,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        mapper=None,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "image/png"
+    assert response.headers.get(
+        "x-image-placeholder"
+    ) is None
+
+    assert pilOpenCalls == [
+        str(imagePath.resolve())
+    ]
+
 def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
     service,
     projectServiceModule,
@@ -1433,6 +1546,21 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
     tmp_path,
 ):
     from starlette.responses import Response
+    from PIL import Image as PILImage
+
+    pilOpenCalls = []
+
+    def pilOpen(*args, **kwargs):
+        pilOpenCalls.append(args)
+        raise AssertionError(
+            "PIL must not be tried for registered MRC formats"
+        )
+
+    monkeypatch.setattr(
+        PILImage,
+        "open",
+        pilOpen,
+    )
 
     projectPath = tmp_path / "project"
     imagePath = (
@@ -1542,3 +1670,4 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
         "rot": None,
         "shifts": None,
     }
+    assert pilOpenCalls == []

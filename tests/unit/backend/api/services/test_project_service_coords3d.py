@@ -539,10 +539,15 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
 
     monkeypatch.setattr(
         projectServiceModule,
-        "readVolumeArray3d",
-        lambda volumePath: (
-            np.arange(64, dtype=np.float32).reshape((4, 4, 4)),
+        "readVolumeSlice2d",
+        lambda volumePath, sliceIndex, axis, maxSide: (
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
             {},
+            {
+                "dims": (4, 4, 4),
+                "index": int(sliceIndex),
+                "step": 1,
+            },
         ),
     )
 
@@ -568,6 +573,140 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
     assert response.headers["x-preview-tomogramid"] == "TS_001"
     assert response.headers["x-preview-format"] == "PNG"
     assert len(response.body) > 0
+
+
+def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    volumePath = tmp_path / "tomo.mrc"
+    volumePath.write_bytes(b"placeholder")
+
+    registryCalls = []
+
+    def registryOpen(*args, **kwargs):
+        registryCalls.append((args, kwargs))
+        raise RuntimeError("ImageReadersRegistry must not be used for volume slices")
+
+    monkeypatch.setattr(
+        projectServiceModule.ImageReadersRegistry,
+        "open",
+        registryOpen,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeSlice2d",
+        lambda volumePath, sliceIndex, axis, maxSide: (
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
+            {},
+            {
+                "dims": (8, 4, 4),
+                "index": int(sliceIndex),
+                "step": 1,
+            },
+        ),
+    )
+
+    response = service._renderTomogramSliceFromPath(
+        volumePath=str(volumePath),
+        tomogramId=0,
+        sliceIndex=3,
+        axis="z",
+        colormap="gray",
+        normalize="minmax",
+        scale=1.0,
+        inline=True,
+        fmt="png",
+        thumb=384,
+        fast=True,
+        quality=55,
+    )
+
+    assert registryCalls == []
+    assert response.media_type == "image/png"
+    assert response.headers["x-preview-depth"] == "8"
+    assert response.headers["x-preview-tomogramid"] == "0"
+
+
+def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    volumePath = tmp_path / "tomo.mrc"
+    volumePath.write_bytes(b"placeholder")
+
+    sliceData = np.array(
+        [
+            [0.0, 1.0, 2.0, 3.0],
+            [1.0, 2.0, 3.0, 4.0],
+            [2.0, 3.0, 4.0, 5.0],
+            [3.0, 4.0, 5.0, 1000.0],
+        ],
+        dtype=np.float32,
+    )
+
+    normalizedInputs = []
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeSlice2d",
+        lambda volumePath, sliceIndex, axis, maxSide: (
+            sliceData,
+            {},
+            {
+                "dims": (8, 4, 4),
+                "index": int(sliceIndex),
+                "step": 1,
+            },
+        ),
+    )
+
+    def normalizeSlice(
+            data,
+            mode,
+            windowMin=None,
+            windowMax=None,
+    ):
+        normalizedInputs.append(np.asarray(data).copy())
+        return np.zeros((4, 4), dtype=np.uint8)
+
+    monkeypatch.setattr(
+        service,
+        "_normalize2dSlice",
+        normalizeSlice,
+    )
+
+    service._renderTomogramSliceFromPath(
+        volumePath=str(volumePath),
+        tomogramId=0,
+        sliceIndex=3,
+        axis="z",
+        colormap=None,
+        normalize="minmax",
+        scale=1.0,
+        inline=True,
+        fmt="png",
+        thumb=384,
+        fast=True,
+        quality=55,
+    )
+
+    sliceMean = float(np.mean(sliceData))
+    sliceStd = float(np.std(sliceData))
+    expected = np.clip(
+        sliceData,
+        sliceMean - 2.0 * sliceStd,
+        sliceMean + 2.0 * sliceStd,
+    )
+
+    np.testing.assert_allclose(
+        normalizedInputs[0],
+        expected,
+    )
 
 
 def test_CreateCoords3dOutputFromPointsServiceCreatesNewPostgresqlOutput(

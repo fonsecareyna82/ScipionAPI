@@ -23,16 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-
 import importlib
-import io
 import json
-import tarfile
 import zipfile
-from pathlib import Path
-
 import pytest
-from fastapi.responses import Response
 
 
 class FakeCurrentProject:
@@ -348,3 +342,5 @@ def test_PreviewDispatchesToImageDelegate(preview, monkeypatch, tmp_path):
     result = preview.preview(protocolId=10, path=str(imgPath), objectManager=FakeObjectManager())
 
     assert result == {"kind": "image", "path": str(imgPath), "inline": True}
+
+

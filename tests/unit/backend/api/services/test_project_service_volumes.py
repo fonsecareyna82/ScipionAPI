@@ -126,6 +126,8 @@ class FakeOutputsPreview:
         axis,
         colormap,
         normalize,
+        windowMin,
+        windowMax,
         scale,
         inline,
         fmt,
@@ -139,6 +141,8 @@ class FakeOutputsPreview:
             "axis": axis,
             "colormap": colormap,
             "normalize": normalize,
+            "windowMin": windowMin,
+            "windowMax": windowMax,
             "scale": scale,
             "inline": inline,
             "fmt": fmt,
@@ -540,6 +544,8 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         axis="y",
         colormap="viridis",
         normalize="minmax",
+        windowMin=-0.25,
+        windowMax=0.75,
         scale=1.5,
         inline=False,
         fmt="png",
@@ -557,6 +563,8 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         "axis": "y",
         "colormap": "viridis",
         "normalize": "minmax",
+        "windowMin": -0.25,
+        "windowMax": 0.75,
         "scale": 1.5,
         "inline": False,
         "fmt": "png",
@@ -564,6 +572,61 @@ def test_RenderVolumeSliceServiceDelegatesToOutputsPreview(projectServiceModule,
         "fast": False,
         "quality": 80,
     }
+
+
+def test_Normalize2dSliceUsesSharedIntensityWindow(service):
+    sliceData = np.array(
+        [
+            [0.0, 5.0],
+            [10.0, 20.0],
+        ],
+        dtype=np.float32,
+    )
+
+    result = service._normalize2dSlice(
+        sliceData,
+        mode="minmax",
+        windowMin=0.0,
+        windowMax=20.0,
+    )
+
+    assert result.tolist() == [
+        [0, 63],
+        [127, 255],
+    ]
+
+
+def test_VolumeSliceCacheKeyIncludesIntensityWindow(service, tmp_path):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_bytes(b"volume")
+
+    commonArgs = {
+        "volumePath": str(volumePath),
+        "tomogramId": 1,
+        "sliceIndex": 10,
+        "axis": "z",
+        "colormap": "gray",
+        "normalize": "minmax",
+        "scale": 1.0,
+        "fmt": "webp",
+        "thumb": 512,
+        "fast": True,
+        "quality": 70,
+    }
+
+    keyA = service._buildVolumeSliceCacheKey(
+        **commonArgs,
+        windowMin=0.0,
+        windowMax=1.0,
+    )
+
+    keyB = service._buildVolumeSliceCacheKey(
+        **commonArgs,
+        windowMin=0.0,
+        windowMax=2.0,
+    )
+
+    assert keyA != keyB
 
 
 def test_GetVolumePathFromOutputReturnsPathForSingleVolume(service, tmp_path):
@@ -610,7 +673,10 @@ def test_GetVolumeData3dServiceReturnsDimsAndFlattenedValues(projectServiceModul
     monkeypatch.setattr(
         projectServiceModule,
         "readVolumeArray3d",
-        lambda path: (np.arange(8, dtype=np.float32).reshape((2, 2, 2)), {"source": path}),
+        lambda path: (
+            np.arange(24, dtype=np.float32).reshape((2, 3, 4)),
+            {"source": path},
+        ),
     )
     monkeypatch.setattr(
         service,
@@ -628,8 +694,11 @@ def test_GetVolumeData3dServiceReturnsDimsAndFlattenedValues(projectServiceModul
     )
 
     assert result == {
-        "dims": [2, 2, 2],
-        "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "dims": [4, 3, 2],
+        "order": "zyx",
+        "values": [float(value) for value in range(24)],
+        "min": 0.0,
+        "max": 23.0,
     }
 
 
@@ -662,13 +731,47 @@ def test_GetVolumeData3dServiceReturns404WhenFileMissing(projectServiceModule, s
     assert exc.value.detail == "Volume file not found on disk"
 
 
-def test_DownsampleVolumeForSurfaceEnforcesInteractiveLimitForNone(service):
+def test_DownsampleVolumeForSurfaceHonorsMaxDimForNone(service):
     volume = np.zeros((96, 80, 64), dtype=np.float32)
 
     result = service._downsampleVolumeForSurface(volume, maxDim=48, method="none")
 
     assert result.shape == (48, 40, 32)
     assert result.dtype == np.float32
+
+
+def test_DownsampleVolumeForSurfaceUsesLargerQualityBudgetForNone(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        projectServiceModule,
+        "_VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS",
+        8_000,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "_VOLUME_SURFACE_QUALITY_MAX_VOXELS",
+        80_000,
+    )
+
+    volume = np.zeros((40, 40, 40), dtype=np.float32)
+
+    qualityResult = service._downsampleVolumeForSurface(
+        volume,
+        maxDim=64,
+        method="none",
+    )
+
+    interactiveResult = service._downsampleVolumeForSurface(
+        volume,
+        maxDim=64,
+        method="stride",
+    )
+
+    assert qualityResult.shape == (40, 40, 40)
+    assert interactiveResult.shape == (20, 20, 20)
 
 
 def test_BinVolumeAveragesBlocks(service):

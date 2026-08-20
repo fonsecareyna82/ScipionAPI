@@ -28,6 +28,7 @@ import logging
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
+from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
@@ -235,6 +236,39 @@ class PostgresqlIntegratedContextReader:
 
         return default
 
+    def _getStoredSetPublicProtocolId(
+            self,
+            storedSet: Dict[str, Any],
+    ):
+        publicProtocolId = storedSet.get("publicProtocolId")
+        if publicProtocolId is None:
+            publicProtocolId = storedSet.get("protocolId")
+
+        if publicProtocolId is not None:
+            return publicProtocolId
+
+        protocolDbId = storedSet.get("protocolDbId")
+        if protocolDbId is None:
+            return None
+
+        try:
+            protocolRow = ProtocolIdentityResolver(
+                db=self.db,
+                projectId=self.projectId,
+            ).getProtocolRowByDbId(protocolDbId)
+
+            return protocolRow.get("protocolId") if protocolRow else None
+        except Exception:
+            logger.debug(
+                "Could not resolve public protocol id for integrated context link. "
+                "projectId=%s protocolDbId=%s outputName=%s",
+                self.projectId,
+                protocolDbId,
+                storedSet.get("outputName"),
+                exc_info=True,
+            )
+            return None
+
     def _buildLink(
             self,
             protocolId: Any,
@@ -251,7 +285,7 @@ class PostgresqlIntegratedContextReader:
             "status": statusValue,
         }
 
-        publicProtocolId = storedSet.get("publicProtocolId") or storedSet.get("protocolId")
+        publicProtocolId = self._getStoredSetPublicProtocolId(storedSet)
         if publicProtocolId is not None and str(publicProtocolId) != str(protocolId):
             link["publicProtocolId"] = publicProtocolId
 
@@ -1368,7 +1402,11 @@ class PostgresqlIntegratedContextReader:
             self,
             rootKind: Optional[str],
             candidateKind: str,
+            relationRole: Optional[str] = None,
     ) -> bool:
+        if str(relationRole or "").strip().lower() == "child":
+            return True
+
         if rootKind == "coordinates3d" and candidateKind == "tomogram":
             return True
 
@@ -1397,7 +1435,11 @@ class PostgresqlIntegratedContextReader:
             if candidateKind is None or candidateKind not in links:
                 continue
 
-            if self._shouldSkipDependencyCandidate(rootKind, candidateKind):
+            if self._shouldSkipDependencyCandidate(
+                    rootKind,
+                    candidateKind,
+                    candidate.get("relationRole"),
+            ):
                 continue
 
             if self._shouldReplaceLink(links.get(candidateKind)):

@@ -31,7 +31,9 @@ import re
 from uuid import uuid4
 import copy
 import json
+import hashlib
 import threading
+import struct
 import shutil
 import sqlite3
 
@@ -44,7 +46,6 @@ from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
-from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
@@ -57,7 +58,10 @@ from app.backend.api.services.protocol_catalog_service import ProtocolCatalogSer
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
 from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
 
-from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack
+from pwem.emlib.image.image_readers import (
+    ImageReadersRegistry,
+    ImageStack,
+)
 from pwem.objects import SetOfVolumes
 from pwem.protocols import ProtUserSubSet
 from pwem.viewers.mdviewer.readers import ScipionImageReader
@@ -149,6 +153,9 @@ from app.backend.api.services.output_viewer_descriptor import (
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
+_VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
+_VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
+_VOLUME_SURFACE_MAX_TRIANGLES = 500_000
 
 # Global lock for metadata / DAO operations (not thread-safe)
 _metadataLock = threading.Lock()
@@ -10857,6 +10864,8 @@ class ProjectService:
             axis: str,
             colormap: Optional[str],
             normalize: Optional[str],
+            windowMin: Optional[float],
+            windowMax: Optional[float],
             scale: float,
             fmt: str,
             thumb: Optional[int],
@@ -10880,6 +10889,8 @@ class ProjectService:
             str(axis or "z").lower(),
             str(colormap or ""),
             str(normalize or "minmax").lower(),
+            None if windowMin is None else float(windowMin),
+            None if windowMax is None else float(windowMax),
             float(scale or 1.0),
             str(fmt or "webp").lower(),
             int(thumb or 0),
@@ -10894,13 +10905,30 @@ class ProjectService:
                 return None
 
             _VOLUME_SLICE_CACHE.move_to_end(cacheKey)
+            cacheEntries = len(_VOLUME_SLICE_CACHE)
 
         headers = dict(cached.get("headers") or {})
         headers.pop("content-length", None)
         headers.pop("Content-Length", None)
 
         headers["X-Preview-Cache"] = "hit"
-        self._exposeHeader(headers, "X-Preview-Cache")
+        headers["X-Preview-Cache-Key"] = hashlib.sha1(
+            repr(cacheKey).encode("utf-8")
+        ).hexdigest()[:12]
+        headers["X-Preview-Cache-Pid"] = str(os.getpid())
+        headers["X-Preview-Cache-Entries"] = str(cacheEntries)
+        headers["X-Preview-Volume-MTimeNs"] = str(cacheKey[1])
+        headers["X-Preview-Volume-Size"] = str(cacheKey[2])
+
+        for headerName in (
+                "X-Preview-Cache",
+                "X-Preview-Cache-Key",
+                "X-Preview-Cache-Pid",
+                "X-Preview-Cache-Entries",
+                "X-Preview-Volume-MTimeNs",
+                "X-Preview-Volume-Size",
+        ):
+            self._exposeHeader(headers, headerName)
 
         return Response(
             content=cached["body"],
@@ -10931,7 +10959,23 @@ class ProjectService:
                 _VOLUME_SLICE_CACHE.popitem(last=False)
 
         response.headers["X-Preview-Cache"] = "miss"
-        self._exposeHeader(response.headers, "X-Preview-Cache")
+        response.headers["X-Preview-Cache-Key"] = hashlib.sha1(
+            repr(cacheKey).encode("utf-8")
+        ).hexdigest()[:12]
+        response.headers["X-Preview-Cache-Pid"] = str(os.getpid())
+        response.headers["X-Preview-Cache-Entries"] = str(len(_VOLUME_SLICE_CACHE))
+        response.headers["X-Preview-Volume-MTimeNs"] = str(cacheKey[1])
+        response.headers["X-Preview-Volume-Size"] = str(cacheKey[2])
+
+        for headerName in (
+                "X-Preview-Cache",
+                "X-Preview-Cache-Key",
+                "X-Preview-Cache-Pid",
+                "X-Preview-Cache-Entries",
+                "X-Preview-Volume-MTimeNs",
+                "X-Preview-Volume-Size",
+        ):
+            self._exposeHeader(response.headers, headerName)
 
         return response
 
@@ -10961,6 +11005,8 @@ class ProjectService:
             thumb: Optional[int] = None,
             fast: bool = True,
             quality: int = 75,
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
             mapper=None,
     ) -> Response:
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
@@ -10982,6 +11028,8 @@ class ProjectService:
                         axis=axis,
                         colormap=colormap,
                         normalize=normalize or "minmax",
+                        windowMin=windowMin,
+                        windowMax=windowMax,
                         scale=scale,
                         fmt=fmt,
                         thumb=thumb,
@@ -11000,12 +11048,33 @@ class ProjectService:
                         axis=axis,
                         colormap=colormap,
                         normalize=normalize or "minmax",
+                        windowMin=windowMin,
+                        windowMax=windowMax,
                         scale=scale,
                         inline=inline,
                         fmt=fmt,
                         thumb=thumb,
                         fast=fast,
                         quality=quality,
+                    )
+
+                    try:
+                        mtimeAfterRender = os.stat(str(volumePath)).st_mtime_ns
+                    except Exception:
+                        mtimeAfterRender = None
+
+                    response.headers["X-Preview-Volume-MTimeNs-After"] = str(mtimeAfterRender)
+                    response.headers["X-Preview-Volume-MTime-Changed"] = str(
+                        mtimeAfterRender != cacheKey[1]
+                    ).lower()
+
+                    self._exposeHeader(
+                        response.headers,
+                        "X-Preview-Volume-MTimeNs-After",
+                    )
+                    self._exposeHeader(
+                        response.headers,
+                        "X-Preview-Volume-MTime-Changed",
                     )
 
                     return self._storeCachedVolumeSliceResponse(cacheKey, response)
@@ -11042,12 +11111,69 @@ class ProjectService:
             axis=axis,
             colormap=colormap,
             normalize=normalize,
+            windowMin=windowMin,
+            windowMax=windowMax,
             scale=scale,
             inline=inline,
             fmt=fmt,
             thumb=thumb,
             fast=fast,
             quality=quality,
+        )
+
+    def _normalizeVolumeData3dArray(
+            self,
+            volume: np.ndarray,
+    ) -> np.ndarray:
+        arr = np.asarray(volume, dtype=np.float32)
+
+        if arr.ndim != 3:
+            raise HTTPException(status_code=500, detail="Invalid volume data")
+
+        finiteMask = np.isfinite(arr)
+        if not finiteMask.all():
+            fillValue = float(np.nanmedian(arr[finiteMask])) if finiteMask.any() else 0.0
+            arr = np.where(finiteMask, arr, fillValue)
+
+        return np.ascontiguousarray(arr, dtype="<f4")
+
+    def _buildVolumeData3dPayload(
+            self,
+            volume: np.ndarray,
+    ) -> Dict[str, Any]:
+        arr = self._normalizeVolumeData3dArray(volume)
+        z, y, x = arr.shape
+
+        return {
+            "dims": [int(x), int(y), int(z)],
+            "order": "zyx",
+            "values": arr.ravel(order="C").tolist(),
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+        }
+
+    def _buildVolumeData3dBinaryResponse(
+            self,
+            volume: np.ndarray,
+    ) -> Response:
+        arr = self._normalizeVolumeData3dArray(volume)
+        z, y, x = arr.shape
+
+        header = struct.pack(
+            "<4sIIIIff",
+            b"SCV3",
+            1,
+            int(x),
+            int(y),
+            int(z),
+            float(arr.min()),
+            float(arr.max()),
+        )
+
+        return Response(
+            content=header + arr.tobytes(order="C"),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
         )
 
     def getVolumeData3dService(
@@ -11059,6 +11185,7 @@ class ProjectService:
             maxDim: int = 160,
             method: str = "binning",
             mapper=None,
+            binary: bool = False,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
@@ -11072,20 +11199,17 @@ class ProjectService:
             if result is not None:
                 volume, _props, _info = result
 
-                if (method or "").lower() == "none":
-                    volumeSmall = np.asarray(volume, dtype=np.float32)
-                else:
-                    volumeSmall = self._downsampleVolumePreview(
-                        np.asarray(volume, dtype=np.float32),
-                        maxDim=maxDim,
-                        method=method,
-                    )
+                volumeSmall = self._downsampleVolumeForSurface(
+                    np.asarray(volume, dtype=np.float32),
+                    maxDim=maxDim,
+                    method=method,
+                )
 
-                z, y, x = volumeSmall.shape
-                return {
-                    "dims": [int(z), int(y), int(x)],
-                    "values": volumeSmall.ravel(order="C").astype(np.float32).tolist(),
-                }
+                return (
+                    self._buildVolumeData3dBinaryResponse(volumeSmall)
+                    if binary
+                    else self._buildVolumeData3dPayload(volumeSmall)
+                )
 
             logger.info(
                 "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
@@ -11123,16 +11247,17 @@ class ProjectService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Cannot read volume file: {e}")
 
-        if (method or "").lower() == "none":
-            volSmall = np.asarray(vol, dtype=np.float32)
-        else:
-            volSmall = self._downsampleVolumePreview(vol, maxDim=maxDim, method=method)
+        volumeSmall = self._downsampleVolumeForSurface(
+            np.asarray(vol, dtype=np.float32),
+            maxDim=maxDim,
+            method=method,
+        )
 
-        z, y, x = volSmall.shape
-        return {
-            "dims": [int(z), int(y), int(x)],
-            "values": volSmall.ravel(order="C").astype(np.float32).tolist(),
-        }
+        return (
+            self._buildVolumeData3dBinaryResponse(volumeSmall)
+            if binary
+            else self._buildVolumeData3dPayload(volumeSmall)
+        )
 
     def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
         """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
@@ -11306,7 +11431,11 @@ class ProjectService:
         requestedMaxDim = max(32, int(maxDim or 192))
         largestDim = max(int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2]))
         voxelCount = int(volume.size)
-        maxInteractiveVoxels = 8_000_000
+        maxInteractiveVoxels = (
+            _VOLUME_SURFACE_QUALITY_MAX_VOXELS
+            if methodLower == "none"
+            else _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS
+        )
         effectiveMaxDim = requestedMaxDim
 
         if voxelCount > maxInteractiveVoxels:
@@ -11333,8 +11462,23 @@ class ProjectService:
             maxTriangles,
             currentUser,
             mapper=None,
+            minComponentTriangles=0,
+            smoothingIterations=0,
     ):
-        effectiveMaxTriangles = min(250000, max(1000, int(maxTriangles or 220000)))
+        effectiveMaxTriangles = min(
+            _VOLUME_SURFACE_MAX_TRIANGLES,
+            max(1000, int(maxTriangles or 220000)),
+        )
+
+        effectiveMinComponentTriangles = min(
+            100000,
+            max(0, int(minComponentTriangles or 0)),
+        )
+
+        effectiveSmoothingIterations = min(
+            12,
+            max(0, int(smoothingIterations or 0)),
+        )
 
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
@@ -11350,9 +11494,13 @@ class ProjectService:
                 volumeSmall = self._downsampleVolumeForSurface(volume,
                                                                maxDim=maxDim,
                                                                method=method)
-                mesh = buildVolumeSurfaceMesh(volumeSmall,
-                                              level=level,
-                                              maxTriangles=effectiveMaxTriangles)
+                mesh = buildVolumeSurfaceMesh(
+                    volumeSmall,
+                    level=level,
+                    maxTriangles=effectiveMaxTriangles,
+                    minComponentTriangles=effectiveMinComponentTriangles,
+                    smoothingIterations=effectiveSmoothingIterations,
+                )
 
                 mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
                 mesh["maxDim"] = int(maxDim)
@@ -11402,14 +11550,20 @@ class ProjectService:
             method=method,
         )
 
-        mesh = buildVolumeSurfaceMesh(volumeSmall,
-                                      level=level,
-                                      maxTriangles=effectiveMaxTriangles)
+        mesh = buildVolumeSurfaceMesh(
+            volumeSmall,
+            level=level,
+            maxTriangles=effectiveMaxTriangles,
+            minComponentTriangles=effectiveMinComponentTriangles,
+            smoothingIterations=effectiveSmoothingIterations,
+        )
 
         mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
         mesh["maxDim"] = int(maxDim)
         mesh["method"] = method
         mesh["maxTriangles"] = effectiveMaxTriangles
+        mesh["minComponentTriangles"] = effectiveMinComponentTriangles
+        mesh["smoothingIterations"] = effectiveSmoothingIterations
         mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
         mesh["volumeId"] = str(volumeId)
         mesh["outputName"] = outputName
@@ -12963,69 +13117,36 @@ class ProjectService:
 
         return points
 
-    def _coords3dPilTo2dTile(self, imgStk, pilImg) -> Optional[np.ndarray]:
-        """
-        Convert a PIL tomogram slice into a small 2D float array.
-
-        - Downsamples to <= maxThumbSize without upscaling.
-        - Converts to grayscale if needed.
-        - Applies highlightSlice/normalizeSlice at most once.
-        - Returns float32 2D array; caller can decide final uint8/colormap.
-        """
-        try:
-            width, height = pilImg.size
-            scale = min(
-                maxThumbSize / float(width),
-                maxThumbSize / float(height),
-                1.0,
-            )
-            thumbWidth = max(1, int(round(width * scale)))
-            thumbHeight = max(1, int(round(height * scale)))
-
-            if pilImg.mode not in ("L", "I;16", "F"):
-                pilGray = pilImg.convert("L")
-            else:
-                pilGray = pilImg
-
-            if thumbWidth < width or thumbHeight < height:
-                pilGray = pilGray.copy()
-                pilGray.thumbnail((thumbWidth, thumbHeight))
-
-            arr = np.asarray(pilGray, dtype=np.float32)
-
-            arr = np.squeeze(arr)
-            if arr.ndim != 2 or arr.size == 0:
-                return None
-
-            try:
-                arr = imgStk.highlightSlice(arr)
-                arr = imgStk.normalizeSlice(arr)
-            except Exception:
-                pass
-
-            return arr.astype(np.float32, copy=False)
-        except Exception:
-            return None
-
-    def _normalize2dSlice(self, a: np.ndarray, mode: str = "minmax") -> np.ndarray:
-        """
-        Normalize a 2D slice into uint8 according to mode: 'minmax' | 'zscore' | 'none'.
-
-        Safeguards:
-        - Accepts any numeric dtype.
-        - If already uint8 and mode in ('minmax', 'none'), returns a copy directly.
-        - Handles NaNs and constant arrays without blowing up.
-        """
+    def _normalize2dSlice(
+            self,
+            a: np.ndarray,
+            mode: str = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
+    ) -> np.ndarray:
+        """Normalize a 2D slice into uint8 using either a shared window or a local mode."""
         if a.ndim != 2:
             raise ValueError("Expected 2D slice")
 
         arr = np.asarray(a)
+        modeLower = (mode or "minmax").lower()
 
-        if arr.dtype == np.uint8 and (mode or "minmax").lower() in ("minmax", "none"):
+        hasWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
+        if (
+                arr.dtype == np.uint8
+                and not hasWindow
+                and modeLower in ("minmax", "none")
+        ):
             return arr.copy()
 
         arr = arr.astype(np.float32, copy=False)
-        mode = (mode or "minmax").lower()
 
         finiteMask = np.isfinite(arr)
         if not finiteMask.all():
@@ -13035,24 +13156,49 @@ class ProjectService:
                 fillVal = 0.0
             arr = np.where(finiteMask, arr, fillVal)
 
-        if mode == "zscore":
+        if hasWindow:
+            low = float(windowMin)
+            high = float(windowMax)
+
+            arr = np.clip(arr, low, high)
+            arr = (arr - low) / (high - low)
+
+            return (
+                    255.0 * np.clip(arr, 0.0, 1.0)
+            ).astype(np.uint8)
+
+        if modeLower == "zscore":
             mu = float(np.mean(arr))
             sd = float(np.std(arr))
+
             if sd == 0.0 or not np.isfinite(sd):
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - mu) / sd
             arr = np.clip(arr, -3.0, 3.0)
-            amin, amax = float(arr.min()), float(arr.max())
+
+            amin = float(arr.min())
+            amax = float(arr.max())
+
             if amax <= amin:
                 return np.zeros_like(arr, dtype=np.uint8)
+
             arr = (arr - amin) / (amax - amin + 1e-12)
+
             return (255.0 * arr).astype(np.uint8)
 
-        amin, amax = float(arr.min()), float(arr.max())
-        if (not np.isfinite(amin)) or (not np.isfinite(amax)) or amax <= amin:
+        amin = float(arr.min())
+        amax = float(arr.max())
+
+        if (
+                not np.isfinite(amin)
+                or not np.isfinite(amax)
+                or amax <= amin
+        ):
             return np.zeros_like(arr, dtype=np.uint8)
 
         arr = (arr - amin) / (amax - amin + 1e-12)
+
         return (255.0 * arr).astype(np.uint8)
 
     def renderCoords3dTomogramSliceService(
@@ -13167,194 +13313,20 @@ class ProjectService:
                 detail="Tomogram file not found on disk",
             )
 
-        axis = (axis or "z").lower()
-        if axis not in ("x", "y", "z"):
-            axis = "z"
-
-        fmtLower = (fmt or "png").lower()
-        if fmtLower in ("jpg", "jpeg"):
-            pilFormat = "JPEG"
-            mediaType = "image/jpeg"
-            saveKw = {"quality": int(quality or 75)}
-        elif fmtLower == "webp":
-            pilFormat = "WEBP"
-            mediaType = "image/webp"
-            saveKw = {"quality": int(quality or 75)}
-        else:
-            pilFormat = "PNG"
-            mediaType = "image/png"
-            saveKw = {}
-
-        usedColormap = colormap
-        gray: Optional[np.ndarray] = None
-        depth = 1
-
-        try:
-            requestedIndex = int(sliceIndex or 0)
-        except Exception:
-            requestedIndex = 0
-        requestedIndex = max(0, requestedIndex)
-
-        sliceUsed = requestedIndex
-        if axis == "z" and fast:
-            try:
-                reader = ImageReadersRegistry.open(volumePath)
-
-                try:
-                    images = reader.getImages()
-                    if hasattr(images, "ndim") and images.ndim == 3:
-                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
-                    elif hasattr(images, "ndim") and images.ndim == 2:
-                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
-                    else:
-                        zdim, ydim, xdim = 1, 0, 0
-                except Exception:
-                    zdim, ydim, xdim = 1, 0, 0
-
-                depth = max(zdim, 1)
-
-                k = requestedIndex
-                if zdim > 0:
-                    k = max(0, min(k, zdim - 1))
-
-                try:
-                    pilImg = reader.getImage(index=k, pilImage=True)
-                except Exception:
-                    try:
-                        pilImg = reader.getCentralImage(pilImage=True)
-                        if zdim > 0:
-                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
-                        else:
-                            k = 0
-                    except Exception:
-                        pilImg = reader.getImage(index=0, pilImage=True)
-                        k = 0
-
-                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
-                if arr2d is None:
-                    arrRaw = np.asarray(pilImg)
-                    if arrRaw.ndim == 3:
-                        arr2d = arrRaw.mean(axis=-1)
-                    else:
-                        arr2d = arrRaw.astype(np.float32, copy=False)
-
-                gray = self._normalize2dSlice(arr2d, mode=normalize)
-                sliceUsed = k
-            except Exception:
-                gray = None
-
-        if gray is None:
-            try:
-                vol3d, _props = readVolumeArray3d(str(volumePath))  # Z, Y, X
-            except HTTPException:
-                raise
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Tomogram file not found on disk",
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to read tomogram volume: {e}",
-                )
-
-            if vol3d.ndim != 3:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Invalid tomogram volume shape {vol3d.shape}",
-                )
-
-            zdim, ydim, xdim = int(vol3d.shape[0]), int(vol3d.shape[1]), int(vol3d.shape[2])
-            depth = max(zdim, 1)
-
-            if axis == "z":
-                dim = zdim
-            elif axis == "y":
-                dim = ydim
-            else:
-                dim = xdim
-
-            if dim <= 0:
-                raise HTTPException(status_code=500, detail="Empty tomogram volume")
-
-            k = max(0, min(requestedIndex, dim - 1))
-
-            if axis == "z":
-                slice2d = vol3d[k, :, :]
-            elif axis == "y":
-                slice2d = vol3d[:, k, :]
-            else:
-                slice2d = vol3d[:, :, k]
-
-            gray = self._normalize2dSlice(slice2d, mode=normalize)
-            sliceUsed = k
-
-        if thumb is not None and thumb > 0:
-            pilTmp = PILImage.fromarray(gray.astype(np.uint8), mode="L")
-            pilTmp.thumbnail((thumb, thumb))
-            gray = np.asarray(pilTmp)
-
-            if gray.dtype != np.uint8:
-                gray = gray.astype(np.uint8, copy=False)
-
-        imgArray = gray.astype(np.uint8, copy=False)
-        pilMode = "L"
-
-        if usedColormap:
-            try:
-                import matplotlib.cm as cm
-                sliceNorm = imgArray.astype(np.float32) / 255.0
-                cmapObj = cm.get_cmap(usedColormap)
-                rgba = cmapObj(sliceNorm)
-                rgb = (rgba[..., :3] * 255.0).clip(0, 255).astype(np.uint8)
-                imgArray = rgb
-                pilMode = "RGB"
-            except Exception:
-                usedColormap = None
-                imgArray = gray.astype(np.uint8, copy=False)
-                pilMode = "L"
-
-        if scale is not None and scale != 1.0:
-            try:
-                pilScale = PILImage.fromarray(imgArray, mode=pilMode)
-                newW = max(1, int(round(pilScale.width * float(scale))))
-                newH = max(1, int(round(pilScale.height * float(scale))))
-                pilScale = pilScale.resize((newW, newH), resample=PILImage.Resampling.BILINEAR)
-                imgArray = np.asarray(pilScale, copy=False)
-            except Exception:
-                pass
-
-        img = PILImage.fromarray(imgArray, mode=pilMode)
-
-        buf = io.BytesIO()
-        img.save(buf, format=pilFormat, **saveKw)
-
-        disp = "inline" if inline else "attachment"
-        filename = f"coords3d_{tomogramId}_axis-{axis}_slice-{sliceUsed}.{fmtLower}"
-
-        headers = {
-            "Content-Disposition": f'{disp}; filename="{filename}"',
-            "Access-Control-Expose-Headers": (
-                "Content-Disposition, "
-                "X-Preview-Mime, "
-                "X-Preview-Width, "
-                "X-Preview-Height, "
-                "X-Preview-Depth, "
-                "X-Preview-Colormap, "
-                "X-Preview-Format, "
-                "X-Preview-TomogramId"
-            ),
-            "X-Preview-Mime": mediaType,
-            "X-Preview-Width": str(img.width),
-            "X-Preview-Height": str(img.height),
-            "X-Preview-Depth": str(depth),
-            "X-Preview-Colormap": usedColormap or "",
-            "X-Preview-Format": pilFormat,
-            "X-Preview-TomogramId": str(tomogramId),
-        }
-
-        return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
+        return self._renderTomogramSliceFromPath(
+            volumePath=volumePath,
+            tomogramId=tomogramId,
+            sliceIndex=sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize,
+            scale=scale,
+            inline=inline,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
+        )
 
     def _renderTomogramSliceFromPath(
             self,
@@ -13364,6 +13336,8 @@ class ProjectService:
             axis: str = "z",
             colormap: Optional[str] = None,
             normalize: Optional[str] = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
             scale: float = 1.0,
             inline: bool = True,
             fmt: str = "webp",
@@ -13402,54 +13376,15 @@ class ProjectService:
             requestedIndex = 0
         requestedIndex = max(0, requestedIndex)
 
+        hasIntensityWindow = (
+                windowMin is not None
+                and windowMax is not None
+                and np.isfinite(float(windowMin))
+                and np.isfinite(float(windowMax))
+                and float(windowMax) > float(windowMin)
+        )
+
         sliceUsed = requestedIndex
-        if axis == "z" and fast:
-            try:
-                reader = ImageReadersRegistry.open(volumePath)
-
-                try:
-                    images = reader.getImages()
-                    if hasattr(images, "ndim") and images.ndim == 3:
-                        zdim, ydim, xdim = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
-                    elif hasattr(images, "ndim") and images.ndim == 2:
-                        zdim, ydim, xdim = 1, int(images.shape[0]), int(images.shape[1])
-                    else:
-                        zdim, ydim, xdim = 1, 0, 0
-                except Exception:
-                    zdim, ydim, xdim = 1, 0, 0
-
-                depth = max(zdim, 1)
-
-                k = requestedIndex
-                if zdim > 0:
-                    k = max(0, min(k, zdim - 1))
-
-                try:
-                    pilImg = reader.getImage(index=k, pilImage=True)
-                except Exception:
-                    try:
-                        pilImg = reader.getCentralImage(pilImage=True)
-                        if zdim > 0:
-                            k = max(0, min(zdim // 2, max(zdim - 1, 0)))
-                        else:
-                            k = 0
-                    except Exception:
-                        pilImg = reader.getImage(index=0, pilImage=True)
-                        k = 0
-
-                arr2d = self._coords3dPilTo2dTile(reader, pilImg)
-                if arr2d is None:
-                    arrRaw = np.asarray(pilImg)
-                    if arrRaw.ndim == 3:
-                        arr2d = arrRaw.mean(axis=-1)
-                    else:
-                        arr2d = arrRaw.astype(np.float32, copy=False)
-
-                gray = self._normalize2dSlice(arr2d, mode=normalize)
-                sliceUsed = k
-            except Exception:
-                gray = None
-
         if gray is None:
             try:
                 slice2d, _props, sliceMeta = readVolumeSlice2d(
@@ -13474,7 +13409,25 @@ class ProjectService:
             zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
             depth = max(int(zdim), 1)
 
-            gray = self._normalize2dSlice(slice2d, mode=normalize)
+            if axis == "z" and fast and not hasIntensityWindow:
+                sliceArray = np.asarray(slice2d, dtype=np.float32)
+                sliceMean = float(np.mean(sliceArray))
+                sliceStd = float(np.std(sliceArray))
+
+                if np.isfinite(sliceMean) and np.isfinite(sliceStd) and sliceStd > 0:
+                    offset = 2.0 * sliceStd
+                    slice2d = np.clip(
+                        sliceArray,
+                        sliceMean - offset,
+                        sliceMean + offset,
+                    )
+
+            gray = self._normalize2dSlice(
+                slice2d,
+                mode=normalize,
+                windowMin=windowMin,
+                windowMax=windowMax,
+            )
             sliceUsed = int(sliceMeta.get("index", requestedIndex))
 
         if thumb is not None and thumb > 0:
@@ -15078,7 +15031,6 @@ class ProjectService:
         except Exception:
             return False
 
-
     def renderMetadataImageCellService(
             self,
             projectId: int,
@@ -15333,19 +15285,38 @@ class ProjectService:
                             )
                             pilImg = None
                         else:
+                            extension = resolvedPath.suffix.lower()
+
                             try:
-                                pilImg = PILImage.open(str(resolvedPath))
-                            except Exception as e:
-                                logger.warning(
-                                    "Cannot open image file '%s' for metadata cell with PIL: %s",
-                                    str(resolvedPath),
-                                    e,
-                                )
+                                pillowExtensions = PILImage.registered_extensions()
+                            except Exception:
+                                pillowExtensions = {}
+
+                            useScipionPreview = (
+                                    imageIndex not in (None, 0)
+                                    or extension not in pillowExtensions
+                            )
+
+                            if not useScipionPreview:
+                                try:
+                                    pilImg = PILImage.open(str(resolvedPath))
+                                except Exception as e:
+                                    logger.warning(
+                                        "Cannot open image file '%s' for metadata cell with PIL: %s",
+                                        str(resolvedPath),
+                                        e,
+                                    )
+                                    useScipionPreview = True
+
+                            if useScipionPreview:
                                 previewIndex = imageIndex
-                                # PIL cannot read cryo-EM formats such as .mrc/.mrcs.
-                                # Fall back to Scipion/pwem preview rendering.
-                                if previewIndex in (None, 0) and self._isVolumeLikeImageFile(resolvedPath):
+
+                                if (
+                                        previewIndex in (None, 0)
+                                        and self._isVolumeLikeImageFile(resolvedPath)
+                                ):
                                     previewIndex = None
+
                                 try:
                                     preview = OutputsPreview(
                                         currentProject=self.currentProject,
@@ -16140,11 +16111,36 @@ class ProjectService:
             viewerId=viewerId,
         )
 
-        thread = threading.Thread(
-            target=self._safeRunExternalViewer,
-            args=(viewerClass, protocol, targetObj, descriptor),
-            daemon=True,
-        )
+        if mapper is not None and projectId is not None:
+            if self.currentProject is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No current Scipion project loaded",
+                )
+
+            projectPath = self.currentProject.getPath()
+
+            thread = threading.Thread(
+                target=self._safeRunPostgresqlExternalViewer,
+                args=(
+                    viewerClass,
+                    protocolId,
+                    outputName,
+                    objectId,
+                    objectKind,
+                    int(projectId),
+                    projectPath,
+                    descriptor,
+                ),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=self._safeRunExternalViewer,
+                args=(viewerClass, protocol, targetObj, descriptor),
+                daemon=True,
+            )
+
         thread.start()
 
         return {
@@ -16157,6 +16153,83 @@ class ProjectService:
                 "objectKind": objectKind,
             },
         }
+
+    def _safeRunPostgresqlExternalViewer(
+            self,
+            viewerClass: Any,
+            protocolId: int,
+            outputName: str,
+            objectId: Optional[Union[str, int]],
+            objectKind: Optional[str],
+            projectId: int,
+            projectPath: str,
+            descriptor: Dict[str, Any],
+    ):
+        backgroundMapper = None
+        backgroundService = None
+
+        try:
+            from app.backend.database import getMapper
+
+            backgroundMapper = getMapper()
+            backgroundService = ProjectService()
+            backgroundService._loadPostgresqlRuntimeProject(
+                mapper=backgroundMapper,
+                projectId=projectId,
+                projectPath=projectPath,
+            )
+            protocol, outputObj = (
+                backgroundService
+                ._getProtocolOutputObject(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=backgroundMapper,
+                    projectId=projectId,
+                )
+            )
+
+            targetObj = (
+                backgroundService
+                ._resolveExternalViewerTargetObject(
+                    outputObj=outputObj,
+                    objectId=objectId,
+                    objectKind=objectKind,
+                )
+            )
+
+            backgroundService._runExternalViewer(
+                viewerClass=viewerClass,
+                protocol=protocol,
+                targetObj=targetObj,
+            )
+
+        except Exception as e:
+            logger.exception(
+                "External viewer failed. viewerId=%s className=%s error=%s",
+                descriptor.get("id"),
+                descriptor.get("className"),
+                e,
+            )
+
+        finally:
+            if backgroundService is not None:
+                try:
+                    if backgroundService.currentProject is not None:
+                        backgroundService.currentProject.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close external viewer runtime mapper.",
+                        exc_info=True,
+                    )
+
+            if backgroundMapper is not None:
+                try:
+                    backgroundMapper.db.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close external viewer PostgreSQL mapper.",
+                        exc_info=True,
+                    )
 
     def _safeRunExternalViewer(
         self,

@@ -1668,36 +1668,21 @@ class RuntimePostgresqlProtocolWorker:
                 or ""
             ).strip().lower()
 
-            if (
-                    parentStatus
-                    in FAILED_INPUT_PARENT_STATUSES
-            ):
-                addFailed(
-                    parentRow
-                )
+            parentOutputName = str(inputRef.get("parentOutputName") or "").strip()
+            directProtocolPointer = not parentOutputName
+            parentFailed = parentStatus in FAILED_INPUT_PARENT_STATUSES
 
-                continue
+            if directProtocolPointer:
+                if parentFailed:
+                    addFailed(parentRow)
+                    continue
 
-            parentOutputName = str(
-                inputRef.get(
-                    "parentOutputName"
-                )
-                or ""
-            ).strip()
-
-            directProtocolPointer = (
-                not parentOutputName
-            )
-
-            if (
-                    directProtocolPointer
-                    and parentStatus
-                    not in FINISHED_INPUT_PARENT_STATUSES
-            ):
-                addPending(
-                    parentRow,
-                    "input_parent_not_finished",
-                )
+                if parentStatus not in FINISHED_INPUT_PARENT_STATUSES:
+                    addPending(
+                        parentRow,
+                        "input_parent_not_finished",
+                    )
+                    continue
 
                 continue
 
@@ -1719,13 +1704,15 @@ class RuntimePostgresqlProtocolWorker:
 
                 continue
 
-            # A non-streaming protocol waits until every
-            # input parent is really finished.
+            # A non-streaming consumer normally waits until its
+            # input parent finishes. A failed/aborted parent is
+            # handled differently: if the concrete output exists,
+            # it may still be consumed and validated.
             if (
                     not streaming
+                    and not parentFailed
                     and parentStatus
-                    not in
-                    FINISHED_INPUT_PARENT_STATUSES
+                    not in FINISHED_INPUT_PARENT_STATUSES
             ):
                 addPending(
                     parentRow,
@@ -1734,17 +1721,10 @@ class RuntimePostgresqlProtocolWorker:
 
                 continue
 
-            # A streaming child does not need the parent to
-            # finish, but the concrete output must already exist.
-            parentOutputName = str(
-                inputRef.get(
-                    "parentOutputName"
-                )
-                or ""
-            ).strip()
-
-            if not parentOutputName:
-                continue
+            # For concrete output pointers, output availability is
+            # authoritative once the scheduling constraints above
+            # have been satisfied. A failed/aborted parent is still
+            # usable if the requested output already exists.
 
             outputInfo = (
                 self.getRuntimeOutputInfo(
@@ -1764,6 +1744,9 @@ class RuntimePostgresqlProtocolWorker:
                         "",
                     )
             ):
+                if parentFailed:
+                    addFailed(parentRow)
+                    continue
                 missingInputs.append({
                     "inputName": (
                         inputRef.get(

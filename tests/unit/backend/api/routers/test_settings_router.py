@@ -439,6 +439,36 @@ def test_GetHostSettingsReturnsPayload(settingsClient, fakeSettingsService):
     }
 
 
+def test_HostSettingsOutAllowsSparseRuntimeHostConfiguration():
+    from app.backend.api.schemas.settings_schema import HostSettingsOut
+
+    settings = HostSettingsOut.parse_obj(
+        {
+            "hostAlias": "localhost",
+            "schedulerName": "",
+            "mandatory": False,
+            "parallelCommand": "mpirun -np %_(JOB_NODES)d %_(COMMAND)s",
+            "submitCommand": "",
+            "cancelCommand": "",
+            "checkCommand": "",
+            "jobDoneRegex": "",
+            "submitTemplate": "",
+            "queues": [],
+        }
+    )
+
+    assert settings.hostAlias == "localhost"
+    assert settings.schedulerName == ""
+    assert settings.parallelCommand == (
+        "mpirun -np %_(JOB_NODES)d %_(COMMAND)s"
+    )
+    assert settings.submitCommand == ""
+    assert settings.cancelCommand == ""
+    assert settings.checkCommand == ""
+    assert settings.submitTemplate == ""
+    assert settings.queues == []
+
+
 def test_PutHostSettingsDelegatesToService(settingsClient, fakeSettingsService):
     response = settingsClient.put(
         "/settings/host",
