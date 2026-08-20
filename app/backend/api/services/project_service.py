@@ -10635,9 +10635,9 @@ class ProjectService:
             maxDim,
             method,
             maxTriangles,
-            minComponentTriangles,
             currentUser,
             mapper=None,
+            minComponentTriangles=0,
             smoothingIterations=0,
     ):
         effectiveMaxTriangles = min(

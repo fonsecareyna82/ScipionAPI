@@ -665,7 +665,12 @@ def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
         ),
     )
 
-    def normalizeSlice(data, mode):
+    def normalizeSlice(
+            data,
+            mode,
+            windowMin=None,
+            windowMax=None,
+    ):
         normalizedInputs.append(np.asarray(data).copy())
         return np.zeros((4, 4), dtype=np.uint8)
 

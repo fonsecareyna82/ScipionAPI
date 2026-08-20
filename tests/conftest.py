@@ -1636,6 +1636,8 @@ class FakeProjectService:
             fast=True,
             quality=75,
             mapper=None,
+            windowMin=None,
+            windowMax=None,
     ):
         self.lastRenderVolumeSliceCall = {
             "projectId": projectId,
@@ -1646,6 +1648,8 @@ class FakeProjectService:
             "axis": axis,
             "colormap": colormap,
             "normalize": normalize,
+            "windowMin": windowMin,
+            "windowMax": windowMax,
             "scale": scale,
             "inline": inline,
             "fmt": fmt,
@@ -1691,6 +1695,8 @@ class FakeProjectService:
             maxTriangles=350000,
             currentUser=None,
             mapper=None,
+            minComponentTriangles=0,
+            smoothingIterations=0,
     ):
         self.lastGetVolumeSurfaceMeshCall = {
             "projectId": projectId,
@@ -1701,6 +1707,8 @@ class FakeProjectService:
             "maxDim": maxDim,
             "method": method,
             "maxTriangles": maxTriangles,
+            "minComponentTriangles": minComponentTriangles,
+            "smoothingIterations": smoothingIterations,
             "currentUser": currentUser,
             "mapper": mapper,
         }
