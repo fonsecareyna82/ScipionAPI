@@ -15286,11 +15286,36 @@ class ProjectService:
             viewerId=viewerId,
         )
 
-        thread = threading.Thread(
-            target=self._safeRunExternalViewer,
-            args=(viewerClass, protocol, targetObj, descriptor),
-            daemon=True,
-        )
+        if mapper is not None and projectId is not None:
+            if self.currentProject is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No current Scipion project loaded",
+                )
+
+            projectPath = self.currentProject.getPath()
+
+            thread = threading.Thread(
+                target=self._safeRunPostgresqlExternalViewer,
+                args=(
+                    viewerClass,
+                    protocolId,
+                    outputName,
+                    objectId,
+                    objectKind,
+                    int(projectId),
+                    projectPath,
+                    descriptor,
+                ),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=self._safeRunExternalViewer,
+                args=(viewerClass, protocol, targetObj, descriptor),
+                daemon=True,
+            )
+
         thread.start()
 
         return {
@@ -15303,6 +15328,83 @@ class ProjectService:
                 "objectKind": objectKind,
             },
         }
+
+    def _safeRunPostgresqlExternalViewer(
+            self,
+            viewerClass: Any,
+            protocolId: int,
+            outputName: str,
+            objectId: Optional[Union[str, int]],
+            objectKind: Optional[str],
+            projectId: int,
+            projectPath: str,
+            descriptor: Dict[str, Any],
+    ):
+        backgroundMapper = None
+        backgroundService = None
+
+        try:
+            from app.backend.database import getMapper
+
+            backgroundMapper = getMapper()
+            backgroundService = ProjectService()
+            backgroundService._loadPostgresqlRuntimeProject(
+                mapper=backgroundMapper,
+                projectId=projectId,
+                projectPath=projectPath,
+            )
+            protocol, outputObj = (
+                backgroundService
+                ._getProtocolOutputObject(
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=backgroundMapper,
+                    projectId=projectId,
+                )
+            )
+
+            targetObj = (
+                backgroundService
+                ._resolveExternalViewerTargetObject(
+                    outputObj=outputObj,
+                    objectId=objectId,
+                    objectKind=objectKind,
+                )
+            )
+
+            backgroundService._runExternalViewer(
+                viewerClass=viewerClass,
+                protocol=protocol,
+                targetObj=targetObj,
+            )
+
+        except Exception as e:
+            logger.exception(
+                "External viewer failed. viewerId=%s className=%s error=%s",
+                descriptor.get("id"),
+                descriptor.get("className"),
+                e,
+            )
+
+        finally:
+            if backgroundService is not None:
+                try:
+                    if backgroundService.currentProject is not None:
+                        backgroundService.currentProject.closeMapper()
+                except Exception:
+                    logger.debug(
+                        "Could not close external viewer runtime mapper.",
+                        exc_info=True,
+                    )
+
+            if backgroundMapper is not None:
+                try:
+                    backgroundMapper.db.close()
+                except Exception:
+                    logger.debug(
+                        "Could not close external viewer PostgreSQL mapper.",
+                        exc_info=True,
+                    )
 
     def _safeRunExternalViewer(
         self,
