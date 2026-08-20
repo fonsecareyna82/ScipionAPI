@@ -2185,6 +2185,12 @@ def getVolumeSurfaceMesh(
         le=100000,
         alias="minComponentTriangles",
     ),
+    smoothingIterations: int = Query(
+        0,
+        ge=0,
+        le=12,
+        alias="smoothingIterations",
+    ),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2204,6 +2210,7 @@ def getVolumeSurfaceMesh(
                                             method=method,
                                             maxTriangles=maxTriangles,
                                             minComponentTriangles=minComponentTriangles,
+                                            smoothingIterations=smoothingIterations,
                                             currentUser=currentUser,
                                             mapper=mapper,)
 

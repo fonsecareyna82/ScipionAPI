@@ -10638,6 +10638,7 @@ class ProjectService:
             minComponentTriangles,
             currentUser,
             mapper=None,
+            smoothingIterations=0,
     ):
         effectiveMaxTriangles = min(
             _VOLUME_SURFACE_MAX_TRIANGLES,
@@ -10647,6 +10648,11 @@ class ProjectService:
         effectiveMinComponentTriangles = min(
             100000,
             max(0, int(minComponentTriangles or 0)),
+        )
+
+        effectiveSmoothingIterations = min(
+            12,
+            max(0, int(smoothingIterations or 0)),
         )
 
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
@@ -10668,6 +10674,7 @@ class ProjectService:
                     level=level,
                     maxTriangles=effectiveMaxTriangles,
                     minComponentTriangles=effectiveMinComponentTriangles,
+                    smoothingIterations=effectiveSmoothingIterations,
                 )
 
                 mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
@@ -10723,6 +10730,7 @@ class ProjectService:
             level=level,
             maxTriangles=effectiveMaxTriangles,
             minComponentTriangles=effectiveMinComponentTriangles,
+            smoothingIterations=effectiveSmoothingIterations,
         )
 
         mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
@@ -10730,6 +10738,7 @@ class ProjectService:
         mesh["method"] = method
         mesh["maxTriangles"] = effectiveMaxTriangles
         mesh["minComponentTriangles"] = effectiveMinComponentTriangles
+        mesh["smoothingIterations"] = effectiveSmoothingIterations
         mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
         mesh["volumeId"] = str(volumeId)
         mesh["outputName"] = outputName

@@ -206,6 +206,115 @@ def _filterSmallMeshComponents(
     )
 
 
+def _smoothMeshVertices(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    iterations: int,
+) -> np.ndarray:
+    effectiveIterations = max(0, min(12, int(iterations or 0)))
+
+    if effectiveIterations <= 0 or verts.size == 0 or faces.size == 0:
+        return np.asarray(verts, dtype=np.float32)
+
+    try:
+        from scipy.sparse import coo_matrix
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"scipy is required to smooth surface meshes: {exc}",
+        )
+
+    faceArray = np.asarray(faces, dtype=np.int64)
+
+    a = faceArray[:, 0]
+    b = faceArray[:, 1]
+    c = faceArray[:, 2]
+
+    rows = np.concatenate((a, b, b, c, c, a))
+    cols = np.concatenate((b, a, c, b, a, c))
+
+    adjacency = coo_matrix(
+        (
+            np.ones(rows.shape[0], dtype=np.float32),
+            (rows, cols),
+        ),
+        shape=(verts.shape[0], verts.shape[0]),
+    ).tocsr()
+
+    adjacency.sum_duplicates()
+    adjacency.data[:] = 1.0
+
+    degree = np.asarray(
+        adjacency.sum(axis=1),
+        dtype=np.float32,
+    ).reshape(-1)
+
+    active = degree > 0
+
+    positions = np.asarray(
+        verts,
+        dtype=np.float32,
+    ).copy()
+
+    def smoothStep(
+        current: np.ndarray,
+        strength: float,
+    ) -> np.ndarray:
+        neighborSum = adjacency.dot(current)
+
+        neighborMean = current.copy()
+        neighborMean[active] = (
+            neighborSum[active] /
+            degree[active, None]
+        )
+
+        result = current.copy()
+        result[active] += strength * (
+            neighborMean[active] -
+            current[active]
+        )
+
+        return result
+
+    for _ in range(effectiveIterations):
+        positions = smoothStep(positions, 0.45)
+        positions = smoothStep(positions, -0.47)
+
+    return positions
+
+
+def _computeMeshVertexNormals(
+    verts: np.ndarray,
+    faces: np.ndarray,
+) -> np.ndarray:
+    faceArray = np.asarray(faces, dtype=np.int64)
+    positions = np.asarray(verts, dtype=np.float32)
+
+    triangles = positions[faceArray]
+
+    faceNormals = np.cross(
+        triangles[:, 1] - triangles[:, 0],
+        triangles[:, 2] - triangles[:, 0],
+    )
+
+    normals = np.zeros_like(
+        positions,
+        dtype=np.float32,
+    )
+
+    np.add.at(normals, faceArray[:, 0], faceNormals)
+    np.add.at(normals, faceArray[:, 1], faceNormals)
+    np.add.at(normals, faceArray[:, 2], faceNormals)
+
+    lengths = np.linalg.norm(normals, axis=1)
+    valid = lengths > 1e-12
+
+    normals[valid] /= lengths[valid, None]
+    normals[~valid] = 0.0
+
+    return normals
+
+
 def buildVolumeSurfaceMesh(
     volume: np.ndarray,
     *,
@@ -213,6 +322,7 @@ def buildVolumeSurfaceMesh(
     spacing: Optional[Tuple[float, float, float]] = None,
     maxTriangles: int = 350000,
     minComponentTriangles: int = 0,
+    smoothingIterations: int = 0,
 ) -> Dict[str, Any]:
     arr = _cleanVolume(volume)
     levelValue = _validateIsoLevel(arr, level)
@@ -262,6 +372,23 @@ def buildVolumeSurfaceMesh(
         minComponentTriangles,
     )
 
+    effectiveSmoothingIterations = max(
+        0,
+        min(12, int(smoothingIterations or 0)),
+    )
+
+    if effectiveSmoothingIterations > 0:
+        verts = _smoothMeshVertices(
+            verts,
+            faces,
+            effectiveSmoothingIterations,
+        )
+
+        normals = _computeMeshVertexNormals(
+            verts,
+            faces,
+        )
+
     triangleCount = int(faces.shape[0])
 
     # marching_cubes returns coordinates in Z,Y,X. The frontend expects X,Y,Z.
@@ -288,6 +415,7 @@ def buildVolumeSurfaceMesh(
         "marchingCubesStep": int(stepSize),
         "minComponentTriangles": int(minComponentTriangles),
         "removedComponents": int(removedComponents),
+        "smoothingIterations": int(effectiveSmoothingIterations),
         "vertices": verticesXyz.reshape(-1).astype(np.float32).tolist(),
         "normals": normalsXyz.reshape(-1).astype(np.float32).tolist(),
         "indices": faces.reshape(-1).astype(np.int32).tolist(),
