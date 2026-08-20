@@ -10635,12 +10635,18 @@ class ProjectService:
             maxDim,
             method,
             maxTriangles,
+            minComponentTriangles,
             currentUser,
             mapper=None,
     ):
         effectiveMaxTriangles = min(
             _VOLUME_SURFACE_MAX_TRIANGLES,
             max(1000, int(maxTriangles or 220000)),
+        )
+
+        effectiveMinComponentTriangles = min(
+            100000,
+            max(0, int(minComponentTriangles or 0)),
         )
 
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
@@ -10657,9 +10663,12 @@ class ProjectService:
                 volumeSmall = self._downsampleVolumeForSurface(volume,
                                                                maxDim=maxDim,
                                                                method=method)
-                mesh = buildVolumeSurfaceMesh(volumeSmall,
-                                              level=level,
-                                              maxTriangles=effectiveMaxTriangles)
+                mesh = buildVolumeSurfaceMesh(
+                    volumeSmall,
+                    level=level,
+                    maxTriangles=effectiveMaxTriangles,
+                    minComponentTriangles=effectiveMinComponentTriangles,
+                )
 
                 mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
                 mesh["maxDim"] = int(maxDim)
@@ -10709,14 +10718,18 @@ class ProjectService:
             method=method,
         )
 
-        mesh = buildVolumeSurfaceMesh(volumeSmall,
-                                      level=level,
-                                      maxTriangles=effectiveMaxTriangles)
+        mesh = buildVolumeSurfaceMesh(
+            volumeSmall,
+            level=level,
+            maxTriangles=effectiveMaxTriangles,
+            minComponentTriangles=effectiveMinComponentTriangles,
+        )
 
         mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
         mesh["maxDim"] = int(maxDim)
         mesh["method"] = method
         mesh["maxTriangles"] = effectiveMaxTriangles
+        mesh["minComponentTriangles"] = effectiveMinComponentTriangles
         mesh["autoReduced"] = tuple(volumeSmall.shape) != tuple(volume.shape)
         mesh["volumeId"] = str(volumeId)
         mesh["outputName"] = outputName

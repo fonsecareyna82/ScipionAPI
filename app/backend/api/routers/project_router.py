@@ -2179,6 +2179,12 @@ def getVolumeSurfaceMesh(
     maxDim: int = Query(192, ge=32, le=512, alias="maxDim"),
     method: Literal["binning", "stride", "linear", "fourier", "none"] = Query("stride"),
     maxTriangles: int = Query(350000, ge=1000, le=1500000, alias="maxTriangles"),
+    minComponentTriangles: int = Query(
+        0,
+        ge=0,
+        le=100000,
+        alias="minComponentTriangles",
+    ),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2197,6 +2203,7 @@ def getVolumeSurfaceMesh(
                                             maxDim=maxDim,
                                             method=method,
                                             maxTriangles=maxTriangles,
+                                            minComponentTriangles=minComponentTriangles,
                                             currentUser=currentUser,
                                             mapper=mapper,)
 
