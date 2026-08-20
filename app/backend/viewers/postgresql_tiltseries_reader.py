@@ -265,7 +265,13 @@ class PostgresqlTiltSeriesReader:
         )
 
         if not rootItems:
-            return False
+            classText = self._getStoredSetClassText(storedSet)
+
+            return (
+                    "tiltseries" in classText
+                    and "tiltseriesm" not in classText
+                    and "ctftomo" not in classText
+            )
 
         for rootItem in rootItems[:5]:
             parentItemId = (
@@ -361,6 +367,18 @@ class PostgresqlTiltSeriesReader:
                     return True
 
         return False
+
+    @staticmethod
+    def _getStoredSetClassText(
+            storedSet: Dict[str, Any],
+    ) -> str:
+        return (
+            "%s %s"
+            % (
+                storedSet.get("setClassName") or "",
+                storedSet.get("itemClassName") or "",
+            )
+        ).replace(" ", "").lower()
 
     def _getLogicalTables(self) -> List[Dict[str, Any]]:
         if self._logicalTables is None:

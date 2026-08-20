@@ -148,6 +148,7 @@ from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.table_viewer_service import TableViewerService
 from app.backend.api.services.output_viewer_descriptor import (
     OutputViewerDescriptorBuilder,
+    VIEWER_CAPABILITY_SET,
 )
 
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
@@ -9589,6 +9590,18 @@ class ProjectService:
 
         ctx = ctx or {}
 
+        outputName = str(ctx.get("outputName") or "").strip()
+        pointerClass = str(ctx.get("pointerClass") or "").strip()
+
+        if pointerClass:
+            declaredDescriptor = OutputViewerDescriptorBuilder.build(
+                outputName=outputName,
+                fallbackClassName=pointerClass,
+            )
+
+            if not declaredDescriptor.hasCapability(VIEWER_CAPABILITY_SET):
+                return {"handled": False}
+
         descriptor = (
             self
             ._buildTableViewerOutputDescriptor(
@@ -10098,7 +10111,6 @@ class ProjectService:
         """
         Build a JSON-friendly summary for one CTFTomoSeries object.
         """
-
         tsId = ctfSeries.getTsId()
         label = ctfSeries.getObjLabel()
         tiltSeries = ctfSeries.getTiltSeries()
@@ -10106,38 +10118,26 @@ class ProjectService:
         pixelSize = tiltSeries.getSamplingRate()
         nViews = tiltSeries.getSize()
 
-        try:
-            excluded = (
-                not bool(
-                    ctfSeries.isEnabled()
-                )
-            )
-        except Exception:
-            excluded = False
-
         item: Dict[str, Any] = {
-            "ctfSeriesId": tsId,
             "tiltSeriesId": tsId,
-            "excluded": excluded,
-            "label": (
-                str(label)
-                if label is not None
-                else ""
-            ),
+            "label": str(label) if label is not None else "",
         }
+
         if nViews is not None:
             item["nViews"] = nViews
+
         if dims is not None:
             item["dims"] = dims
+
         if pixelSize is not None:
             item["pixelSize"] = pixelSize
+
         return item
 
     def _buildCtftomoMeasurementRow(self, ctfObj, tiltSeries=None) -> Dict[str, Any]:
         """
         Build a JSON-friendly row with CTF parameters for a single tilt image.
         """
-
         defocusU = ctfObj.getDefocusU()
         defocusV = ctfObj.getDefocusV()
         defocusAngle = ctfObj.getDefocusAngle()
@@ -10152,7 +10152,7 @@ class ProjectService:
 
         if tiltSeries is not None:
             try:
-                view = tiltSeries.getItem('_acqOrder', acqOrder)
+                view = tiltSeries.getItem("_acqOrder", acqOrder)
             except Exception:
                 view = None
 
@@ -10170,42 +10170,39 @@ class ProjectService:
 
         row: Dict[str, Any] = {}
 
-        viewId = ctfObj.getObjId()
+        row["index"] = ctfObj.getObjId()
+        row["viewIndex"] = ctfObj.getObjId()
 
-        try:
-            ctfIndex = (
-                ctfObj.getIndex()
-            )
-        except Exception:
-            ctfIndex = viewId
-
-        if ctfIndex is None:
-            ctfIndex = viewId
-
-        row["viewId"] = viewId
-        row["index"] = ctfIndex
-        row["viewIndex"] = viewId
         if tiltAngle is not None:
             row["tiltAngle"] = tiltAngle
+
         if dose is not None:
             row["dose"] = dose
+
         if defocusU is not None:
             row["defocusU"] = defocusU
+
         if defocusV is not None:
             row["defocusV"] = defocusV
-        row['astigmatism'] = astigmatism
+
+        row["astigmatism"] = astigmatism
+
         if defocusAngle is not None:
             row["defocusAngle"] = defocusAngle
+
         if resolution is not None:
             row["resolution"] = resolution
+
         if phaseShift is not None:
             row["phaseShift"] = phaseShift
+
         if acqOrder is not None:
             row["order"] = acqOrder
-        if psdFile:
-            row['psdFile'] = psdFile
 
-        row['excluded'] = not enabled
+        if psdFile:
+            row["psdFile"] = psdFile
+
+        row["excluded"] = not enabled
 
         return row
 
@@ -10520,26 +10517,20 @@ class ProjectService:
         pixelSize = ts.getSamplingRate()
         tiltAxisAngle = ts.getAcquisition().getTiltAxisAngle()
 
-        try:
-            excluded = (
-                not bool(
-                    ts.isEnabled()
-                )
-            )
-        except Exception:
-            excluded = False
-
         item: Dict[str, Any] = {
             "tiltSeriesId": tsId,
-            "excluded": excluded,
             "label": str(label),
         }
+
         if nViews is not None:
             item["nViews"] = nViews
+
         if dims is not None:
             item["dims"] = dims
+
         if pixelSize is not None:
             item["pixelSize"] = pixelSize
+
         if tiltAxisAngle is not None:
             item["tiltAxisAngle"] = tiltAxisAngle
 
