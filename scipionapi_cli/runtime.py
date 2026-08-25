@@ -97,7 +97,12 @@ def _terminateProcessGroup(pid: int, timeoutSec: float = 5.0) -> None:
     try:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except Exception:
+            return
     except Exception:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -533,6 +538,38 @@ def getWorkerProcessState(
     }
 
 
+def adoptWorkerProcess(
+    workerKind: str,
+    pid: int,
+) -> Dict[str, Any]:
+    repoRoot = resolveRepoRoot()
+    pidPath = _getWorkerPidPath(
+        repoRoot,
+        workerKind,
+    )
+
+    pid = int(pid)
+
+    if pid <= 0:
+        raise ValueError(
+            f"Invalid worker PID: {pid}"
+        )
+
+    if not _isProcessAlive(pid):
+        raise RuntimeError(
+            f"Worker process {pid} is not running."
+        )
+
+    _writePid(
+        pidPath,
+        pid,
+    )
+
+    return getWorkerProcessState(
+        workerKind
+    )
+
+
 def _getWorkerRuntimeSpec(
     workerKind: str,
 ) -> Dict[str, Any]:
@@ -706,6 +743,7 @@ def restartWorkerProcess(
     return startWorkerProcess(
         workerKind
     )
+
 
 def startCommand() -> None:
     # startApiAndWorkers

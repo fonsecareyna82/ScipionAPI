@@ -430,6 +430,10 @@ class JobMonitoringService:
                 or {}
             )
 
+            celeryPid = self._optionalInt(
+                workerStats.get("pid")
+            )
+
             poolStats = (
                 workerStats.get(
                     "pool"
@@ -489,7 +493,7 @@ class JobMonitoringService:
                     workerName
                 ),
                 "state": "online",
-                "pid": None,
+                "pid": celeryPid,
             })
 
         expectedWorkers = (
@@ -524,9 +528,8 @@ class JobMonitoringService:
 
             if matchingWorker is not None:
                 matchingWorker["pid"] = (
-                    processState.get(
-                        "pid"
-                    )
+                        processState.get("pid")
+                        or matchingWorker.get("pid")
                 )
                 continue
 

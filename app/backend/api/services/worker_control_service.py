@@ -23,9 +23,12 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from typing import Any, Dict
+import socket
+
+from typing import Any, Dict, Optional
 
 from scipionapi_cli.runtime import (
+    adoptWorkerProcess,
     getWorkerProcessState,
     restartWorkerProcess,
     startWorkerProcess,
@@ -44,6 +47,62 @@ class WorkerControlService:
         "stop",
         "restart",
     }
+
+    def _getCeleryWorkerPid(
+            self,
+            workerKind: str,
+    ) -> Optional[int]:
+        from app.workers.task_queue import celeryApp
+
+        inspector = celeryApp.control.inspect(
+            timeout=1.0
+        )
+
+        stats = inspector.stats() or {}
+
+        hostname = socket.gethostname()
+        expectedName = (
+            f"{workerKind}@{hostname}"
+        )
+
+        workerStats = stats.get(
+            expectedName
+        ) or {}
+
+        try:
+            pid = int(
+                workerStats.get("pid")
+            )
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return None
+
+        return pid if pid > 0 else None
+
+    def _adoptWorkerIfNeeded(
+            self,
+            workerKind: str,
+    ) -> None:
+        state = getWorkerProcessState(
+            workerKind
+        )
+
+        if state.get("state") == "running":
+            return
+
+        pid = self._getCeleryWorkerPid(
+            workerKind
+        )
+
+        if pid is None:
+            return
+
+        adoptWorkerProcess(
+            workerKind,
+            pid,
+        )
 
     def control(
         self,
@@ -67,6 +126,10 @@ class WorkerControlService:
             raise ValueError(
                 f"Unsupported worker action: {action}"
             )
+
+        self._adoptWorkerIfNeeded(
+            kind
+        )
 
         if normalizedAction == "start":
             return startWorkerProcess(
