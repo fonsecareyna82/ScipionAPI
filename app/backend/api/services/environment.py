@@ -23,7 +23,41 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 import os
+from typing import Dict
+
+
+_CUSTOM_ENVIRONMENT_FILE_NAME = "scipionweb_environment.json"
+
+
+def _loadCustomEnvironment(scipionHome: str) -> Dict[str, str]:
+    if not scipionHome:
+        return {}
+
+    path = os.path.join(
+        scipionHome,
+        "config",
+        _CUSTOM_ENVIRONMENT_FILE_NAME,
+    )
+
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            raw = json.load(file)
+    except Exception:
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    return {
+        str(name).strip(): "" if value is None else str(value)
+        for name, value in raw.items()
+        if str(name).strip()
+    }
 
 
 def prepareEnvironment():
@@ -34,6 +68,20 @@ def prepareEnvironment():
     os.environ.update(variables)
 
     import pyworkflow
+
+    scipionHome = (
+        variables.get(pyworkflow.SCIPION_HOME_VAR)
+        or os.environ.get(pyworkflow.SCIPION_HOME_VAR)
+    )
+
+    customEnvironment = (
+        _loadCustomEnvironment(scipionHome)
+        if scipionHome
+        else {}
+    )
+
+    # Custom variables must be available before loading plugins/protocols.
+    os.environ.update(customEnvironment)
 
     pyworkflow.Config.setDomain("pwem")
     domain = pyworkflow.Config.getDomain()
@@ -49,7 +97,9 @@ def prepareEnvironment():
     # Keep backend bootstrap values as priority
     os.environ.update(variables)
 
-    scipionHome = variables.get(pyworkflow.SCIPION_HOME_VAR) or os.environ.get(pyworkflow.SCIPION_HOME_VAR)
+    # Explicit ScipionWeb environment variables have final priority.
+    os.environ.update(customEnvironment)
+
     if scipionHome:
         os.chdir(scipionHome)
         os.environ.setdefault(
