@@ -142,6 +142,17 @@ def test_JobMonitoringOverviewCombinesCeleryAndPostgresql(
     )
 
     monkeypatch.setattr(
+        jobMonitoringModule,
+        "getWorkerProcessState",
+        lambda workerKind: {
+            "kind": workerKind,
+            "state": "stopped",
+            "pid": None,
+            "pidPath": "",
+        },
+    )
+
+    monkeypatch.setattr(
         jobMonitoringModule.time,
         "time",
         lambda: 1020.0,
@@ -216,20 +227,26 @@ def test_JobMonitoringOverviewCombinesCeleryAndPostgresql(
     assert result["workers"] == [
         {
             "name": "protocols@blackwell",
+            "kind": "protocols",
             "queues": [
                 "protocols",
             ],
             "online": True,
+            "state": "online",
+            "pid": None,
             "concurrency": 4,
             "active": 1,
             "reserved": 0,
         },
         {
             "name": "plugins@blackwell",
+            "kind": "plugins",
             "queues": [
                 "plugins",
             ],
             "online": True,
+            "state": "online",
+            "pid": None,
             "concurrency": 1,
             "active": 0,
             "reserved": 0,
@@ -372,6 +389,23 @@ def test_JobMonitoringKeepsPostgresqlHistoryWhenCeleryUnavailable(
     )
 
     monkeypatch.setattr(
+        jobMonitoringModule,
+        "getWorkerProcessState",
+        lambda workerKind: {
+            "kind": workerKind,
+            "state": "stopped",
+            "pid": None,
+            "pidPath": "",
+        },
+    )
+
+    monkeypatch.setattr(
+        jobMonitoringModule.socket,
+        "gethostname",
+        lambda: "blackwell",
+    )
+
+    monkeypatch.setattr(
         jobMonitoringModule.time,
         "time",
         lambda: 1020.0,
@@ -407,8 +441,35 @@ def test_JobMonitoringKeepsPostgresqlHistoryWhenCeleryUnavailable(
     ] == "No Celery workers responded."
 
     assert result[
-        "workers"
-    ] == []
+               "workers"
+           ] == [
+               {
+                   "name": "protocols@blackwell",
+                   "kind": "protocols",
+                   "queues": [
+                       "protocols",
+                   ],
+                   "online": False,
+                   "state": "offline",
+                   "pid": None,
+                   "concurrency": 0,
+                   "active": 0,
+                   "reserved": 0,
+               },
+               {
+                   "name": "plugins@blackwell",
+                   "kind": "plugins",
+                   "queues": [
+                       "plugins",
+                   ],
+                   "online": False,
+                   "state": "offline",
+                   "pid": None,
+                   "concurrency": 0,
+                   "active": 0,
+                   "reserved": 0,
+               },
+           ]
 
     assert result[
         "activeJobs"
