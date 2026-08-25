@@ -37,3 +37,28 @@ def test_GuidedInstallerCreatesFullUninstallMarker():
     assert "INSTALL_ROOT=${INSTALL_DIR}" in content
     assert "write_install_marker" in content
     assert "./scripts/scipionapi uninstall --full" in content
+
+
+def test_GuidedInstallerSupportsManagedCliAlias():
+    content = INSTALL_SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+    assert "--create-alias" in content
+    assert "--no-create-alias" in content
+    assert "SCIPIONWEB_CREATE_ALIAS" in content
+
+    assert (
+        'CLI_ALIAS_BEGIN='
+        '"# >>> ScipionWeb scipionapi >>>"'
+        in content
+    )
+
+    assert (
+        'CLI_ALIAS_END='
+        '"# <<< ScipionWeb scipionapi <<<"'
+        in content
+    )
+
+    assert "configure_cli_alias" in content
+    assert "alias scipionapi=" in content

@@ -12,6 +12,8 @@ DEFAULT_BASE_URL="https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
 DEFAULT_INSTALL_DIR="${HOME}/scipionweb"
 DEFAULT_VERSION="latest"
 INSTALL_MARKER_NAME=".scipionweb-installation"
+CLI_ALIAS_BEGIN="# >>> ScipionWeb scipionapi >>>"
+CLI_ALIAS_END="# <<< ScipionWeb scipionapi <<<"
 
 BASE_URL="${SCIPIONWEB_DOWNLOAD_BASE_URL:-${DEFAULT_BASE_URL}}"
 INSTALL_DIR="${SCIPIONWEB_INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
@@ -19,6 +21,8 @@ REQUESTED_VERSION="${SCIPIONWEB_VERSION:-${DEFAULT_VERSION}}"
 ADMIN_USER="${SCIPIONWEB_ADMIN_USER:-}"
 ADMIN_EMAIL="${SCIPIONWEB_ADMIN_EMAIL:-}"
 API_PORT="${SCIPIONWEB_API_PORT:-}"
+CREATE_CLI_ALIAS="${SCIPIONWEB_CREATE_ALIAS:-}"
+CLI_ALIAS_CREATED=0
 CHECK_ONLY=0
 NON_INTERACTIVE=0
 INSTALL_DIR_EXPLICIT=0
@@ -59,6 +63,8 @@ Options:
   --version VERSION    Release to install, e.g. v4.0.0. Default: latest
   --base-url URL       Release download base URL.
   --api-port PORT      Optional fixed API/Web port. If omitted, provision decides.
+  --create-alias       Add a managed 'scipionapi' alias to ~/.bashrc.
+  --no-create-alias    Do not create the shell alias.
   --check-only         Only validate system prerequisites and exit.
   --non-interactive    Do not prompt for missing values. Password must be supplied
                        through SCIPIONWEB_ADMIN_PASSWORD.
@@ -73,6 +79,8 @@ Environment equivalents:
   SCIPIONWEB_DOWNLOAD_BASE_URL
   SCIPIONWEB_API_PORT
   SCIPIONAPI_CONDA_EXE
+  SCIPIONWEB_CREATE_ALIAS
+
 
 Examples:
   ./install.sh
@@ -126,6 +134,8 @@ while [[ $# -gt 0 ]]; do
     --version) need_arg "$1" "${2:-}"; REQUESTED_VERSION="$2"; shift 2 ;;
     --base-url) need_arg "$1" "${2:-}"; BASE_URL="$2"; shift 2 ;;
     --api-port) need_arg "$1" "${2:-}"; API_PORT="$2"; shift 2 ;;
+    --create-alias) CREATE_CLI_ALIAS="1"; shift ;;
+    --no-create-alias) CREATE_CLI_ALIAS="0"; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -498,6 +508,52 @@ prompt_admin_password() {
   done
 }
 
+resolve_cli_alias_choice() {
+  local normalized="${CREATE_CLI_ALIAS,,}"
+  local answer=""
+
+  case "${normalized}" in
+    1|true|yes|y|on)
+      CREATE_CLI_ALIAS=1
+      return 0
+      ;;
+    0|false|no|n|off)
+      CREATE_CLI_ALIAS=0
+      return 0
+      ;;
+    "")
+      ;;
+    *)
+      print_error "Invalid SCIPIONWEB_CREATE_ALIAS value: ${CREATE_CLI_ALIAS}"
+      print_error "Use 1/0, true/false, yes/no, or --create-alias/--no-create-alias."
+      exit 2
+      ;;
+  esac
+
+  if [[ ${NON_INTERACTIVE} -eq 1 ]]; then
+    CREATE_CLI_ALIAS=0
+    return 0
+  fi
+
+  while true; do
+    read -r -p "Create 'scipionapi' alias in ~/.bashrc? [Y/n]: " answer
+
+    case "${answer,,}" in
+      ""|y|yes)
+        CREATE_CLI_ALIAS=1
+        return 0
+        ;;
+      n|no)
+        CREATE_CLI_ALIAS=0
+        return 0
+        ;;
+      *)
+        print_warn "Please answer yes or no."
+        ;;
+    esac
+  done
+}
+
 validate_inputs() {
   if [[ ! "${ADMIN_EMAIL}" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then print_error "Invalid administrator email: ${ADMIN_EMAIL}"; exit 2; fi
   if [[ -n "${API_PORT}" ]]; then
@@ -527,11 +583,13 @@ collect_install_inputs() {
   prompt_admin_password
   validate_inputs
   validate_install_dir
+  resolve_cli_alias_choice
 
   print_line
   print_line "Installation directory: ${INSTALL_DIR}"
   print_line "Admin username:       ${ADMIN_USER}"
   print_line "Admin email:          ${ADMIN_EMAIL}"
+  print_line "CLI alias:            $([[ ${CREATE_CLI_ALIAS} -eq 1 ]] && echo yes || echo no)"
   print_line "Release:              ${REQUESTED_VERSION}"
   if [[ -n "${API_PORT}" ]]; then print_line "API/Web port:         ${API_PORT}"; else print_line "API/Web port:         automatic / provision default"; fi
 }
@@ -557,6 +615,80 @@ extract_api() {
   cp -a "${api_root}/." "${INSTALL_DIR}/"
   chmod +x "${INSTALL_DIR}/scripts/scipionapi"
   print_ok "ScipionAPI extracted to ${INSTALL_DIR}"
+}
+
+configure_cli_alias() {
+  CLI_ALIAS_CREATED=0
+
+  if [[ "${CREATE_CLI_ALIAS}" != "1" ]]; then
+    return 0
+  fi
+
+  local bashrc_path="${HOME}/.bashrc"
+  local cli_target="${INSTALL_DIR}/scripts/scipionapi"
+  local escaped_target=""
+  local begin_count=0
+  local end_count=0
+  local tmp_file=""
+
+  if [[ ! -x "${cli_target}" ]]; then
+    print_warn "Cannot create CLI alias because the wrapper was not found: ${cli_target}"
+    return 0
+  fi
+
+  if ! touch "${bashrc_path}" 2>/dev/null; then
+    print_warn "Could not write ${bashrc_path}; skipping CLI alias."
+    return 0
+  fi
+
+  begin_count="$(grep -Fxc -- "${CLI_ALIAS_BEGIN}" "${bashrc_path}" || true)"
+  end_count="$(grep -Fxc -- "${CLI_ALIAS_END}" "${bashrc_path}" || true)"
+
+  if [[ "${begin_count}" != "${end_count}" ]]; then
+    print_warn "Found a malformed ScipionWeb alias block in ${bashrc_path}; leaving it unchanged."
+    return 0
+  fi
+
+  printf -v escaped_target '%q' "${cli_target}"
+
+  tmp_file="$(mktemp -t scipionweb-bashrc-XXXXXX)"
+
+  awk \
+    -v begin="${CLI_ALIAS_BEGIN}" \
+    -v end="${CLI_ALIAS_END}" '
+      $0 == begin {
+        inside = 1
+        next
+      }
+
+      inside && $0 == end {
+        inside = 0
+        next
+      }
+
+      !inside {
+        print
+      }
+    ' "${bashrc_path}" > "${tmp_file}"
+
+  {
+    cat "${tmp_file}"
+    printf '\n%s\n' "${CLI_ALIAS_BEGIN}"
+    printf '# installation: %s\n' "${INSTALL_DIR}"
+    printf 'alias scipionapi=%s\n' "${escaped_target}"
+    printf '%s\n' "${CLI_ALIAS_END}"
+  } > "${tmp_file}.new"
+
+  if ! cat "${tmp_file}.new" > "${bashrc_path}"; then
+    rm -f "${tmp_file}" "${tmp_file}.new"
+    print_warn "Could not update ${bashrc_path}; skipping CLI alias."
+    return 0
+  fi
+
+  rm -f "${tmp_file}" "${tmp_file}.new"
+
+  CLI_ALIAS_CREATED=1
+  print_ok "CLI alias installed in ${bashrc_path}: scipionapi"
 }
 
 write_install_marker() {
@@ -626,6 +758,25 @@ SUCCESS
 
   if [[ "${serve_web}" != "1" ]]; then print_warn "SERVE_WEB is not enabled in the final environment. Check provision output."; fi
 
+  if [[ ${CLI_ALIAS_CREATED} -eq 1 ]]; then
+  cat <<SUMMARY
+
+CLI shortcut installed:
+  scipionapi
+
+Open a new terminal or run:
+  source ~/.bashrc
+
+Useful commands:
+  scipionapi status
+  scipionapi logs
+  scipionapi restart
+  scipionapi stop
+  scipionapi update
+  scipionapi uninstall --full
+============================================================
+SUMMARY
+else
   cat <<SUMMARY
 
 Useful commands:
@@ -638,6 +789,7 @@ Useful commands:
   ./scripts/scipionapi uninstall --full
 ============================================================
 SUMMARY
+fi
 }
 
 main() {
@@ -674,6 +826,7 @@ main() {
   extract_api "${api_zip}"
   run_provision "${web_zip}"
   write_install_marker
+  configure_cli_alias
   print_success_summary
 }
 

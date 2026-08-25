@@ -5,6 +5,7 @@ from scipionapi_cli.uninstall import (
     _validateFullScipionHome,
     _validateGuidedInstallationMarker,
     _validateLegacyInstallationRoot,
+    _removeManagedShellAlias
 )
 
 
@@ -139,3 +140,72 @@ def test_ValidateFullScipionHomeRejectsSymlink(tmp_path):
             repo_root,
             external_home,
         )
+
+
+def test_RemoveManagedShellAliasOnlyRemovesMatchingInstallation(
+        tmp_path,
+        monkeypatch,
+):
+    repoRoot = (
+        tmp_path
+        / "scipionweb"
+    ).resolve()
+
+    otherRoot = (
+        tmp_path
+        / "other-scipionweb"
+    ).resolve()
+
+    repoRoot.mkdir()
+    otherRoot.mkdir()
+
+    bashrcPath = (
+        tmp_path
+        / ".bashrc"
+    )
+
+    bashrcPath.write_text(
+        "export KEEP_ME=1\n"
+        "\n"
+        "# >>> ScipionWeb scipionapi >>>\n"
+        f"# installation: {repoRoot}\n"
+        f"alias scipionapi={repoRoot}/scripts/scipionapi\n"
+        "# <<< ScipionWeb scipionapi <<<\n"
+        "\n"
+        "export KEEP_ME_TOO=1\n"
+        "\n"
+        "# >>> ScipionWeb scipionapi >>>\n"
+        f"# installation: {otherRoot}\n"
+        f"alias scipionapi={otherRoot}/scripts/scipionapi\n"
+        "# <<< ScipionWeb scipionapi <<<\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv(
+        "HOME",
+        str(tmp_path),
+    )
+
+    assert _removeManagedShellAlias(
+        repoRoot,
+        dryRun=False,
+    ) is True
+
+    content = bashrcPath.read_text(
+        encoding="utf-8"
+    )
+
+    assert "export KEEP_ME=1" in content
+    assert "export KEEP_ME_TOO=1" in content
+
+    assert (
+        f"# installation: {repoRoot}"
+        not in content
+    )
+
+    assert (
+        f"# installation: {otherRoot}"
+        in content
+    )
+
+

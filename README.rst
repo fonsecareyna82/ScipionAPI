@@ -298,6 +298,22 @@ Notes:
 
 The wrapper script ``./scripts/scipionapi`` is the main entry point for end users.
 
+When using the guided ``install.sh``, the installer can optionally add a
+managed ``scipionapi`` alias to ``~/.bashrc``. Interactive installation enables
+this by default after confirmation, allowing runtime commands to be executed
+from any directory::
+
+    scipionapi status
+    scipionapi logs
+    scipionapi restart
+    scipionapi update
+
+Open a new terminal after installation, or run ``source ~/.bashrc``. For
+unattended installations the alias is disabled by default unless
+``--create-alias`` or ``SCIPIONWEB_CREATE_ALIAS=1`` is provided. A guided
+``uninstall --full`` removes the managed alias when it belongs to that
+installation.
+
 It can:
 
 1) Bootstrap a conda env (default name: ``scipion4Web``)

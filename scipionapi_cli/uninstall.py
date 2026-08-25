@@ -28,6 +28,8 @@ from scipionapi_cli.shell import resolveRepoRoot
 console = Console()
 
 GUIDED_INSTALL_MARKER = ".scipionweb-installation"
+CLI_ALIAS_BEGIN = "# >>> ScipionWeb scipionapi >>>"
+CLI_ALIAS_END = "# <<< ScipionWeb scipionapi <<<"
 
 app = typer.Typer(
     add_completion=False,
@@ -411,6 +413,123 @@ def _stopServices(dryRun: bool) -> None:
         _printWarning(f"Service stop failed or was not available: {exc}")
 
 
+def _removeManagedShellAlias(
+    repoRoot: Path,
+    dryRun: bool,
+) -> bool:
+    homePath = Path(
+        os.environ.get("HOME")
+        or str(Path.home())
+    ).expanduser()
+
+    bashrcPath = homePath / ".bashrc"
+
+    if not bashrcPath.is_file():
+        _printInfo(
+            f"Shell config not found: {bashrcPath}"
+        )
+        return False
+
+    try:
+        lines = bashrcPath.read_text(
+            encoding="utf-8"
+        ).splitlines(
+            keepends=True
+        )
+    except Exception as exc:
+        _printWarning(
+            f"Could not read {bashrcPath}: {exc}"
+        )
+        return False
+
+    expectedMetadata = (
+        f"# installation: "
+        f"{repoRoot.expanduser().resolve()}"
+    )
+
+    updatedLines = []
+    removed = False
+    index = 0
+
+    while index < len(lines):
+        line = lines[index].rstrip(
+            "\r\n"
+        )
+
+        if line != CLI_ALIAS_BEGIN:
+            updatedLines.append(
+                lines[index]
+            )
+            index += 1
+            continue
+
+        endIndex = index + 1
+
+        while (
+            endIndex < len(lines)
+            and lines[endIndex].rstrip(
+                "\r\n"
+            ) != CLI_ALIAS_END
+        ):
+            endIndex += 1
+
+        if endIndex >= len(lines):
+            _printWarning(
+                "Found a malformed ScipionWeb "
+                f"alias block in {bashrcPath}; "
+                "leaving it unchanged."
+            )
+            return False
+
+        block = lines[
+            index:endIndex + 1
+        ]
+
+        blockValues = {
+            value.rstrip("\r\n")
+            for value in block
+        }
+
+        if expectedMetadata in blockValues:
+            removed = True
+        else:
+            updatedLines.extend(block)
+
+        index = endIndex + 1
+
+    if not removed:
+        _printInfo(
+            "Managed scipionapi shell alias "
+            "was not found."
+        )
+        return False
+
+    if dryRun:
+        _printInfo(
+            f"Would remove managed scipionapi "
+            f"alias from {bashrcPath}"
+        )
+        return True
+
+    try:
+        bashrcPath.write_text(
+            "".join(updatedLines),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        _printWarning(
+            f"Could not update {bashrcPath}: {exc}"
+        )
+        return False
+
+    _printSuccess(
+        f"Removed managed scipionapi alias "
+        f"from {bashrcPath}"
+    )
+
+    return True
+
+
 def uninstallWebCommand(
     yes: bool = False,
     dryRun: bool = False,
@@ -480,6 +599,12 @@ def uninstallWebCommand(
         repoRoot=repoRoot,
         fullMode=fullMode,
     )
+
+    if full:
+        _removeManagedShellAlias(
+            repoRoot,
+            dryRun=dryRun,
+        )
 
     _stopServices(dryRun=dryRun)
     _dropDatabaseAndRole(
