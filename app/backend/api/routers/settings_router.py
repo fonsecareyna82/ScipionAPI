@@ -28,7 +28,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from typing import Dict, List
+from typing import Any, Dict, List
 from app.backend.api.dependencies import getCurrentUser, requireAdmin
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -53,6 +53,9 @@ from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.job_monitoring_service import (
     JobMonitoringService,
 )
+from app.backend.api.services.worker_control_service import (
+    WorkerControlService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,10 @@ def getSettingsService() -> SettingsService:
 
 def getJobMonitoringService() -> JobMonitoringService:
     return JobMonitoringService()
+
+
+def getWorkerControlService() -> WorkerControlService:
+    return WorkerControlService()
 
 
 @router.get(
@@ -248,6 +255,60 @@ def getJobsOverview(
             detail=(
                 "Failed to load job monitoring data: %s"
                 % error
+            ),
+        )
+
+
+@router.post(
+    "/jobs/workers/{workerKind}/{action}",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+)
+def controlJobWorker(
+    workerKind: str,
+    action: str,
+    currentUser=Depends(
+        requireAdmin
+    ),
+    service: WorkerControlService = Depends(
+        getWorkerControlService
+    ),
+):
+    try:
+        return service.control(
+            workerKind=workerKind,
+            action=action,
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=(
+                status
+                .HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail=str(error),
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error controlling worker "
+            "%s action=%s: %s",
+            workerKind,
+            action,
+            error,
+        )
+
+        raise HTTPException(
+            status_code=(
+                status
+                .HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Failed to control worker: "
+                f"{error}"
             ),
         )
 

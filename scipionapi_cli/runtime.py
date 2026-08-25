@@ -485,6 +485,228 @@ def _buildCeleryWorkerCommand(
     ]
 
 
+def _getWorkerPidPath(
+    repoRoot: Path,
+    workerKind: str,
+) -> Path:
+    kind = str(workerKind or "").strip().lower()
+
+    if kind == "plugins":
+        return _pidDir(repoRoot) / "worker.pid"
+
+    if kind == "protocols":
+        return _pidDir(repoRoot) / "protocol-worker.pid"
+
+    raise ValueError(
+        f"Unsupported worker kind: {workerKind}"
+    )
+
+
+def getWorkerProcessState(
+    workerKind: str,
+) -> Dict[str, Any]:
+    repoRoot = resolveRepoRoot()
+    pidPath = _getWorkerPidPath(
+        repoRoot,
+        workerKind,
+    )
+
+    rawState, pid = _describePidState(
+        pidPath
+    )
+
+    stateMap = {
+        "RUNNING": "running",
+        "STOPPED": "stopped",
+        "STALE PID": "stale",
+        "INVALID PID FILE": "invalid",
+    }
+
+    return {
+        "kind": str(workerKind).strip().lower(),
+        "state": stateMap.get(
+            rawState,
+            rawState.lower(),
+        ),
+        "pid": pid,
+        "pidPath": str(pidPath),
+    }
+
+
+def _getWorkerRuntimeSpec(
+    workerKind: str,
+) -> Dict[str, Any]:
+    kind = str(workerKind or "").strip().lower()
+
+    if kind not in {
+        "plugins",
+        "protocols",
+    }:
+        raise ValueError(
+            f"Unsupported worker kind: {workerKind}"
+        )
+
+    repoRoot = resolveRepoRoot()
+    env = _loadEnv(repoRoot)
+
+    logsDir = Path(
+        env.get(
+            "LOGS_PATH",
+            str(
+                _resolveScipionHome(repoRoot)
+                / "logs"
+            ),
+        )
+    )
+
+    logsDir.mkdir(
+        exist_ok=True,
+        parents=True,
+    )
+
+    celeryApp = env.get(
+        "CELERY_APP",
+        "app.workers.task_queue",
+    )
+
+    celeryLogLevel = env.get(
+        "CELERY_LOGLEVEL",
+        "info",
+    )
+
+    startupWait = _envFloat(
+        env,
+        "WORKER_STARTUP_WAIT",
+        2.0,
+    )
+
+    if kind == "plugins":
+        queueName = "plugins"
+        hostname = "plugins@%h"
+        concurrency = 1
+        logPath = logsDir / "celery.log"
+
+    else:
+        queueName = "protocols"
+        hostname = "protocols@%h"
+        concurrency = max(
+            1,
+            _envInt(
+                env,
+                "PROTOCOL_WORKER_CONCURRENCY",
+                4,
+            ),
+        )
+        logPath = (
+            logsDir
+            / "celery-protocols.log"
+        )
+
+    return {
+        "kind": kind,
+        "repoRoot": repoRoot,
+        "pidPath": _getWorkerPidPath(
+            repoRoot,
+            kind,
+        ),
+        "logPath": logPath,
+        "celeryApp": celeryApp,
+        "celeryLogLevel": celeryLogLevel,
+        "queueName": queueName,
+        "hostname": hostname,
+        "concurrency": concurrency,
+        "startupWait": startupWait,
+    }
+
+
+def startWorkerProcess(
+    workerKind: str,
+) -> Dict[str, Any]:
+    spec = _getWorkerRuntimeSpec(
+        workerKind
+    )
+
+    state = getWorkerProcessState(
+        workerKind
+    )
+
+    if state["state"] == "running":
+        return state
+
+    if state["state"] in {
+        "stale",
+        "invalid",
+    }:
+        _safeUnlink(
+            spec["pidPath"]
+        )
+
+    workerEnv = os.environ.copy()
+    workerEnv["PYTHONPATH"] = str(
+        spec["repoRoot"]
+    )
+    workerEnv["PYTHONUNBUFFERED"] = "1"
+
+    command = _buildCeleryWorkerCommand(
+        celeryApp=spec["celeryApp"],
+        celeryLogLevel=spec[
+            "celeryLogLevel"
+        ],
+        queueName=spec["queueName"],
+        concurrency=spec["concurrency"],
+        hostname=spec["hostname"],
+    )
+
+    pid = _startDetachedProcess(
+        command,
+        cwd=spec["repoRoot"],
+        env=workerEnv,
+        logPath=spec["logPath"],
+        sanityWaitSec=spec[
+            "startupWait"
+        ],
+    )
+
+    _writePid(
+        spec["pidPath"],
+        pid,
+    )
+
+    return getWorkerProcessState(
+        workerKind
+    )
+
+
+def stopWorkerProcess(
+    workerKind: str,
+) -> Dict[str, Any]:
+    repoRoot = resolveRepoRoot()
+
+    _stopPid(
+        _getWorkerPidPath(
+            repoRoot,
+            workerKind,
+        )
+    )
+
+    return getWorkerProcessState(
+        workerKind
+    )
+
+
+def restartWorkerProcess(
+    workerKind: str,
+) -> Dict[str, Any]:
+    stopWorkerProcess(
+        workerKind
+    )
+
+    time.sleep(0.5)
+
+    return startWorkerProcess(
+        workerKind
+    )
+
 def startCommand() -> None:
     # startApiAndWorkers
     repoRoot = resolveRepoRoot()

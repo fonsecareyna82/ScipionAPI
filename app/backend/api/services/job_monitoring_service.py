@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import socket
 import ast
 import json
 import time
@@ -30,6 +31,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
+)
+from scipionapi_cli.runtime import (
+    getWorkerProcessState,
 )
 
 PROTOCOL_TASK_NAME = "app.tasks.executeProtocolTask"
@@ -382,6 +386,26 @@ class JobMonitoringService:
 
         return []
 
+    @staticmethod
+    def _workerKind(
+            workerName: str,
+    ) -> Optional[str]:
+        name = str(
+            workerName or ""
+        ).lower()
+
+        if name.startswith(
+                "protocols@"
+        ):
+            return "protocols"
+
+        if name.startswith(
+                "plugins@"
+        ):
+            return "plugins"
+
+        return None
+
     def _buildWorkers(
             self,
             snapshot,
@@ -461,6 +485,79 @@ class JobMonitoringService:
                 "reserved": len(
                     workerReserved
                 ),
+                "kind": self._workerKind(
+                    workerName
+                ),
+                "state": "online",
+                "pid": None,
+            })
+
+        expectedWorkers = (
+            ("protocols", "protocols"),
+            ("plugins", "plugins"),
+        )
+
+        existingKinds = {
+            worker.get("kind")
+            for worker in workers
+        }
+
+        for (
+            workerKind,
+            queueName,
+        ) in expectedWorkers:
+            processState = (
+                getWorkerProcessState(
+                    workerKind
+                )
+            )
+
+            matchingWorker = next(
+                (
+                    worker
+                    for worker in workers
+                    if worker.get("kind")
+                    == workerKind
+                ),
+                None,
+            )
+
+            if matchingWorker is not None:
+                matchingWorker["pid"] = (
+                    processState.get(
+                        "pid"
+                    )
+                )
+                continue
+
+            processRunning = (
+                processState.get("state")
+                == "running"
+            )
+
+            workers.append({
+                "name": (
+                    f"{workerKind}@"
+                    f"{socket.gethostname()}"
+                ),
+                "kind": workerKind,
+                "queues": [
+                    queueName,
+                ],
+                "online": False,
+                "state": (
+                    "unresponsive"
+                    if processRunning
+                    else "offline"
+                ),
+                "pid": (
+                    processState.get(
+                        "pid"
+                    )
+                ),
+                "concurrency": 0,
+                "active": 0,
+                "reserved": 0,
             })
 
         workers.sort(

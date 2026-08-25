@@ -31,8 +31,11 @@ from pydantic import BaseModel, Field
 
 class JobWorkerOut(BaseModel):
     name: str
+    kind: Optional[str] = None
     queues: List[str] = Field(default_factory=list)
     online: bool = True
+    state: str = "online"
+    pid: Optional[int] = None
     concurrency: int = 0
     active: int = 0
     reserved: int = 0
