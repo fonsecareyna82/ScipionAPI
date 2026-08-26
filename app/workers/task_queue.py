@@ -47,6 +47,39 @@ def ansi(text: str, color: str, bold: bool = False) -> str:
     return f"{prefix}{text}{ANSI_RESET}"
 
 
+def _lowerPluginTaskPriority() -> None:
+    try:
+        targetNice = int(
+            os.environ.get(
+                "PLUGIN_TASK_NICE",
+                "5",
+            )
+        )
+
+        targetNice = max(
+            0,
+            min(19, targetNice),
+        )
+
+        currentNice = os.getpriority(
+            os.PRIO_PROCESS,
+            0,
+        )
+
+        if currentNice < targetNice:
+            os.setpriority(
+                os.PRIO_PROCESS,
+                0,
+                targetNice,
+            )
+
+    except Exception:
+        logger.debug(
+            "Could not lower plugin task priority.",
+            exc_info=True,
+        )
+
+
 PROTOCOL_SUCCESS_STATUSES = {
     "finished",
     "interactive",
@@ -149,6 +182,7 @@ def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
         self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
         writePluginTaskStep(taskId, "Preparing environment...")
         prepareEnvironment()
+        _lowerPluginTaskPriority()
 
         self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
         writePluginTaskStep(taskId, "Loading service...")
@@ -190,6 +224,7 @@ def installPluginsBatchTask(self, pip_names: List[str], skip_binaries: bool = Fa
         self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
         writePluginTaskStep(taskId, "Preparing environment...")
         prepareEnvironment()
+        _lowerPluginTaskPriority()
 
         self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
         writePluginTaskStep(taskId, "Loading service...")
@@ -267,6 +302,7 @@ def installDevelPluginTask(
         self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
         writePluginTaskStep(taskId, "Preparing environment...")
         prepareEnvironment()
+        _lowerPluginTaskPriority()
 
         self.update_state(state="PROGRESS", meta={"step": "Loading devel service..."})
         writePluginTaskStep(taskId, "Loading devel service...")
@@ -309,6 +345,7 @@ def uninstallPluginTask(self, pip_name: str) -> str:
         self.update_state(state="PROGRESS", meta={"step": "Preparing environment..."})
         writePluginTaskStep(taskId, "Preparing environment...")
         prepareEnvironment()
+        _lowerPluginTaskPriority()
 
         self.update_state(state="PROGRESS", meta={"step": "Loading service..."})
         writePluginTaskStep(taskId, "Loading service...")
