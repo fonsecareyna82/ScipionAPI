@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -168,6 +169,219 @@ def test_RequestedReleaseVersionIsOnlyAnAssertion(
             webRoot,
             requestedVersion="v4.0.1",
         )
+
+
+def test_BuildApiReleaseArchiveUsesManagedPaths(
+    monkeypatch,
+    tmp_path,
+):
+    repoRoot = tmp_path / "ScipionAPI"
+    repoRoot.mkdir()
+
+    appPath = repoRoot / "app"
+    appPath.mkdir()
+
+    (appPath / "main.py").write_text(
+        "print('api')",
+        encoding="utf-8",
+    )
+
+    cachePath = appPath / "__pycache__"
+    cachePath.mkdir()
+
+    (cachePath / "main.pyc").write_bytes(
+        b"cache"
+    )
+
+    (repoRoot / "pyproject.toml").write_text(
+        "[project]\nname='scipionapi'\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "API_MANAGED_PATHS",
+        [
+            "app",
+            "pyproject.toml",
+        ],
+    )
+
+    archivePath = (
+        tmp_path
+        / "ScipionAPI-v4.0.0.zip"
+    )
+
+    releaseModule._buildApiReleaseArchive(
+        repoRoot,
+        archivePath,
+    )
+
+    with zipfile.ZipFile(
+        archivePath,
+        "r",
+    ) as archive:
+        names = set(
+            archive.namelist()
+        )
+
+    assert "app/main.py" in names
+    assert "pyproject.toml" in names
+    assert not any(
+        "__pycache__" in name
+        for name in names
+    )
+
+
+def test_BuildWebReleaseArchiveKeepsAppRoot(
+    tmp_path,
+):
+    webDistPath = (
+        tmp_path
+        / "dist"
+        / "app"
+    )
+
+    assetsPath = (
+        webDistPath
+        / "assets"
+    )
+
+    assetsPath.mkdir(
+        parents=True
+    )
+
+    (webDistPath / "index.html").write_text(
+        "<html></html>",
+        encoding="utf-8",
+    )
+
+    (assetsPath / "main.js").write_text(
+        "console.log('web')",
+        encoding="utf-8",
+    )
+
+    archivePath = (
+        tmp_path
+        / "ScipionWeb-v4.0.0-dist.zip"
+    )
+
+    releaseModule._buildWebReleaseArchive(
+        webDistPath,
+        archivePath,
+    )
+
+    with zipfile.ZipFile(
+        archivePath,
+        "r",
+    ) as archive:
+        names = set(
+            archive.namelist()
+        )
+
+    assert "app/index.html" in names
+    assert "app/assets/main.js" in names
+    assert "index.html" not in names
+
+
+def test_ReleaseBuildRunsWebBuild(
+    monkeypatch,
+    tmp_path,
+):
+    apiRoot = tmp_path / "ScipionAPI"
+    webRoot = tmp_path / "ScipionWeb"
+    downloads = tmp_path / "downloads"
+
+    apiRoot.mkdir()
+    webRoot.mkdir()
+
+    (webRoot / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.0",
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "resolveRepoRoot",
+        lambda: apiRoot,
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "SCIPIONAPI_VERSION",
+        "4.0.0",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "_requireTool",
+        lambda name: name,
+    )
+
+    calls = []
+
+    def fakeRun(
+        args,
+        captureOutput=False,
+        check=True,
+        cwd=None,
+    ):
+        calls.append(
+            (args, cwd)
+        )
+
+        webDist = (
+            webRoot
+            / "dist"
+            / "app"
+        )
+
+        webDist.mkdir(
+            parents=True
+        )
+
+        (webDist / "index.html").write_text(
+            "<html></html>",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "_run",
+        fakeRun,
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "_buildApiReleaseArchive",
+        lambda repoRoot, archivePath:
+            archivePath.write_bytes(b"api"),
+    )
+
+    releaseModule.releaseBuildCommand(
+        webRoot=str(webRoot),
+        downloadsDir=str(downloads),
+    )
+
+    assert calls == [
+        (
+            ["npm", "run", "build:web"],
+            webRoot.resolve(),
+        )
+    ]
+
+    assert (
+        downloads
+        / "ScipionAPI-v4.0.0.zip"
+    ).is_file()
+
+    assert (
+        downloads
+        / "ScipionWeb-v4.0.0-dist.zip"
+    ).is_file()
 
 
 def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ from scipionapi_cli.release import (
     DEFAULT_RELEASE_BASE_URL,
     DEFAULT_RELEASE_LOGIN,
     DEFAULT_RELEASE_REMOTE_DIR,
+    releaseBuildCommand,
     releaseUploadCommand,
 )
 from scipionapi_cli.update import updateCommand
@@ -412,8 +413,8 @@ def update(
 @app.command(
     "release",
     help=(
-        "Publish a paired ScipionAPI/ScipionWeb release to the ScipionWeb "
-        "download server using rsync + ssh."
+            "Build paired ScipionAPI/ScipionWeb release archives locally "
+            "and optionally publish them to the download server."
     ),
 )
 def release(
@@ -445,7 +446,7 @@ def release(
     downloadsDir: str = typer.Option(
         ".",
         "--downloads-dir",
-        help="Directory containing the ScipionAPI and ScipionWeb release ZIPs.",
+        help="Directory where the ScipionAPI and ScipionWeb release ZIPs are created or read.",
         show_default=True,
     ),
     apiFile: Optional[str] = typer.Option(
@@ -508,10 +509,14 @@ def release(
     ),
 ) -> None:
     if not upload:
-        raise typer.BadParameter(
-            "No release action selected. Use --upload.",
-            param_hint="--upload",
+        releaseBuildCommand(
+            version=version,
+            webRoot=webRoot,
+            downloadsDir=downloadsDir,
+            apiFile=apiFile,
+            webFile=webFile,
         )
+        return
 
     releaseUploadCommand(
         version=version,

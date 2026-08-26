@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -20,7 +21,10 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from scipionapi_cli.shell import resolveRepoRoot
-from scipionapi_cli.update import DEFAULT_UPDATE_BASE_URL
+from scipionapi_cli.update import (
+    API_MANAGED_PATHS,
+    DEFAULT_UPDATE_BASE_URL,
+)
 from scipionapi_cli.version import __version__ as SCIPIONAPI_VERSION
 
 
@@ -270,13 +274,237 @@ def _run(
     args: List[str],
     captureOutput: bool = False,
     check: bool = True,
+    cwd: Optional[Path] = None,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         args,
         check=check,
         capture_output=captureOutput,
         text=True,
+        cwd=str(cwd) if cwd else None,
     )
+
+
+def _shouldSkipReleaseFile(
+    relativePath: Path,
+) -> bool:
+    return (
+        "__pycache__" in relativePath.parts
+        or relativePath.suffix in {".pyc", ".pyo"}
+    )
+
+def _buildApiReleaseArchive(
+    repoRoot: Path,
+    archivePath: Path,
+) -> None:
+    archivePath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with zipfile.ZipFile(
+        archivePath,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        for relativeName in API_MANAGED_PATHS:
+            sourcePath = repoRoot / relativeName
+
+            if not sourcePath.exists():
+                raise RuntimeError(
+                    "ScipionAPI release path not found: "
+                    f"{sourcePath}"
+                )
+
+            if sourcePath.is_file():
+                archive.write(
+                    sourcePath,
+                    arcname=relativeName,
+                )
+                continue
+
+            for filePath in sorted(
+                sourcePath.rglob("*")
+            ):
+                if not filePath.is_file():
+                    continue
+
+                relativePath = filePath.relative_to(
+                    sourcePath
+                )
+
+                if _shouldSkipReleaseFile(
+                    relativePath
+                ):
+                    continue
+
+                archive.write(
+                    filePath,
+                    arcname=(
+                        Path(relativeName)
+                        / relativePath
+                    ),
+                )
+
+
+def _buildWebReleaseArchive(
+    webDistPath: Path,
+    archivePath: Path,
+) -> None:
+    indexPath = webDistPath / "index.html"
+
+    if not indexPath.is_file():
+        raise RuntimeError(
+            "ScipionWeb build is not valid. "
+            f"index.html not found at {indexPath}"
+        )
+
+    archivePath.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with zipfile.ZipFile(
+        archivePath,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        for filePath in sorted(
+            webDistPath.rglob("*")
+        ):
+            if not filePath.is_file():
+                continue
+
+            archive.write(
+                filePath,
+                arcname=(
+                    Path("app")
+                    / filePath.relative_to(
+                        webDistPath
+                    )
+                ),
+            )
+
+
+def releaseBuildCommand(
+    version: Optional[str] = None,
+    webRoot: Optional[str] = None,
+    downloadsDir: str = ".",
+    apiFile: Optional[str] = None,
+    webFile: Optional[str] = None,
+) -> Tuple[str, Path, Path]:
+    repoRoot = resolveRepoRoot()
+
+    resolvedWebRoot = _resolveWebRoot(
+        repoRoot,
+        webRoot,
+    )
+
+    normalizedVersion = _resolvePairedReleaseVersion(
+        resolvedWebRoot,
+        requestedVersion=version,
+    )
+
+    downloadsPath = Path(
+        downloadsDir
+    ).expanduser().resolve()
+
+    downloadsPath.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    apiPath = _resolveAssetPath(
+        downloadsPath,
+        apiFile,
+        f"ScipionAPI-{normalizedVersion}.zip",
+    )
+
+    webPath = _resolveAssetPath(
+        downloadsPath,
+        webFile,
+        f"ScipionWeb-{normalizedVersion}-dist.zip",
+    )
+
+    _printPanel(
+        "ScipionWeb paired release build"
+    )
+
+    _printKeyValueTable(
+        "Release sources",
+        [
+            ("Version", normalizedVersion),
+            ("ScipionAPI", repoRoot),
+            ("ScipionWeb", resolvedWebRoot),
+            ("Output", downloadsPath),
+        ],
+    )
+
+    _requireTool("npm")
+
+    _printStep(
+        "Building ScipionWeb",
+        str(resolvedWebRoot),
+    )
+
+    _run(
+        ["npm", "run", "build:web"],
+        cwd=resolvedWebRoot,
+    )
+
+    webDistPath = (
+        resolvedWebRoot
+        / "dist"
+        / "app"
+    )
+
+    if not webDistPath.is_dir():
+        raise RuntimeError(
+            "ScipionWeb build did not create "
+            f"{webDistPath}"
+        )
+
+    _printStep(
+        "Packaging ScipionAPI",
+        apiPath.name,
+    )
+
+    _buildApiReleaseArchive(
+        repoRoot,
+        apiPath,
+    )
+
+    _printStep(
+        "Packaging ScipionWeb",
+        webPath.name,
+    )
+
+    _buildWebReleaseArchive(
+        webDistPath,
+        webPath,
+    )
+
+    _printKeyValueTable(
+        "Release artifacts",
+        [
+            (
+                "ScipionAPI ZIP",
+                f"{apiPath} "
+                f"({apiPath.stat().st_size} bytes)",
+            ),
+            (
+                "ScipionWeb ZIP",
+                f"{webPath} "
+                f"({webPath.stat().st_size} bytes)",
+            ),
+        ],
+    )
+
+    _printSuccess(
+        f"Release {normalizedVersion} artifacts created successfully."
+    )
+
+    return normalizedVersion, apiPath, webPath
 
 
 def _runSsh(
