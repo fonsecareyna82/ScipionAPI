@@ -901,3 +901,60 @@ def releaseUploadCommand(
         _printSuccess(
             f"ScipionWeb release {normalizedVersion} published successfully."
         )
+
+
+def releaseCommand(
+    upload: bool = False,
+    buildArtifacts: bool = True,
+    version: Optional[str] = None,
+    webRoot: Optional[str] = None,
+    downloadsDir: str = ".",
+    apiFile: Optional[str] = None,
+    webFile: Optional[str] = None,
+    login: str = DEFAULT_RELEASE_LOGIN,
+    remoteDir: str = DEFAULT_RELEASE_REMOTE_DIR,
+    baseUrl: str = DEFAULT_RELEASE_BASE_URL,
+    setLatest: bool = True,
+    dryRun: bool = False,
+    yes: bool = False,
+    force: bool = False,
+) -> None:
+    resolvedVersion = version
+    resolvedApiFile = apiFile
+    resolvedWebFile = webFile
+
+    if buildArtifacts:
+        resolvedVersion, apiPath, webPath = releaseBuildCommand(
+            version=version,
+            webRoot=webRoot,
+            downloadsDir=downloadsDir,
+            apiFile=apiFile,
+            webFile=webFile,
+        )
+
+        resolvedApiFile = str(apiPath)
+        resolvedWebFile = str(webPath)
+
+    elif not upload:
+        raise RuntimeError(
+            "No release action selected. "
+            "Use --build or --upload."
+        )
+
+    if not upload:
+        return
+
+    releaseUploadCommand(
+        version=resolvedVersion,
+        webRoot=webRoot,
+        downloadsDir=downloadsDir,
+        apiFile=resolvedApiFile,
+        webFile=resolvedWebFile,
+        login=login,
+        remoteDir=remoteDir,
+        baseUrl=baseUrl,
+        setLatest=setLatest,
+        dryRun=dryRun,
+        yes=yes,
+        force=force,
+    )

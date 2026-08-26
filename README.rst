@@ -430,20 +430,46 @@ Options include ``--api-only``/``--web-only`` to update a single side,
 the full list (including ``--base-url``/``--api-zip-url``/``--web-zip-url``
 for custom release sources).
 
-Publish a release to the ScipionWeb download server (developer/admin use):
+Build a paired ScipionAPI/ScipionWeb release locally (developer/admin use):
+
+::
+
+    ./scripts/scipionapi release \
+      --downloads-dir /path/to/release/files
+
+The release command reads the version from ScipionAPI and ScipionWeb and
+requires both packages to use the same version. It then runs the ScipionWeb
+``npm run build:web`` build and creates:
+
+::
+
+    ScipionAPI-v4.0.0.zip
+    ScipionWeb-v4.0.0-dist.zip
+
+The Web archive contains the compiled ``dist/app`` directory as ``app/``.
+
+Build and publish both archives in one command:
 
 ::
 
     ./scripts/scipionapi release \
       --upload \
-      --version v4.0.0 \
       --downloads-dir /path/to/release/files
 
-The upload command publishes the paired API/Web ZIPs plus ``install.sh`` and
-updates ``manifest.json`` as the final atomic step. Use ``--dry-run`` first to
-inspect the resolved remote path and release plan. The SSH login, remote path,
-and public URL can be overridden with ``--login``, ``--remote-dir``, and
-``--base-url`` (or ``SCIPIONWEB_RELEASE_*`` environment variables).
+The upload flow also publishes ``install.sh`` and updates ``manifest.json`` as
+the final atomic step. ``--version`` is optional and acts only as an assertion
+against the versions declared by both packages.
+
+Use ``--dry-run`` with ``--upload`` to build the archives and inspect the
+resolved remote release plan without modifying remote files.
+
+Use ``--upload --no-build`` to preserve the previous workflow and publish
+already-existing release ZIPs.
+
+ScipionWeb is resolved by default as a sibling repository of ScipionAPI. Use
+``--web-root`` or ``SCIPIONWEB_RELEASE_WEB_ROOT`` when it lives elsewhere.
+The SSH login, remote path, and public URL can be overridden with ``--login``,
+``--remote-dir``, and ``--base-url``.
 
 Completely remove an installation created by the guided ``install.sh``:
 

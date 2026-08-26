@@ -384,6 +384,120 @@ def test_ReleaseBuildRunsWebBuild(
     ).is_file()
 
 
+def test_ReleaseCommandBuildsBeforeUpload(
+    monkeypatch,
+    tmp_path,
+):
+    apiPath = tmp_path / "ScipionAPI-v4.0.0.zip"
+    webPath = tmp_path / "ScipionWeb-v4.0.0-dist.zip"
+
+    buildCalls = []
+    uploadCalls = []
+
+    def fakeBuildCommand(**kwargs):
+        buildCalls.append(kwargs)
+        return "v4.0.0", apiPath, webPath
+
+    def fakeUploadCommand(**kwargs):
+        uploadCalls.append(kwargs)
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseBuildCommand",
+        fakeBuildCommand,
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseUploadCommand",
+        fakeUploadCommand,
+    )
+
+    releaseModule.releaseCommand(
+        upload=True,
+        downloadsDir=str(tmp_path),
+        dryRun=True,
+        yes=True,
+    )
+
+    assert len(buildCalls) == 1
+    assert len(uploadCalls) == 1
+
+    assert uploadCalls[0]["version"] == "v4.0.0"
+    assert uploadCalls[0]["apiFile"] == str(apiPath)
+    assert uploadCalls[0]["webFile"] == str(webPath)
+
+
+def test_ReleaseCommandBuildOnlyDoesNotUpload(
+    monkeypatch,
+    tmp_path,
+):
+    apiPath = tmp_path / "ScipionAPI-v4.0.0.zip"
+    webPath = tmp_path / "ScipionWeb-v4.0.0-dist.zip"
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseBuildCommand",
+        lambda **kwargs: (
+            "v4.0.0",
+            apiPath,
+            webPath,
+        ),
+    )
+
+    uploads = []
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseUploadCommand",
+        lambda **kwargs: uploads.append(kwargs),
+    )
+
+    releaseModule.releaseCommand(
+        upload=False,
+        downloadsDir=str(tmp_path),
+    )
+
+    assert uploads == []
+
+
+def test_ReleaseCommandCanUploadExistingArchives(
+    monkeypatch,
+    tmp_path,
+):
+    buildCalls = []
+    uploadCalls = []
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseBuildCommand",
+        lambda **kwargs: buildCalls.append(kwargs),
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "releaseUploadCommand",
+        lambda **kwargs: uploadCalls.append(kwargs),
+    )
+
+    releaseModule.releaseCommand(
+        upload=True,
+        buildArtifacts=False,
+        version="v4.0.0",
+        downloadsDir=str(tmp_path),
+        apiFile="ScipionAPI-v4.0.0.zip",
+        webFile="ScipionWeb-v4.0.0-dist.zip",
+        dryRun=True,
+        yes=True,
+    )
+
+    assert buildCalls == []
+    assert len(uploadCalls) == 1
+    assert uploadCalls[0]["version"] == "v4.0.0"
+    assert uploadCalls[0]["apiFile"] == "ScipionAPI-v4.0.0.zip"
+    assert uploadCalls[0]["webFile"] == "ScipionWeb-v4.0.0-dist.zip"
+
+
 def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
     repo_root = Path(__file__).resolve().parents[3]
     web_root = tmp_path / "ScipionWeb"

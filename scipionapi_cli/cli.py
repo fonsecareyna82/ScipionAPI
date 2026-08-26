@@ -14,8 +14,7 @@ from scipionapi_cli.release import (
     DEFAULT_RELEASE_BASE_URL,
     DEFAULT_RELEASE_LOGIN,
     DEFAULT_RELEASE_REMOTE_DIR,
-    releaseBuildCommand,
-    releaseUploadCommand,
+    releaseCommand,
 )
 from scipionapi_cli.update import updateCommand
 from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
@@ -418,107 +417,117 @@ def update(
     ),
 )
 def release(
-    upload: bool = typer.Option(
-        False,
-        "--upload",
-        help="Upload the selected release to the configured remote server.",
-        show_default=True,
-    ),
-    version: Optional[str] = typer.Option(
-        None,
-        "--version",
-        help=(
-                "Optional expected release version, for example v4.0.0. "
-                "The actual version is read from ScipionAPI and ScipionWeb."
+        upload: bool = typer.Option(
+            False,
+            "--upload",
+            help=(
+                    "Publish the release to the configured remote server "
+                    "after building it, unless --no-build is used."
+            ),
+            show_default=True,
         ),
-        show_default=False,
-    ),
-    webRoot: Optional[str] = typer.Option(
-        None,
-        "--web-root",
-        envvar="SCIPIONWEB_RELEASE_WEB_ROOT",
-        help=(
-            "Path to the ScipionWeb repository. "
-            "Defaults to a ScipionWeb sibling of ScipionAPI."
+        buildArtifacts: bool = typer.Option(
+            True,
+            "--build/--no-build",
+            help=(
+                "Build fresh ScipionAPI and ScipionWeb release ZIPs first. "
+                "Use --no-build only when uploading existing archives."
+            ),
+            show_default=True,
         ),
-        show_default=False,
-    ),
-    downloadsDir: str = typer.Option(
-        ".",
-        "--downloads-dir",
-        help="Directory where the ScipionAPI and ScipionWeb release ZIPs are created or read.",
-        show_default=True,
-    ),
-    apiFile: Optional[str] = typer.Option(
-        None,
-        "--api-file",
-        help="Optional custom ScipionAPI ZIP path or filename.",
-        show_default=False,
-    ),
-    webFile: Optional[str] = typer.Option(
-        None,
-        "--web-file",
-        help="Optional custom ScipionWeb ZIP path or filename.",
-        show_default=False,
-    ),
-    login: str = typer.Option(
-        DEFAULT_RELEASE_LOGIN,
-        "--login",
-        envvar="SCIPIONWEB_RELEASE_LOGIN",
-        help="SSH login used to publish release files.",
-        show_default=True,
-    ),
-    remoteDir: str = typer.Option(
-        DEFAULT_RELEASE_REMOTE_DIR,
-        "--remote-dir",
-        envvar="SCIPIONWEB_RELEASE_REMOTE_DIR",
-        help="Remote directory corresponding to the public ScipionWeb download URL.",
-        show_default=True,
-    ),
-    baseUrl: str = typer.Option(
-        DEFAULT_RELEASE_BASE_URL,
-        "--base-url",
-        envvar="SCIPIONWEB_RELEASE_BASE_URL",
-        help="Public HTTP base URL used to verify the published manifest.",
-        show_default=True,
-    ),
-    setLatest: bool = typer.Option(
-        True,
-        "--latest/--no-latest",
-        help="Update manifest.json latest to this release.",
-        show_default=True,
-    ),
-    dryRun: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Resolve and validate the release plan without uploading files.",
-        show_default=True,
-    ),
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Upload without interactive confirmation.",
-        show_default=True,
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Intentionally replace an already-published release version.",
-        show_default=True,
-    ),
-) -> None:
-    if not upload:
-        releaseBuildCommand(
-            version=version,
-            webRoot=webRoot,
-            downloadsDir=downloadsDir,
-            apiFile=apiFile,
-            webFile=webFile,
+        version: Optional[str] = typer.Option(
+            None,
+            "--version",
+            help=(
+                    "Optional expected release version, for example v4.0.0. "
+                    "The actual version is read from ScipionAPI and ScipionWeb."
+            ),
+            show_default=False,
+        ),
+        webRoot: Optional[str] = typer.Option(
+            None,
+            "--web-root",
+            envvar="SCIPIONWEB_RELEASE_WEB_ROOT",
+            help=(
+                "Path to the ScipionWeb repository. "
+                "Defaults to a ScipionWeb sibling of ScipionAPI."
+            ),
+            show_default=False,
+        ),
+        downloadsDir: str = typer.Option(
+            ".",
+            "--downloads-dir",
+            help="Directory where the ScipionAPI and ScipionWeb release ZIPs are created or read.",
+            show_default=True,
+        ),
+        apiFile: Optional[str] = typer.Option(
+            None,
+            "--api-file",
+            help="Optional custom ScipionAPI ZIP path or filename.",
+            show_default=False,
+        ),
+        webFile: Optional[str] = typer.Option(
+            None,
+            "--web-file",
+            help="Optional custom ScipionWeb ZIP path or filename.",
+            show_default=False,
+        ),
+        login: str = typer.Option(
+            DEFAULT_RELEASE_LOGIN,
+            "--login",
+            envvar="SCIPIONWEB_RELEASE_LOGIN",
+            help="SSH login used to publish release files.",
+            show_default=True,
+        ),
+        remoteDir: str = typer.Option(
+            DEFAULT_RELEASE_REMOTE_DIR,
+            "--remote-dir",
+            envvar="SCIPIONWEB_RELEASE_REMOTE_DIR",
+            help="Remote directory corresponding to the public ScipionWeb download URL.",
+            show_default=True,
+        ),
+        baseUrl: str = typer.Option(
+            DEFAULT_RELEASE_BASE_URL,
+            "--base-url",
+            envvar="SCIPIONWEB_RELEASE_BASE_URL",
+            help="Public HTTP base URL used to verify the published manifest.",
+            show_default=True,
+        ),
+        setLatest: bool = typer.Option(
+            True,
+            "--latest/--no-latest",
+            help="Update manifest.json latest to this release.",
+            show_default=True,
+        ),
+        dryRun: bool = typer.Option(
+            False,
+            "--dry-run",
+            help="Resolve and validate the release plan without uploading files.",
+            show_default=True,
+        ),
+        yes: bool = typer.Option(
+            False,
+            "--yes",
+            "-y",
+            help="Upload without interactive confirmation.",
+            show_default=True,
+        ),
+        force: bool = typer.Option(
+            False,
+            "--force",
+            help="Intentionally replace an already-published release version.",
+            show_default=True,
+        ),
+    ) -> None:
+    if not buildArtifacts and not upload:
+        raise typer.BadParameter(
+            "--no-build requires --upload because there would be no release action.",
+            param_hint="--no-build",
         )
-        return
 
-    releaseUploadCommand(
+    releaseCommand(
+        upload=upload,
+        buildArtifacts=buildArtifacts,
         version=version,
         webRoot=webRoot,
         downloadsDir=downloadsDir,
