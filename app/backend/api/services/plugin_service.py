@@ -457,7 +457,9 @@ class PluginService:
         currentRevision = self._getPluginsRevision()
 
         if currentRevision != self._pluginsRevision:
-            self.clearCache()
+            self.clearCache(
+                reloadRepository=False
+            )
 
         with self._cacheLock:
             if self._pluginsCache is not None and not forceRefresh:
