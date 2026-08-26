@@ -15,6 +15,9 @@ from celery import Celery, Task
 from celery.exceptions import Ignore
 
 from app.backend.api.services.environment import prepareEnvironment
+from app.backend.api.services.scipion_domain_refresh_service import (
+    refreshScipionDomainIfNeeded,
+)
 from app.backend.api.services.plugin_task_log import (
     appendPluginTaskLog,
     pluginTaskLogCapture,
@@ -400,6 +403,19 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
         )
 
         prepareEnvironment()
+
+        domainRefreshed = (
+            refreshScipionDomainIfNeeded()
+        )
+
+        if domainRefreshed:
+            logger.info(
+                "Refreshed Scipion domain before "
+                "protocol execution. "
+                "projectId=%s protocolId=%s",
+                projectId,
+                protocolId,
+            )
 
         runtimeWorker = RuntimePostgresqlProtocolWorker(
             projectId=projectId,
