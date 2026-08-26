@@ -656,6 +656,87 @@ def _getWorkerRuntimeSpec(
     }
 
 
+def _recoverInterruptedPluginTasks() -> int:
+    try:
+        from app.backend.api.services.plugin_task_log import (
+            appendPluginTaskLog,
+        )
+        from app.backend.api.services.system_task_service import (
+            SystemTaskService,
+        )
+
+        service = SystemTaskService()
+
+        tasks = service.listTasks(
+            taskType="plugin",
+            includeAcknowledged=True,
+            limit=500,
+        )
+
+        interruptedStatuses = {
+            "STARTED",
+            "PROGRESS",
+            "RETRY",
+        }
+
+        recovered = 0
+
+        for task in tasks:
+            backend = str(
+                task.get("backend")
+                or ""
+            ).strip().lower()
+
+            status = str(
+                task.get("status")
+                or ""
+            ).strip().upper()
+
+            if (
+                backend != "celery"
+                or status not in interruptedStatuses
+            ):
+                continue
+
+            taskId = str(
+                task.get("taskId")
+                or ""
+            ).strip()
+
+            if not taskId:
+                continue
+
+            message = (
+                "Plugin task was interrupted because "
+                "the plugin worker restarted before "
+                "completion. The operation may have "
+                "been partially applied; verify the "
+                "plugin state and retry if needed."
+            )
+
+            service.updateTask(
+                taskId=taskId,
+                status="FAILURE",
+                step="Interrupted",
+                error=message,
+            )
+
+            try:
+                appendPluginTaskLog(
+                    taskId,
+                    f"[recovery] {message}",
+                )
+            except Exception:
+                pass
+
+            recovered += 1
+
+        return recovered
+
+    except Exception:
+        return 0
+
+
 def startWorkerProcess(
     workerKind: str,
 ) -> Dict[str, Any]:
@@ -677,6 +758,9 @@ def startWorkerProcess(
         _safeUnlink(
             spec["pidPath"]
         )
+
+    if spec["kind"] == "plugins":
+        _recoverInterruptedPluginTasks()
 
     workerEnv = os.environ.copy()
     workerEnv["PYTHONPATH"] = str(
@@ -860,6 +944,8 @@ def startCommand() -> None:
     )
 
     if not workerPidPath.exists():
+        _recoverInterruptedPluginTasks()
+
         _printInfo("Launching plugin Celery worker")
         workerEnv = os.environ.copy()
         workerEnv["PYTHONPATH"] = str(repoRoot)

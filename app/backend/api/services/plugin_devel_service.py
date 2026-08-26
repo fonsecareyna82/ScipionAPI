@@ -11,7 +11,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence
 
-from app.backend.api.services.plugin_task_log import appendPluginTaskLog, writePluginTaskStep
+from app.backend.api.services.plugin_task_log import (
+    appendPluginTaskLog,
+    getPluginTaskLogPath,
+    writePluginTaskStep,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -343,28 +347,60 @@ class PluginDevelService:
 
         return [sys.executable, "-m", "scipion"]
 
-    def _runCommand(self, command: Sequence[str], cwd: Path, taskId: Optional[str]) -> None:
+    def _runCommand(
+            self,
+            command: Sequence[str],
+            cwd: Path,
+            taskId: Optional[str],
+    ) -> None:
         if taskId:
-            appendPluginTaskLog(taskId, "$ " + " ".join(str(part) for part in command))
+            appendPluginTaskLog(
+                taskId,
+                "$ " + " ".join(
+                    str(part)
+                    for part in command
+                ),
+            )
 
-        process = subprocess.Popen(
-            list(command),
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=os.environ.copy(),
-        )
+        logFile = None
 
-        assert process.stdout is not None
-        for line in process.stdout:
+        try:
             if taskId:
-                appendPluginTaskLog(taskId, line)
+                logFile = open(
+                    getPluginTaskLogPath(taskId),
+                    "a",
+                    encoding="utf-8",
+                    buffering=1,
+                    errors="replace",
+                )
 
-        returnCode = process.wait()
+            process = subprocess.Popen(
+                list(command),
+                cwd=str(cwd),
+                stdout=logFile,
+                stderr=(
+                    subprocess.STDOUT
+                    if logFile is not None
+                    else None
+                ),
+                env=os.environ.copy(),
+            )
+
+            returnCode = process.wait()
+
+        finally:
+            if logFile is not None:
+                logFile.close()
+
         if returnCode != 0:
-            raise RuntimeError(f"Command failed with exit code {returnCode}: {' '.join(str(part) for part in command)}")
+            raise RuntimeError(
+                f"Command failed with exit code {returnCode}: "
+                + " ".join(
+                    str(part)
+                    for part in command
+                )
+            )
+        
 
     def installDevelPlugin(
         self,

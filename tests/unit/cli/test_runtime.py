@@ -25,6 +25,10 @@
 # ******************************************************************************
 import socket
 
+import app.backend.api.services.plugin_task_log as pluginTaskLogModule
+import app.backend.api.services.system_task_service as systemTaskModule
+import scipionapi_cli.runtime as runtimeModule
+
 from scipionapi_cli.runtime import _canBindTcpPort
 
 
@@ -42,3 +46,354 @@ def test_CanBindTcpPortDetectsOccupiedPort():
             "127.0.0.1",
             str(occupiedPort),
         ) is False
+
+
+def test_RecoverInterruptedPluginTasksOnlyFailsActiveCeleryTasks(
+        monkeypatch,
+):
+    tasks = [
+        {
+            "taskId": "started-task",
+            "backend": "celery",
+            "status": "STARTED",
+        },
+        {
+            "taskId": "progress-task",
+            "backend": "celery",
+            "status": "PROGRESS",
+        },
+        {
+            "taskId": "retry-task",
+            "backend": "celery",
+            "status": "RETRY",
+        },
+        {
+            "taskId": "pending-task",
+            "backend": "celery",
+            "status": "PENDING",
+        },
+        {
+            "taskId": "success-task",
+            "backend": "celery",
+            "status": "SUCCESS",
+        },
+        {
+            "taskId": "local-progress",
+            "backend": "local",
+            "status": "PROGRESS",
+        },
+    ]
+
+    updates = []
+    logs = []
+
+    class FakeSystemTaskService:
+        def listTasks(self, **kwargs):
+            assert kwargs == {
+                "taskType": "plugin",
+                "includeAcknowledged": True,
+                "limit": 500,
+            }
+            return tasks
+
+        def updateTask(self, **kwargs):
+            updates.append(kwargs)
+            return kwargs
+
+    monkeypatch.setattr(
+        systemTaskModule,
+        "SystemTaskService",
+        FakeSystemTaskService,
+    )
+
+    monkeypatch.setattr(
+        pluginTaskLogModule,
+        "appendPluginTaskLog",
+        lambda taskId, text: logs.append(
+            (taskId, text)
+        ),
+    )
+
+    recovered = (
+        runtimeModule
+        ._recoverInterruptedPluginTasks()
+    )
+
+    assert recovered == 3
+
+    assert [
+        item["taskId"]
+        for item in updates
+    ] == [
+        "started-task",
+        "progress-task",
+        "retry-task",
+    ]
+
+    for update in updates:
+        assert update["status"] == "FAILURE"
+        assert update["step"] == "Interrupted"
+        assert "interrupted" in (
+            update["error"].lower()
+        )
+
+    assert [
+        taskId
+        for taskId, _ in logs
+    ] == [
+        "started-task",
+        "progress-task",
+        "retry-task",
+    ]
+
+
+def test_StartPluginWorkerRecoversInterruptedTasksBeforeLaunch(
+        tmp_path,
+        monkeypatch,
+):
+    pidPath = tmp_path / "worker.pid"
+    logPath = tmp_path / "celery.log"
+
+    spec = {
+        "kind": "plugins",
+        "repoRoot": tmp_path,
+        "pidPath": pidPath,
+        "logPath": logPath,
+        "celeryApp": "app.workers.task_queue",
+        "celeryLogLevel": "info",
+        "queueName": "plugins",
+        "hostname": "plugins@%h",
+        "concurrency": 1,
+        "startupWait": 0.1,
+    }
+
+    states = iter([
+        {
+            "kind": "plugins",
+            "state": "stopped",
+            "pid": None,
+            "pidPath": str(pidPath),
+        },
+        {
+            "kind": "plugins",
+            "state": "running",
+            "pid": 12345,
+            "pidPath": str(pidPath),
+        },
+    ])
+
+    events = []
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_getWorkerRuntimeSpec",
+        lambda workerKind: spec,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "getWorkerProcessState",
+        lambda workerKind: next(states),
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_recoverInterruptedPluginTasks",
+        lambda: events.append("recover") or 1,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_buildCeleryWorkerCommand",
+        lambda **kwargs: ["celery-worker"],
+    )
+
+    def fakeStartDetachedProcess(*args, **kwargs):
+        events.append("launch")
+        return 12345
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_startDetachedProcess",
+        fakeStartDetachedProcess,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_writePid",
+        lambda path, pid: None,
+    )
+
+    result = runtimeModule.startWorkerProcess(
+        "plugins"
+    )
+
+    assert events == [
+        "recover",
+        "launch",
+    ]
+
+    assert result["state"] == "running"
+    assert result["pid"] == 12345
+
+
+def test_StartCommandRecoversInterruptedTasksBeforePluginWorkerLaunch(
+        tmp_path,
+        monkeypatch,
+):
+    runDir = tmp_path / ".run"
+    runDir.mkdir()
+
+    (runDir / "api.pid").write_text(
+        "101",
+        encoding="utf-8",
+    )
+
+    (runDir / "protocol-worker.pid").write_text(
+        "303",
+        encoding="utf-8",
+    )
+
+    env = {
+        "API_HOST": "127.0.0.1",
+        "API_PORT": "39080",
+        "LOGS_PATH": str(
+            tmp_path / "logs"
+        ),
+        "CELERY_APP": "app.workers.task_queue",
+        "CELERY_LOGLEVEL": "info",
+        "SERVE_WEB": "0",
+    }
+
+    events = []
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "resolveRepoRoot",
+        lambda: tmp_path,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_loadEnv",
+        lambda repoRoot: env,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_resolveEnvPath",
+        lambda repoRoot:
+            tmp_path
+            / "scipion_home"
+            / ".env",
+    )
+
+    def fakeDescribePidState(path):
+        if path.name == "api.pid":
+            return "RUNNING", 101
+
+        if path.name == "protocol-worker.pid":
+            return "RUNNING", 303
+
+        if path.name == "worker.pid":
+            if path.exists():
+                return "RUNNING", 202
+
+            return "STOPPED", None
+
+        raise AssertionError(
+            f"Unexpected PID path: {path}"
+        )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_describePidState",
+        fakeDescribePidState,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_waitForTcp",
+        lambda *args, **kwargs: True,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_waitForHttp",
+        lambda *args, **kwargs:
+            (True, "HTTP 200"),
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_recoverInterruptedPluginTasks",
+        lambda: events.append("recover") or 1,
+    )
+
+    def fakeStartDetachedProcess(
+            args,
+            cwd,
+            env,
+            logPath,
+            sanityWaitSec,
+    ):
+        events.append("launch")
+        return 202
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_startDetachedProcess",
+        fakeStartDetachedProcess,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printPanel",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printKeyValueTable",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printServiceStatusTable",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printSummaryTable",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printInfo",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_printSuccess",
+        lambda *args, **kwargs: None,
+    )
+
+    runtimeModule.startCommand()
+
+    assert events == [
+        "recover",
+        "launch",
+    ]
+
+    assert (
+        runDir
+        / "worker.pid"
+    ).read_text(
+        encoding="utf-8"
+    ) == "202"
+
+
