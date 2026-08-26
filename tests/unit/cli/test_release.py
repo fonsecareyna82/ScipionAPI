@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,113 @@ def test_ResolveAssetPathPreservesAbsolutePath(tmp_path):
     )
 
     assert path == archive.resolve()
+
+
+def test_ResolveWebRootUsesSiblingRepository(tmp_path):
+    apiRoot = tmp_path / "ScipionAPI"
+    webRoot = tmp_path / "ScipionWeb"
+
+    apiRoot.mkdir()
+    webRoot.mkdir()
+
+    (webRoot / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.0",
+        }),
+        encoding="utf-8",
+    )
+
+    assert releaseModule._resolveWebRoot(
+        apiRoot
+    ) == webRoot.resolve()
+
+
+def test_ResolvePairedReleaseVersionMatchesApiAndWeb(
+    monkeypatch,
+    tmp_path,
+):
+    webRoot = tmp_path / "ScipionWeb"
+    webRoot.mkdir()
+
+    (webRoot / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.0",
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "SCIPIONAPI_VERSION",
+        "4.0.0",
+    )
+
+    assert releaseModule._resolvePairedReleaseVersion(
+        webRoot
+    ) == "v4.0.0"
+
+
+def test_ResolvePairedReleaseVersionRejectsMismatch(
+    monkeypatch,
+    tmp_path,
+):
+    webRoot = tmp_path / "ScipionWeb"
+    webRoot.mkdir()
+
+    (webRoot / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.1",
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "SCIPIONAPI_VERSION",
+        "4.0.0",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Release version mismatch",
+    ):
+        releaseModule._resolvePairedReleaseVersion(
+            webRoot
+        )
+
+
+def test_RequestedReleaseVersionIsOnlyAnAssertion(
+    monkeypatch,
+    tmp_path,
+):
+    webRoot = tmp_path / "ScipionWeb"
+    webRoot.mkdir()
+
+    (webRoot / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.0",
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        releaseModule,
+        "SCIPIONAPI_VERSION",
+        "4.0.0",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Requested release version does not match",
+    ):
+        releaseModule._resolvePairedReleaseVersion(
+            webRoot,
+            requestedVersion="v4.0.1",
+        )
 
 
 def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):

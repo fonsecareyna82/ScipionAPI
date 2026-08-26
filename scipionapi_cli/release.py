@@ -21,11 +21,16 @@ from rich.table import Table
 
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.update import DEFAULT_UPDATE_BASE_URL
+from scipionapi_cli.version import __version__ as SCIPIONAPI_VERSION
 
 
 DEFAULT_RELEASE_LOGIN = "scipion@nolan.cnb.csic.es"
 DEFAULT_RELEASE_REMOTE_DIR = "/home/scipion/scipionfiles/downloads/scipion/scipionWeb"
 DEFAULT_RELEASE_BASE_URL = DEFAULT_UPDATE_BASE_URL
+
+RELEASE_VERSION_RE = re.compile(
+    r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-._A-Za-z0-9]*)?$"
+)
 
 console = Console()
 
@@ -132,6 +137,122 @@ def _normalizeBaseUrl(value: str) -> str:
     if not baseUrl.endswith("/"):
         baseUrl = f"{baseUrl}/"
     return baseUrl
+
+
+def _normalizePackageVersion(
+    value: str,
+    packageName: str,
+) -> str:
+    version = str(value or "").strip()
+
+    if version.startswith("v"):
+        version = version[1:]
+
+    if not version or not RELEASE_VERSION_RE.fullmatch(version):
+        raise RuntimeError(
+            f"Invalid {packageName} version: {value!r}"
+        )
+
+    return version
+
+
+def _resolveWebRoot(
+    repoRoot: Path,
+    webRoot: Optional[str] = None,
+) -> Path:
+    if webRoot:
+        candidate = Path(webRoot).expanduser().resolve()
+    else:
+        candidate = (repoRoot.parent / "ScipionWeb").resolve()
+
+    packagePath = candidate / "package.json"
+
+    if not packagePath.is_file():
+        raise RuntimeError(
+            "Could not locate ScipionWeb. Expected package.json at "
+            f"{packagePath}. Use --web-root to specify the repository."
+        )
+
+    return candidate
+
+
+def _readWebPackageVersion(
+    webRoot: Path,
+) -> str:
+    packagePath = webRoot / "package.json"
+
+    try:
+        package = json.loads(
+            packagePath.read_text(
+                encoding="utf-8",
+            )
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+    ) as error:
+        raise RuntimeError(
+            f"Could not read ScipionWeb package.json: {error}"
+        ) from error
+
+    if not isinstance(package, dict):
+        raise RuntimeError(
+            f"Invalid ScipionWeb package.json: {packagePath}"
+        )
+
+    packageName = str(
+        package.get("name")
+        or ""
+    ).strip()
+
+    if packageName != "scipionweb":
+        raise RuntimeError(
+            "Invalid ScipionWeb package identity. "
+            f"Expected 'scipionweb', found {packageName!r}."
+        )
+
+    return _normalizePackageVersion(
+        package.get("version"),
+        "ScipionWeb",
+    )
+
+
+def _resolvePairedReleaseVersion(
+    webRoot: Path,
+    requestedVersion: Optional[str] = None,
+) -> str:
+    apiVersion = _normalizePackageVersion(
+        SCIPIONAPI_VERSION,
+        "ScipionAPI",
+    )
+
+    webVersion = _readWebPackageVersion(
+        webRoot
+    )
+
+    if apiVersion != webVersion:
+        raise RuntimeError(
+            "Release version mismatch. "
+            f"ScipionAPI={apiVersion}, "
+            f"ScipionWeb={webVersion}. "
+            "Both packages must use the same version."
+        )
+
+    if requestedVersion:
+        expectedVersion = _normalizePackageVersion(
+            requestedVersion,
+            "requested release",
+        )
+
+        if expectedVersion != apiVersion:
+            raise RuntimeError(
+                "Requested release version does not match "
+                "the package versions. "
+                f"Requested={expectedVersion}, "
+                f"packages={apiVersion}."
+            )
+
+    return f"v{apiVersion}"
 
 
 def _resolveAssetPath(
@@ -347,7 +468,8 @@ def _verifyPublishedManifest(
 
 
 def releaseUploadCommand(
-    version: str,
+    version: Optional[str] = None,
+    webRoot: Optional[str] = None,
     downloadsDir: str = ".",
     apiFile: Optional[str] = None,
     webFile: Optional[str] = None,
@@ -360,8 +482,18 @@ def releaseUploadCommand(
     force: bool = False,
 ) -> None:
     repoRoot = resolveRepoRoot()
+
+    resolvedWebRoot = _resolveWebRoot(
+        repoRoot,
+        webRoot,
+    )
+
+    normalizedVersion = _resolvePairedReleaseVersion(
+        resolvedWebRoot,
+        requestedVersion=version,
+    )
+
     manifestModule = _loadManifestModule(repoRoot)
-    normalizedVersion = manifestModule.normalizeVersion(version)
     downloadsPath = Path(downloadsDir).expanduser().resolve()
     login = _normalizeLogin(login)
     remoteDir = _normalizeRemoteDir(remoteDir)

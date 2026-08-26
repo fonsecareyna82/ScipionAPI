@@ -423,10 +423,24 @@ def release(
         help="Upload the selected release to the configured remote server.",
         show_default=True,
     ),
-    version: str = typer.Option(
-        ...,
+    version: Optional[str] = typer.Option(
+        None,
         "--version",
-        help="Release version to publish, for example v4.0.0.",
+        help=(
+                "Optional expected release version, for example v4.0.0. "
+                "The actual version is read from ScipionAPI and ScipionWeb."
+        ),
+        show_default=False,
+    ),
+    webRoot: Optional[str] = typer.Option(
+        None,
+        "--web-root",
+        envvar="SCIPIONWEB_RELEASE_WEB_ROOT",
+        help=(
+            "Path to the ScipionWeb repository. "
+            "Defaults to a ScipionWeb sibling of ScipionAPI."
+        ),
+        show_default=False,
     ),
     downloadsDir: str = typer.Option(
         ".",
@@ -501,6 +515,7 @@ def release(
 
     releaseUploadCommand(
         version=version,
+        webRoot=webRoot,
         downloadsDir=downloadsDir,
         apiFile=apiFile,
         webFile=webFile,
