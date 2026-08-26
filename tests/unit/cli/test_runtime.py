@@ -24,9 +24,9 @@
 # *
 # ******************************************************************************
 import socket
+import sys
+import types
 
-import app.backend.api.services.plugin_task_log as pluginTaskLogModule
-import app.backend.api.services.system_task_service as systemTaskModule
 import scipionapi_cli.runtime as runtimeModule
 
 from scipionapi_cli.runtime import _canBindTcpPort
@@ -100,18 +100,27 @@ def test_RecoverInterruptedPluginTasksOnlyFailsActiveCeleryTasks(
             updates.append(kwargs)
             return kwargs
 
-    monkeypatch.setattr(
-        systemTaskModule,
-        "SystemTaskService",
-        FakeSystemTaskService,
+    systemTaskModule = types.ModuleType(
+        "app.backend.api.services.system_task_service"
+    )
+    systemTaskModule.SystemTaskService = FakeSystemTaskService
+
+    pluginTaskLogModule = types.ModuleType(
+        "app.backend.api.services.plugin_task_log"
+    )
+    pluginTaskLogModule.appendPluginTaskLog = (
+        lambda taskId, text: logs.append((taskId, text))
     )
 
-    monkeypatch.setattr(
+    monkeypatch.setitem(
+        sys.modules,
+        "app.backend.api.services.system_task_service",
+        systemTaskModule,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.backend.api.services.plugin_task_log",
         pluginTaskLogModule,
-        "appendPluginTaskLog",
-        lambda taskId, text: logs.append(
-            (taskId, text)
-        ),
     )
 
     recovered = (
