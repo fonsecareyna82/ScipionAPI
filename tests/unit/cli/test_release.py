@@ -386,8 +386,19 @@ def test_ReleaseBuildRunsWebBuild(
 
 def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
     repo_root = Path(__file__).resolve().parents[3]
+    web_root = tmp_path / "ScipionWeb"
     downloads = tmp_path / "downloads"
+
+    web_root.mkdir()
     downloads.mkdir()
+
+    (web_root / "package.json").write_text(
+        json.dumps({
+            "name": "scipionweb",
+            "version": "4.0.0",
+        }),
+        encoding="utf-8",
+    )
 
     (downloads / "ScipionAPI-v4.0.0.zip").write_bytes(b"api")
     (downloads / "ScipionWeb-v4.0.0-dist.zip").write_bytes(b"web")
@@ -396,6 +407,11 @@ def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
         releaseModule,
         "resolveRepoRoot",
         lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        releaseModule,
+        "SCIPIONAPI_VERSION",
+        "4.0.0",
     )
     monkeypatch.setattr(
         releaseModule,
@@ -419,6 +435,7 @@ def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
     )
 
     uploads = []
+
     monkeypatch.setattr(
         releaseModule,
         "_atomicUpload",
@@ -427,6 +444,7 @@ def test_ReleaseDryRunDoesNotUpload(monkeypatch, tmp_path):
 
     releaseModule.releaseUploadCommand(
         version="v4.0.0",
+        webRoot=str(web_root),
         downloadsDir=str(downloads),
         dryRun=True,
         yes=True,
