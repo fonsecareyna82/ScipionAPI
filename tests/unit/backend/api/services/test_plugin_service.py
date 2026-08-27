@@ -539,6 +539,54 @@ class DummyInstallPlugin:
         self.uninstallPipCalls += 1
 
 
+def test_uninstall_plugin_ignores_stale_in_process_metadata(tmp_path, monkeypatch):
+    service = makeService(
+        tmp_path,
+        plugins=[
+            {
+                "pipName": "scipion-em-test",
+                "path": str(tmp_path / "scipion-em-test"),
+            }
+        ],
+    )
+    plugin = DummyInstalledPlugin()
+    clearCacheCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getInstalledPipVersions",
+        lambda: {},
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule.importlibMetadata,
+        "distribution",
+        lambda pipName: object(),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda: clearCacheCalls.append(True),
+    )
+
+    result = service.uninstallPlugin("scipion-em-test")
+
+    assert result == {"uninstalled": "SUCCESS"}
+    assert plugin.uninstallBinsCalls == 0
+    assert plugin.uninstallPipCalls == 0
+    assert service.pluginDevelService.listDevelPlugins() == []
+    assert clearCacheCalls == [True]
+
+
 def test_install_plugin_reports_detailed_task_progress(
         tmp_path,
         monkeypatch,

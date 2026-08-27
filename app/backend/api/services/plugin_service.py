@@ -1,7 +1,10 @@
 import importlib.metadata as importlibMetadata
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
 import traceback
 from pathlib import Path
 from time import monotonic
@@ -10,6 +13,7 @@ from typing import List, Dict, Optional, Any
 from urllib.parse import urljoin
 
 from packaging.version import parse as parseVersion  # type: ignore
+from packaging.utils import canonicalize_name
 
 from pyworkflow.config import Config
 from scipion.install.plugin_funcs import PluginRepository
@@ -69,6 +73,54 @@ class PluginService:
 
         except importlibMetadata.PackageNotFoundError:
             return None
+
+    @staticmethod
+    def _getInstalledPipVersions() -> Optional[Dict[str, str]]:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "list",
+                    "--format=json",
+                    "--disable-pip-version-check",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=sys.prefix,
+            )
+            packages = json.loads(result.stdout or "[]")
+        except Exception:
+            logger.exception("Could not query installed pip packages from current environment.")
+            return None
+
+        versions: Dict[str, str] = {}
+
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+
+            name = str(package.get("name") or "").strip()
+            version = str(package.get("version") or "").strip()
+
+            if name:
+                versions[canonicalize_name(name)] = version
+
+        return versions
+
+    def _getFreshPipPackageVersion(self, pipName: str) -> Optional[str]:
+        installedVersions = self._getInstalledPipVersions()
+
+        if installedVersions is None:
+            return self._getPipPackageVersion(pipName)
+
+        return installedVersions.get(canonicalize_name(pipName))
 
     def clearCache(self, reloadRepository: bool = True) -> None:
         with self._cacheLock:
@@ -471,6 +523,8 @@ class PluginService:
             serializedList: List[Dict[str, Any]] = []
             seenPipNames = set()
 
+            installedPipVersions = self._getInstalledPipVersions()
+
             for pluginKey in sorted(rawPlugins.keys(), reverse=True):
                 pluginObj = rawPlugins.get(pluginKey)
                 if pluginObj is None:
@@ -488,9 +542,10 @@ class PluginService:
                 # serializedPlugin["categories"] = ['tomography']
                 # serializedPlugin["categoryData"] = [{'description': 'Tomograms, tilt series and subtomogram workflows', 'id': 'tomography', 'title': 'Tomography'}]
 
-                installedPipVersion = self._getPipPackageVersion(
-                    pipName
-                )
+                if installedPipVersions is None:
+                    installedPipVersion = self._getPipPackageVersion(pipName)
+                else:
+                    installedPipVersion = installedPipVersions.get(canonicalize_name(pipName))
 
                 isInstalled = installedPipVersion is not None
 
@@ -793,13 +848,7 @@ class PluginService:
             resolvedKey = self._resolvePluginKeyByPipName(pluginName, rawPlugins)
             plugin = rawPlugins[resolvedKey]
 
-            isInstalled = False
-            try:
-                isInstalled = self._isPipPackageInstalled(
-                    pluginName
-                )
-            except Exception:
-                isInstalled = False
+            isInstalled = self._getFreshPipPackageVersion(pluginName) is not None
 
             if isInstalled:
                 if taskId:
@@ -814,7 +863,7 @@ class PluginService:
                 if taskId:
                     writePluginTaskStep(taskId, "Verifying pip module removal...")
 
-                if self._isPipPackageInstalled(pluginName):
+                if self._getFreshPipPackageVersion(pluginName) is not None:
                     raise RuntimeError(
                         "Plugin pip package is still installed after uninstall: %s"
                         % pluginName
