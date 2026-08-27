@@ -209,6 +209,168 @@ class PluginService:
 
         raise KeyError(f"Plugin not found: {pipName}")
 
+    @staticmethod
+    def _buildBinaryTarget(binaryName: str, version: str) -> str:
+        cleanName = str(binaryName or "").strip()
+        cleanVersion = str(version or "").strip()
+
+        if not cleanName:
+            return ""
+
+        return (
+            f"{cleanName}-{cleanVersion}"
+            if cleanVersion
+            else cleanName
+        )
+
+    def _getPluginBinaryDescriptors(
+            self,
+            pluginObj: Any,
+    ) -> List[Dict[str, Any]]:
+        try:
+            environment = pluginObj.getInstallenv()
+        except Exception:
+            logger.debug(
+                "Could not load plugin binary environment.",
+                exc_info=True,
+            )
+            return []
+
+        if environment is None:
+            return []
+
+        try:
+            packages = environment.getPackages() or {}
+        except Exception:
+            logger.debug(
+                "Could not read plugin binary packages.",
+                exc_info=True,
+            )
+            return []
+
+        binaries: List[Dict[str, Any]] = []
+
+        for packageName in sorted(packages.keys()):
+            packageVersions = packages.get(packageName) or []
+
+            for binaryName, version in packageVersions:
+                cleanName = str(binaryName or "").strip()
+                cleanVersion = str(version or "").strip()
+                target = self._buildBinaryTarget(
+                    cleanName,
+                    cleanVersion,
+                )
+
+                if not target:
+                    continue
+
+                installed = False
+
+                try:
+                    installed = bool(
+                        environment._isInstalled(
+                            binaryName,
+                            version,
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not determine binary installation state: %s",
+                        target,
+                        exc_info=True,
+                    )
+
+                default = False
+
+                try:
+                    if environment.hasTarget(target):
+                        default = bool(
+                            environment
+                            .getTarget(target)
+                            .isDefault()
+                        )
+                except Exception:
+                    logger.debug(
+                        "Could not determine default binary target: %s",
+                        target,
+                        exc_info=True,
+                    )
+
+                binaries.append({
+                    "name": cleanName,
+                    "version": cleanVersion,
+                    "target": target,
+                    "installed": installed,
+                    "default": default,
+                })
+
+        return binaries
+
+    def _resolvePluginBinaryTarget(
+            self,
+            pluginName: str,
+            binaryTarget: str,
+    ):
+        cleanTarget = str(
+            binaryTarget or ""
+        ).strip()
+
+        if not cleanTarget:
+            raise ValueError(
+                "Binary target is required"
+            )
+
+        rawPlugins = self._loadRawPlugins(
+            forceRefresh=True
+        )
+
+        resolvedKey = self._resolvePluginKeyByPipName(
+            pluginName,
+            rawPlugins,
+        )
+
+        plugin = rawPlugins[resolvedKey]
+
+        environment = plugin.getInstallenv()
+
+        if environment is None:
+            raise KeyError(
+                f"Plugin has no binaries: {pluginName}"
+            )
+
+        packages = (
+            environment.getPackages()
+            or {}
+        )
+
+        for packageName in sorted(
+                packages.keys()
+        ):
+            packageVersions = (
+                packages.get(packageName)
+                or []
+            )
+
+            for binaryName, version in packageVersions:
+                target = self._buildBinaryTarget(
+                    binaryName,
+                    version,
+                )
+
+                if target != cleanTarget:
+                    continue
+
+                return (
+                    plugin,
+                    environment,
+                    str(binaryName or "").strip(),
+                    str(version or "").strip(),
+                )
+
+        raise KeyError(
+            f"Binary target not found for plugin {pluginName}: {cleanTarget}"
+        )
+
     def _loadPackageMetadata(self, pipName: str) -> Dict[str, str]:
         try:
             metadata = importlibMetadata.metadata(pipName)
@@ -464,7 +626,7 @@ class PluginService:
             "devel": True,
             "develInstalledAt": develPlugin.get("installedAt", ""),
             "develUpdatedAt": develPlugin.get("updatedAt", ""),
-            "binaries": {},
+            "binaries": [],
             "categories": categoryInfo["categories"],
             "categoryData": categoryInfo["categoryData"],
             "source": "devel",
@@ -571,20 +733,13 @@ class PluginService:
 
                 self._applyDevelMetadata(serializedPlugin)
 
-                try:
-                    pluginBinaryList = pluginObj.getInstallenv()
-                    if pluginBinaryList is not None:
-                        binaryList = pluginBinaryList.getPackages()
-                        keys = sorted(binaryList.keys())
-                        serializedPlugin.setdefault("binaries", {})
-                        for k in keys:
-                            pVersions = binaryList[k]
-                            serializedPlugin["binaries"][k] = {}
-                            for binary, version in pVersions:
-                                installed = pluginBinaryList._isInstalled(binary, version)
-                                serializedPlugin["binaries"][k][f"{binary}-{version}"] = bool(installed)
-                except Exception:
-                    pass
+                serializedPlugin["binaries"] = (
+                    self._getPluginBinaryDescriptors(
+                        pluginObj
+                    )
+                    if isInstalled
+                    else []
+                )
 
                 seenPipNames.add(self._normalizePipName(pipName))
                 serializedList.append(serializedPlugin)
@@ -836,6 +991,186 @@ class PluginService:
                         )
 
             raise
+
+    def installPluginBinary(
+            self,
+            pluginName: str,
+            binaryTarget: str,
+            taskId: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self._getFreshPipPackageVersion(pluginName) is None:
+            raise RuntimeError(
+                f"Plugin is not installed: {pluginName}"
+            )
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                "Resolving binary target...",
+            )
+
+        (
+            plugin,
+            environment,
+            binaryName,
+            version,
+        ) = self._resolvePluginBinaryTarget(
+            pluginName,
+            binaryTarget,
+        )
+
+        cleanTarget = self._buildBinaryTarget(
+            binaryName,
+            version,
+        )
+
+        if environment._isInstalled(
+                binaryName,
+                version,
+        ):
+            if taskId:
+                writePluginTaskStep(
+                    taskId,
+                    f"Binary {cleanTarget} is already installed.",
+                )
+
+            self.clearCache(
+                reloadRepository=False
+            )
+
+            return {
+                "installed": "SUCCESS",
+                "pluginName": pluginName,
+                "binaryTarget": cleanTarget,
+                "alreadyInstalled": True,
+            }
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                f"Installing binary {cleanTarget}...",
+            )
+
+        plugin.installBin({
+            "args": [
+                cleanTarget,
+                "-j",
+                "3",
+            ]
+        })
+
+        if not environment._isInstalled(
+                binaryName,
+                version,
+        ):
+            raise RuntimeError(
+                f"Binary is still not installed after installation: {cleanTarget}"
+            )
+
+        self.clearCache(
+            reloadRepository=False
+        )
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                f"Binary {cleanTarget} installed successfully.",
+            )
+
+        return {
+            "installed": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": cleanTarget,
+            "alreadyInstalled": False,
+        }
+
+    def uninstallPluginBinary(
+            self,
+            pluginName: str,
+            binaryTarget: str,
+            taskId: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self._getFreshPipPackageVersion(pluginName) is None:
+            raise RuntimeError(
+                f"Plugin is not installed: {pluginName}"
+            )
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                "Resolving binary target...",
+            )
+
+        (
+            plugin,
+            environment,
+            binaryName,
+            version,
+        ) = self._resolvePluginBinaryTarget(
+            pluginName,
+            binaryTarget,
+        )
+
+        cleanTarget = self._buildBinaryTarget(
+            binaryName,
+            version,
+        )
+
+        if not environment._isInstalled(
+                binaryName,
+                version,
+        ):
+            if taskId:
+                writePluginTaskStep(
+                    taskId,
+                    f"Binary {cleanTarget} is not installed.",
+                )
+
+            self.clearCache(
+                reloadRepository=False
+            )
+
+            return {
+                "uninstalled": "SUCCESS",
+                "pluginName": pluginName,
+                "binaryTarget": cleanTarget,
+                "alreadyUninstalled": True,
+            }
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                f"Uninstalling binary {cleanTarget}...",
+            )
+
+        plugin.uninstallBins([
+            cleanTarget,
+        ])
+
+        if environment._isInstalled(
+                binaryName,
+                version,
+        ):
+            raise RuntimeError(
+                f"Binary is still installed after uninstall: {cleanTarget}"
+            )
+
+        self.clearCache(
+            reloadRepository=False
+        )
+
+        if taskId:
+            writePluginTaskStep(
+                taskId,
+                f"Binary {cleanTarget} uninstalled successfully.",
+            )
+
+        return {
+            "uninstalled": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": cleanTarget,
+            "alreadyUninstalled": False,
+        }
 
     def uninstallPlugin(self, pluginName: str, taskId: Optional[str] = None) -> Dict[str, Any]:
         try:

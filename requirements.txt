@@ -3,6 +3,7 @@ scipion-em @ git+https://github.com/fonsecareyna82//scipion-em.git@devel
 scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 scipion-em-tomo
 pyxmipp3
+xmipp3-installer
 
 fastapi==0.116.1
 uvicorn[standard]==0.33.0

@@ -522,6 +522,337 @@ def test_load_raw_plugins_falls_back_to_cached_catalog(tmp_path):
 
 
 
+class DummyBinaryTarget:
+    def __init__(self, default=False):
+        self.default = default
+
+    def isDefault(self):
+        return self.default
+
+
+class DummyBinaryEnvironment:
+    def __init__(self):
+        self.installed = {
+            ("imod", "4.11.25"): False,
+            ("imod", "5.1.9"): True,
+            ("teamtomoBRT", "0.1.2"): False,
+        }
+
+        self.targets = {
+            "imod-4.11.25": DummyBinaryTarget(False),
+            "imod-5.1.9": DummyBinaryTarget(True),
+            "teamtomoBRT-0.1.2": DummyBinaryTarget(False),
+        }
+
+    def getPackages(self):
+        return {
+            "imod": [
+                ("imod", "4.11.25"),
+                ("imod", "5.1.9"),
+            ],
+            "teamtomoBRT": [
+                ("teamtomoBRT", "0.1.2"),
+            ],
+        }
+
+    def _isInstalled(self, binaryName, version):
+        return self.installed.get(
+            (
+                str(binaryName),
+                str(version),
+            ),
+            False,
+        )
+
+    def hasTarget(self, target):
+        return target in self.targets
+
+    def getTarget(self, target):
+        return self.targets[target]
+
+
+class DummyBinaryPlugin:
+    latestRelease = "1.0.0"
+
+    def __init__(self):
+        self.environment = DummyBinaryEnvironment()
+        self.installBinCalls = []
+        self.uninstallBinsCalls = []
+
+    def getInstallenv(self):
+        return self.environment
+
+    def installBin(self, args):
+        self.installBinCalls.append(args)
+
+        target = args["args"][0]
+
+        for binaryName, version in self.environment.installed:
+            expectedTarget = (
+                f"{binaryName}-{version}"
+                if version
+                else binaryName
+            )
+
+            if expectedTarget == target:
+                self.environment.installed[
+                    (
+                        binaryName,
+                        version,
+                    )
+                ] = True
+
+    def uninstallBins(self, binaryTargets):
+        self.uninstallBinsCalls.append(
+            list(binaryTargets)
+        )
+
+        for target in binaryTargets:
+            for binaryName, version in self.environment.installed:
+                expectedTarget = (
+                    f"{binaryName}-{version}"
+                    if version
+                    else binaryName
+                )
+
+                if expectedTarget == target:
+                    self.environment.installed[
+                        (
+                            binaryName,
+                            version,
+                        )
+                    ] = False
+
+
+def test_get_plugins_exposes_structured_binary_targets(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+    plugin = DummyBinaryPlugin()
+
+    monkeypatch.setattr(
+        service,
+        "_getPluginsRevision",
+        lambda: 0,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "serializeToJson",
+        lambda pluginObj: {
+            "pipName": "scipion-em-test",
+            "name": "Test Plugin",
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveCategories",
+        lambda pipName, metadata=None: {
+            "categories": [],
+            "categoryData": [],
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getInstalledPipVersions",
+        lambda: {
+            "scipion-em-test": "1.0.0",
+        },
+    )
+
+    plugins = service.getPlugins(
+        forceRefresh=True
+    )
+
+    assert plugins[0]["binaries"] == [
+        {
+            "name": "imod",
+            "version": "4.11.25",
+            "target": "imod-4.11.25",
+            "installed": False,
+            "default": False,
+        },
+        {
+            "name": "imod",
+            "version": "5.1.9",
+            "target": "imod-5.1.9",
+            "installed": True,
+            "default": True,
+        },
+        {
+            "name": "teamtomoBRT",
+            "version": "0.1.2",
+            "target": "teamtomoBRT-0.1.2",
+            "installed": False,
+            "default": False,
+        },
+    ]
+
+
+def test_install_plugin_binary_executes_only_requested_target(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+    plugin = DummyBinaryPlugin()
+    clearCacheCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_getFreshPipPackageVersion",
+        lambda pipName: "1.0.0",
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda reloadRepository=True: clearCacheCalls.append(
+            reloadRepository
+        ),
+    )
+
+    result = service.installPluginBinary(
+        "scipion-em-test",
+        "imod-4.11.25",
+    )
+
+    assert result == {
+        "installed": "SUCCESS",
+        "pluginName": "scipion-em-test",
+        "binaryTarget": "imod-4.11.25",
+        "alreadyInstalled": False,
+    }
+
+    assert plugin.installBinCalls == [
+        {
+            "args": [
+                "imod-4.11.25",
+                "-j",
+                "3",
+            ]
+        }
+    ]
+
+    assert plugin.environment._isInstalled(
+        "imod",
+        "4.11.25",
+    ) is True
+
+    assert clearCacheCalls == [
+        False,
+    ]
+
+
+def test_uninstall_plugin_binary_removes_only_requested_target(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+    plugin = DummyBinaryPlugin()
+    clearCacheCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_getFreshPipPackageVersion",
+        lambda pipName: "1.0.0",
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda reloadRepository=True: clearCacheCalls.append(
+            reloadRepository
+        ),
+    )
+
+    result = service.uninstallPluginBinary(
+        "scipion-em-test",
+        "imod-5.1.9",
+    )
+
+    assert result == {
+        "uninstalled": "SUCCESS",
+        "pluginName": "scipion-em-test",
+        "binaryTarget": "imod-5.1.9",
+        "alreadyUninstalled": False,
+    }
+
+    assert plugin.uninstallBinsCalls == [
+        [
+            "imod-5.1.9",
+        ]
+    ]
+
+    assert plugin.environment._isInstalled(
+        "imod",
+        "5.1.9",
+    ) is False
+
+    assert clearCacheCalls == [
+        False,
+    ]
+
+
+def test_plugin_binary_operation_rejects_unknown_target(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+    plugin = DummyBinaryPlugin()
+
+    monkeypatch.setattr(
+        service,
+        "_getFreshPipPackageVersion",
+        lambda pipName: "1.0.0",
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    with pytest.raises(
+        KeyError,
+        match="Binary target not found",
+    ):
+        service.installPluginBinary(
+            "scipion-em-test",
+            "relion-5.0",
+        )
+
+    assert plugin.installBinCalls == []
+
+
 class DummyInstallPlugin:
     def __init__(self):
         self.installPipCalls = 0
