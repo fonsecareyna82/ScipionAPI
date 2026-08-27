@@ -848,31 +848,30 @@ class SettingsService:
         # warmupEnvironmentRegistry
         from scipion.__main__ import Vars
         from pyworkflow.project import Manager
-        from pyworkflow.template import TemplateList
 
-        logger.warning("registry count [start]: %s", self._registryCount())
+        # logger.warning("registry count [start]: %s", self._registryCount())
 
         Vars.init()
-        logger.warning("registry count [after Vars.init]: %s", self._registryCount())
+        # logger.warning("registry count [after Vars.init]: %s", self._registryCount())
 
         pyworkflow.Config.getVars()
-        logger.warning("registry count [after Config.getVars]: %s", self._registryCount())
+        # logger.warning("registry count [after Config.getVars]: %s", self._registryCount())
 
         pyworkflow.Config.setDomain("pwem")
         domain = pyworkflow.Config.getDomain()
-        logger.warning("registry count [after Config.getDomain]: %s", self._registryCount())
+        # logger.warning("registry count [after Config.getDomain]: %s", self._registryCount())
 
         try:
             domain.getProtocols()
         except Exception:
             logger.exception("Error warming domain.getProtocols()")
-        logger.warning("registry count [after domain.getProtocols]: %s", self._registryCount())
+        # logger.warning("registry count [after domain.getProtocols]: %s", self._registryCount())
 
         try:
             Manager()
         except Exception:
             logger.exception("Error warming Manager()")
-        logger.warning("registry count [after Manager()]: %s", self._registryCount())
+        # logger.warning("registry count [after Manager()]: %s", self._registryCount())
 
         # try:
         #     tempList = TemplateList()
