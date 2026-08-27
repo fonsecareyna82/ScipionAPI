@@ -109,18 +109,6 @@ class ThumbnailService:
         249,
     )
 
-    THUMBNAIL_PANEL_BACKGROUND = (
-        248,
-        250,
-        252,
-    )
-
-    THUMBNAIL_BORDER = (
-        203,
-        213,
-        225,
-    )
-
     def __init__(self, currentProject):
         self.currentProject = currentProject
 
@@ -7159,11 +7147,7 @@ class ThumbnailService:
             self.THUMBNAIL_BACKGROUND,
         )
 
-        draw = ImageDraw.Draw(
-            canvas
-        )
-
-        inset = max(
+        contentPad = max(
             3,
             int(
                 round(
@@ -7176,66 +7160,16 @@ class ThumbnailService:
             ),
         )
 
-        radius = max(
-            12,
-            int(
-                round(
-                    height
-                    * 0.07
-                )
-            ),
-        )
-
-        draw.rounded_rectangle(
-            (
-                inset,
-                inset,
-                width - inset - 1,
-                height - inset - 1,
-            ),
-            radius=radius,
-            fill=(
-                self
-                .THUMBNAIL_PANEL_BACKGROUND
-            ),
-            outline=(
-                self
-                .THUMBNAIL_BORDER
-            ),
-            width=1,
-        )
-
-        contentPad = max(
-            5,
-            int(
-                round(
-                    min(
-                        width,
-                        height,
-                    )
-                    * 0.028
-                )
-            ),
-        )
-
         targetW = max(
             1,
             width
-            - 2
-            * (
-                inset
-                + contentPad
-            ),
+            - 2 * contentPad,
         )
 
         targetH = max(
             1,
             height
-            - 2
-            * (
-                inset
-                + contentPad
-            ),
+            - 2 * contentPad,
         )
 
         contained = ImageOps.contain(
@@ -7254,14 +7188,14 @@ class ThumbnailService:
         )
 
         x = (
-            width
-            - contained.width
-        ) // 2
+                    width
+                    - contained.width
+            ) // 2
 
         y = (
-            height
-            - contained.height
-        ) // 2
+                    height
+                    - contained.height
+            ) // 2
 
         canvas.paste(
             contained,
