@@ -378,6 +378,225 @@ def uninstallPluginTask(self, pip_name: str) -> str:
         return f"Plugin {pip_name} uninstalled successfully!"
 
 
+@celeryApp.task(
+    base=InstallPluginTask,
+    bind=True,
+    name="app.tasks.installPluginBinaryTask",
+)
+def installPluginBinaryTask(
+        self,
+        pip_name: str,
+        binary_target: str,
+) -> str:
+    taskId = str(self.request.id)
+
+    with pluginTaskLogCapture(taskId):
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Preparing environment...",
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Preparing environment...",
+        )
+
+        prepareEnvironment()
+        _lowerPluginTaskPriority()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Loading service...",
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Loading service...",
+        )
+
+        from app.backend.api.services.plugin_service import PluginService
+        service = PluginService()
+
+        step = (
+            f"Installing binary {binary_target}..."
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": step,
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            step,
+        )
+
+        service.installPluginBinary(
+            pip_name,
+            binary_target,
+            taskId=taskId,
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Refreshing plugin metadata...",
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Refreshing plugin metadata...",
+        )
+
+        newRev = bumpPluginsRevision()
+
+        logger.warning(
+            "pluginsRevisionBumped=%s scipionHome=%s",
+            newRev,
+            os.environ.get("SCIPION_HOME"),
+        )
+
+        writePluginTaskStep(
+            taskId,
+            f"Plugins revision bumped to {newRev}",
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Completed",
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+
+        writePluginTaskStep(
+            taskId,
+            "Completed",
+        )
+
+        return (
+            f"Binary {binary_target} installed successfully "
+            f"for plugin {pip_name}!"
+        )
+
+
+@celeryApp.task(
+    base=InstallPluginTask,
+    bind=True,
+    name="app.tasks.uninstallPluginBinaryTask",
+)
+def uninstallPluginBinaryTask(
+        self,
+        pip_name: str,
+        binary_target: str,
+) -> str:
+    taskId = str(self.request.id)
+
+    with pluginTaskLogCapture(taskId):
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Preparing environment...",
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Preparing environment...",
+        )
+
+        prepareEnvironment()
+        _lowerPluginTaskPriority()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Loading service...",
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Loading service...",
+        )
+
+        from app.backend.api.services.plugin_service import PluginService
+        service = PluginService()
+
+        step = (
+            f"Uninstalling binary {binary_target}..."
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": step,
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            step,
+        )
+
+        service.uninstallPluginBinary(
+            pip_name,
+            binary_target,
+            taskId=taskId,
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Refreshing plugin metadata...",
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+        writePluginTaskStep(
+            taskId,
+            "Refreshing plugin metadata...",
+        )
+
+        newRev = bumpPluginsRevision()
+
+        logger.warning(
+            "pluginsRevisionBumped=%s scipionHome=%s",
+            newRev,
+            os.environ.get("SCIPION_HOME"),
+        )
+
+        writePluginTaskStep(
+            taskId,
+            f"Plugins revision bumped to {newRev}",
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "Completed",
+                "pluginName": pip_name,
+                "binaryTarget": binary_target,
+            },
+        )
+
+        writePluginTaskStep(
+            taskId,
+            "Completed",
+        )
+
+        return (
+            f"Binary {binary_target} uninstalled successfully "
+            f"for plugin {pip_name}!"
+        )
+
 @celeryApp.task(bind=True, name="app.tasks.executeProtocolTask")
 def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str = "resume"):
     from app.backend.runtime.postgresql_protocol_worker import (

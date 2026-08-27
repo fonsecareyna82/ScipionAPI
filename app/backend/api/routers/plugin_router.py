@@ -63,6 +63,21 @@ except Exception:
     uninstallPluginTask = None  # type: ignore
     _celeryUninstallAvailable = False
 
+try:
+    from app.workers.task_queue import installPluginBinaryTask  # type: ignore
+    _celeryInstallBinaryAvailable = True
+except Exception:
+    installPluginBinaryTask = None  # type: ignore
+    _celeryInstallBinaryAvailable = False
+
+
+try:
+    from app.workers.task_queue import uninstallPluginBinaryTask  # type: ignore
+    _celeryUninstallBinaryAvailable = True
+except Exception:
+    uninstallPluginBinaryTask = None  # type: ignore
+    _celeryUninstallBinaryAvailable = False
+
 
 _inProcessResults: Dict[str, Dict[str, Any]] = {}
 _inProcessTasks: Dict[str, asyncio.Task] = {}
@@ -587,6 +602,94 @@ def loadPlugin(pluginName: str):
 
 
 @router.post(
+    "/{pluginName}/binaries/{binaryTarget}/install",
+    response_model=TaskStartResponse,
+)
+async def installPluginBinary(
+        pluginName: str,
+        binaryTarget: str,
+):
+    try:
+        payload = {
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
+
+        if (
+                _celeryAppAvailable
+                and _celeryInstallBinaryAvailable
+                and installPluginBinaryTask is not None
+        ):
+            return _startCeleryPluginSystemTask(
+                celeryTask=installPluginBinaryTask,
+                args=[
+                    pluginName,
+                    binaryTarget,
+                ],
+                operation="install-binary",
+                subject=pluginName,
+                payload=payload,
+            )
+
+        return await _startInProcessTask(
+            service.installPluginBinary,
+            pluginName,
+            "install-binary",
+            binaryTarget=binaryTarget,
+        )
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+@router.post(
+    "/{pluginName}/binaries/{binaryTarget}/uninstall",
+    response_model=TaskStartResponse,
+)
+async def uninstallPluginBinary(
+        pluginName: str,
+        binaryTarget: str,
+):
+    try:
+        payload = {
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
+
+        if (
+                _celeryAppAvailable
+                and _celeryUninstallBinaryAvailable
+                and uninstallPluginBinaryTask is not None
+        ):
+            return _startCeleryPluginSystemTask(
+                celeryTask=uninstallPluginBinaryTask,
+                args=[
+                    pluginName,
+                    binaryTarget,
+                ],
+                operation="uninstall-binary",
+                subject=pluginName,
+                payload=payload,
+            )
+
+        return await _startInProcessTask(
+            service.uninstallPluginBinary,
+            pluginName,
+            "uninstall-binary",
+            binaryTarget=binaryTarget,
+        )
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+
+@router.post(
     "/tasks/{taskId}/retry",
     response_model=TaskStartResponse,
 )
@@ -801,6 +904,113 @@ async def retryPluginTask(taskId: str):
                 skipBinaries=skipBinaries,
                 force=force,
             )
+        if operation == "install-binary":
+            pluginName = str(
+                payload.get("pluginName")
+                or originalTask.get("subject")
+                or ""
+            ).strip()
+
+            binaryTarget = str(
+                payload.get("binaryTarget")
+                or ""
+            ).strip()
+
+            if not pluginName:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original binary install task has no plugin name",
+                )
+
+            if not binaryTarget:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original binary install task has no binary target",
+                )
+
+            retryPayload = {
+                "pluginName": pluginName,
+                "binaryTarget": binaryTarget,
+            }
+
+            if (
+                    _celeryAppAvailable
+                    and _celeryInstallBinaryAvailable
+                    and installPluginBinaryTask is not None
+            ):
+                return _startCeleryPluginSystemTask(
+                    celeryTask=installPluginBinaryTask,
+                    args=[
+                        pluginName,
+                        binaryTarget,
+                    ],
+                    operation="install-binary",
+                    subject=pluginName,
+                    payload=retryPayload,
+                    retryOfTaskId=taskId,
+                )
+
+            return await _startInProcessTask(
+                service.installPluginBinary,
+                pluginName,
+                "install-binary",
+                retryOfTaskId=taskId,
+                binaryTarget=binaryTarget,
+            )
+
+        if operation == "uninstall-binary":
+            pluginName = str(
+                payload.get("pluginName")
+                or originalTask.get("subject")
+                or ""
+            ).strip()
+
+            binaryTarget = str(
+                payload.get("binaryTarget")
+                or ""
+            ).strip()
+
+            if not pluginName:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original binary uninstall task has no plugin name",
+                )
+
+            if not binaryTarget:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Original binary uninstall task has no binary target",
+                )
+
+            retryPayload = {
+                "pluginName": pluginName,
+                "binaryTarget": binaryTarget,
+            }
+
+            if (
+                    _celeryAppAvailable
+                    and _celeryUninstallBinaryAvailable
+                    and uninstallPluginBinaryTask is not None
+            ):
+                return _startCeleryPluginSystemTask(
+                    celeryTask=uninstallPluginBinaryTask,
+                    args=[
+                        pluginName,
+                        binaryTarget,
+                    ],
+                    operation="uninstall-binary",
+                    subject=pluginName,
+                    payload=retryPayload,
+                    retryOfTaskId=taskId,
+                )
+
+            return await _startInProcessTask(
+                service.uninstallPluginBinary,
+                pluginName,
+                "uninstall-binary",
+                retryOfTaskId=taskId,
+                binaryTarget=binaryTarget,
+            )
 
         if operation == "uninstall":
             pluginName = str(
@@ -893,7 +1103,14 @@ async def _startInProcessTask(
         try:
             writePluginTaskStep(taskId, "Starting in-process task...")
             with pluginTaskLogCapture(taskId):
-                result = await loop.run_in_executor(None, lambda: taskFn(pluginName, taskId, **taskKwargs))
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: taskFn(
+                        pluginName,
+                        taskId=taskId,
+                        **taskKwargs,
+                    ),
+                )
             writePluginTaskStep(taskId, "In-process task completed.")
             _inProcessResults[taskId] = {"status": "SUCCESS", "result": result, "error": None}
             systemTaskService.updateTask(

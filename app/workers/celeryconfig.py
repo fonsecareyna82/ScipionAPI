@@ -39,6 +39,8 @@ task_routes = {
     "app.tasks.installPluginsBatchTask": {"queue": "plugins"},
     "app.tasks.installDevelPluginTask": {"queue": "plugins"},
     "app.tasks.uninstallPluginTask": {"queue": "plugins"},
+    "app.tasks.installPluginBinaryTask": {"queue": "plugins"},
+    "app.tasks.uninstallPluginBinaryTask": {"queue": "plugins"},
     "app.tasks.executeProtocolTask": {"queue": "protocols"},
 }
 

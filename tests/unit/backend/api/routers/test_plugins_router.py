@@ -47,6 +47,8 @@ class FakePluginService:
         self.clearCacheCalls = 0
         self.installCalls = []
         self.uninstallCalls = []
+        self.installBinaryCalls = []
+        self.uninstallBinaryCalls = []
 
     def getPlugins(self):
         return self.pluginsResult
@@ -65,6 +67,42 @@ class FakePluginService:
     def uninstallPlugin(self, pluginName, taskId=None):
         self.uninstallCalls.append({"pluginName": pluginName, "taskId": taskId})
         return {"uninstalled": "SUCCESS"}
+
+    def installPluginBinary(
+            self,
+            pluginName,
+            binaryTarget,
+            taskId=None,
+    ):
+        self.installBinaryCalls.append({
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+            "taskId": taskId,
+        })
+
+        return {
+            "installed": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
+
+    def uninstallPluginBinary(
+            self,
+            pluginName,
+            binaryTarget,
+            taskId=None,
+    ):
+        self.uninstallBinaryCalls.append({
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+            "taskId": taskId,
+        })
+
+        return {
+            "uninstalled": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
 
     def clearCache(self):
         self.clearCacheCalls += 1
@@ -86,6 +124,30 @@ class ImportSafePluginService:
 
     def uninstallPlugin(self, pluginName, taskId=None):
         return {"uninstalled": "SUCCESS"}
+
+    def installPluginBinary(
+            self,
+            pluginName,
+            binaryTarget,
+            taskId=None,
+    ):
+        return {
+            "installed": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
+
+    def uninstallPluginBinary(
+            self,
+            pluginName,
+            binaryTarget,
+            taskId=None,
+    ):
+        return {
+            "uninstalled": "SUCCESS",
+            "pluginName": pluginName,
+            "binaryTarget": binaryTarget,
+        }
 
     def clearCache(self):
         pass
@@ -326,11 +388,15 @@ def pluginClient(
     monkeypatch.setattr(pluginRouterModule, "_celeryInstallBatchAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "_celeryInstallDevelAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "_celeryUninstallAvailable", False)
+    monkeypatch.setattr(pluginRouterModule, "_celeryInstallBinaryAvailable", False)
+    monkeypatch.setattr(pluginRouterModule, "_celeryUninstallBinaryAvailable", False)
     monkeypatch.setattr(pluginRouterModule, "celeryApp", None)
     monkeypatch.setattr(pluginRouterModule, "installPluginTask", None)
     monkeypatch.setattr(pluginRouterModule, "installPluginsBatchTask", None)
     monkeypatch.setattr(pluginRouterModule, "installDevelPluginTask", None)
     monkeypatch.setattr(pluginRouterModule, "uninstallPluginTask", None)
+    monkeypatch.setattr(pluginRouterModule, "installPluginBinaryTask", None)
+    monkeypatch.setattr(pluginRouterModule, "uninstallPluginBinaryTask", None)
 
     app = FastAPI()
     app.include_router(pluginRouterModule.router)
@@ -454,6 +520,239 @@ def test_UninstallPluginUsesLocalBackendWhenCeleryUnavailable(pluginClient, plug
     assert captured["pluginName"] == "scipion-em-xmipp"
     assert captured["operation"] == "uninstall"
     assert captured["taskKwargs"] == {}
+
+
+def test_InstallPluginBinaryUsesLocalBackendWhenCeleryUnavailable(
+        pluginClient,
+        pluginRouterModule,
+        monkeypatch,
+):
+    captured = {}
+
+    async def fakeStartInProcessTask(
+            taskFn,
+            pluginName,
+            operation,
+            **taskKwargs,
+    ):
+        captured["taskFn"] = taskFn
+        captured["pluginName"] = pluginName
+        captured["operation"] = operation
+        captured["taskKwargs"] = taskKwargs
+
+        return {
+            "taskId": "local-install-binary-1",
+            "status": "STARTED",
+            "backend": "local",
+        }
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_startInProcessTask",
+        fakeStartInProcessTask,
+    )
+
+    response = pluginClient.post(
+        "/plugins/scipion-em-imod/binaries/imod-5.1.9/install"
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "taskId": "local-install-binary-1",
+        "status": "STARTED",
+        "backend": "local",
+    }
+
+    assert (
+        captured["taskFn"]
+        == pluginRouterModule.service.installPluginBinary
+    )
+
+    assert captured["pluginName"] == "scipion-em-imod"
+    assert captured["operation"] == "install-binary"
+
+    assert captured["taskKwargs"] == {
+        "binaryTarget": "imod-5.1.9",
+    }
+
+
+def test_UninstallPluginBinaryUsesLocalBackendWhenCeleryUnavailable(
+        pluginClient,
+        pluginRouterModule,
+        monkeypatch,
+):
+    captured = {}
+
+    async def fakeStartInProcessTask(
+            taskFn,
+            pluginName,
+            operation,
+            **taskKwargs,
+    ):
+        captured["taskFn"] = taskFn
+        captured["pluginName"] = pluginName
+        captured["operation"] = operation
+        captured["taskKwargs"] = taskKwargs
+
+        return {
+            "taskId": "local-uninstall-binary-1",
+            "status": "STARTED",
+            "backend": "local",
+        }
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_startInProcessTask",
+        fakeStartInProcessTask,
+    )
+
+    response = pluginClient.post(
+        "/plugins/scipion-em-imod/binaries/imod-5.1.9/uninstall"
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "taskId": "local-uninstall-binary-1",
+        "status": "STARTED",
+        "backend": "local",
+    }
+
+    assert (
+        captured["taskFn"]
+        == pluginRouterModule.service.uninstallPluginBinary
+    )
+
+    assert captured["pluginName"] == "scipion-em-imod"
+    assert captured["operation"] == "uninstall-binary"
+
+    assert captured["taskKwargs"] == {
+        "binaryTarget": "imod-5.1.9",
+    }
+
+
+def test_InstallPluginBinaryUsesCeleryWhenAvailable(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeTask = FakeCeleryTask()
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryInstallBinaryAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "installPluginBinaryTask",
+        fakeTask,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "initializePluginTaskLog",
+        lambda taskId, pluginName, operation: "/tmp/binary-install.log",
+    )
+
+    response = pluginClient.post(
+        "/plugins/scipion-em-imod/binaries/imod-5.1.9/install"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["status"] == "PENDING"
+    assert body["backend"] == "celery"
+
+    assert fakeTask.calls == [{
+        "args": [
+            "scipion-em-imod",
+            "imod-5.1.9",
+        ],
+        "task_id": body["taskId"],
+    }]
+
+    createdTask = (
+        fakeSystemTaskService
+        .createCalls[0]
+    )
+
+    assert createdTask["operation"] == "install-binary"
+    assert createdTask["subject"] == "scipion-em-imod"
+
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-imod",
+        "binaryTarget": "imod-5.1.9",
+    }
+
+
+def test_UninstallPluginBinaryUsesCeleryWhenAvailable(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeTask = FakeCeleryTask()
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryUninstallBinaryAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "uninstallPluginBinaryTask",
+        fakeTask,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "initializePluginTaskLog",
+        lambda taskId, pluginName, operation: "/tmp/binary-uninstall.log",
+    )
+
+    response = pluginClient.post(
+        "/plugins/scipion-em-imod/binaries/imod-5.1.9/uninstall"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["status"] == "PENDING"
+    assert body["backend"] == "celery"
+
+    assert fakeTask.calls == [{
+        "args": [
+            "scipion-em-imod",
+            "imod-5.1.9",
+        ],
+        "task_id": body["taskId"],
+    }]
+
+    createdTask = (
+        fakeSystemTaskService
+        .createCalls[0]
+    )
+
+    assert createdTask["operation"] == "uninstall-binary"
+
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-imod",
+        "binaryTarget": "imod-5.1.9",
+    }
 
 
 def test_InstallPluginUsesCeleryWhenAvailable(
@@ -691,6 +990,80 @@ def test_RetryFailedInstallUsesOriginalPayloadAndLinksTask(
     assert createdTask["payload"] == {
         "pluginName": "scipion-em-relion",
         "skipBinaries": True,
+    }
+
+
+def test_RetryFailedBinaryInstallUsesOriginalTarget(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeSystemTaskService.tasksById[
+        "failed-binary-install"
+    ] = {
+        "taskId": "failed-binary-install",
+        "taskType": "plugin",
+        "operation": "install-binary",
+        "subject": "scipion-em-imod",
+        "status": "FAILURE",
+        "payload": {
+            "pluginName": "scipion-em-imod",
+            "binaryTarget": "imod-5.1.9",
+        },
+        "backend": "celery",
+    }
+
+    fakeTask = FakeCeleryTask()
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryInstallBinaryAvailable",
+        True,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "installPluginBinaryTask",
+        fakeTask,
+    )
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "initializePluginTaskLog",
+        lambda taskId, pluginName, operation: "/tmp/retry-binary.log",
+    )
+
+    response = pluginClient.post(
+        "/plugins/tasks/failed-binary-install/retry"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert fakeTask.calls == [{
+        "args": [
+            "scipion-em-imod",
+            "imod-5.1.9",
+        ],
+        "task_id": body["taskId"],
+    }]
+
+    createdTask = (
+        fakeSystemTaskService
+        .createCalls[0]
+    )
+
+    assert createdTask["operation"] == "install-binary"
+    assert createdTask["retryOfTaskId"] == "failed-binary-install"
+
+    assert createdTask["payload"] == {
+        "pluginName": "scipion-em-imod",
+        "binaryTarget": "imod-5.1.9",
     }
 
 
