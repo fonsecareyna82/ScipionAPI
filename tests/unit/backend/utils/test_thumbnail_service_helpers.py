@@ -164,7 +164,10 @@ def test_FinalizeProtocolThumbnailProducesExpectedAspect(service):
     )
 
     assert thumb.mode == "RGB"
-    assert thumb.size == (320, 218)
+    assert thumb.size == (
+        320,
+        192,
+    )
 
 
 def test_ComposeProjectStripBuildsHorizontalCanvas(service, tmp_path):
@@ -215,6 +218,134 @@ def test_ComposeCleanStripBuildsStrip(service):
 
     assert strip.mode == "RGB"
     assert strip.size[0] > strip.size[1]
+
+
+def test_ComposeParticleMosaicBuildsDenseMontage(
+        service,
+):
+    tiles = [
+        Image.new(
+            "RGB",
+            (
+                64,
+                64,
+            ),
+            color=(
+                value,
+                value,
+                value,
+            ),
+        )
+        for value in range(
+            20,
+            170,
+            10,
+        )
+    ]
+
+    mosaic = (
+        service
+        ._composeParticleMosaic(
+            tiles=tiles,
+            targetWidth=128,
+            maxCols=5,
+        )
+    )
+
+    assert mosaic.mode == "RGB"
+    assert mosaic.size[0] > mosaic.size[1]
+    assert mosaic.size[0] >= 360
+
+
+def test_VolumeProjectionScorePrefersStructuredSignal(
+        service,
+):
+    empty = np.zeros(
+        (
+            64,
+            64,
+        ),
+        dtype=np.float32,
+    )
+
+    structured = np.zeros(
+        (
+            64,
+            64,
+        ),
+        dtype=np.float32,
+    )
+
+    structured[
+        18:46,
+        18:46,
+    ] = 1.0
+
+    assert (
+        service
+        ._scoreVolumeProjection(
+            structured
+        )
+        >
+        service
+        ._scoreVolumeProjection(
+            empty
+        )
+    )
+
+
+def test_CentralVolumeProjectionSupportsAllAxes(
+        service,
+):
+    volume = np.arange(
+        24 * 32 * 40,
+        dtype=np.float32,
+    ).reshape(
+        (
+            24,
+            32,
+            40,
+        )
+    )
+
+    projectionZ = (
+        service
+        ._centralVolumeProjection(
+            volume,
+            axis=0,
+        )
+    )
+
+    projectionY = (
+        service
+        ._centralVolumeProjection(
+            volume,
+            axis=1,
+        )
+    )
+
+    projectionX = (
+        service
+        ._centralVolumeProjection(
+            volume,
+            axis=2,
+        )
+    )
+
+    assert projectionZ.shape == (
+        32,
+        40,
+    )
+
+    assert projectionY.shape == (
+        24,
+        40,
+    )
+
+    assert projectionX.shape == (
+        24,
+        32,
+    )
 
 
 def test_ComposeTriptychBuildsThreePanelLayout(service):

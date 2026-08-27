@@ -42,7 +42,13 @@ import matplotlib.pyplot as plt
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps, ImageFont
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageOps,
+    ImageFont,
+    ImageEnhance,
+)
 
 from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
@@ -93,8 +99,27 @@ _thumbnailBuildLocks: Dict[str, threading.Lock] = {}
 
 
 class ThumbnailService:
-    CACHE_VERSION = "v1"
-    PROTOCOL_ASPECT_RATIO = 0.68
+    CACHE_VERSION = "v2"
+
+    PROTOCOL_ASPECT_RATIO = 0.60
+
+    THUMBNAIL_BACKGROUND = (
+        241,
+        245,
+        249,
+    )
+
+    THUMBNAIL_PANEL_BACKGROUND = (
+        248,
+        250,
+        252,
+    )
+
+    THUMBNAIL_BORDER = (
+        203,
+        213,
+        225,
+    )
 
     def __init__(self, currentProject):
         self.currentProject = currentProject
@@ -1683,8 +1708,23 @@ class ThumbnailService:
         tiles: List[Image.Image] = []
         objectManager = self._createPreviewObjectManager(protocol, output)
 
-        sampleCount = 4 if isinstance(output, SetOfClasses2D) else 6
-        maxCols = 2 if isinstance(output, SetOfClasses2D) else 3
+        sampleCount = (
+            6
+            if isinstance(
+                output,
+                SetOfClasses2D,
+            )
+            else 15
+        )
+
+        maxCols = (
+            3
+            if isinstance(
+                output,
+                SetOfClasses2D,
+            )
+            else 5
+        )
 
         if objectManager is not None:
             try:
@@ -1722,7 +1762,11 @@ class ThumbnailService:
 
                         tile = self._grayTileToImage(gray)
                         if tile is not None:
-                            tiles.append(tile)
+                            tiles.append(
+                                self._prepareParticleTile(
+                                    tile
+                                )
+                            )
             except Exception:
                 logger.debug("Metadata particle/class2d preview failed", exc_info=True)
 
@@ -1734,7 +1778,11 @@ class ThumbnailService:
 
                 tile = self._readImagePreview(protocol, sourcePath, sourceIndex)
                 if tile is not None:
-                    tiles.append(tile)
+                    tiles.append(
+                        self._prepareParticleTile(
+                            tile
+                        )
+                    )
 
         if not tiles:
             return None
@@ -2871,49 +2919,165 @@ class ThumbnailService:
 
         return "CTF Tomo"
 
+    def _prepareParticleTile(
+            self,
+            image: Image.Image,
+    ) -> Image.Image:
+        gray = image.convert("L")
+
+        gray = ImageOps.autocontrast(
+            gray,
+            cutoff=1,
+        )
+
+        gray = (
+            ImageEnhance
+            .Contrast(gray)
+            .enhance(1.08)
+        )
+
+        gray = (
+            ImageEnhance
+            .Sharpness(gray)
+            .enhance(1.05)
+        )
+
+        return gray.convert("RGB")
+
     def _composeParticleMosaic(
             self,
             tiles: Sequence[Image.Image],
             targetWidth: int,
-            maxCols: int = 3,
+            maxCols: int = 5,
     ) -> Image.Image:
         count = len(tiles)
+
         if count == 0:
-            return Image.new("RGB", (320, 200), (246, 249, 252))
+            return Image.new(
+                "RGB",
+                (
+                    320,
+                    180,
+                ),
+                self.THUMBNAIL_BACKGROUND,
+            )
 
-        cols = min(max(1, int(maxCols)), count)
-        rows = int(np.ceil(count / float(cols)))
+        cols = min(
+            max(
+                1,
+                int(maxCols),
+            ),
+            count,
+        )
 
-        baseWidth = max(240, int(targetWidth))
-        gap = max(3, int(round(baseWidth * 0.012)))
-        tileW = max(92, int((baseWidth - gap * max(0, cols - 1)) / cols))
+        rows = int(
+            np.ceil(
+                count
+                / float(cols)
+            )
+        )
+
+        baseWidth = max(
+            360,
+            int(targetWidth) * 2,
+        )
+
+        gap = max(
+            2,
+            int(
+                round(
+                    baseWidth
+                    * 0.006
+                )
+            ),
+        )
+
+        tileW = max(
+            52,
+            int(
+                np.ceil(
+                    (
+                            baseWidth
+                            - gap
+                            * max(
+                        0,
+                        cols - 1,
+                    )
+                    )
+                    / cols
+                )
+            ),
+        )
+
         tileH = tileW
 
-        width = cols * tileW + max(0, cols - 1) * gap
-        height = rows * tileH + max(0, rows - 1) * gap
-        canvas = Image.new("RGB", (width, height), (246, 249, 252))
+        width = (
+                cols * tileW
+                + max(
+            0,
+            cols - 1,
+        ) * gap
+        )
 
-        index = 0
-        for row in range(rows):
-            for col in range(cols):
-                if index >= count:
-                    break
+        height = (
+                rows * tileH
+                + max(
+            0,
+            rows - 1,
+        ) * gap
+        )
 
-                x0 = col * (tileW + gap)
-                y0 = row * (tileH + gap)
-                x1 = x0 + tileW - 1
-                y1 = y0 + tileH - 1
+        canvas = Image.new(
+            "RGB",
+            (
+                width,
+                height,
+            ),
+            (
+                226,
+                232,
+                240,
+            ),
+        )
 
-                self._pasteContainedPreview(
-                    canvas=canvas,
-                    previewImage=tiles[index],
-                    box=(x0, y0, x1, y1),
-                    padding=2,
-                    radius=max(8, int(round(tileH * 0.08))),
-                    background=(246, 249, 252),
-                    contain=True,
-                )
-                index += 1
+        for index, tile in enumerate(
+                tiles
+        ):
+            row = index // cols
+            col = index % cols
+
+            x = col * (
+                    tileW + gap
+            )
+
+            y = row * (
+                    tileH + gap
+            )
+
+            fitted = ImageOps.fit(
+                tile.convert("RGB"),
+                (
+                    tileW,
+                    tileH,
+                ),
+                method=(
+                    Image
+                    .Resampling
+                    .LANCZOS
+                ),
+                centering=(
+                    0.5,
+                    0.5,
+                ),
+            )
+
+            canvas.paste(
+                fitted,
+                (
+                    x,
+                    y,
+                ),
+            )
 
         return canvas
 
@@ -6305,71 +6469,291 @@ class ThumbnailService:
 
         return text[:maxChars - 3] + "..."
 
-    def _renderFscPreview(self, output, size: int) -> Optional[Image.Image]:
+    def _renderFscPreview(
+            self,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
         try:
             import matplotlib
-            matplotlib.use("Agg")
+
+            matplotlib.use(
+                "Agg"
+            )
+
             import matplotlib.pyplot as plt
+
         except Exception:
             return None
 
         fscItems = []
+
         try:
-            for index, fsc in enumerate(output):
+            for index, fsc in enumerate(
+                    output
+            ):
                 if fsc is None:
                     continue
-                clone = getattr(fsc, "clone", lambda: fsc)()
-                label = getattr(clone, "getObjLabel", lambda: None)() or f"FSC {index + 1}"
-                fscItems.append((clone, label))
+
+                clone = getattr(
+                    fsc,
+                    "clone",
+                    lambda: fsc,
+                )()
+
+                label = (
+                        getattr(
+                            clone,
+                            "getObjLabel",
+                            lambda: None,
+                        )()
+                        or f"FSC {index + 1}"
+                )
+
+                fscItems.append(
+                    (
+                        clone,
+                        label,
+                    )
+                )
+
         except Exception:
             return None
 
         if not fscItems:
             return None
 
-        def getXY(fscObj):
+        def getXY(
+                fscObj,
+        ):
             data = fscObj.getData()
-            if isinstance(data, (list, tuple)) and len(data) == 2:
-                xVals = np.asarray(data[0], dtype=float)
-                yVals = np.asarray(data[1], dtype=float)
+
+            if (
+                    isinstance(
+                        data,
+                        (
+                                list,
+                                tuple,
+                        ),
+                    )
+                    and len(data) == 2
+            ):
+                xVals = np.asarray(
+                    data[0],
+                    dtype=float,
+                )
+
+                yVals = np.asarray(
+                    data[1],
+                    dtype=float,
+                )
+
             else:
-                arr = np.asarray(data, dtype=float)
-                if arr.ndim != 2 or arr.shape[1] < 2:
-                    return np.asarray([]), np.asarray([])
+                arr = np.asarray(
+                    data,
+                    dtype=float,
+                )
+
+                if (
+                        arr.ndim != 2
+                        or arr.shape[1] < 2
+                ):
+                    return (
+                        np.asarray([]),
+                        np.asarray([]),
+                    )
+
                 xVals = arr[:, 0]
                 yVals = arr[:, 1]
-            mask = np.isfinite(xVals) & np.isfinite(yVals)
-            return xVals[mask], yVals[mask]
 
-        figW = max(4.8, size / 95.0)
-        figH = max(2.7, figW * 0.58)
-        fig, ax = plt.subplots(figsize=(figW, figH), dpi=130)
+            mask = (
+                    np.isfinite(xVals)
+                    & np.isfinite(yVals)
+            )
+
+            return (
+                xVals[mask],
+                yVals[mask],
+            )
+
+        figW = max(
+            4.2,
+            size / 100.0,
+        )
+
+        figH = max(
+            2.5,
+            figW * 0.56,
+        )
+
+        figureBackground = (
+            "#f8fafc"
+        )
+
+        fig, ax = plt.subplots(
+            figsize=(
+                figW,
+                figH,
+            ),
+            dpi=120,
+            facecolor=figureBackground,
+        )
+
         try:
+            ax.set_facecolor(
+                figureBackground
+            )
+
             threshold = 0.143
             maxX = 0.0
-            for fscObj, label in fscItems:
-                xVals, yVals = getXY(fscObj)
+
+            for (
+                    fscObj,
+                    label,
+            ) in fscItems:
+                xVals, yVals = getXY(
+                    fscObj
+                )
+
                 if xVals.size == 0:
                     continue
-                maxX = max(maxX, float(xVals.max()))
-                ax.plot(xVals, yVals, linewidth=1.6, label=label)
-            ax.axhline(threshold, linestyle="--", linewidth=0.9, alpha=0.6)
-            ax.set_xlim(0, maxX if maxX > 0 else 1.0)
-            ax.set_ylim(0.0, 1.05)
-            ax.grid(True, linestyle="--", linewidth=0.35, alpha=0.3)
-            ax.set_xlabel("Spatial frequency")
-            ax.set_ylabel("FSC")
-            if len(fscItems) > 1:
-                ax.legend(fontsize=6, loc="best")
-            fig.tight_layout(pad=0.8)
+
+                maxX = max(
+                    maxX,
+                    float(
+                        xVals.max()
+                    ),
+                )
+
+                ax.plot(
+                    xVals,
+                    yVals,
+                    linewidth=2.2,
+                    label=label,
+                )
+
+            ax.axhline(
+                threshold,
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.55,
+            )
+
+            ax.set_xlim(
+                0,
+                (
+                    maxX
+                    if maxX > 0
+                    else 1.0
+                ),
+            )
+
+            ax.set_ylim(
+                0.0,
+                1.02,
+            )
+
+            ax.grid(
+                axis="y",
+                linewidth=0.45,
+                alpha=0.18,
+            )
+
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+
+            ax.tick_params(
+                axis="both",
+                labelsize=7,
+                length=2,
+            )
+
+            ax.spines[
+                "top"
+            ].set_visible(
+                False
+            )
+
+            ax.spines[
+                "right"
+            ].set_visible(
+                False
+            )
+
+            ax.spines[
+                "left"
+            ].set_alpha(
+                0.28
+            )
+
+            ax.spines[
+                "bottom"
+            ].set_alpha(
+                0.28
+            )
+
+            ax.text(
+                0.02,
+                0.93,
+                "FSC",
+                transform=ax.transAxes,
+                fontsize=8,
+                fontweight="bold",
+                va="top",
+            )
+
+            ax.text(
+                0.98,
+                0.155,
+                "0.143",
+                transform=ax.transAxes,
+                fontsize=6,
+                alpha=0.62,
+                ha="right",
+                va="bottom",
+            )
+
+            if len(
+                    fscItems
+            ) > 1:
+                ax.legend(
+                    fontsize=6,
+                    loc="upper right",
+                    frameon=False,
+                )
+
+            fig.tight_layout(
+                pad=0.35
+            )
+
             buf = io.BytesIO()
-            fig.savefig(buf, format="png", facecolor="white")
+
+            fig.savefig(
+                buf,
+                format="png",
+                facecolor=figureBackground,
+                bbox_inches="tight",
+                pad_inches=0.02,
+            )
+
             data = buf.getvalue()
+
         finally:
             plt.close(fig)
 
         try:
-            return Image.open(io.BytesIO(data)).convert("RGB")
+            return (
+                Image
+                .open(
+                    io.BytesIO(
+                        data
+                    )
+                )
+                .convert(
+                    "RGB"
+                )
+            )
+
         except Exception:
             return None
 
@@ -6494,37 +6878,218 @@ class ThumbnailService:
             pass
         return None
 
-    def _renderVolumeFromPath(self, volumePath: Path, size: int) -> Optional[Image.Image]:
-        try:
-            volume, _props = readVolumeArray3d(str(volumePath))
-        except Exception:
+    def _centralVolumeProjection(
+            self,
+            volume: np.ndarray,
+            axis: int,
+            maxSlices: int = 5,
+    ) -> Optional[np.ndarray]:
+        axisSize = int(
+            volume.shape[axis]
+        )
+
+        if axisSize <= 0:
             return None
 
-        volume = np.asarray(volume)
-        if volume.ndim != 3:
-            return None
+        center = axisSize // 2
 
-        zSize, _ySize, _xSize = volume.shape
-        centerZ = zSize // 2
+        halfWindow = max(
+            0,
+            int(maxSlices) // 2,
+        )
 
-        maxSlices = 5
-        halfWindow = maxSlices // 2
+        start = max(
+            0,
+            center - halfWindow,
+        )
 
-        z0 = max(0, centerZ - halfWindow)
-        z1 = min(zSize, centerZ + halfWindow + 1)
+        end = min(
+            axisSize,
+            center + halfWindow + 1,
+        )
 
-        slab = volume[z0:z1, :, :]
+        slices = [
+            slice(None),
+            slice(None),
+            slice(None),
+        ]
+
+        slices[axis] = slice(
+            start,
+            end,
+        )
+
+        slab = np.asarray(
+            volume[
+                tuple(slices)
+            ],
+            dtype=np.float32,
+        )
+
         if slab.size == 0:
             return None
 
-        meanSliceZ = np.mean(slab.astype(np.float32, copy=False), axis=0)
+        return np.mean(
+            slab,
+            axis=axis,
+        )
 
-        cmapName = self._volumeColormapName()
-        image = self._arrayToImage(meanSliceZ, cmapName=cmapName)
-        if image is None:
+
+    def _scoreVolumeProjection(
+            self,
+            projection: np.ndarray,
+    ) -> float:
+        gray = (
+            self
+            ._normalizeArrayToUint8(
+                projection
+            )
+            .astype(
+                np.float32
+            )
+            / 255.0
+        )
+
+        if gray.size == 0:
+            return 0.0
+
+        height, width = gray.shape
+
+        border = np.concatenate(
+            (
+                gray[0, :],
+                gray[-1, :],
+                gray[:, 0],
+                gray[:, -1],
+            )
+        )
+
+        background = float(
+            np.median(border)
+        )
+
+        signal = float(
+            np.mean(
+                np.abs(
+                    gray
+                    - background
+                )
+            )
+        )
+
+        y0 = int(
+            height * 0.20
+        )
+        y1 = max(
+            y0 + 1,
+            int(
+                height * 0.80
+            ),
+        )
+
+        x0 = int(
+            width * 0.20
+        )
+        x1 = max(
+            x0 + 1,
+            int(
+                width * 0.80
+            ),
+        )
+
+        center = gray[
+            y0:y1,
+            x0:x1,
+        ]
+
+        centerSignal = (
+            float(
+                np.mean(
+                    np.abs(
+                        center
+                        - background
+                    )
+                )
+            )
+            if center.size
+            else 0.0
+        )
+
+        contrast = float(
+            np.std(gray)
+        )
+
+        return (
+            signal
+            + 0.45 * centerSignal
+            + 0.25 * contrast
+        )
+
+
+    def _renderVolumeFromPath(
+            self,
+            volumePath: Path,
+            size: int,
+    ) -> Optional[Image.Image]:
+        try:
+            volume, _props = (
+                readVolumeArray3d(
+                    str(volumePath)
+                )
+            )
+        except Exception:
             return None
 
-        return image
+        volume = np.asarray(
+            volume
+        )
+
+        if volume.ndim != 3:
+            return None
+
+        candidates = []
+
+        for axis in (
+            0,
+            1,
+            2,
+        ):
+            projection = (
+                self
+                ._centralVolumeProjection(
+                    volume=volume,
+                    axis=axis,
+                )
+            )
+
+            if projection is None:
+                continue
+
+            candidates.append(
+                (
+                    self
+                    ._scoreVolumeProjection(
+                        projection
+                    ),
+                    projection,
+                )
+            )
+
+        if not candidates:
+            return None
+
+        _score, bestProjection = max(
+            candidates,
+            key=lambda item: item[0],
+        )
+
+        return self._arrayToImage(
+            bestProjection,
+            cmapName=(
+                self
+                ._volumeColormapName()
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Object manager
@@ -6570,34 +7135,141 @@ class ThumbnailService:
             size: int,
             protocolId: Optional[int] = None,
     ) -> Image.Image:
-        width = max(248, int(size))
-        height = max(164, int(round(width * self.PROTOCOL_ASPECT_RATIO)))
-
-        background = (244, 247, 251)
-        canvas = Image.new("RGB", (width, height), background)
-
-        outerRadius = max(16, int(round(height * 0.08)))
-        mask = self._buildRoundedMask((width, height), radius=outerRadius)
-
-        innerPad = max(3, int(round(min(width, height) * 0.015)))
-        innerW = max(1, width - innerPad * 2)
-        innerH = max(1, height - innerPad * 2)
-
-        contained = ImageOps.contain(
-            previewImage.convert("RGB"),
-            (innerW, innerH),
-            method=Image.Resampling.LANCZOS,
+        width = max(
+            248,
+            int(size),
         )
 
-        panel = Image.new("RGB", (width, height), background)
-        ox = (width - contained.width) // 2
-        oy = (height - contained.height) // 2
-        panel.paste(contained, (ox, oy))
+        height = max(
+            148,
+            int(
+                round(
+                    width
+                    * self.PROTOCOL_ASPECT_RATIO
+                )
+            ),
+        )
 
-        canvas.paste(panel, (0, 0), mask)
+        canvas = Image.new(
+            "RGB",
+            (
+                width,
+                height,
+            ),
+            self.THUMBNAIL_BACKGROUND,
+        )
 
-        # if protocolId is not None:
-        #     self._drawProtocolBadge(canvas, f"Protocol {int(protocolId)}")
+        draw = ImageDraw.Draw(
+            canvas
+        )
+
+        inset = max(
+            3,
+            int(
+                round(
+                    min(
+                        width,
+                        height,
+                    )
+                    * 0.018
+                )
+            ),
+        )
+
+        radius = max(
+            12,
+            int(
+                round(
+                    height
+                    * 0.07
+                )
+            ),
+        )
+
+        draw.rounded_rectangle(
+            (
+                inset,
+                inset,
+                width - inset - 1,
+                height - inset - 1,
+            ),
+            radius=radius,
+            fill=(
+                self
+                .THUMBNAIL_PANEL_BACKGROUND
+            ),
+            outline=(
+                self
+                .THUMBNAIL_BORDER
+            ),
+            width=1,
+        )
+
+        contentPad = max(
+            5,
+            int(
+                round(
+                    min(
+                        width,
+                        height,
+                    )
+                    * 0.028
+                )
+            ),
+        )
+
+        targetW = max(
+            1,
+            width
+            - 2
+            * (
+                inset
+                + contentPad
+            ),
+        )
+
+        targetH = max(
+            1,
+            height
+            - 2
+            * (
+                inset
+                + contentPad
+            ),
+        )
+
+        contained = ImageOps.contain(
+            previewImage.convert(
+                "RGB"
+            ),
+            (
+                targetW,
+                targetH,
+            ),
+            method=(
+                Image
+                .Resampling
+                .LANCZOS
+            ),
+        )
+
+        x = (
+            width
+            - contained.width
+        ) // 2
+
+        y = (
+            height
+            - contained.height
+        ) // 2
+
+        canvas.paste(
+            contained,
+            (
+                x,
+                y,
+            ),
+        )
 
         return canvas
 
@@ -7586,8 +8258,13 @@ class ThumbnailService:
             return max(340, int(round(size * 0.46)))
         return max(300, int(round(size * 0.38)))
 
-    def _volumeColormapName(self) -> str:
-        return os.getenv("SCIPION_THUMB_COLORMAP", "viridis")
+    def _volumeColormapName(
+            self,
+    ) -> str:
+        return os.getenv(
+            "SCIPION_THUMB_COLORMAP",
+            "turbo",
+        )
 
     def _isLikelyPreviewFile(self, lowerName: str) -> bool:
         if any(

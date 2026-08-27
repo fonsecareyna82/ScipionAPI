@@ -215,14 +215,14 @@ def test_SlugOutputNameSanitizesValue(service):
 def test_GetProtocolCachePathUsesExpectedPattern(service):
     path = service._getProtocolCachePath(protocolId=10, size=320, outputName="outputAvg")
 
-    assert path.name == "protocol_10_outputAvg_320_v1.png"
+    assert path.name == "protocol_10_outputAvg_320_v2.png"
     assert path.parent.name == ".thumbnail_cache"
 
 
 def test_GetProjectCachePathUsesExpectedPattern(service):
     path = service._getProjectCachePath(size=720, maxProtocols=6)
 
-    assert path.name == "project_720_6_v1.png"
+    assert path.name == "project_720_6_v2.png"
     assert path.parent.name == ".thumbnail_cache"
 
 
