@@ -283,9 +283,11 @@ def test_get_plugins_uses_pip_installation_state(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        pluginServiceModule.importlibMetadata,
-        "version",
-        lambda pipName: "1.0.0",
+        service,
+        "_getInstalledPipVersions",
+        lambda: {
+            "scipion-em-test": "1.0.0",
+        },
     )
 
     plugins = service.getPlugins(
@@ -333,9 +335,11 @@ def test_uninstall_plugin_fails_if_pip_package_remains_installed(tmp_path, monke
     )
 
     monkeypatch.setattr(
-        pluginServiceModule.importlibMetadata,
-        "distribution",
-        lambda pipName: object(),
+        service,
+        "_getInstalledPipVersions",
+        lambda: {
+            "scipion-em-test": "1.0.0",
+        },
     )
 
     with pytest.raises(
@@ -380,22 +384,22 @@ def test_uninstall_plugin_refreshes_after_confirmed_pip_removal(tmp_path, monkey
         "installed": True,
     }
 
-    def distributionState(pipName):
-        if installedState["installed"]:
-            return object()
-
-        raise pluginServiceModule.importlibMetadata.PackageNotFoundError(
-            pipName
-        )
-
     def uninstallPip():
         plugin.uninstallPipCalls += 1
         installedState["installed"] = False
 
+    def getInstalledPipVersions():
+        if installedState["installed"]:
+            return {
+                "scipion-em-test": "1.0.0",
+            }
+
+        return {}
+
     monkeypatch.setattr(
-        pluginServiceModule.importlibMetadata,
-        "distribution",
-        distributionState,
+        service,
+        "_getInstalledPipVersions",
+        getInstalledPipVersions,
     )
 
     monkeypatch.setattr(
@@ -454,20 +458,20 @@ def test_get_plugins_refreshes_installation_state_without_reloading_remote_catal
         "value": None,
     }
 
-    def getVersion(pipName):
+    def getInstalledPipVersions():
         version = installedVersion["value"]
 
         if version is None:
-            raise pluginServiceModule.importlibMetadata.PackageNotFoundError(
-                pipName
-            )
+            return {}
 
-        return version
+        return {
+            "scipion-em-test": version,
+        }
 
     monkeypatch.setattr(
-        pluginServiceModule.importlibMetadata,
-        "version",
-        getVersion,
+        service,
+        "_getInstalledPipVersions",
+        getInstalledPipVersions,
     )
 
     plugins = service.getPlugins()
