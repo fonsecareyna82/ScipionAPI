@@ -98,3 +98,143 @@ def test_RunCommandWritesDirectlyToLogWithoutStdoutPipe(
 
     assert captured["waited"] is True
     assert captured["stdout"].closed is True
+
+
+def test_InstallDevelPluginAddsNoBinWhenSkippingBinaries(
+        tmp_path,
+        monkeypatch,
+):
+    pluginPath = (
+        tmp_path
+        / "scipion-em-test"
+    )
+    pluginPath.mkdir()
+
+    (
+        pluginPath
+        / "pyproject.toml"
+    ).write_text(
+        """
+[project]
+name = "scipion-em-test"
+version = "1.0.0"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    service = PluginDevelService(
+        manifestPath=(
+            tmp_path
+            / "devel_plugins.json"
+        )
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveScipionCommand",
+        lambda: [
+            "scipion3",
+        ],
+    )
+
+    def fakeRunCommand(
+            command,
+            cwd,
+            taskId,
+    ):
+        captured["command"] = list(
+            command
+        )
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr(
+        service,
+        "_runCommand",
+        fakeRunCommand,
+    )
+
+    service.installDevelPlugin(
+        str(pluginPath),
+        skipBinaries=True,
+    )
+
+    assert captured["command"] == [
+        "scipion3",
+        "installp",
+        "-p",
+        str(pluginPath),
+        "--devel",
+        "--noBin",
+    ]
+
+
+def test_InstallDevelPluginDoesNotAddNoBinByDefault(
+        tmp_path,
+        monkeypatch,
+):
+    pluginPath = (
+        tmp_path
+        / "scipion-em-test"
+    )
+    pluginPath.mkdir()
+
+    (
+        pluginPath
+        / "pyproject.toml"
+    ).write_text(
+        """
+[project]
+name = "scipion-em-test"
+version = "1.0.0"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    service = PluginDevelService(
+        manifestPath=(
+            tmp_path
+            / "devel_plugins.json"
+        )
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveScipionCommand",
+        lambda: [
+            "scipion3",
+        ],
+    )
+
+    def fakeRunCommand(
+            command,
+            cwd,
+            taskId,
+    ):
+        captured["command"] = list(
+            command
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_runCommand",
+        fakeRunCommand,
+    )
+
+    service.installDevelPlugin(
+        str(pluginPath),
+        skipBinaries=False,
+    )
+
+    assert captured["command"] == [
+        "scipion3",
+        "installp",
+        "-p",
+        str(pluginPath),
+        "--devel",
+    ]
+
+

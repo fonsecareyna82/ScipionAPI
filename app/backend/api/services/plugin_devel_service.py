@@ -420,13 +420,17 @@ class PluginDevelService:
             writePluginTaskStep(taskId, f"Validated devel plugin path: {resolvedPath}")
             writePluginTaskStep(taskId, f"Detected pip name: {pipName}")
 
-        command = list(self._resolveScipionCommand()) + ["installp", "-p", str(resolvedPath), "--devel"]
+        command = list(
+            self._resolveScipionCommand()
+        ) + [
+                      "installp",
+                      "-p",
+                      str(resolvedPath),
+                      "--devel",
+                  ]
 
-        skipBinariesArg = os.environ.get("SCIPIONAPI_DEVEL_SKIP_BINARIES_ARG", "").strip()
-        if skipBinaries and skipBinariesArg:
-            command.append(skipBinariesArg)
-        elif skipBinaries and taskId:
-            writePluginTaskStep(taskId, "skipBinaries requested, but no SCIPIONAPI_DEVEL_SKIP_BINARIES_ARG is configured.")
+        if skipBinaries:
+            command.append("--noBin")
 
         forceArg = os.environ.get("SCIPIONAPI_DEVEL_FORCE_ARG", "").strip()
         if force and forceArg:
