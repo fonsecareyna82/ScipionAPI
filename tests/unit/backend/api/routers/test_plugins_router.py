@@ -329,30 +329,127 @@ class FakeSystemTaskService:
 
 @pytest.fixture
 def pluginRouterModule(monkeypatch):
-    # pluginRouterModule
-    pluginServiceModuleName = "app.backend.api.services.plugin_service"
-    previousPluginServiceModule = sys.modules.get(pluginServiceModuleName)
-    previousPluginRouterModule = sys.modules.get("app.backend.api.routers.plugin_router")
+    pluginServiceModuleName = (
+        "app.backend.api.services.plugin_service"
+    )
+    systemTaskServiceModuleName = (
+        "app.backend.api.services.system_task_service"
+    )
+    taskQueueModuleName = (
+        "app.workers.task_queue"
+    )
+    pluginRouterModuleName = (
+        "app.backend.api.routers.plugin_router"
+    )
 
-    fakePluginServiceModule = types.ModuleType(pluginServiceModuleName)
-    fakePluginServiceModule.PluginService = ImportSafePluginService
-    sys.modules[pluginServiceModuleName] = fakePluginServiceModule
+    previousPluginServiceModule = (
+        sys.modules.get(
+            pluginServiceModuleName
+        )
+    )
+    previousSystemTaskServiceModule = (
+        sys.modules.get(
+            systemTaskServiceModuleName
+        )
+    )
+    previousTaskQueueModule = (
+        sys.modules.get(
+            taskQueueModuleName
+        )
+    )
+    previousPluginRouterModule = (
+        sys.modules.get(
+            pluginRouterModuleName
+        )
+    )
 
-    sys.modules.pop("app.backend.api.routers.plugin_router", None)
+    fakePluginServiceModule = (
+        types.ModuleType(
+            pluginServiceModuleName
+        )
+    )
+    fakePluginServiceModule.PluginService = (
+        ImportSafePluginService
+    )
+
+    fakeSystemTaskServiceModule = (
+        types.ModuleType(
+            systemTaskServiceModuleName
+        )
+    )
+    fakeSystemTaskServiceModule.SystemTaskService = (
+        FakeSystemTaskService
+    )
+
+    fakeTaskQueueModule = (
+        types.ModuleType(
+            taskQueueModuleName
+        )
+    )
+
+    sys.modules[
+        pluginServiceModuleName
+    ] = fakePluginServiceModule
+
+    sys.modules[
+        systemTaskServiceModuleName
+    ] = fakeSystemTaskServiceModule
+
+    sys.modules[
+        taskQueueModuleName
+    ] = fakeTaskQueueModule
+
+    sys.modules.pop(
+        pluginRouterModuleName,
+        None,
+    )
 
     try:
-        module = importlib.import_module("app.backend.api.routers.plugin_router")
+        module = importlib.import_module(
+            pluginRouterModuleName
+        )
         yield module
+
     finally:
-        sys.modules.pop("app.backend.api.routers.plugin_router", None)
+        sys.modules.pop(
+            pluginRouterModuleName,
+            None,
+        )
 
         if previousPluginServiceModule is None:
-            sys.modules.pop(pluginServiceModuleName, None)
+            sys.modules.pop(
+                pluginServiceModuleName,
+                None,
+            )
         else:
-            sys.modules[pluginServiceModuleName] = previousPluginServiceModule
+            sys.modules[
+                pluginServiceModuleName
+            ] = previousPluginServiceModule
+
+        if previousSystemTaskServiceModule is None:
+            sys.modules.pop(
+                systemTaskServiceModuleName,
+                None,
+            )
+        else:
+            sys.modules[
+                systemTaskServiceModuleName
+            ] = previousSystemTaskServiceModule
+
+        if previousTaskQueueModule is None:
+            sys.modules.pop(
+                taskQueueModuleName,
+                None,
+            )
+        else:
+            sys.modules[
+                taskQueueModuleName
+            ] = previousTaskQueueModule
 
         if previousPluginRouterModule is not None:
-            sys.modules["app.backend.api.routers.plugin_router"] = previousPluginRouterModule
+            sys.modules[
+                pluginRouterModuleName
+            ] = previousPluginRouterModule
 
 
 @pytest.fixture
