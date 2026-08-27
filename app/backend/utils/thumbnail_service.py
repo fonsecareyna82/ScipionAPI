@@ -3047,6 +3047,23 @@ class ThumbnailService:
         return None
 
     def _readCoordinate3dScalar(self, item, getterName: str) -> Optional[float]:
+        runtimeValues = getattr(item, "_postgresqlRuntimeValues", {}) or {}
+        runtimeKeys = {
+            "getX": ("bottomLeftX", "_bottomLeftX"),
+            "getY": ("bottomLeftY", "_bottomLeftY"),
+            "getZ": ("bottomLeftZ", "_bottomLeftZ"),
+        }
+
+        for key in runtimeKeys.get(getterName, ()):
+            value = runtimeValues.get(key)
+            if value is None or value == "":
+                continue
+
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+
         getter = getattr(item, getterName, None)
         if not callable(getter):
             return None

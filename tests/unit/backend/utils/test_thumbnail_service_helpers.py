@@ -228,3 +228,28 @@ def test_ComposeTriptychBuildsThreePanelLayout(service):
 
     assert triptych.mode == "RGB"
     assert triptych.size[0] > triptych.size[1]
+
+
+def test_ReadCoordinate3dScalarUsesPostgresqlBottomLeftCoordinates(service):
+    class FakeCoordinate3D:
+        def __init__(self):
+            self._postgresqlRuntimeValues = {
+                "bottomLeftX": 10.5,
+                "bottomLeftY": 20.25,
+                "bottomLeftZ": 30.75,
+            }
+
+        def getX(self, *_args):
+            raise RuntimeError("Native coordinate is not available")
+
+        def getY(self, *_args):
+            raise RuntimeError("Native coordinate is not available")
+
+        def getZ(self, *_args):
+            raise RuntimeError("Native coordinate is not available")
+
+    coordinate = FakeCoordinate3D()
+
+    assert service._readCoordinate3dScalar(coordinate, "getX") == 10.5
+    assert service._readCoordinate3dScalar(coordinate, "getY") == 20.25
+    assert service._readCoordinate3dScalar(coordinate, "getZ") == 30.75
