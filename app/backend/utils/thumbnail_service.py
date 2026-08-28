@@ -2033,7 +2033,12 @@ class ThumbnailService:
             output,
             size: int,
     ) -> Optional[Image.Image]:
-        tiles: List[Image.Image] = []
+        items: List[
+            Tuple[
+                Image.Image,
+                str,
+            ]
+        ] = []
 
         for class3d in self._rankClasses3d(
                 output,
@@ -2091,23 +2096,26 @@ class ThumbnailService:
 
             if population > 0:
                 labelParts.append(
-                    f"{population:,} particles"
+                    f"{population:,}"
                 )
 
-            if labelParts:
-                image = self._drawPreviewBadge(
+            label = " · ".join(
+                labelParts
+            )
+
+            items.append(
+                (
                     image,
-                    " · ".join(labelParts),
+                    label,
                 )
+            )
 
-            tiles.append(image)
-
-            if len(tiles) >= 3:
+            if len(items) >= 3:
                 break
 
-        if tiles:
-            return self._composeScientificHeroPreview(
-                tiles=tiles,
+        if items:
+            return self._composeClasses3dPreview(
+                items=items,
                 targetWidth=size,
             )
 
@@ -3932,6 +3940,298 @@ class ThumbnailService:
                 height - 1,
             ),
             contain=True,
+        )
+
+        return canvas
+
+    def _composeClasses3dPreview(
+            self,
+            items: Sequence[
+                Tuple[
+                    Image.Image,
+                    str,
+                ]
+            ],
+            targetWidth: int,
+    ) -> Image.Image:
+        items = list(
+            items[:3]
+        )
+
+        if not items:
+            return Image.new(
+                "RGB",
+                (
+                    420,
+                    240,
+                ),
+                self.THUMBNAIL_BACKGROUND,
+            )
+
+        width = max(
+            420,
+            int(targetWidth) * 3,
+        )
+
+        height = max(
+            240,
+            int(
+                round(
+                    width * 0.56
+                )
+            ),
+        )
+
+        gap = max(
+            6,
+            int(
+                round(
+                    width * 0.016
+                )
+            ),
+        )
+
+        canvas = Image.new(
+            "RGB",
+            (
+                width,
+                height,
+            ),
+            self.THUMBNAIL_BACKGROUND,
+        )
+
+        draw = ImageDraw.Draw(
+            canvas
+        )
+
+        def pastePanel(
+                image: Image.Image,
+                label: str,
+                box: Tuple[
+                    int,
+                    int,
+                    int,
+                    int,
+                ],
+        ):
+            x0, y0, x1, y1 = box
+
+            panelHeight = max(
+                1,
+                y1 - y0 + 1,
+            )
+
+            labelHeight = max(
+                28,
+                min(
+                    38,
+                    int(
+                        round(
+                            panelHeight
+                            * 0.17
+                        )
+                    ),
+                ),
+            )
+
+            imageBottom = max(
+                y0,
+                y1
+                - labelHeight,
+            )
+
+            self._pastePreviewContent(
+                canvas=canvas,
+                image=image,
+                box=(
+                    x0,
+                    y0,
+                    x1,
+                    imageBottom,
+                ),
+                contain=True,
+            )
+
+            draw.line(
+                (
+                    x0,
+                    imageBottom + 1,
+                    x1,
+                    imageBottom + 1,
+                ),
+                fill=(
+                    203,
+                    213,
+                    225,
+                ),
+                width=1,
+            )
+
+            if not label:
+                return
+
+            font = self._getBadgeFont(
+                labelHeight
+            )
+
+            try:
+                bbox = draw.textbbox(
+                    (
+                        0,
+                        0,
+                    ),
+                    label,
+                    font=font,
+                )
+
+                textWidth = (
+                    bbox[2]
+                    - bbox[0]
+                )
+
+                textHeight = (
+                    bbox[3]
+                    - bbox[1]
+                )
+
+            except Exception:
+                textWidth = max(
+                    24,
+                    len(label) * 7,
+                )
+
+                textHeight = 12
+
+            availableWidth = max(
+                1,
+                x1 - x0 + 1,
+            )
+
+            textX = (
+                x0
+                + max(
+                    5,
+                    (
+                        availableWidth
+                        - textWidth
+                    ) // 2,
+                )
+            )
+
+            textY = (
+                imageBottom
+                + 1
+                + max(
+                    1,
+                    (
+                        labelHeight
+                        - textHeight
+                    ) // 2,
+                )
+                - 1
+            )
+
+            draw.text(
+                (
+                    textX,
+                    textY,
+                ),
+                label,
+                fill=(
+                    71,
+                    85,
+                    105,
+                ),
+                font=font,
+            )
+
+        if len(items) == 1:
+            pastePanel(
+                image=items[0][0],
+                label=items[0][1],
+                box=(
+                    0,
+                    0,
+                    width - 1,
+                    height - 1,
+                ),
+            )
+
+            return canvas
+
+        if len(items) == 2:
+            panelWidth = (
+                width - gap
+            ) // 2
+
+            pastePanel(
+                image=items[0][0],
+                label=items[0][1],
+                box=(
+                    0,
+                    0,
+                    panelWidth - 1,
+                    height - 1,
+                ),
+            )
+
+            pastePanel(
+                image=items[1][0],
+                label=items[1][1],
+                box=(
+                    panelWidth + gap,
+                    0,
+                    width - 1,
+                    height - 1,
+                ),
+            )
+
+            return canvas
+
+        heroWidth = int(
+            round(
+                (
+                    width - gap
+                )
+                * 0.58
+            )
+        )
+
+        sideHeight = (
+            height - gap
+        ) // 2
+
+        pastePanel(
+            image=items[0][0],
+            label=items[0][1],
+            box=(
+                0,
+                0,
+                heroWidth - 1,
+                height - 1,
+            ),
+        )
+
+        pastePanel(
+            image=items[1][0],
+            label=items[1][1],
+            box=(
+                heroWidth + gap,
+                0,
+                width - 1,
+                sideHeight - 1,
+            ),
+        )
+
+        pastePanel(
+            image=items[2][0],
+            label=items[2][1],
+            box=(
+                heroWidth + gap,
+                sideHeight + gap,
+                width - 1,
+                height - 1,
+            ),
         )
 
         return canvas
@@ -5850,7 +6150,6 @@ class ThumbnailService:
         except Exception:
             logger.debug("Coordinates3D tomogram overlay thumbnail failed", exc_info=True)
             return None
-
 
     def _buildCoordinatesScatterImage(
             self,

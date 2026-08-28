@@ -446,6 +446,55 @@ def test_RankClasses3dPrefersLargestPopulations(
     ]
 
 
+def test_ComposeClasses3dPreviewBuildsReadableLayout(
+        service,
+):
+    items = [
+        (
+            Image.new(
+                "RGB",
+                (
+                    140,
+                    140,
+                ),
+                color=(
+                    255,
+                    0,
+                    0,
+                ),
+            ),
+            "Class 2 · 572",
+        ),
+        (
+            Image.new(
+                "RGB",
+                (
+                    140,
+                    140,
+                ),
+                color=(
+                    0,
+                    255,
+                    0,
+                ),
+            ),
+            "Class 1 · 547",
+        ),
+    ]
+
+    preview = (
+        service
+        ._composeClasses3dPreview(
+            items=items,
+            targetWidth=128,
+        )
+    )
+
+    assert preview.mode == "RGB"
+    assert preview.size[0] > preview.size[1]
+    assert preview.size[0] >= 420
+
+
 def test_PickCoordinates3dSlicePrefersDenseRegion(
         service,
 ):
