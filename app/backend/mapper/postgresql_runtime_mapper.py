@@ -3477,17 +3477,118 @@ class PostgresqlRuntimeMapper(Mapper):
 
         return result
 
+    def _buildDetachedProtocolParentView(
+            self,
+            protocolId: int,
+    ):
+        protocolId = self._toOptionalInt(
+            protocolId
+        )
+
+        if protocolId is None:
+            return None
+
+        row = (
+            self.flatMapper
+            .getProjectProtocolByProtocolId(
+                self.projectId,
+                protocolId,
+            )
+        )
+
+        if not row:
+            return None
+
+        parentProtocol = (
+            self
+            ._buildProtocolFromPostgresqlRow(
+                row
+            )
+        )
+
+        if parentProtocol is None:
+            return None
+
+        outputRows = (
+            self.protocolGraphRepository
+            .listPersistedSetOutputRows(
+                mapper=self,
+                projectId=self.projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        restoredOutputs = []
+
+        for outputInfo in outputRows:
+            outputName = str(
+                outputInfo.get(
+                    "outputName"
+                )
+                or ""
+            ).strip()
+
+            if not outputName:
+                continue
+
+            runtimeSet = (
+                self.runtimeSetFactory
+                .build(
+                    db=self.db,
+                    parent=parentProtocol,
+                    outputName=outputName,
+                    outputInfo=outputInfo,
+                    classes=getattr(
+                        self,
+                        "dictClasses",
+                        None,
+                    ),
+                    cache=False,
+                )
+            )
+
+            if runtimeSet is None:
+                continue
+
+            setattr(
+                parentProtocol,
+                outputName,
+                runtimeSet,
+            )
+
+            restoredOutputs.append(
+                outputName
+            )
+
+        logger.debug(
+            "Built detached PostgreSQL parent protocol view. "
+            "projectId=%s protocolId=%s outputs=%s",
+            self.projectId,
+            protocolId,
+            restoredOutputs,
+        )
+
+        return parentProtocol
+
     def getParent(self, obj):
         """
-        Return the direct parent without refreshing or reattaching it.
+        Return the direct PostgreSQL parent.
 
-        Native PostgreSQL objects may already carry their parent through
-        _objParent. Otherwise, resolve the runtime parent id from PostgreSQL.
+        Runtime output Sets require native Scipion parent semantics:
+        plugins may inspect sibling outputs through the producer protocol.
+        For those Sets, return a detached read-only protocol view with its
+        persisted Set outputs restored as attributes.
+
+        Other objects keep using the normal read-only relation resolver.
         """
         if obj is None:
             return None
 
-        parent = getattr(obj, "_objParent", None)
+        parent = getattr(
+            obj,
+            "_objParent",
+            None,
+        )
 
         if parent is not None:
             return parent
@@ -3496,14 +3597,47 @@ class PostgresqlRuntimeMapper(Mapper):
             self._call(
                 obj,
                 "getObjParentId",
-                getattr(obj, "_objParentId", None),
+                getattr(
+                    obj,
+                    "_objParentId",
+                    None,
+                ),
             )
         )
 
         if parentId is None:
             return None
 
-        return self._selectRelationObjectById(parentId)
+        runtimeChecker = getattr(
+            obj,
+            "isPostgresqlRuntimeOutput",
+            None,
+        )
+
+        isPostgresqlRuntimeOutput = False
+
+        if callable(runtimeChecker):
+            try:
+                isPostgresqlRuntimeOutput = bool(
+                    runtimeChecker()
+                )
+            except Exception:
+                isPostgresqlRuntimeOutput = False
+
+        if isPostgresqlRuntimeOutput:
+            parentProtocol = (
+                self
+                ._buildDetachedProtocolParentView(
+                    parentId
+                )
+            )
+
+            if parentProtocol is not None:
+                return parentProtocol
+
+        return self._selectRelationObjectById(
+            parentId
+        )
 
     def deleteAll(self):
         deleteResult = self.flatMapper.deleteProjectRuntimeData(

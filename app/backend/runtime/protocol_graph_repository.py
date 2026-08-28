@@ -413,6 +413,7 @@ class ProtocolGraphRepository:
             mapper,
             projectId: int,
             className: Optional[str] = None,
+            protocolId: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         List PostgreSQL-backed Scipion set outputs that expose a usable
@@ -450,6 +451,24 @@ class ProtocolGraphRepository:
             className or ""
         ).strip()
 
+        protocolIdValue = None
+
+        if protocolId not in (
+                None,
+                "",
+        ):
+            try:
+                protocolIdValue = int(
+                    protocolId
+                )
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                raise ValueError(
+                    "protocolId must be an integer"
+                )
+
         query = """
             SELECT
                 s.id AS "setId",
@@ -484,6 +503,15 @@ class ProtocolGraphRepository:
 
             params.append(
                 classNameText
+            )
+
+        if protocolIdValue is not None:
+            query += """
+               AND p."protocolId" = %s
+            """
+
+            params.append(
+                protocolIdValue
             )
 
         query += """

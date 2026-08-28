@@ -334,6 +334,39 @@ def test_ListPersistedSetOutputRowsFiltersExactClass():
     )
 
 
+def test_ListPersistedSetOutputRowsFiltersProtocol():
+    mapper = FakeMapper(
+        rows=[
+            buildSetRow(),
+        ]
+    )
+
+    result = (
+        ProtocolGraphRepository()
+        .listPersistedSetOutputRows(
+            mapper=mapper,
+            projectId=4,
+            protocolId=100,
+        )
+    )
+
+    assert result == [
+        buildSetRow(),
+    ]
+
+    call = mapper.db.calls[0]
+
+    assert (
+        'p."protocolId" = %s'
+        in call["query"]
+    )
+
+    assert call["params"] == (
+        4,
+        100,
+    )
+
+
 def test_ListPersistedSetOutputRowsSkipsMissingRuntimeIdentity():
     mapper = FakeMapper(
         rows=[

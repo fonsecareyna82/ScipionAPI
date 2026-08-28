@@ -10,6 +10,8 @@
 # * (at your option) any later version.
 # *
 # ******************************************************************************
+import pytest
+
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
@@ -185,3 +187,182 @@ def test_GetParentReturnsNoneForMissingObject():
 
     assert result is None
     assert resolvedIds == []
+
+
+class FakePostgresqlRuntimeSet:
+    def __init__(
+            self,
+            parentId,
+    ):
+        self._objParent = None
+        self._objParentId = parentId
+
+    def getObjParentId(self):
+        return self._objParentId
+
+    def isPostgresqlRuntimeOutput(self):
+        return True
+
+
+class FakeParentProtocol:
+    def __init__(
+            self,
+            protocolId,
+    ):
+        self._protocolId = protocolId
+
+    def getObjId(self):
+        return self._protocolId
+
+
+class FakeRuntimeSetFactory:
+    def __init__(self):
+        self.calls = []
+
+    def build(
+            self,
+            **kwargs,
+    ):
+        self.calls.append(
+            kwargs
+        )
+
+        return {
+            "outputName": kwargs[
+                "outputName"
+            ],
+        }
+
+
+def test_GetParentRestoresPersistedSetOutputs():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 4
+    mapper.db = object()
+    mapper.dictClasses = {}
+
+    parentProtocol = FakeParentProtocol(
+        protocolId=100,
+    )
+
+    class FakeFlatMapper:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            assert projectId == 4
+            assert protocolId == 100
+
+            return {
+                "protocolId": 100,
+                "protocolClassName": (
+                    "FakeProducer"
+                ),
+            }
+
+    class FakeRepository:
+        def listPersistedSetOutputRows(
+                self,
+                mapper,
+                projectId,
+                protocolId=None,
+                className=None,
+        ):
+            assert projectId == 4
+            assert protocolId == 100
+
+            return [
+                {
+                    "runtimeObjectId": 501,
+                    "outputName": (
+                        "outputMovies"
+                    ),
+                    "className": (
+                        "SetOfMovies"
+                    ),
+                    "itemClassName": (
+                        "Movie"
+                    ),
+                    "setId": 10,
+                    "properties": {},
+                },
+                {
+                    "runtimeObjectId": 502,
+                    "outputName": (
+                        "outputMicrographsDoseWeighted"
+                    ),
+                    "className": (
+                        "SetOfMicrographs"
+                    ),
+                    "itemClassName": (
+                        "Micrograph"
+                    ),
+                    "setId": 11,
+                    "properties": {},
+                },
+            ]
+
+    mapper.flatMapper = FakeFlatMapper()
+    mapper.protocolGraphRepository = (
+        FakeRepository()
+    )
+
+    mapper.runtimeSetFactory = (
+        FakeRuntimeSetFactory()
+    )
+
+    mapper._buildProtocolFromPostgresqlRow = (
+        lambda row: parentProtocol
+    )
+
+    mapper._selectRelationObjectById = (
+        lambda objId: (
+            pytest.fail(
+                "PostgreSQL runtime Set parent "
+                "must use detached protocol view"
+            )
+        )
+    )
+
+    child = FakePostgresqlRuntimeSet(
+        parentId=100,
+    )
+
+    result = mapper.getParent(
+        child
+    )
+
+    assert result is parentProtocol
+
+    assert hasattr(
+        result,
+        "outputMovies",
+    )
+
+    assert hasattr(
+        result,
+        "outputMicrographsDoseWeighted",
+    )
+
+    assert (
+        result
+        .outputMicrographsDoseWeighted[
+            "outputName"
+        ]
+        == "outputMicrographsDoseWeighted"
+    )
+
+    assert len(
+        mapper.runtimeSetFactory.calls
+    ) == 2
+
+    assert all(
+        call["cache"] is False
+        for call
+        in mapper.runtimeSetFactory.calls
+    )
+
+
