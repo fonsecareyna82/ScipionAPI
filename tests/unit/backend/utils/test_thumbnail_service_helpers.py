@@ -348,6 +348,185 @@ def test_CentralVolumeProjectionSupportsAllAxes(
     )
 
 
+def test_RankClasses2dPrefersLargestPopulations(
+        service,
+):
+    class FakeClass2D:
+        def __init__(
+                self,
+                name,
+                population,
+        ):
+            self.name = name
+            self.population = population
+
+        def getSize(self):
+            return self.population
+
+    small = FakeClass2D(
+        "small",
+        10,
+    )
+
+    large = FakeClass2D(
+        "large",
+        100,
+    )
+
+    medium = FakeClass2D(
+        "medium",
+        50,
+    )
+
+    ranked = service._rankClasses2d(
+        [
+            small,
+            large,
+            medium,
+        ],
+        maxItems=3,
+    )
+
+    assert [
+        item.name
+        for item in ranked
+    ] == [
+        "large",
+        "medium",
+        "small",
+    ]
+
+
+def test_SelectRepresentativeTiltFramesUsesZeroAndExtremes(
+        service,
+):
+    frames = [
+        (
+            -60.0,
+            object(),
+        ),
+        (
+            -25.0,
+            object(),
+        ),
+        (
+            0.0,
+            object(),
+        ),
+        (
+            25.0,
+            object(),
+        ),
+        (
+            60.0,
+            object(),
+        ),
+    ]
+
+    selected = (
+        service
+        ._selectRepresentativeTiltFrames(
+            frames
+        )
+    )
+
+    assert [
+        item[0]
+        for item in selected
+    ] == [
+        0.0,
+        -60.0,
+        60.0,
+    ]
+
+
+def test_ComposeScientificSplitBuildsWidePreview(
+        service,
+):
+    left = Image.new(
+        "RGB",
+        (
+            100,
+            100,
+        ),
+        color=(
+            255,
+            0,
+            0,
+        ),
+    )
+
+    right = Image.new(
+        "RGB",
+        (
+            220,
+            120,
+        ),
+        color=(
+            0,
+            255,
+            0,
+        ),
+    )
+
+    preview = (
+        service
+        ._composeScientificSplitPreview(
+            leftImage=left,
+            rightImage=right,
+            targetWidth=128,
+        )
+    )
+
+    assert preview.mode == "RGB"
+    assert preview.size[0] > preview.size[1]
+    assert preview.size[0] >= 360
+
+
+def test_ComposeTiltSeriesHeroPreviewBuildsHeroLayout(
+        service,
+):
+    tiles = [
+        Image.new(
+            "RGB",
+            (
+                120,
+                120,
+            ),
+            color=color,
+        )
+        for color in (
+            (
+                255,
+                0,
+                0,
+            ),
+            (
+                0,
+                255,
+                0,
+            ),
+            (
+                0,
+                0,
+                255,
+            ),
+        )
+    ]
+
+    preview = (
+        service
+        ._composeTiltSeriesHeroPreview(
+            tiles=tiles,
+            targetWidth=128,
+        )
+    )
+
+    assert preview.mode == "RGB"
+    assert preview.size[0] > preview.size[1]
+    assert preview.size[0] >= 360
+
+
 def test_ComposeTriptychBuildsThreePanelLayout(service):
     panels = [
         Image.new("RGB", (120, 120), color=(255, 0, 0)),

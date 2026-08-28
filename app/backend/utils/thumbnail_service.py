@@ -1352,7 +1352,9 @@ class ThumbnailService:
                 return self._renderDefocusGroupPreview(output, size=size)
             if isinstance(output, (Mask, VolumeMask)):
                 return self._renderMaskPreview(protocol, output, size=size)
-            if isinstance(output, (SetOfParticles, SetOfClasses2D)):
+            if isinstance(output, SetOfClasses2D):
+                return self._renderClasses2dPreview(protocol, output, size=size)
+            if isinstance(output, SetOfParticles):
                 return self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfCoordinates):
                 return self._renderCoordinates2dPreview(protocol, output, size=size)
@@ -1486,7 +1488,12 @@ class ThumbnailService:
                 if image is not None:
                     return image
 
-            if "particle" in className or "class2d" in className or "average" in className:
+            if "class2d" in className:
+                image = self._renderClasses2dPreview(protocol, output, size=size)
+                if image is not None:
+                    return image
+
+            if "particle" in className or "average" in className:
                 image = self._renderParticlesOrClasses2dPreview(protocol, output, size=size)
                 if image is not None:
                     return image
@@ -1691,6 +1698,122 @@ class ThumbnailService:
             return None
 
         return self._composeMicrographStrip(tiles[:3], targetWidth=size)
+
+    def _rankClasses2d(
+            self,
+            output,
+            maxItems: int = 12,
+    ) -> List[Any]:
+        ranked = []
+
+        for index, class2d in enumerate(self._iterItemsDirect(output)):
+            if not self._isEnabled(class2d):
+                continue
+
+            population = 0
+
+            try:
+                value = self._safeScalarValue(
+                    getattr(class2d, "getSize", lambda: 0)()
+                )
+                population = max(0, int(float(value or 0)))
+            except Exception:
+                pass
+
+            ranked.append((population, index, class2d))
+
+            if index >= 255:
+                break
+
+        ranked.sort(
+            key=lambda item: (-item[0], item[1])
+        )
+
+        return [
+            item[2]
+            for item in ranked[:maxItems]
+        ]
+
+    def _renderClass2dRepresentativePreview(
+            self,
+            protocol,
+            class2d,
+    ) -> Optional[Image.Image]:
+        getRepresentativeFn = getattr(
+            class2d,
+            "getRepresentative",
+            None,
+        )
+
+        if not callable(getRepresentativeFn):
+            return None
+
+        try:
+            representative = getRepresentativeFn()
+        except Exception:
+            return None
+
+        if representative is None:
+            return None
+
+        sourcePath, sourceIndex = self._resolveImageSourceFromItem(
+            representative
+        )
+
+        if not sourcePath:
+            return None
+
+        try:
+            image = self._readImagePreview(
+                protocol,
+                sourcePath,
+                sourceIndex,
+            )
+        except Exception:
+            image = None
+
+        if image is None:
+            return None
+
+        return self._prepareParticleTile(image)
+
+    def _renderClasses2dPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+
+        for class2d in self._rankClasses2d(
+                output,
+                maxItems=12,
+        ):
+            tile = self._renderClass2dRepresentativePreview(
+                protocol,
+                class2d,
+            )
+
+            if tile is None:
+                continue
+
+            tiles.append(tile)
+
+            if len(tiles) >= 6:
+                break
+
+        if tiles:
+            return self._composeParticleMosaic(
+                tiles=tiles,
+                targetWidth=size,
+                maxCols=3,
+            )
+
+        return self._renderParticlesOrClasses2dPreview(
+            protocol,
+            output,
+            size=size,
+        )
 
     def _renderParticlesOrClasses2dPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
@@ -1907,7 +2030,356 @@ class ThumbnailService:
 
         return None
 
+    def _selectRepresentativeTiltFrames(
+            self,
+            frames: Sequence[
+                Tuple[
+                    Optional[float],
+                    Any,
+                ]
+            ],
+    ) -> List[
+        Tuple[
+            Optional[float],
+            Any,
+        ]
+    ]:
+        if not frames:
+            return []
+
+        validAngles = [
+            item
+            for item in frames
+            if (
+                item[0] is not None
+                and np.isfinite(item[0])
+            )
+        ]
+
+        selected = []
+        seen = set()
+
+        def add(item):
+            key = id(item[1])
+
+            if key in seen:
+                return
+
+            seen.add(key)
+            selected.append(item)
+
+        if validAngles:
+            zeroTilt = min(
+                validAngles,
+                key=lambda item: abs(item[0]),
+            )
+
+            negativeExtreme = min(
+                validAngles,
+                key=lambda item: item[0],
+            )
+
+            positiveExtreme = max(
+                validAngles,
+                key=lambda item: item[0],
+            )
+
+            add(zeroTilt)
+            add(negativeExtreme)
+            add(positiveExtreme)
+
+        if len(selected) < 3:
+            indices = np.linspace(
+                0,
+                len(frames) - 1,
+                num=min(3, len(frames)),
+                dtype=int,
+            )
+
+            for index in indices:
+                add(frames[int(index)])
+
+        return selected[:3]
+
+
+    def _renderTiltSeriesFramePreview(
+            self,
+            protocol,
+            frame,
+    ) -> Optional[Image.Image]:
+        sourcePath, sourceIndex = (
+            self._resolveImageSourceFromItem(
+                frame
+            )
+        )
+
+        if not sourcePath:
+            return None
+
+        try:
+            image = self._readImagePreview(
+                protocol,
+                sourcePath,
+                sourceIndex,
+            )
+        except Exception:
+            image = None
+
+        if image is None:
+            resolvedPath = self._resolveFilePath(
+                protocol,
+                sourcePath,
+            )
+
+            if (
+                    resolvedPath is not None
+                    and resolvedPath.exists()
+            ):
+                try:
+                    gray = self._read2dTile(
+                        filePath=resolvedPath,
+                        sliceIndex=sourceIndex,
+                        preferCentral=(
+                            sourceIndex is None
+                        ),
+                        thumbSize=maxThumbSize,
+                    )
+
+                    if gray is not None:
+                        image = self._grayTileToImage(
+                            gray
+                        )
+                except Exception:
+                    pass
+
+        if image is None:
+            return None
+
+        grayImage = ImageOps.autocontrast(
+            image.convert("L"),
+            cutoff=1,
+        )
+
+        grayImage = (
+            ImageEnhance
+            .Contrast(grayImage)
+            .enhance(1.05)
+        )
+
+        return grayImage.convert("RGB")
+
+
+    def _drawPreviewBadge(
+            self,
+            image: Image.Image,
+            label: str,
+    ) -> Image.Image:
+        label = str(label or "").strip()
+
+        if not label:
+            return image.convert("RGB")
+
+        canvas = image.convert("RGBA")
+        overlay = Image.new(
+            "RGBA",
+            canvas.size,
+            (0, 0, 0, 0),
+        )
+
+        draw = ImageDraw.Draw(overlay)
+
+        badgeH = max(
+            24,
+            int(round(canvas.height * 0.12)),
+        )
+
+        font = self._getBadgeFont(
+            badgeH
+        )
+
+        try:
+            bbox = draw.textbbox(
+                (0, 0),
+                label,
+                font=font,
+            )
+
+            textW = bbox[2] - bbox[0]
+            textH = bbox[3] - bbox[1]
+
+        except Exception:
+            textW = max(
+                24,
+                len(label) * 8,
+            )
+            textH = 12
+
+        padX = max(
+            8,
+            int(round(badgeH * 0.34)),
+        )
+
+        badgeW = textW + 2 * padX
+
+        x0 = max(
+            6,
+            int(round(canvas.width * 0.025)),
+        )
+
+        y0 = max(
+            6,
+            int(round(canvas.height * 0.025)),
+        )
+
+        x1 = x0 + badgeW
+        y1 = y0 + badgeH
+
+        draw.rounded_rectangle(
+            (
+                x0,
+                y0,
+                x1,
+                y1,
+            ),
+            radius=max(
+                8,
+                badgeH // 2,
+            ),
+            fill=(
+                15,
+                23,
+                42,
+                195,
+            ),
+        )
+
+        draw.text(
+            (
+                x0 + padX,
+                y0
+                + (
+                    badgeH
+                    - textH
+                ) // 2
+                - 1,
+            ),
+            label,
+            fill=(
+                255,
+                255,
+                255,
+                255,
+            ),
+            font=font,
+        )
+
+        return Image.alpha_composite(
+            canvas,
+            overlay,
+        ).convert("RGB")
+
+
+    def _renderTiltSeriesAnglePreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
+        if isinstance(output, SetOfTiltSeries):
+            seriesList = list(
+                self._iterPreviewItems(
+                    output,
+                    maxItems=3,
+                )
+            )
+        else:
+            seriesList = [output]
+
+        for tiltSeries in seriesList:
+            frames = []
+
+            for frame in self._iterItemsDirect(
+                    tiltSeries
+            ):
+                if not self._isEnabled(frame):
+                    continue
+
+                angle = None
+
+                try:
+                    value = self._safeScalarValue(
+                        getattr(
+                            frame,
+                            "getTiltAngle",
+                            lambda: None,
+                        )()
+                    )
+
+                    if value is not None:
+                        value = float(value)
+
+                        if np.isfinite(value):
+                            angle = value
+
+                except Exception:
+                    pass
+
+                frames.append(
+                    (
+                        angle,
+                        frame,
+                    )
+                )
+
+                if len(frames) >= 96:
+                    break
+
+            selected = (
+                self
+                ._selectRepresentativeTiltFrames(
+                    frames
+                )
+            )
+
+            rendered = []
+
+            for angle, frame in selected:
+                tile = (
+                    self
+                    ._renderTiltSeriesFramePreview(
+                        protocol,
+                        frame,
+                    )
+                )
+
+                if tile is None:
+                    continue
+
+                if angle is not None:
+                    tile = self._drawPreviewBadge(
+                        tile,
+                        f"{angle:+.1f}°",
+                    )
+
+                rendered.append(tile)
+
+            if len(rendered) >= 2:
+                return self._composeTiltSeriesHeroPreview(
+                    tiles=rendered,
+                    targetWidth=size,
+                )
+
+        return None
+
     def _renderTiltSeriesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+        anglePreview = self._renderTiltSeriesAnglePreview(
+            protocol=protocol,
+            output=output,
+            size=size,
+        )
+
+        if anglePreview is not None:
+            return anglePreview
         tiles: List[Image.Image] = []
         seriesList: List[Any]
 
@@ -2225,53 +2697,85 @@ class ThumbnailService:
             if fig is not None:
                 plt.close(fig)
 
-    def _renderCtfPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
-        tiles: List[Image.Image] = []
+    def _renderCtfPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
         ctfItems: List[Any] = []
-        maxItems = 4
 
         if isinstance(output, SetOfCTF):
-            ctfIterator = self._iterItemsDirect(output, orderBy="id")
+            ctfIterator = self._iterItemsDirect(
+                output,
+                orderBy="id",
+            )
         else:
             ctfIterator = iter([output])
 
         for ctfModel in ctfIterator:
             try:
+                if not self._isEnabled(ctfModel):
+                    continue
+
                 ctfItems.append(ctfModel)
 
-                tile = self._renderCtfPsdPreviewFromItem(
-                    protocol=protocol,
-                    ctfModel=ctfModel,
-                )
-                if tile is not None:
-                    tiles.append(tile)
-
-                if len(tiles) >= maxItems:
-                    break
-
-                if len(ctfItems) >= 80 and tiles:
+                if len(ctfItems) >= 80:
                     break
 
             except Exception:
-                logger.debug("CTF item preview failed", exc_info=True)
+                continue
 
-        if tiles:
-            return self._composeCleanGrid(
-                tiles=tiles[:maxItems],
-                maxCols=2,
+        if not ctfItems:
+            return None
+
+        psdPreview = None
+
+        representativeIndices = [
+            len(ctfItems) // 2,
+            0,
+            len(ctfItems) - 1,
+        ]
+
+        seenIndices = set()
+
+        for index in representativeIndices:
+            if index in seenIndices:
+                continue
+
+            seenIndices.add(index)
+
+            try:
+                psdPreview = self._renderCtfPsdPreviewFromItem(
+                    protocol=protocol,
+                    ctfModel=ctfItems[index],
+                )
+            except Exception:
+                psdPreview = None
+
+            if psdPreview is not None:
+                break
+
+        defocusPreview = self._buildCtfDefocusPreviewImage(
+            ctfItems=ctfItems,
+            size=size,
+        )
+
+        if (
+                psdPreview is not None
+                and defocusPreview is not None
+        ):
+            return self._composeScientificSplitPreview(
+                leftImage=psdPreview,
+                rightImage=defocusPreview,
                 targetWidth=size,
-                background=(246, 249, 252),
+                leftRatio=0.38,
             )
 
-        if ctfItems:
-            image = self._buildCtfDefocusPreviewImage(
-                ctfItems=ctfItems,
-                size=size,
-            )
-            if image is not None:
-                return image
+        if defocusPreview is not None:
+            return defocusPreview
 
-        return None
+        return psdPreview
 
     def _renderCtfPsdPreviewFromItem(
             self,
@@ -3066,6 +3570,269 @@ class ThumbnailService:
                     y,
                 ),
             )
+
+        return canvas
+
+    def _pastePreviewContent(
+            self,
+            canvas: Image.Image,
+            image: Image.Image,
+            box: Tuple[int, int, int, int],
+            contain: bool = True,
+    ):
+        x0, y0, x1, y1 = box
+
+        width = max(
+            1,
+            x1 - x0 + 1,
+        )
+
+        height = max(
+            1,
+            y1 - y0 + 1,
+        )
+
+        source = image.convert("RGB")
+
+        if contain:
+            fitted = ImageOps.contain(
+                source,
+                (
+                    width,
+                    height,
+                ),
+                method=(
+                    Image
+                    .Resampling
+                    .LANCZOS
+                ),
+            )
+
+        else:
+            fitted = ImageOps.fit(
+                source,
+                (
+                    width,
+                    height,
+                ),
+                method=(
+                    Image
+                    .Resampling
+                    .LANCZOS
+                ),
+                centering=(
+                    0.5,
+                    0.5,
+                ),
+            )
+
+        x = x0 + (
+            width
+            - fitted.width
+        ) // 2
+
+        y = y0 + (
+            height
+            - fitted.height
+        ) // 2
+
+        canvas.paste(
+            fitted,
+            (
+                x,
+                y,
+            ),
+        )
+
+
+    def _composeScientificSplitPreview(
+            self,
+            leftImage: Image.Image,
+            rightImage: Image.Image,
+            targetWidth: int,
+            leftRatio: float = 0.42,
+    ) -> Image.Image:
+        width = max(
+            360,
+            int(targetWidth) * 2,
+        )
+
+        height = max(
+            210,
+            int(round(width * 0.56)),
+        )
+
+        gap = max(
+            6,
+            int(round(width * 0.018)),
+        )
+
+        usableWidth = width - gap
+
+        leftWidth = int(
+            round(
+                usableWidth
+                * leftRatio
+            )
+        )
+
+        rightWidth = (
+            usableWidth
+            - leftWidth
+        )
+
+        canvas = Image.new(
+            "RGB",
+            (
+                width,
+                height,
+            ),
+            self.THUMBNAIL_BACKGROUND,
+        )
+
+        self._pastePreviewContent(
+            canvas=canvas,
+            image=leftImage,
+            box=(
+                0,
+                0,
+                leftWidth - 1,
+                height - 1,
+            ),
+            contain=True,
+        )
+
+        self._pastePreviewContent(
+            canvas=canvas,
+            image=rightImage,
+            box=(
+                leftWidth + gap,
+                0,
+                leftWidth
+                + gap
+                + rightWidth
+                - 1,
+                height - 1,
+            ),
+            contain=True,
+        )
+
+        return canvas
+
+
+    def _composeTiltSeriesHeroPreview(
+            self,
+            tiles: Sequence[Image.Image],
+            targetWidth: int,
+    ) -> Image.Image:
+        if not tiles:
+            return Image.new(
+                "RGB",
+                (
+                    360,
+                    210,
+                ),
+                self.THUMBNAIL_BACKGROUND,
+            )
+
+        if len(tiles) == 1:
+            return tiles[0].convert("RGB")
+
+        width = max(
+            360,
+            int(targetWidth) * 2,
+        )
+
+        height = max(
+            210,
+            int(round(width * 0.56)),
+        )
+
+        gap = max(
+            6,
+            int(round(width * 0.018)),
+        )
+
+        heroWidth = int(
+            round(
+                (
+                    width
+                    - gap
+                )
+                * 0.62
+            )
+        )
+
+        sideWidth = (
+            width
+            - heroWidth
+            - gap
+        )
+
+        canvas = Image.new(
+            "RGB",
+            (
+                width,
+                height,
+            ),
+            self.THUMBNAIL_BACKGROUND,
+        )
+
+        self._pastePreviewContent(
+            canvas=canvas,
+            image=tiles[0],
+            box=(
+                0,
+                0,
+                heroWidth - 1,
+                height - 1,
+            ),
+            contain=False,
+        )
+
+        if len(tiles) == 2:
+            self._pastePreviewContent(
+                canvas=canvas,
+                image=tiles[1],
+                box=(
+                    heroWidth + gap,
+                    0,
+                    width - 1,
+                    height - 1,
+                ),
+                contain=False,
+            )
+
+            return canvas
+
+        sideHeight = (
+            height
+            - gap
+        ) // 2
+
+        self._pastePreviewContent(
+            canvas=canvas,
+            image=tiles[1],
+            box=(
+                heroWidth + gap,
+                0,
+                width - 1,
+                sideHeight - 1,
+            ),
+            contain=False,
+        )
+
+        self._pastePreviewContent(
+            canvas=canvas,
+            image=tiles[2],
+            box=(
+                heroWidth + gap,
+                sideHeight + gap,
+                width - 1,
+                height - 1,
+            ),
+            contain=False,
+        )
 
         return canvas
 
