@@ -33,7 +33,11 @@ from pyworkflow.object import (
     Set,
     String,
 )
-from pwem.objects import EMSet
+from pwem.objects import (
+    EMSet,
+    SetOfCTF,
+    SetOfMicrographs,
+)
 from app.backend.mapper.scipion_set_mapper import (
     ScipionSetPostgresqlMapper,
 )
@@ -43,6 +47,7 @@ from app.backend.runtime.postgresql_runtime_set_factory import (
 )
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     getPostgresqlRuntimeParent,
+    setPostgresqlRuntimeParentReference,
 )
 
 
@@ -2131,6 +2136,118 @@ def test_BuildHydratesRootSetPointerUsingProtocolOutputIdentity():
         "outputName": (
             "outputTiltSeries"
         ),
+    }]
+
+
+def test_SetOfCtfHydratesProtocolExtendedMicrographsPointer():
+    targetMicrographs = SetOfMicrographs()
+    targetMicrographs.setObjId(999)
+
+    targetProtocol = FakeParent()
+    targetProtocol.setObjId(5)
+    targetProtocol.outputMicrographs = (
+        targetMicrographs
+    )
+
+    class FakeRuntimeMapper:
+        def __init__(self):
+            self.projectId = 4
+            self.calls = []
+
+        def selectDetachedProtocolViewById(
+                self,
+                protocolId,
+                outputNames=None,
+        ):
+            self.calls.append({
+                "protocolId": protocolId,
+                "outputNames": outputNames,
+            })
+
+            if protocolId == 5:
+                return targetProtocol
+
+            return None
+
+    class SourceProtocol(FakeParent):
+        def __init__(self, mapper):
+            super().__init__()
+            self.mapper = mapper
+
+        def getMapper(self):
+            return self.mapper
+
+    runtimeMapper = FakeRuntimeMapper()
+
+    sourceProtocol = SourceProtocol(
+        runtimeMapper
+    )
+    sourceProtocol.setObjId(5)
+
+    ctfSet = SetOfCTF()
+    ctfSet.setObjId(998)
+
+    ctfSet._postgresqlRuntimeInfo = {
+        "projectId": 4,
+        "runtimeObjectId": 998,
+    }
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=ctfSet,
+        parent=sourceProtocol,
+    )
+
+    factory = PostgresqlRuntimeSetFactory()
+
+    factory._hydrateSetProperties(
+        runtimeSet=ctfSet,
+        properties={
+            "_micrographsPointer": {
+                "version": 1,
+                "kind": "pointer",
+                "targetObjectId": 5,
+                "targetClassName": (
+                    "FakeProducerProtocol"
+                ),
+                "targetObjectName": None,
+                "targetParentObjectId": None,
+                "targetParentClassName": None,
+                "extended": (
+                    "outputMicrographs"
+                ),
+                "uniqueId": (
+                    "5.outputMicrographs"
+                ),
+            },
+        },
+        db=object(),
+        classRegistry={},
+    )
+
+    assert (
+        ctfSet.getMicrographs()
+        is targetMicrographs
+    )
+
+    assert (
+        ctfSet
+        ._micrographsPointer
+        .getObjValue()
+        is targetProtocol
+    )
+
+    assert (
+        ctfSet
+        ._micrographsPointer
+        .getExtended()
+        == "outputMicrographs"
+    )
+
+    assert runtimeMapper.calls == [{
+        "protocolId": 5,
+        "outputNames": [
+            "outputMicrographs",
+        ],
     }]
 
 

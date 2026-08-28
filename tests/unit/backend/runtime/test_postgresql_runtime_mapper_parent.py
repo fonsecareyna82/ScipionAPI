@@ -366,3 +366,108 @@ def test_GetParentRestoresPersistedSetOutputs():
     )
 
 
+def test_SelectDetachedProtocolViewRestoresOnlyRequestedOutputs():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 4
+    mapper.db = object()
+    mapper.dictClasses = {}
+
+    parentProtocol = FakeParentProtocol(
+        protocolId=100
+    )
+
+    class FakeFlatMapper:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "protocolId": protocolId,
+                "protocolClassName": (
+                    "FakeProducer"
+                ),
+            }
+
+    class FakeRepository:
+        def listPersistedSetOutputRows(
+                self,
+                mapper,
+                projectId,
+                protocolId=None,
+                className=None,
+        ):
+            return [
+                {
+                    "runtimeObjectId": 501,
+                    "outputName": "outputCTF",
+                    "className": "SetOfCTF",
+                    "itemClassName": "CTFModel",
+                    "setId": 10,
+                    "properties": {},
+                },
+                {
+                    "runtimeObjectId": 502,
+                    "outputName": (
+                        "outputMicrographs"
+                    ),
+                    "className": (
+                        "SetOfMicrographs"
+                    ),
+                    "itemClassName": (
+                        "Micrograph"
+                    ),
+                    "setId": 11,
+                    "properties": {},
+                },
+            ]
+
+    mapper.flatMapper = FakeFlatMapper()
+    mapper.protocolGraphRepository = (
+        FakeRepository()
+    )
+    mapper.runtimeSetFactory = (
+        FakeRuntimeSetFactory()
+    )
+
+    mapper._buildProtocolFromPostgresqlRow = (
+        lambda row: parentProtocol
+    )
+
+    result = (
+        mapper
+        .selectDetachedProtocolViewById(
+            100,
+            outputNames=[
+                "outputMicrographs",
+            ],
+        )
+    )
+
+    assert result is parentProtocol
+
+    assert hasattr(
+        result,
+        "outputMicrographs",
+    )
+
+    assert not hasattr(
+        result,
+        "outputCTF",
+    )
+
+    assert [
+        call["outputName"]
+        for call
+        in mapper.runtimeSetFactory.calls
+    ] == [
+        "outputMicrographs",
+    ]
+
+
+
+
+

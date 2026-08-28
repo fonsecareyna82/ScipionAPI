@@ -2781,6 +2781,113 @@ class PostgresqlRuntimeSetFactory:
 
         return resolvePointer
 
+    def _resolveProtocolExtendedPointerTarget(
+            self,
+            runtimeSet: ScipionSet,
+            reference: Dict[str, Any],
+    ):
+        targetProtocolId = self._toOptionalInt(
+            reference.get("targetObjectId")
+        )
+
+        extended = str(
+            reference.get("extended")
+            or ""
+        ).strip()
+
+        if (
+                not isinstance(targetProtocolId, int)
+                or not extended
+        ):
+            return None
+
+        outputName = extended.split(".", 1)[0].strip()
+
+        if not outputName:
+            return None
+
+        sourceProtocol = self._findProtocolParent(
+            runtimeSet
+        )
+
+        runtimeMapper = self._getProtocolMapper(
+            sourceProtocol
+        )
+
+        projectId = self._getRuntimeProjectId(
+            runtimeSet
+        )
+
+        sourceRuntimeObjectId = self._toOptionalInt(
+            self._callOptionalMethod(
+                runtimeSet,
+                "getObjId",
+            )
+        )
+
+        if (
+                runtimeMapper is None
+                or not isinstance(projectId, int)
+                or not isinstance(sourceRuntimeObjectId, int)
+        ):
+            return None
+
+        selector = getattr(
+            runtimeMapper,
+            "selectDetachedProtocolViewById",
+            None,
+        )
+
+        if not callable(selector):
+            return None
+
+        targetKey = (
+            projectId,
+            sourceRuntimeObjectId,
+            "protocol:%s:%s"
+            % (
+                targetProtocolId,
+                outputName,
+            ),
+        )
+
+        if targetKey in self._resolvedPointerTargets:
+            return self._resolvedPointerTargets[targetKey]
+
+        if targetKey in self._resolvingPointerTargets:
+            return None
+
+        self._resolvingPointerTargets.add(
+            targetKey
+        )
+
+        try:
+            targetProtocol = selector(
+                targetProtocolId,
+                outputNames=[outputName],
+            )
+
+            if targetProtocol is None:
+                return None
+
+            if getattr(
+                    targetProtocol,
+                    outputName,
+                    None,
+            ) is None:
+                return None
+
+            self._resolvedPointerTargets[
+                targetKey
+            ] = targetProtocol
+
+            return targetProtocol
+
+        finally:
+            self._resolvingPointerTargets.discard(
+                targetKey
+            )
+
     def _buildPointerResolver(
             self,
             db,
@@ -2802,7 +2909,21 @@ class PostgresqlRuntimeSetFactory:
             hasRawParentIdentity = isinstance(targetParentObjectId, int)
             hasSemanticParentIdentity = isinstance(targetParentParentObjectId, int) and bool(targetParentObjectName)
 
-            if not hasRawParentIdentity and not hasSemanticParentIdentity:
+            if (
+                    not hasRawParentIdentity
+                    and not hasSemanticParentIdentity
+            ):
+                targetProtocol = (
+                    self
+                    ._resolveProtocolExtendedPointerTarget(
+                        runtimeSet=runtimeSet,
+                        reference=reference,
+                    )
+                )
+
+                if targetProtocol is not None:
+                    return targetProtocol
+
                 return None
 
             if isinstance(runtimeSetObjectId, int) and targetParentObjectId == runtimeSetObjectId:

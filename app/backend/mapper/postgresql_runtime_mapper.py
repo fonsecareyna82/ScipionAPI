@@ -3480,6 +3480,7 @@ class PostgresqlRuntimeMapper(Mapper):
     def _buildDetachedProtocolParentView(
             self,
             protocolId: int,
+            outputNames=None,
     ):
         protocolId = self._toOptionalInt(
             protocolId
@@ -3487,6 +3488,15 @@ class PostgresqlRuntimeMapper(Mapper):
 
         if protocolId is None:
             return None
+
+        requestedOutputNames = None
+
+        if outputNames is not None:
+            requestedOutputNames = {
+                str(outputName or "").strip()
+                for outputName in outputNames
+                if str(outputName or "").strip()
+            }
 
         row = (
             self.flatMapper
@@ -3531,6 +3541,12 @@ class PostgresqlRuntimeMapper(Mapper):
             if not outputName:
                 continue
 
+            if (
+                    requestedOutputNames is not None
+                    and outputName not in requestedOutputNames
+            ):
+                continue
+
             runtimeSet = (
                 self.runtimeSetFactory
                 .build(
@@ -3569,6 +3585,16 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         return parentProtocol
+
+    def selectDetachedProtocolViewById(
+            self,
+            protocolId: int,
+            outputNames=None,
+    ):
+        return self._buildDetachedProtocolParentView(
+            protocolId=protocolId,
+            outputNames=outputNames,
+        )
 
     def getParent(self, obj):
         """
