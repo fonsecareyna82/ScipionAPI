@@ -54,8 +54,15 @@ from metadataviewer.dao.numpy_dao import NumpyDao
 from metadataviewer.model import ObjectManager
 
 from tomo.constants import BOTTOM_LEFT_CORNER
-from tomo.objects import (SetOfTiltSeries, SetOfTiltSeriesM, SetOfTomoMasks,
-                          SetOfMeshes, SetOfTiltSeriesCoordinates, SetOfLandmarkModels)
+from tomo.objects import (
+    SetOfTiltSeries,
+    SetOfTiltSeriesM,
+    SetOfTomograms,
+    SetOfTomoMasks,
+    SetOfMeshes,
+    SetOfTiltSeriesCoordinates,
+    SetOfLandmarkModels,
+)
 
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
@@ -1360,7 +1367,9 @@ class ThumbnailService:
                 return self._renderCoordinates2dPreview(protocol, output, size=size)
             if isinstance(output, SetOfTomoMasks):
                 return self._renderTomoMasksPreview(protocol, output, size=size)
-            if isinstance(output, (SetOfClasses3D, SetOfVolumes)):
+            if isinstance(output, SetOfClasses3D):
+                return self._renderClasses3dPreview(protocol, output, size=size)
+            if isinstance(output, SetOfVolumes):
                 return self._renderClasses3dOrVolumesPreview(protocol, output, size=size)
             if isinstance(output, SetOfTiltSeriesM):
                 return self._renderTiltSeriesMPreview(protocol, output, size=size)
@@ -1463,8 +1472,30 @@ class ThumbnailService:
                 if image is not None:
                     return image
 
-            if "tomogram" in className or "volume" in className or "class3d" in className:
-                image = self._renderVolumeLikePreview(protocol, output, size=size)
+            if "tomogram" in className:
+                image = self._renderTomogramsPreview(
+                    protocol,
+                    output,
+                    size=size,
+                )
+                if image is not None:
+                    return image
+
+            if "class3d" in className:
+                image = self._renderClasses3dPreview(
+                    protocol,
+                    output,
+                    size=size,
+                )
+                if image is not None:
+                    return image
+
+            if "volume" in className:
+                image = self._renderVolumeLikePreview(
+                    protocol,
+                    output,
+                    size=size,
+                )
                 if image is not None:
                     return image
 
@@ -1899,6 +1930,192 @@ class ThumbnailService:
             return None
 
         return self._composeParticleMosaic(tiles, targetWidth=size, maxCols=maxCols)
+
+    def _rankClasses3d(
+            self,
+            output,
+            maxItems: int = 12,
+    ) -> List[Any]:
+        ranked = []
+
+        for index, class3d in enumerate(
+                self._iterItemsDirect(output)
+        ):
+            if not self._isEnabled(class3d):
+                continue
+
+            population = 0
+
+            try:
+                value = self._safeScalarValue(
+                    getattr(
+                        class3d,
+                        "getSize",
+                        lambda: 0,
+                    )()
+                )
+
+                population = max(
+                    0,
+                    int(float(value or 0)),
+                )
+            except Exception:
+                pass
+
+            ranked.append(
+                (
+                    population,
+                    index,
+                    class3d,
+                )
+            )
+
+            if index >= 255:
+                break
+
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                item[1],
+            )
+        )
+
+        return [
+            item[2]
+            for item in ranked[:maxItems]
+        ]
+
+
+    def _renderClass3dRepresentativePreview(
+            self,
+            protocol,
+            class3d,
+            size: int,
+    ) -> Optional[Image.Image]:
+        representative = None
+
+        getRepresentativeFn = getattr(
+            class3d,
+            "getRepresentative",
+            None,
+        )
+
+        if callable(getRepresentativeFn):
+            try:
+                representative = (
+                    getRepresentativeFn()
+                )
+            except Exception:
+                representative = None
+
+        for candidate in (
+                representative,
+                class3d,
+        ):
+            if candidate is None:
+                continue
+
+            image = self._renderVolumePreviewFromItem(
+                protocol=protocol,
+                item=candidate,
+                size=size,
+            )
+
+            if image is not None:
+                return image
+
+        return None
+
+
+    def _renderClasses3dPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
+        tiles: List[Image.Image] = []
+
+        for class3d in self._rankClasses3d(
+                output,
+                maxItems=12,
+        ):
+            image = (
+                self
+                ._renderClass3dRepresentativePreview(
+                    protocol=protocol,
+                    class3d=class3d,
+                    size=size,
+                )
+            )
+
+            if image is None:
+                continue
+
+            population = 0
+
+            try:
+                population = int(
+                    float(
+                        self._safeScalarValue(
+                            getattr(
+                                class3d,
+                                "getSize",
+                                lambda: 0,
+                            )()
+                        )
+                        or 0
+                    )
+                )
+            except Exception:
+                pass
+
+            classId = None
+
+            try:
+                classId = self._safeScalarValue(
+                    getattr(
+                        class3d,
+                        "getObjId",
+                        lambda: None,
+                    )()
+                )
+            except Exception:
+                pass
+
+            labelParts = []
+
+            if classId is not None:
+                labelParts.append(
+                    f"Class {classId}"
+                )
+
+            if population > 0:
+                labelParts.append(
+                    f"{population:,} particles"
+                )
+
+            if labelParts:
+                image = self._drawPreviewBadge(
+                    image,
+                    " · ".join(labelParts),
+                )
+
+            tiles.append(image)
+
+            if len(tiles) >= 3:
+                break
+
+        if tiles:
+            return self._composeScientificHeroPreview(
+                tiles=tiles,
+                targetWidth=size,
+            )
+
+        return self._renderClasses3dOrVolumesPreview(
+            protocol,
+            output,
+            size=size,
+        )
 
     def _renderClasses3dOrVolumesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
@@ -3719,8 +3936,7 @@ class ThumbnailService:
 
         return canvas
 
-
-    def _composeTiltSeriesHeroPreview(
+    def _composeScientificHeroPreview(
             self,
             tiles: Sequence[Image.Image],
             targetWidth: int,
@@ -3835,6 +4051,16 @@ class ThumbnailService:
         )
 
         return canvas
+
+    def _composeTiltSeriesHeroPreview(
+            self,
+            tiles: Sequence[Image.Image],
+            targetWidth: int,
+    ) -> Image.Image:
+        return self._composeScientificHeroPreview(
+            tiles=tiles,
+            targetWidth=targetWidth,
+        )
 
     def _composeTiltSeriesStrip(
             self,
@@ -5456,6 +5682,82 @@ class ThumbnailService:
 
         return None
 
+    def _pickCoordinates3dSlice(
+            self,
+            zValues: Sequence[float],
+            zSize: int,
+    ) -> int:
+        if zSize <= 0:
+            return 0
+
+        clean = []
+
+        for value in zValues:
+            try:
+                value = float(value)
+
+                if np.isfinite(value):
+                    clean.append(
+                        min(
+                            max(
+                                value,
+                                0.0,
+                            ),
+                            float(
+                                zSize - 1
+                            ),
+                        )
+                    )
+            except Exception:
+                continue
+
+        if not clean:
+            return zSize // 2
+
+        binCount = min(
+            32,
+            max(
+                1,
+                int(zSize),
+            ),
+        )
+
+        histogram, edges = np.histogram(
+            np.asarray(
+                clean,
+                dtype=np.float32,
+            ),
+            bins=binCount,
+            range=(
+                0.0,
+                float(zSize),
+            ),
+        )
+
+        bestBin = int(
+            np.argmax(histogram)
+        )
+
+        targetZ = int(
+            round(
+                (
+                    edges[bestBin]
+                    + edges[
+                        bestBin + 1
+                    ]
+                )
+                * 0.5
+            )
+        )
+
+        return max(
+            0,
+            min(
+                targetZ,
+                zSize - 1,
+            ),
+        )
+
     def _renderCoordinates3dTomogramOverlayPreview(
             self,
             protocol,
@@ -5483,8 +5785,15 @@ class ThumbnailService:
             if zSize <= 0 or ySize <= 0 or xSize <= 0:
                 return None
 
-            centerZ = zSize // 2
-            slice2d = np.asarray(volume[centerZ], dtype=np.float32)
+            targetZ = self._pickCoordinates3dSlice(
+                zValues=zValues,
+                zSize=zSize,
+            )
+
+            slice2d = np.asarray(
+                volume[targetZ],
+                dtype=np.float32,
+            )
 
             baseImage = self._arrayToImage(slice2d)
             if baseImage is None:
@@ -5501,7 +5810,7 @@ class ThumbnailService:
                     yValue = float(point[1])
                     zValue = float(zValue)
 
-                    if abs(zValue - float(centerZ)) <= zTolerance:
+                    if abs(zValue - float(targetZ)) <= zTolerance:
                         selectedPoints.append((xValue, yValue))
                 except Exception:
                     continue
@@ -5533,17 +5842,10 @@ class ThumbnailService:
                 except Exception:
                     continue
 
-            label = f"{len(selectedPoints)} coords"
-            draw.rounded_rectangle(
-                (8, 8, 118, 30),
-                radius=8,
-                fill=(255, 255, 255),
-                outline=(203, 213, 225),
-                width=1,
+            return self._drawPreviewBadge(
+                baseImage,
+                f"{len(selectedPoints)} coords",
             )
-            draw.text((14, 13), label, fill=(51, 65, 85))
-
-            return baseImage
 
         except Exception:
             logger.debug("Coordinates3D tomogram overlay thumbnail failed", exc_info=True)
@@ -5884,6 +6186,9 @@ class ThumbnailService:
         tiles: List[Image.Image] = []
         maxItems = 4
 
+        if isinstance(output, SetOfTomograms):
+            return self._renderTomogramsPreview(protocol, output, size=size)
+
         if isinstance(output, SetOfTomoMasks):
             maskIterator = self._iterItemsDirect(output)
         else:
@@ -6175,6 +6480,180 @@ class ThumbnailService:
             return alphaImage
         except Exception:
             return None
+
+    def _prepareTomogramProjection(
+            self,
+            projection: np.ndarray,
+            label: str,
+    ) -> Optional[Image.Image]:
+        image = self._arrayToImage(
+            projection
+        )
+
+        if image is None:
+            return None
+
+        gray = ImageOps.autocontrast(
+            image.convert("L"),
+            cutoff=1,
+        )
+
+        gray = (
+            ImageEnhance
+            .Contrast(gray)
+            .enhance(1.08)
+        )
+
+        return self._drawPreviewBadge(
+            gray.convert("RGB"),
+            label,
+        )
+
+
+    def _renderTomogramFromPath(
+            self,
+            tomogramPath: Path,
+            size: int,
+    ) -> Optional[Image.Image]:
+        try:
+            volume, _props = readVolumeArray3d(
+                str(tomogramPath)
+            )
+        except Exception:
+            return None
+
+        volume = np.asarray(volume)
+
+        if volume.ndim != 3:
+            return None
+
+        candidates = []
+
+        axisLabels = (
+            (
+                0,
+                "XY",
+            ),
+            (
+                1,
+                "XZ",
+            ),
+            (
+                2,
+                "YZ",
+            ),
+        )
+
+        for axis, label in axisLabels:
+            projection = (
+                self
+                ._centralVolumeProjection(
+                    volume=volume,
+                    axis=axis,
+                )
+            )
+
+            if projection is None:
+                continue
+
+            image = (
+                self
+                ._prepareTomogramProjection(
+                    projection=projection,
+                    label=label,
+                )
+            )
+
+            if image is None:
+                continue
+
+            score = (
+                self
+                ._scoreVolumeProjection(
+                    projection
+                )
+            )
+
+            candidates.append(
+                (
+                    score,
+                    image,
+                )
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        return self._composeScientificHeroPreview(
+            tiles=[
+                item[1]
+                for item in candidates
+            ],
+            targetWidth=size,
+        )
+
+
+    def _renderTomogramsPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
+        directPath = self._resolveVolumePathFromItem(
+            protocol=protocol,
+            item=output,
+            includeVolName=True,
+        )
+
+        if (
+                directPath is not None
+                and directPath.exists()
+        ):
+            image = self._renderTomogramFromPath(
+                tomogramPath=directPath,
+                size=size,
+            )
+
+            if image is not None:
+                return image
+
+        for tomogram in self._iterPreviewItems(
+                output,
+                maxItems=4,
+        ):
+            tomogramPath = (
+                self
+                ._resolveVolumePathFromItem(
+                    protocol=protocol,
+                    item=tomogram,
+                    includeVolName=True,
+                )
+            )
+
+            if (
+                    tomogramPath is None
+                    or not tomogramPath.exists()
+            ):
+                continue
+
+            image = self._renderTomogramFromPath(
+                tomogramPath=tomogramPath,
+                size=size,
+            )
+
+            if image is not None:
+                return image
+
+        return self._renderVolumeLikePreview(
+            protocol,
+            output,
+            size=size,
+        )
 
     def _renderVolumeLikePreview(self, protocol, output, size: int) -> Optional[Image.Image]:
         try:

@@ -397,6 +397,127 @@ def test_RankClasses2dPrefersLargestPopulations(
     ]
 
 
+def test_RankClasses3dPrefersLargestPopulations(
+        service,
+):
+    class FakeClass3D:
+        def __init__(
+                self,
+                name,
+                population,
+        ):
+            self.name = name
+            self.population = population
+
+        def getSize(self):
+            return self.population
+
+    small = FakeClass3D(
+        "small",
+        25,
+    )
+
+    large = FakeClass3D(
+        "large",
+        900,
+    )
+
+    medium = FakeClass3D(
+        "medium",
+        250,
+    )
+
+    ranked = service._rankClasses3d(
+        [
+            small,
+            large,
+            medium,
+        ],
+        maxItems=3,
+    )
+
+    assert [
+        item.name
+        for item in ranked
+    ] == [
+        "large",
+        "medium",
+        "small",
+    ]
+
+
+def test_PickCoordinates3dSlicePrefersDenseRegion(
+        service,
+):
+    zValues = [
+        5,
+        6,
+        7,
+        68,
+        69,
+        70,
+        71,
+        72,
+        73,
+        74,
+        75,
+    ]
+
+    selected = (
+        service
+        ._pickCoordinates3dSlice(
+            zValues=zValues,
+            zSize=100,
+        )
+    )
+
+    assert 67 <= selected <= 76
+
+
+def test_ComposeScientificHeroPreviewBuildsThreePanelLayout(
+        service,
+):
+    tiles = [
+        Image.new(
+            "RGB",
+            (
+                120,
+                120,
+            ),
+            color=color,
+        )
+        for color in (
+            (
+                255,
+                0,
+                0,
+            ),
+            (
+                0,
+                255,
+                0,
+            ),
+            (
+                0,
+                0,
+                255,
+            ),
+        )
+    ]
+
+    preview = (
+        service
+        ._composeScientificHeroPreview(
+            tiles=tiles,
+            targetWidth=128,
+        )
+    )
+
+    assert preview.mode == "RGB"
+    assert preview.size[0] > preview.size[1]
+    assert preview.size[0] >= 360
+
+
 def test_SelectRepresentativeTiltFramesUsesZeroAndExtremes(
         service,
 ):
