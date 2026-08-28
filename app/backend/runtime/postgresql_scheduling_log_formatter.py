@@ -409,6 +409,35 @@ class PostgresqlSchedulingLogFormatter:
                 )
             )
 
+        if (
+                reason
+                == "parent_output_empty"
+        ):
+            outputName = _quoted(
+                item.get(
+                    "parentOutputName"
+                ),
+                "required output",
+            )
+
+            parentProtocolId = _text(
+                item.get(
+                    "parentProtocolId"
+                ),
+                "unknown",
+            )
+
+            return (
+                "Output %s from protocol %s "
+                "does not contain items yet "
+                "for input %s."
+                % (
+                    outputName,
+                    parentProtocolId,
+                    inputName,
+                )
+            )
+
         if reason in {
             "missing_parent_protocol",
             "parent_protocol_not_found",

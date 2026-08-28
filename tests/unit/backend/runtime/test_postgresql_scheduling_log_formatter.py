@@ -135,6 +135,44 @@ def test_WaitingMessageFormatsMissingOutput():
     )
 
 
+def test_WaitingMessageFormatsEmptyStreamingOutput():
+    formatter = (
+        PostgresqlSchedulingLogFormatter()
+    )
+
+    readiness = buildReadiness(
+        missingInputs=[
+            {
+                "inputName": (
+                    "inputSetOfTiltSeries"
+                ),
+                "itemIndex": 0,
+                "parentProtocolId": 1568,
+                "parentOutputName": (
+                    "TiltSeries"
+                ),
+                "reason": (
+                    "parent_output_empty"
+                ),
+            },
+        ],
+    )
+
+    assert (
+        formatter.buildWaitingMessage(
+            readiness
+        )
+        == (
+            "Protocol is scheduled for "
+            "the following reason(s):\n"
+            "  - Output \"TiltSeries\" "
+            "from protocol 1568 does not "
+            "contain items yet for input "
+            "\"inputSetOfTiltSeries\"."
+        )
+    )
+
+
 def test_WaitingMessageFormatsValidationErrors():
     formatter = (
         PostgresqlSchedulingLogFormatter()

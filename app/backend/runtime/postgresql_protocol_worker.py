@@ -1777,6 +1777,54 @@ class RuntimePostgresqlProtocolWorker:
                     ),
                 })
 
+            if (
+                    streaming
+                    and parentStatus
+                    not in TERMINAL_PREREQUISITE_STATUSES
+                    and str(
+                        outputInfo.get(
+                            "kind"
+                        )
+                        or ""
+                    ).strip().lower()
+                    == "set"
+                    and outputInfo.get(
+                        "itemsCount"
+                    )
+                    == 0
+            ):
+                missingInputs.append({
+                    "inputName": (
+                        inputRef.get(
+                            "inputName"
+                        )
+                    ),
+                    "itemIndex": int(
+                        inputRef.get(
+                            "itemIndex"
+                        )
+                        or 0
+                    ),
+                    "parentProtocolDbId": (
+                        parentProtocolDbId
+                    ),
+                    "parentProtocolId": (
+                        inputRef.get(
+                            "parentProtocolId"
+                        )
+                    ),
+                    "parentOutputName": (
+                        inputRef.get(
+                            "parentOutputName"
+                        )
+                    ),
+                    "reason": (
+                        "parent_output_empty"
+                    ),
+                })
+
+                continue
+
         # Preserve any dependency that is not represented by
         # an input pointer or by the explicit prerequisites field.
         for row in parentRows:

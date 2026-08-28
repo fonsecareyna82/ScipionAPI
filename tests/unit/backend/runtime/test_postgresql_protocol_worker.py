@@ -77,6 +77,8 @@ def buildWorker(
         inputRestoreErrors=None,
         inputCondition=True,
         parentOutputName="outputSet",
+        outputKind="set",
+        outputItemsCount=1,
 ):
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -112,6 +114,16 @@ def buildWorker(
     worker.getRuntimeOutputInfo = (
         lambda inputRef: {
             "exists": outputExists,
+            "kind": (
+                outputKind
+                if outputExists
+                else None
+            ),
+            "itemsCount": (
+                outputItemsCount
+                if outputExists
+                else None
+            ),
             "runtimeObjectId": (
                 200
                 if outputExists
@@ -715,6 +727,79 @@ def test_StreamingProtocolStartsWhenInputsValidate():
         streaming=True,
         parentStatus="running",
         outputExists=True,
+        validationErrors=[],
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "missingInputs"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
+    ] == []
+
+
+def test_StreamingProtocolWaitsForFirstSetItem():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        outputExists=True,
+        outputKind="set",
+        outputItemsCount=0,
+    )
+
+    worker.validateAvailableInputs = (
+        lambda inputRefs=None: pytest.fail(
+            "Empty streaming Set must not "
+            "reach protocol validation"
+        )
+    )
+
+    readiness = (
+        worker.getReadinessState()
+    )
+
+    assert readiness[
+        "pendingParents"
+    ] == []
+
+    assert readiness[
+        "validationErrors"
+    ] == []
+
+    assert readiness[
+        "missingInputs"
+    ] == [
+        {
+            "inputName": "inputSet",
+            "itemIndex": 0,
+            "parentProtocolDbId": 20,
+            "parentProtocolId": 2,
+            "parentOutputName": (
+                "outputSet"
+            ),
+            "reason": (
+                "parent_output_empty"
+            ),
+        },
+    ]
+
+
+def test_StreamingProtocolAllowsEmptySetAfterParentFinished():
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="finished",
+        outputExists=True,
+        outputKind="set",
+        outputItemsCount=0,
         validationErrors=[],
     )
 
