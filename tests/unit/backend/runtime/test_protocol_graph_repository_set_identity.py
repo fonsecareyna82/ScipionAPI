@@ -357,13 +357,18 @@ def test_ListPersistedSetOutputRowsFiltersProtocol():
     call = mapper.db.calls[0]
 
     assert (
-        'p."protocolId" = %s'
-        in call["query"]
+            'p."protocolId"::text = %s'
+            in call["query"]
     )
 
     assert call["params"] == (
         4,
-        100,
+        "100",
+    )
+
+    assert (
+            'p."protocolId" = %s'
+            not in call["query"]
     )
 
 

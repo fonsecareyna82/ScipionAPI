@@ -507,11 +507,11 @@ class ProtocolGraphRepository:
 
         if protocolIdValue is not None:
             query += """
-               AND p."protocolId" = %s
+               AND p."protocolId"::text = %s
             """
 
             params.append(
-                protocolIdValue
+                str(protocolIdValue)
             )
 
         query += """
