@@ -885,115 +885,66 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     }
 
 
-def test_GetProtocolOutputThumbnailsBatchDelegatesPostgresqlProtocolId(
-    service,
-    monkeypatch,
-    tmp_path,
+@pytest.mark.asyncio
+async def test_GetProtocolOutputThumbnailsBatchDelegatesToPreviewProcess(
+        monkeypatch,
 ):
-    projectRouterModule = importlib.import_module("app.backend.api.routers.project_router")
-
-    outputFile = tmp_path / "output.sqlite"
-    outputFile.write_text("placeholder", encoding="utf-8")
-
-    thumbnailFile = tmp_path / "thumbnail.png"
-    thumbnailFile.write_bytes(b"fake-thumbnail")
-
-    output = FakeOutput(str(outputFile))
-    protocol = FakeProtocol(protocolId=10, outputName="outputVol", output=output)
-    service.currentProject = FakeCurrentProject(protocols={10: protocol})
-
-    mapper = FakeMapper(runtimeProtocolIdByDbId={500: 10})
-
-    monkeypatch.setattr(
-        service,
-        "getProjectDbRow",
-        lambda mapper, projectId, currentUser: {"id": projectId, "name": str(tmp_path)},
-    )
-    monkeypatch.setattr(
-        service,
-        "loadProjectForThumbnails",
-        lambda dbProj, mapper=None: (
-            service.currentProject
-        ),
+    projectRouterModule = importlib.import_module(
+        "app.backend.api.routers.project_router"
     )
 
-    buildCalls = []
+    calls = []
 
-    def fakeBuildProtocolOutputThumbnail(
-        protocolId,
-        outputName,
-        force=False,
-        size=320,
-        mapper=None,
-        projectId=None,
-    ):
-        buildCalls.append({
-            "protocolId": protocolId,
-            "outputName": outputName,
-            "force": force,
-            "size": size,
-            "mapper": mapper,
-            "projectId": projectId,
+    async def fakeRunOutputThumbnailsBatchInProcess(**kwargs):
+        calls.append(kwargs)
+
+        return projectRouterModule.JSONResponse({
+            "projectId": 1,
+            "size": 256,
+            "items": [],
         })
-        return {
-            "absolutePath": str(thumbnailFile),
-            "exists": True,
-            "cached": False,
-            "outputClassName": "FakeOutput",
-        }
 
     monkeypatch.setattr(
-        service,
-        "buildProtocolOutputThumbnail",
-        fakeBuildProtocolOutputThumbnail,
+        projectRouterModule,
+        "runOutputThumbnailsBatchInProcess",
+        fakeRunOutputThumbnailsBatchInProcess,
     )
 
     payload = FakePayload(
         outputs=[
-            FakePayload(protocolId=500, outputName="outputVol"),
+            FakePayload(
+                protocolId=500,
+                outputName="outputVol",
+            ),
         ],
         size=256,
         inlineImages=False,
     )
 
-    response = projectRouterModule.getProtocolOutputThumbnailsBatch(
+    response = await projectRouterModule.getProtocolOutputThumbnailsBatch(
         projectId=1,
         payload=payload,
         currentUser={"id": 1},
-        mapper=mapper,
-        service=service,
     )
 
-    payloadJson = json.loads(response.body.decode("utf-8"))
-
-    assert payloadJson == {
+    assert calls == [{
         "projectId": 1,
+        "userId": 1,
         "size": 256,
-        "items": [
-            {
-                "protocolId": 500,
-                "outputName": "outputVol",
-                "outputClassName": "FakeOutput",
-                "exists": True,
-                "cached": False,
-                "thumbnailUrl": "/projects/1/protocols/500/outputs/outputVol/thumbnail",
-                "thumbnailDataUrl": None,
-                "error": None,
-            }
-        ],
-    }
-
-    assert buildCalls == [
-        {
+        "inlineImages": False,
+        "outputs": [{
             "protocolId": 500,
             "outputName": "outputVol",
-            "force": False,
-            "size": 256,
-            "mapper": mapper,
-            "projectId": 1,
-        }
-    ]
+        }],
+    }]
 
+    assert json.loads(
+        response.body.decode("utf-8")
+    ) == {
+        "projectId": 1,
+        "size": 256,
+        "items": [],
+    }
 
 
 def test_ExportProtocolsServiceResolvesPostgresqlProtocolIdsAndWritesJsonFile(
