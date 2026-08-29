@@ -161,13 +161,115 @@ class FakeCeleryResult:
         self.info = info
 
 
+class FakeCeleryControl:
+    def __init__(self):
+        self.revokeCalls = []
+
+    def revoke(
+            self,
+            taskId,
+            terminate=False,
+            signal=None,
+    ):
+        self.revokeCalls.append({
+            "taskId": taskId,
+            "terminate": terminate,
+            "signal": signal,
+        })
+
+
+
+def test_CancelPluginTaskRevokesRunningCeleryTask(
+        pluginClient,
+        pluginRouterModule,
+        fakeSystemTaskService,
+        monkeypatch,
+):
+    fakeSystemTaskService.tasksById[
+        "running-task"
+    ] = {
+        "id": 1,
+        "taskId": "running-task",
+        "taskType": "plugin",
+        "operation": "install",
+        "subject": "scipion-em-test",
+        "subjectLabel": None,
+        "status": "PROGRESS",
+        "step": "Installing binaries...",
+        "error": None,
+        "result": None,
+        "meta": None,
+        "payload": {},
+        "backend": "celery",
+        "acknowledged": False,
+        "retryOfTaskId": None,
+        "createdAt": None,
+        "startedAt": None,
+        "finishedAt": None,
+        "updatedAt": None,
+    }
+
+    celery = FakeCeleryApp({
+        "running-task":
+            FakeCeleryResult(
+                status="PROGRESS",
+            ),
+    })
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_celeryAppAvailable",
+        True,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "celeryApp",
+        celery,
+    )
+
+    monkeypatch.setattr(
+        pluginRouterModule,
+        "_refreshPluginCatalogAfterTask",
+        lambda *args, **kwargs: None,
+    )
+
+    response = pluginClient.post(
+        "/plugins/tasks/"
+        "running-task/cancel"
+    )
+
+    assert response.status_code == 200
+
+    assert (
+        response.json()["status"]
+        == "CANCELLED"
+    )
+
+    assert (
+        celery.control.revokeCalls
+        == [{
+            "taskId": "running-task",
+            "terminate": True,
+            "signal": "SIGTERM",
+        }]
+    )
+
+
 class FakeCeleryApp:
     # fakeCeleryApp
     def __init__(self, resultByTaskId):
-        self.resultByTaskId = resultByTaskId
+        self.resultByTaskId = (
+            resultByTaskId
+        )
+        self.control = (
+            FakeCeleryControl()
+        )
 
     def AsyncResult(self, taskId):
-        return self.resultByTaskId[taskId]
+        return self.resultByTaskId[
+            taskId
+        ]
 
 
 class FakeCeleryTask:

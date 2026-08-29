@@ -155,7 +155,12 @@ class SystemTaskResponse(BaseModel):
 
 
 def _isTerminalTaskStatus(status: Optional[str]) -> bool:
-    return str(status or "").upper() in {"SUCCESS", "FAILURE"}
+    return str(status or "").upper() in {
+        "SUCCESS",
+        "FAILURE",
+        "CANCELLED",
+        "REVOKED",
+    }
 
 
 def _getStoredSystemTask(taskId: str) -> Optional[Dict[str, Any]]:
@@ -687,6 +692,118 @@ async def uninstallPluginBinary(
             status_code=500,
             detail=str(error),
         )
+
+
+@router.post(
+    "/tasks/{taskId}/cancel",
+    response_model=SystemTaskResponse,
+)
+def cancelPluginTask(taskId: str):
+    task = systemTaskService.getTask(
+        taskId
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    if str(
+            task.get("taskType")
+            or ""
+    ).strip().lower() != "plugin":
+        raise HTTPException(
+            status_code=400,
+            detail="Task is not a plugin task",
+        )
+
+    status = str(
+        task.get("status")
+        or ""
+    ).strip().upper()
+
+    if status == "CANCELLED":
+        return task
+
+    if status in {
+        "SUCCESS",
+        "FAILURE",
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="Task has already finished",
+        )
+
+    if str(
+            task.get("backend")
+            or ""
+    ).strip().lower() != "celery":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Only Celery plugin tasks "
+                "can be cancelled"
+            ),
+        )
+
+    if (
+            not _celeryAppAvailable
+            or celeryApp is None
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Celery is not available",
+        )
+
+    try:
+        appendPluginTaskLog(
+            taskId,
+            "[cancel] Cancellation requested by user.",
+        )
+
+        celeryApp.control.revoke(
+            taskId,
+            terminate=True,
+            signal="SIGTERM",
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Could not cancel plugin task. "
+            "taskId=%s",
+            taskId,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
+        )
+
+    updatedTask = (
+        systemTaskService.updateTask(
+            taskId=taskId,
+            status="CANCELLED",
+            step="Cancelled",
+            error=None,
+            meta={
+                "cancelRequested": True,
+            },
+        )
+    )
+
+    _refreshPluginCatalogAfterTask(
+        taskId,
+        "CANCELLED",
+    )
+
+    if updatedTask is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    return updatedTask
 
 
 @router.post(
@@ -1492,14 +1609,28 @@ async def getTaskLog(taskId: str, offset: int = 0, limit: int = 65536):
 
     if _celeryAppAvailable and celeryApp is not None:
         task = celeryApp.AsyncResult(taskId)
-        status = str(task.status)
-        completed = status in ("SUCCESS", "FAILURE")
+        rawStatus = str(
+            task.status
+            or "UNKNOWN"
+        ).strip().upper()
+
+        status = (
+            "CANCELLED"
+            if rawStatus == "REVOKED"
+            else rawStatus
+        )
+
+        completed = _isTerminalTaskStatus(
+            status
+        )
         backend = "celery"
     else:
         local = _inProcessResults.get(taskId)
         if local is not None:
             status = str(local.get("status", "UNKNOWN"))
-            completed = status in ("SUCCESS", "FAILURE")
+            completed = _isTerminalTaskStatus(
+                status
+            )
             backend = "local"
 
     _refreshPluginCatalogAfterTask(taskId, status)
