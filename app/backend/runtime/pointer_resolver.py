@@ -322,13 +322,27 @@ class RuntimePointerResolver:
         mergedParams: Dict[str, Any] = dict(params or {})
         explicitParamNames = set(mergedParams.keys())
 
-        try:
-            inputPointers = list(protocol.iterInputPointers())
-        except Exception:
+        inputPointers = []
+
+        for iteratorName in (
+                "iterInputPointers",
+                "iterInputAttributes",
+        ):
+            iterator = getattr(
+                protocol,
+                iteratorName,
+                None,
+            )
+
+            if not callable(iterator):
+                continue
+
             try:
-                inputPointers = list(protocol.iterInputAttributes())
+                inputPointers.extend(
+                    list(iterator())
+                )
             except Exception:
-                inputPointers = []
+                continue
 
         pointerValuesByInputName: Dict[str, List[str]] = {}
 

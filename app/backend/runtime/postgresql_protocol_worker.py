@@ -2388,6 +2388,37 @@ class RuntimePostgresqlProtocolWorker:
                         pointer
                     )
 
+                elif bool(
+                        getattr(
+                            param,
+                            "allowsPointers",
+                            False,
+                        )
+                ):
+                    protVar = getattr(
+                        self.protocol,
+                        inputName,
+                        None,
+                    )
+                    setPointer = getattr(
+                        protVar,
+                        "setPointer",
+                        None,
+                    )
+
+                    if not callable(setPointer):
+                        errors.append({
+                            **dict(ref),
+                            "error": (
+                                    "Scalar input %s does not "
+                                    "support pointer restoration"
+                                    % inputName
+                            ),
+                        })
+                        continue
+                    setPointer(
+                        pointer
+                    )
                 else:
                     setattr(
                         self.protocol,
@@ -2570,6 +2601,37 @@ class RuntimePostgresqlProtocolWorker:
 
                 pointerList.append(pointer)
 
+            elif bool(
+                    getattr(
+                        param,
+                        "allowsPointers",
+                        False,
+                    )
+            ):
+                protVar = getattr(
+                    self.protocol,
+                    inputName,
+                    None,
+                )
+                setPointer = getattr(
+                    protVar,
+                    "setPointer",
+                    None,
+                )
+
+                if not callable(setPointer):
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                                "Scalar input %s does not "
+                                "support pointer restoration"
+                                % inputName
+                        ),
+                    })
+                    continue
+                setPointer(
+                    pointer
+                )
             else:
                 setattr(
                     self.protocol,

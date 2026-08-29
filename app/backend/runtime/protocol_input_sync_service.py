@@ -43,6 +43,27 @@ class RuntimeProtocolInputSyncService:
     """Synchronize PostgreSQL runtime input refs and dependency edges."""
 
     @staticmethod
+    def _allowsScalarPointers(param) -> bool:
+        return (
+            bool(getattr(param, "allowsPointers", False))
+            and not isinstance(
+                param,
+                (
+                    PointerParam,
+                    MultiPointerParam,
+                    RelationParam,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _isScalarPointerPayload(value) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get("pointerMode") is True
+        )
+
+    @staticmethod
     def _getScipionObjectId(obj) -> Optional[int]:
         if obj is None:
             return None
@@ -148,16 +169,80 @@ class RuntimeProtocolInputSyncService:
             params,
         )
 
+        pointerParams = {}
+
+        for inputName, rawParamValue in params.items():
+            try:
+                param = protocol.getParam(
+                    inputName
+                )
+            except Exception:
+                param = None
+
+            if isinstance(
+                    param,
+                    (
+                        PointerParam,
+                        MultiPointerParam,
+                        RelationParam,
+                    ),
+            ):
+                pointerParams[inputName] = (
+                    rawParamValue
+                )
+                continue
+
+            if not self._allowsScalarPointers(
+                    param
+            ):
+                continue
+
+            if self._isScalarPointerPayload(
+                    rawParamValue
+            ):
+                pointerParams[inputName] = (
+                    rawParamValue
+                )
+                continue
+
+            if inputName not in rawParams:
+                protVar = getattr(
+                    protocol,
+                    inputName,
+                    None,
+                )
+
+                try:
+                    hasPointer = bool(
+                        protVar.hasPointer()
+                    )
+                except Exception:
+                    hasPointer = False
+
+                if hasPointer:
+                    pointerParams[inputName] = (
+                        rawParamValue
+                    )
+
         pointerSyncData = pointerResolver.buildInputRefsFromPointerParams(
             mapper=mapper,
             projectId=projectId,
             protocolDbId=int(protocolDbId),
             protocolId=protocolId,
-            params=params,
+            params=pointerParams,
             getParamCallback=protocol.getParam,
-            isPointerParamCallback=lambda param: isinstance(
-                param,
-                (PointerParam, MultiPointerParam, RelationParam),
+            isPointerParamCallback=lambda param: (
+                    isinstance(
+                        param,
+                        (
+                            PointerParam,
+                            MultiPointerParam,
+                            RelationParam,
+                        ),
+                    )
+                    or self._allowsScalarPointers(
+                param
+            )
             ),
         )
 

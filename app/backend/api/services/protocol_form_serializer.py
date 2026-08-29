@@ -48,6 +48,33 @@ logger = logging.getLogger(__name__)
 class ProtocolFormSerializer:
     """Serialize Scipion protocol parameters for the web form."""
 
+    @staticmethod
+    def _allowsScalarPointers(param) -> bool:
+        return (
+            bool(getattr(param, "allowsPointers", False))
+            and not isinstance(
+                param,
+                (
+                    PointerParam,
+                    MultiPointerParam,
+                    RelationParam,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _getScalarPointerClassName(param):
+        paramClass = getattr(param, "paramClass", None)
+
+        if paramClass is None:
+            return None
+
+        return getattr(
+            paramClass,
+            "__name__",
+            str(paramClass),
+        )
+
     def serializeParam(
             self,
             *,
@@ -110,6 +137,29 @@ class ProtocolFormSerializer:
                 paramClass = "Label"
 
             paramDict["paramClass"] = paramClass
+
+            allowsScalarPointers = (
+                self._allowsScalarPointers(
+                    param
+                )
+            )
+
+            paramDict["allowsPointers"] = (
+                allowsScalarPointers
+            )
+
+            if allowsScalarPointers:
+                pointerClass = (
+                    self
+                    ._getScalarPointerClassName(
+                        param
+                    )
+                )
+
+                if pointerClass:
+                    paramDict["pointerClass"] = (
+                        pointerClass
+                    )
 
             if protVar is not None:
                 if isinstance(param, MultiPointerParam):
@@ -376,6 +426,176 @@ class ProtocolFormSerializer:
 
                     paramDict["readOnly"] = True
 
+                elif allowsScalarPointers:
+                    paramDict["pointerMode"] = False
+                    protocolDbId = None
+                    if (
+                            mapper is not None
+                            and projectId is not None
+                            and protocol is not None
+                            and getScipionObjectIdCallback is not None
+                            and resolvePostgresqlProtocolDbIdCallback is not None
+                    ):
+                        protocolId = (
+                            getScipionObjectIdCallback(
+                                protocol
+                            )
+                        )
+                        if protocolId not in (
+                                None,
+                                "",
+                        ):
+                            protocolDbId = (
+                                resolvePostgresqlProtocolDbIdCallback(
+                                    mapper=mapper,
+                                    projectId=projectId,
+                                    protocolId=protocolId,
+                                )
+                            )
+                    if protocolDbId is not None:
+                        pointerValueInfo = (
+                            ProtocolGraphRepository()
+                            .loadInputRefPointerValue(
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocolDbId=protocolDbId,
+                                inputName=paramName,
+                            )
+                        )
+
+                        if pointerValueInfo:
+                            paramDict["pointerMode"] = True
+                            parentId = (
+                                pointerValueInfo.get(
+                                    "parentId"
+                                )
+                            )
+                            if parentId is not None:
+                                try:
+                                    paramDict["parentId"] = int(
+                                        parentId
+                                    )
+                                except Exception:
+                                    paramDict["parentId"] = (
+                                        parentId
+                                    )
+                            return (
+                                paramDict,
+                                pointerValueInfo.get(
+                                    "value"
+                                ),
+                            )
+                    hasPointer = False
+                    try:
+                        hasPointer = bool(
+                            protVar.hasPointer()
+                        )
+                    except Exception:
+                        pass
+                    if hasPointer:
+                        pointer = (
+                            protVar.getPointer()
+                        )
+                        paramDict["pointerMode"] = True
+                        try:
+                            paramValue = (
+                                pointer.getUniqueId()
+                            )
+                        except Exception:
+                            paramValue = None
+                    else:
+                        paramValue = (
+                            protVar.get()
+                            if protVar.get() is not None
+                            else None
+                        )
+
+                elif allowsScalarPointers:
+                    paramDict["pointerMode"] = False
+                    protocolDbId = None
+                    if (
+                            mapper is not None
+                            and projectId is not None
+                            and protocol is not None
+                            and getScipionObjectIdCallback is not None
+                            and resolvePostgresqlProtocolDbIdCallback is not None
+                    ):
+                        protocolId = (
+                            getScipionObjectIdCallback(
+                                protocol
+                            )
+                        )
+                        if protocolId not in (
+                                None,
+                                "",
+                        ):
+                            protocolDbId = (
+                                resolvePostgresqlProtocolDbIdCallback(
+                                    mapper=mapper,
+                                    projectId=projectId,
+                                    protocolId=protocolId,
+                                )
+                            )
+
+                    if protocolDbId is not None:
+                        pointerValueInfo = (
+                            ProtocolGraphRepository()
+                            .loadInputRefPointerValue(
+                                mapper=mapper,
+                                projectId=projectId,
+                                protocolDbId=protocolDbId,
+                                inputName=paramName,
+                            )
+                        )
+
+                        if pointerValueInfo:
+                            paramDict["pointerMode"] = True
+                            parentId = (
+                                pointerValueInfo.get(
+                                    "parentId"
+                                )
+                            )
+
+                            if parentId is not None:
+                                try:
+                                    paramDict["parentId"] = int(
+                                        parentId
+                                    )
+                                except Exception:
+                                    paramDict["parentId"] = (
+                                        parentId
+                                    )
+                            return (
+                                paramDict,
+                                pointerValueInfo.get(
+                                    "value"
+                                ),
+                            )
+                    hasPointer = False
+                    try:
+                        hasPointer = bool(
+                            protVar.hasPointer()
+                        )
+
+                    except Exception:
+                        pass
+                    if hasPointer:
+                        pointer = (
+                            protVar.getPointer()
+                        )
+                        paramDict["pointerMode"] = True
+                        try:
+                            paramValue = (
+                                pointer.getUniqueId()
+                            )
+                        except Exception:
+                            paramValue = None
+                    else:
+                        paramValue = (
+                            protVar.get()
+                            if protVar.get() is not None
+                            else None
+                        )
                 else:
                     paramValue = (
                         protVar.get()

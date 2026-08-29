@@ -46,6 +46,38 @@ class RuntimeProtocolSaveService:
     while moving real save/pointer/persistence responsibility out of the god-service.
     """
 
+    @staticmethod
+    def _allowsScalarPointers(param) -> bool:
+        return (
+            bool(getattr(param, "allowsPointers", False))
+            and not isinstance(
+                param,
+                (
+                    PointerParam,
+                    MultiPointerParam,
+                    RelationParam,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _isScalarPointerPayload(value) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get("pointerMode") is True
+        )
+
+    @staticmethod
+    def _getScalarPayloadValue(value):
+        if (
+                isinstance(value, dict)
+                and "pointerMode" in value
+        ):
+            return value.get("value")
+
+        return value
+
+
     protectedParams = [
         "_objComment",
         "_useQueue",
@@ -228,21 +260,90 @@ class RuntimeProtocolSaveService:
             param = protocol.getParam(key)
 
             if param is None:
-                logger.warning("[WARN] Param not found: %s", key)
+                logger.warning(
+                    "[WARN] Param not found: %s",
+                    key,
+                )
                 continue
 
-            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+            if isinstance(
+                    param,
+                    (
+                            PointerParam,
+                            MultiPointerParam,
+                            RelationParam,
+                    ),
+            ):
+                continue
+
+            allowsScalarPointers = (
+                self._allowsScalarPointers(
+                    param
+                )
+            )
+
+            if (
+                    allowsScalarPointers
+                    and self._isScalarPointerPayload(
+                value
+            )
+            ):
                 continue
 
             try:
-                castedValue = castProtocolParamValue(param, value)
-                errors = param.validate(castedValue) if validateParams and hasattr(param, "validate") else []
+                rawValue = (
+                    self._getScalarPayloadValue(
+                        value
+                    )
+                    if allowsScalarPointers
+                    else value
+                )
+
+                castedValue = (
+                    castProtocolParamValue(
+                        param,
+                        rawValue,
+                    )
+                )
+
+                errors = (
+                    param.validate(
+                        castedValue
+                    )
+                    if (
+                            validateParams
+                            and hasattr(
+                        param,
+                        "validate",
+                    )
+                    )
+                    else []
+                )
 
                 if errors:
                     errorList += [
-                        "**" + param.label.get() + "** " + error
+                        "**"
+                        + param.label.get()
+                        + "** "
+                        + error
                         for error in errors
                     ]
+
+                if allowsScalarPointers:
+                    protVar = getattr(
+                        protocol,
+                        key,
+                        None,
+                    )
+
+                    setPointer = getattr(
+                        protVar,
+                        "setPointer",
+                        None,
+                    )
+
+                    if callable(setPointer):
+                        setPointer(None)
 
                 protocol.setAttributeValue(
                     key,
@@ -250,9 +351,15 @@ class RuntimeProtocolSaveService:
                 )
 
                 if key == "runName":
-                    protocol.runName.set(castedValue)
+                    protocol.runName.set(
+                        castedValue
+                    )
 
-                logger.info("[INFO] Set param %s = %s", key, castedValue)
+                logger.info(
+                    "[INFO] Set param %s = %s",
+                    key,
+                    castedValue,
+                )
 
             except Exception as e:
                 cleaned = re.sub(
@@ -260,7 +367,13 @@ class RuntimeProtocolSaveService:
                     "",
                     str(e),
                 )
-                errorList.append("**" + param.label.get() + "** " + cleaned)
+
+                errorList.append(
+                    "**"
+                    + param.label.get()
+                    + "** "
+                    + cleaned
+                )
 
         return errorList
 
@@ -283,7 +396,24 @@ class RuntimeProtocolSaveService:
             if param is None:
                 continue
 
-            if not isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+            scalarPointer = (
+                    self._allowsScalarPointers(param)
+                    and self._isScalarPointerPayload(
+                value
+            )
+            )
+
+            if (
+                    not isinstance(
+                        param,
+                        (
+                                PointerParam,
+                                MultiPointerParam,
+                                RelationParam,
+                        ),
+                    )
+                    and not scalarPointer
+            ):
                 continue
 
             if isinstance(param, MultiPointerParam):
@@ -315,6 +445,147 @@ class RuntimeProtocolSaveService:
                         resolveParentOutputCallback=resolveParentOutputCallback,
                     )
                 )
+
+            elif scalarPointer:
+                errorList.extend(
+                    self._applyScalarPointerParam(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocol=protocol,
+                        inputName=key,
+                        rawValue=value,
+                        param=param,
+                        pointerResolver=pointerResolver,
+                        resolvePointerParentProtocolCallback=(
+                            resolvePointerParentProtocolCallback
+                        ),
+                        resolveParentOutputCallback=(
+                            resolveParentOutputCallback
+                        ),
+                    )
+                )
+
+        return errorList
+
+    def _applyScalarPointerParam(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocol,
+            inputName: str,
+            rawValue,
+            param,
+            pointerResolver: RuntimePointerResolver,
+            resolvePointerParentProtocolCallback: Callable,
+            resolveParentOutputCallback: Callable,
+    ) -> List[str]:
+        errorList: List[str] = []
+
+        pointerValues = (
+            pointerResolver
+            .completePointerValuesFromInputRefs(
+                mapper=mapper,
+                projectId=projectId,
+                protocol=protocol,
+                inputName=inputName,
+                rawValue=rawValue,
+            )
+        )
+
+        pointerValues = (
+            pointerResolver
+            .filterEmptyPointerValues(
+                pointerValues
+            )
+        )
+
+        if not pointerValues:
+            errorList.append(
+                "**"
+                + param.label.get()
+                + "** pointer value is empty."
+            )
+            return errorList
+
+        resolvedPointerTarget = (
+            pointerResolver
+            .resolvePointerTarget(
+                mapper=mapper,
+                projectId=projectId,
+                pointerValue=pointerValues[0],
+                paramLabel=param.label.get(),
+                getParentProtocolCallback=(
+                    resolvePointerParentProtocolCallback
+                ),
+                resolveParentOutputCallback=(
+                    resolveParentOutputCallback
+                ),
+            )
+        )
+
+        if not resolvedPointerTarget.get(
+                "ok"
+        ):
+            errorList.append(
+                resolvedPointerTarget.get(
+                    "error"
+                )
+            )
+            return errorList
+
+        parentProtocol = (
+            resolvedPointerTarget.get(
+                "parentProtocol"
+            )
+        )
+
+        outputName = (
+            resolvedPointerTarget.get(
+                "outputName"
+            )
+        )
+
+        if not outputName:
+            errorList.append(
+                "**"
+                + param.label.get()
+                + "** scalar pointer must reference a protocol output."
+            )
+            return errorList
+
+        protVar = getattr(
+            protocol,
+            inputName,
+            None,
+        )
+
+        setPointer = getattr(
+            protVar,
+            "setPointer",
+            None,
+        )
+
+        if not callable(setPointer):
+            errorList.append(
+                "**"
+                + param.label.get()
+                + "** runtime scalar does not support pointers."
+            )
+            return errorList
+
+        setPointer(
+            Pointer(
+                parentProtocol,
+                extended=outputName,
+            )
+        )
+
+        logger.info(
+            "[INFO] Scalar param %s set from pointer %s",
+            inputName,
+            pointerValues[0],
+        )
 
         return errorList
 
