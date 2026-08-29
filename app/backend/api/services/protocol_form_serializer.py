@@ -75,6 +75,116 @@ class ProtocolFormSerializer:
             str(paramClass),
         )
 
+    @staticmethod
+    def _getScalarPointerRuntimeValue(protVar):
+        try:
+            if not protVar.hasPointer():
+                return None
+
+            pointer = protVar.getPointer()
+        except Exception:
+            return None
+
+        try:
+            objValue = pointer.getObjValue()
+        except Exception:
+            objValue = None
+
+        try:
+            extended = str(
+                pointer.getExtended()
+                or ""
+            ).strip()
+        except Exception:
+            extended = ""
+
+        if objValue is not None:
+            try:
+                parentId = (
+                    objValue.getObjParentId()
+                )
+            except Exception:
+                parentId = None
+
+            # PostgreSQL worker case:
+            # Pointer(outputObject)
+            if parentId not in (None, ""):
+                try:
+                    outputName = str(
+                        objValue.getObjName()
+                        or ""
+                    ).strip()
+                except Exception:
+                    outputName = str(
+                        getattr(
+                            objValue,
+                            "_objName",
+                            "",
+                        )
+                        or ""
+                    ).strip()
+
+                if outputName:
+                    outputName = (
+                        outputName
+                        .split(".")[-1]
+                    )
+
+                    if extended:
+                        outputName = (
+                            f"{outputName}."
+                            f"{extended}"
+                        )
+
+                    return {
+                        "parentId": parentId,
+                        "value": (
+                            f"{parentId}."
+                            f"{outputName}"
+                        ),
+                    }
+
+            # Normal Scipion case:
+            # Pointer(parentProtocol, extended=outputName)
+            if extended:
+                try:
+                    parentId = (
+                        objValue.getObjId()
+                    )
+                except Exception:
+                    parentId = None
+
+                if parentId not in (
+                        None,
+                        "",
+                ):
+                    return {
+                        "parentId": parentId,
+                        "value": (
+                            f"{parentId}."
+                            f"{extended}"
+                        ),
+                    }
+
+        # Last-resort legacy fallback.
+        try:
+            value = pointer.getUniqueId()
+        except Exception:
+            value = None
+
+        if value in (None, ""):
+            return None
+
+        parentId = (
+            str(value)
+            .split(".", 1)[0]
+        )
+
+        return {
+            "parentId": parentId,
+            "value": value,
+        }
+
     def serializeParam(
             self,
             *,
@@ -429,6 +539,7 @@ class ProtocolFormSerializer:
                 elif allowsScalarPointers:
                     paramDict["pointerMode"] = False
                     protocolDbId = None
+
                     if (
                             mapper is not None
                             and projectId is not None
@@ -441,90 +552,7 @@ class ProtocolFormSerializer:
                                 protocol
                             )
                         )
-                        if protocolId not in (
-                                None,
-                                "",
-                        ):
-                            protocolDbId = (
-                                resolvePostgresqlProtocolDbIdCallback(
-                                    mapper=mapper,
-                                    projectId=projectId,
-                                    protocolId=protocolId,
-                                )
-                            )
-                    if protocolDbId is not None:
-                        pointerValueInfo = (
-                            ProtocolGraphRepository()
-                            .loadInputRefPointerValue(
-                                mapper=mapper,
-                                projectId=projectId,
-                                protocolDbId=protocolDbId,
-                                inputName=paramName,
-                            )
-                        )
 
-                        if pointerValueInfo:
-                            paramDict["pointerMode"] = True
-                            parentId = (
-                                pointerValueInfo.get(
-                                    "parentId"
-                                )
-                            )
-                            if parentId is not None:
-                                try:
-                                    paramDict["parentId"] = int(
-                                        parentId
-                                    )
-                                except Exception:
-                                    paramDict["parentId"] = (
-                                        parentId
-                                    )
-                            return (
-                                paramDict,
-                                pointerValueInfo.get(
-                                    "value"
-                                ),
-                            )
-                    hasPointer = False
-                    try:
-                        hasPointer = bool(
-                            protVar.hasPointer()
-                        )
-                    except Exception:
-                        pass
-                    if hasPointer:
-                        pointer = (
-                            protVar.getPointer()
-                        )
-                        paramDict["pointerMode"] = True
-                        try:
-                            paramValue = (
-                                pointer.getUniqueId()
-                            )
-                        except Exception:
-                            paramValue = None
-                    else:
-                        paramValue = (
-                            protVar.get()
-                            if protVar.get() is not None
-                            else None
-                        )
-
-                elif allowsScalarPointers:
-                    paramDict["pointerMode"] = False
-                    protocolDbId = None
-                    if (
-                            mapper is not None
-                            and projectId is not None
-                            and protocol is not None
-                            and getScipionObjectIdCallback is not None
-                            and resolvePostgresqlProtocolDbIdCallback is not None
-                    ):
-                        protocolId = (
-                            getScipionObjectIdCallback(
-                                protocol
-                            )
-                        )
                         if protocolId not in (
                                 None,
                                 "",
@@ -550,6 +578,7 @@ class ProtocolFormSerializer:
 
                         if pointerValueInfo:
                             paramDict["pointerMode"] = True
+
                             parentId = (
                                 pointerValueInfo.get(
                                     "parentId"
@@ -558,50 +587,63 @@ class ProtocolFormSerializer:
 
                             if parentId is not None:
                                 try:
-                                    paramDict["parentId"] = int(
+                                    paramDict[
+                                        "parentId"
+                                    ] = int(
                                         parentId
                                     )
                                 except Exception:
-                                    paramDict["parentId"] = (
-                                        parentId
-                                    )
+                                    paramDict[
+                                        "parentId"
+                                    ] = parentId
+
                             return (
                                 paramDict,
                                 pointerValueInfo.get(
                                     "value"
                                 ),
                             )
-                    hasPointer = False
-                    try:
-                        hasPointer = bool(
-                            protVar.hasPointer()
-                        )
 
-                    except Exception:
-                        pass
-                    if hasPointer:
-                        pointer = (
-                            protVar.getPointer()
+                    runtimePointerValue = (
+                        self
+                        ._getScalarPointerRuntimeValue(
+                            protVar
                         )
-                        paramDict["pointerMode"] = True
-                        try:
-                            paramValue = (
-                                pointer.getUniqueId()
-                            )
-                        except Exception:
-                            paramValue = None
-                    else:
-                        paramValue = (
-                            protVar.get()
-                            if protVar.get() is not None
-                            else None
-                        )
-                else:
-                    paramValue = (
-                        protVar.get()
-                        if protVar.get() is not None
-                        else None
                     )
+
+                    if runtimePointerValue:
+                        paramDict["pointerMode"] = True
+
+                        parentId = (
+                            runtimePointerValue.get(
+                                "parentId"
+                            )
+                        )
+
+                        if parentId is not None:
+                            try:
+                                paramDict[
+                                    "parentId"
+                                ] = int(
+                                    parentId
+                                )
+                            except Exception:
+                                paramDict[
+                                    "parentId"
+                                ] = parentId
+
+                        paramValue = (
+                            runtimePointerValue.get(
+                                "value"
+                            )
+                        )
+
+                    else:
+                        paramValue = (
+                            protVar.get()
+                            if protVar.get() is not None
+                            else None
+                        )
 
             return paramDict, paramValue
 
