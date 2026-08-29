@@ -3295,11 +3295,25 @@ class RuntimePostgresqlProtocolWorker:
         submitDict = self.protocol.getSubmitDict()
         submitDict["JOB_COMMAND"] = shlex.join(command)
 
+        queueEnv = os.environ.copy()
+
+        bindingsPath = Config.getBindingsFolder()
+        pythonPath = queueEnv.get("PYTHONPATH", "")
+
+        queueEnv["PYTHONPATH"] = os.pathsep.join(
+            path
+            for path in [
+                bindingsPath,
+                pythonPath,
+            ]
+            if path
+        )
+
         jobId, error = _submit(
             hostConfig,
             submitDict,
             cwd=self.project.path,
-            env=os.environ.copy(),
+            env=queueEnv,
         )
 
         if jobId is None or jobId == UNKNOWN_JOBID:

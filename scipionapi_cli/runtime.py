@@ -193,6 +193,17 @@ def _resolveScipionHome(repoRoot: Path) -> Path:
     return (repoRoot / "scipion_home").resolve()
 
 
+def _buildRuntimePythonPath(repoRoot: Path) -> str:
+    return os.pathsep.join([
+        str(repoRoot),
+        str(
+            _resolveScipionHome(repoRoot)
+            / "software"
+            / "bindings"
+            / "python"
+        ),
+    ])
+
 def _resolveEnvPath(repoRoot: Path) -> Path:
     # resolveEnvPath
     return _resolveScipionHome(repoRoot) / ".env"
@@ -902,7 +913,7 @@ def startCommand() -> None:
 
         _printInfo("Launching uvicorn")
         apiEnv = os.environ.copy()
-        apiEnv["PYTHONPATH"] = str(repoRoot)
+        apiEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
         apiEnv["PYTHONUNBUFFERED"] = "1"
 
         apiPid = _startDetachedProcess(
@@ -956,7 +967,7 @@ def startCommand() -> None:
 
         _printInfo("Launching plugin Celery worker")
         workerEnv = os.environ.copy()
-        workerEnv["PYTHONPATH"] = str(repoRoot)
+        workerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
         workerEnv["PYTHONUNBUFFERED"] = "1"
 
         workerCommand = _buildCeleryWorkerCommand(
@@ -998,7 +1009,7 @@ def startCommand() -> None:
     if not protocolWorkerPidPath.exists():
         _printInfo("Launching protocol Celery worker")
         protocolWorkerEnv = os.environ.copy()
-        protocolWorkerEnv["PYTHONPATH"] = str(repoRoot)
+        protocolWorkerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
         protocolWorkerEnv["PYTHONUNBUFFERED"] = "1"
 
         protocolWorkerCommand = _buildCeleryWorkerCommand(
