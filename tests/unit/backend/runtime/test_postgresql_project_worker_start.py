@@ -140,6 +140,18 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
     monkeypatch.setattr(workerModule, "buildPostgresqlWorkerCommand", buildCommand)
     monkeypatch.setattr(projectModule.subprocess, "Popen", popen)
 
+    bindingsPath = str(
+        tmp_path
+        / "software"
+        / "bindings"
+    )
+
+    monkeypatch.setattr(
+        projectModule.pw.Config,
+        "getBindingsFolder",
+        lambda: bindingsPath,
+    )
+
     pid = project._startPostgresqlProtocolWorker(protocol=protocol, runMode="restart", wait=False)
 
     moduleRoot = str(Path(projectModule.__file__).resolve().parents[3])
@@ -190,7 +202,12 @@ def test_StartPostgresqlProtocolWorkerLaunchesDetachedCoordinator(tmp_path, monk
     assert calls["stdin"] is projectModule.subprocess.DEVNULL
     assert calls["sameLog"] is True
     assert calls["stdoutPath"] == str(projectPath / "Runs/000041_FakeProtocol/logs/schedule.log")
-    assert calls["env"]["PYTHONPATH"].split(os.pathsep)[0] == moduleRoot
+    pythonPathEntries = calls["env"]["PYTHONPATH"].split(
+        os.pathsep
+    )
+
+    assert pythonPathEntries[0] == moduleRoot
+    assert pythonPathEntries[1] == bindingsPath
 
 
 def test_StartPostgresqlProtocolWorkerForwardsTransientQueueOverride(

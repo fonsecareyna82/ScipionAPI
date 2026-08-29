@@ -438,11 +438,33 @@ class PostgresqlProject(ScipionProject):
         scheduleLogPath = os.path.abspath(scheduleLogPath)
         os.makedirs(os.path.dirname(scheduleLogPath), exist_ok=True)
         moduleRoot = str(Path(__file__).resolve().parents[3])
+        bindingsPath = pw.Config.getBindingsFolder()
+
         workerEnv = os.environ.copy()
-        pythonPathEntries = [entry for entry in str(workerEnv.get("PYTHONPATH") or "").split(os.pathsep) if entry]
-        if moduleRoot not in pythonPathEntries:
-            pythonPathEntries.insert(0, moduleRoot)
-        workerEnv["PYTHONPATH"] = os.pathsep.join(pythonPathEntries)
+
+        pythonPathEntries = [
+            entry
+            for entry in str(
+                workerEnv.get("PYTHONPATH") or ""
+            ).split(os.pathsep)
+            if entry
+        ]
+
+        pythonPathEntries = [
+                                moduleRoot,
+                                bindingsPath,
+                            ] + [
+                                entry
+                                for entry in pythonPathEntries
+                                if entry not in {
+                moduleRoot,
+                bindingsPath,
+            }
+                            ]
+
+        workerEnv["PYTHONPATH"] = os.pathsep.join(
+            pythonPathEntries
+        )
         commandArgs = {
             "projectId": self.postgresqlProjectId,
             "protocolId": int(protocolId),
