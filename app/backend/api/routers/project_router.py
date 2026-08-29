@@ -34,6 +34,10 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
                                                     ProtocolWizardExecuteRequest, ProjectImportOut)
 from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
+from app.backend.runtime.preview_process_executor import (
+    runOutputPreviewInProcess,
+    runOutputThumbnailsBatchInProcess,
+)
 from app.backend.models.project_model import ExternalViewerLaunchRequest
 from app.backend.models.protocol_model import (
     ProtocolRequest,
@@ -1882,43 +1886,56 @@ def writeRemoteFile(
         )
 
 
-@router.get("/{projectId}/protocols/{protocolId}/outputpreview/{outputName}", response_model=None)
-def previewOutput(
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputpreview/{outputName}",
+    response_model=None,
+)
+async def previewOutput(
     projectId: int,
     protocolId: Union[int, str],
     outputName: str,
     request: Request,
     currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
 ):
-    project = (
-        service
-        .loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
+    cmapHeader = (
+        request.headers.get(
+            "x-scipion-colormap"
+        )
+        or request.headers.get(
+            "x-preview-colormap"
+        )
+        or request.headers.get(
+            "x-colormap"
+        )
+        or request.headers.get(
+            "scipion-colormap"
+        )
+        or request.headers.get(
+            "colormap"
         )
     )
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
 
-    cmapHeader = (
-        request.headers.get("x-scipion-colormap")
-        or request.headers.get("x-preview-colormap")
-        or request.headers.get("x-colormap")
-        or request.headers.get("scipion-colormap")
-        or request.headers.get("colormap")
+    cmapQuery = (
+        request.query_params.get(
+            "cmap"
+        )
+        or request.query_params.get(
+            "colormap"
+        )
     )
-    cmapQuery = request.query_params.get("cmap") or request.query_params.get("colormap")
 
-    return service.outputPreview(
+    return await runOutputPreviewInProcess(
+        projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
-        requestHeaders=dict(request.headers),
-        colormap=cmapHeader or cmapQuery,
-        mapper=mapper,
-        projectId=projectId,
+        userId=int(currentUser["id"]),
+        requestHeaders=dict(
+            request.headers
+        ),
+        colormap=(
+            cmapHeader
+            or cmapQuery
+        ),
     )
 
 
@@ -4213,148 +4230,49 @@ def getProtocolOutputThumbnail(
             ),
         )
 
+
 @router.post(
     "/{projectId}/output-thumbnails",
     response_model=Any,
     status_code=status.HTTP_200_OK,
 )
-def getProtocolOutputThumbnailsBatch(
-        projectId: int,
-        payload: ProtocolOutputThumbnailsRequest,
-        currentUser=Depends(getCurrentUser),
-        mapper: PostgresqlFlatMapper = Depends(getMapper),
-        service: ProjectService = Depends(getProjectService),
+async def getProtocolOutputThumbnailsBatch(
+    projectId: int,
+    payload: ProtocolOutputThumbnailsRequest,
+    currentUser=Depends(getCurrentUser),
 ):
-    requestStartedAt = perf_counter()
-    projectLoadMs = 0.0
-    thumbnailBuildMs = 0.0
-    cacheHits = 0
-    try:
-        requestedOutputs = payload.outputs or []
-
-        if not requestedOutputs:
-            return {
-                "projectId": projectId,
-                "size": payload.size,
-                "items": [],
-            }
-
-        items = []
-
-        with _thumbnailProjectLock:
-            dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
-            if not dbProj:
-                raise HTTPException(status_code=404, detail="Project not found")
-
-            projectLoadStartedAt = perf_counter()
-            service.loadProjectForThumbnails(dbProj, mapper=mapper)
-            projectLoadMs = (perf_counter() - projectLoadStartedAt) * 1000
-            thumbnailBuildStartedAt = perf_counter()
-
-            seen = set()
-
-            for requestedOutput in requestedOutputs:
-                requestedProtocolId = int(requestedOutput.protocolId)
-                outputName = str(requestedOutput.outputName or "").strip()
-
-                if not outputName:
-                    continue
-
-                requestKey = (requestedProtocolId, outputName)
-                if requestKey in seen:
-                    continue
-                seen.add(requestKey)
-
-                item = {
-                    "protocolId": requestedProtocolId,
-                    "outputName": outputName,
-                    "outputClassName": None,
-                    "exists": False,
-                    "cached": False,
-                    "thumbnailUrl": f"/projects/{int(projectId)}/protocols/{requestedProtocolId}/outputs/{quote(outputName, safe='')}/thumbnail",
-                    "thumbnailDataUrl": None,
-                    "error": None,
-                }
-
-                try:
-                    result = service.buildProtocolOutputThumbnail(
-                        protocolId=requestedProtocolId,
-                        outputName=outputName,
-                        force=False,
-                        size=payload.size,
-                        mapper=mapper,
-                        projectId=projectId,
-                    )
-                    item["outputClassName"] = result.get("outputClassName")
-                    if result.get("cached"):
-                        cacheHits += 1
-
-                except Exception as exc:
-                    logger.debug(
-                        "Failed building batch protocol output thumbnail. projectId=%s protocolId=%s outputName=%s",
-                        projectId,
-                        requestedProtocolId,
-                        outputName,
-                        exc_info=True,
-                    )
-                    item["error"] = str(exc)
-                    items.append(item)
-                    continue
-
-                thumbPath = result.get("absolutePath")
-                if not result.get("exists") or not thumbPath:
-                    item["error"] = "Thumbnail not available"
-                    items.append(item)
-                    continue
-
-                item["exists"] = True
-                item["cached"] = bool(result.get("cached"))
-
-                if payload.inlineImages:
-                    try:
-                        if os.path.exists(str(thumbPath)) and os.path.getsize(str(thumbPath)) > 0:
-                            with open(str(thumbPath), "rb") as fh:
-                                encoded = base64.b64encode(fh.read()).decode("ascii")
-                            item["thumbnailDataUrl"] = f"data:image/png;base64,{encoded}"
-                    except Exception:
-                        logger.debug(
-                            "Could not inline batch thumbnail image. projectId=%s protocolId=%s outputName=%s",
-                            projectId,
-                            requestedProtocolId,
-                            outputName,
-                            exc_info=True,
-                        )
-
-                items.append(item)
-
-        thumbnailBuildMs = (perf_counter() - thumbnailBuildStartedAt) * 1000
-        response = JSONResponse(
-            {
-                "projectId": projectId,
-                "size": payload.size,
-                "items": items,
-            }
+    requestedOutputs = [
+        {
+            "protocolId":
+                int(item.protocolId),
+            "outputName":
+                str(item.outputName),
+        }
+        for item in (
+            payload.outputs
+            or []
         )
-        totalMs = (perf_counter() - requestStartedAt) * 1000
-        response.headers["Cache-Control"] = "private, max-age=60, stale-while-revalidate=300"
-        response.headers[
-            "Server-Timing"] = f"project;dur={projectLoadMs:.1f}, thumbnails;dur={thumbnailBuildMs:.1f}, total;dur={totalMs:.1f}"
-        response.headers["X-Thumbnail-Items"] = str(len(items))
-        response.headers["X-Thumbnail-Cache-Hits"] = str(cacheHits)
-        response.headers[
-            "Access-Control-Expose-Headers"] = "Cache-Control, Server-Timing, X-Thumbnail-Items, X-Thumbnail-Cache-Hits"
-        return _attachDebugHeaders(response, currentUser)
+    ]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Error in getProtocolOutputThumbnailsBatch: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to load protocol output thumbnails: {e}",
+    response = (
+        await
+        runOutputThumbnailsBatchInProcess(
+            projectId=projectId,
+            userId=int(
+                currentUser["id"]
+            ),
+            size=payload.size,
+            inlineImages=(
+                payload.inlineImages
+            ),
+            outputs=requestedOutputs,
         )
-    finally:
-        _clearThumbnailProjectContext(service)
+    )
+
+    return _attachDebugHeaders(
+        response,
+        currentUser,
+    )
 
 # *****************************************
 # Wizards routers
