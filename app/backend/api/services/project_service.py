@@ -8316,12 +8316,12 @@ class ProjectService:
                     )
                 )
 
-                return (
-                    previewService
-                    .getPreviewOutput(
-                        objectManager
-                    )
+            return (
+                previewService
+                .getPreviewOutput(
+                    objectManager
                 )
+            )
 
         # Tree/object outputs such as Volume are reconstructed from
         # PostgreSQL, but their actual binary artifact remains on disk.

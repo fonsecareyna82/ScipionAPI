@@ -434,7 +434,7 @@ def getProtocolRuntimeSummaries(
 
 
 @router.get("/{projectId}/protocols/{protocolId}", response_model=Any)
-async def loadProtocol(
+def loadProtocol(
     projectId: int,
     protocolId: int,
     currentUser=Depends(getCurrentUser),
@@ -523,7 +523,7 @@ def updateProtocolStepStatus(
 
 
 @router.get("/{projectId}/protclass/{protClassName}", response_model=Any)
-async def loadNewProtocol(
+def loadNewProtocol(
     projectId: int,
     protClassName: str,
     currentUser=Depends(getCurrentUser),
@@ -632,7 +632,7 @@ def launchProtocol(
 
 
 @router.post("/{projectId}/save", response_model=Any)
-async def saveProtocol(
+def saveProtocol(
     projectId: int,
     request: ProtocolRequest,
     currentUser=Depends(getCurrentUser),
@@ -1609,7 +1609,7 @@ def _ensureProjectForFsRequest(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
-async def getProtocolPath(
+def getProtocolPath(
     projectId: int,
     protocolId: str,
     currentUser=Depends(getCurrentUser),
@@ -1625,7 +1625,7 @@ async def getProtocolPath(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
-async def listProtocolDir(
+def listProtocolDir(
     projectId: int,
     protocolId: Union[int, str],
     path: str = Query(
@@ -1650,7 +1650,7 @@ async def listProtocolDir(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
-async def previewProtocolText(
+def previewProtocolText(
     projectId: int,
     protocolId: Union[int, str],
     path: str = Query(..., description="Relative file path inside protocol root"),
@@ -1694,7 +1694,7 @@ def previewRemoteEntry(
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
-async def previewProtocolImageFile(
+def previewProtocolImageFile(
     projectId: int,
     protocolId: Union[int, str],
     path: str = Query(..., description="Relative file path inside protocol root"),
@@ -1841,12 +1841,13 @@ def importWorkflowProtocols(
             detail=f"Failed to import workflow protocols: {e}",
         )
 
+
 @router.post(
     "/{projectId}/protocols/{protocolId}/fs/write",
     response_model=Any,
     status_code=status.HTTP_200_OK,
 )
-async def writeRemoteFile(
+def writeRemoteFile(
     projectId: int,
     protocolId: Union[int, str],
     payload: RemoteFileWriteRequest,
@@ -3723,7 +3724,7 @@ def setProtocolTags(
     response_model=Any,
     status_code=status.HTTP_200_OK,
 )
-async def getContextMenuVisibilityPolicy(
+def getContextMenuVisibilityPolicy(
     projectId: int,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),

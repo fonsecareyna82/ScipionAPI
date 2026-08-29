@@ -1111,6 +1111,127 @@ def test_OutputPreviewDelegatesToRuntimeFallback(service, monkeypatch):
     }
 
 
+def test_PostgresqlSetOutputPreviewRendersOutsideMetadataLock(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    class FakeMetadataLock:
+        def __init__(self):
+            self.active = False
+            self.enterCount = 0
+
+        def __enter__(self):
+            self.active = True
+            self.enterCount += 1
+            return self
+
+        def __exit__(
+                self,
+                excType,
+                excValue,
+                traceback,
+        ):
+            self.active = False
+
+    metadataLock = FakeMetadataLock()
+    objectManager = object()
+    postgresqlOutput = object()
+
+    protocol = FakeProtocol(
+        protocolId=10,
+    )
+
+    service.currentProject = (
+        FakeCurrentProject(
+            protocols={
+                10: protocol,
+            },
+        )
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "_metadataLock",
+        metadataLock,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolveScipionProtocolId",
+        lambda **kwargs: 10,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlOutputForPreview",
+        lambda **kwargs: (
+            postgresqlOutput,
+            {
+                "exists": True,
+                "kind": "set",
+            },
+        ),
+    )
+
+    def getMetadataObjectManager(
+            **kwargs,
+    ):
+        assert metadataLock.active is True
+        return objectManager
+
+    monkeypatch.setattr(
+        service,
+        "_getMetadataObjectManagerForOutput",
+        getMetadataObjectManager,
+    )
+
+    class FakeSetPreview:
+        def __init__(
+                self,
+                currentProject,
+                protocol,
+                output,
+                requestHeaders=None,
+                colormapOverride=None,
+        ):
+            pass
+
+        def getPreviewOutput(
+                self,
+                receivedObjectManager,
+        ):
+            assert metadataLock.active is False
+            assert (
+                receivedObjectManager
+                is objectManager
+            )
+
+            return {
+                "preview": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "OutputsPreview",
+        FakeSetPreview,
+    )
+
+    result = service.outputPreview(
+        protocolId=10,
+        outputName="outputSet",
+        mapper=object(),
+        projectId=1,
+    )
+
+    assert result == {
+        "preview": True,
+    }
+
+    assert metadataLock.enterCount == 1
+    assert metadataLock.active is False
+
+
 def test_LoadProjectForThumbnailsAlwaysUsesPostgresql(
         service,
         monkeypatch,
