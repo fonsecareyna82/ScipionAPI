@@ -24,9 +24,15 @@
 # *
 # ******************************************************************************
 from pyworkflow.object import (
+    Boolean,
     Integer,
     Object,
     Pointer,
+)
+
+from pyworkflow.protocol.params import (
+    BooleanParam,
+    IntParam,
 )
 
 from app.backend.api.services.protocol_form_serializer import (
@@ -81,3 +87,64 @@ def test_scalar_pointer_runtime_value_from_protocol_pointer():
         "parentId": 421,
         "value": "421.boxsize",
     }
+
+
+def test_regular_scalar_param_preserves_runtime_value():
+    param = IntParam(
+        label="Box size",
+        default=64,
+    )
+
+    value = Integer(256)
+
+    paramDict, paramValue = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="boxSize",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=value,
+            mapper=None,
+            projectId=None,
+            protocol=None,
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    assert paramDict["paramClass"] == "IntParam"
+    assert paramValue == 256
+
+
+def test_regular_boolean_param_preserves_false_value():
+    param = BooleanParam(
+        label="Enabled",
+        default=True,
+    )
+
+    value = Boolean(False)
+
+    _, paramValue = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="enabled",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=value,
+            mapper=None,
+            projectId=None,
+            protocol=None,
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    assert paramValue is False
+
+

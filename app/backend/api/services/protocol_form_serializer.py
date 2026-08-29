@@ -644,6 +644,12 @@ class ProtocolFormSerializer:
                             if protVar.get() is not None
                             else None
                         )
+                else:
+                    paramValue = (
+                        protVar.get()
+                        if protVar.get() is not None
+                        else None
+                    )
 
             return paramDict, paramValue
 
@@ -735,7 +741,7 @@ class ProtocolFormSerializer:
                                                 None,
                                             )
 
-                                            if protVar:
+                                            if protVar is not None:
                                                 paramChild, paramValue = serializeFormParam(
                                                     paramLine,
                                                     paramLineName,
@@ -750,7 +756,7 @@ class ProtocolFormSerializer:
                                                         paramValue
                                                     )
 
-                                    elif protVar:
+                                    elif protVar is not None:
                                         paramChild, paramValue = serializeFormParam(
                                             paramGroup,
                                             paramGroupName,
@@ -787,7 +793,7 @@ class ProtocolFormSerializer:
                                         None,
                                     )
 
-                                    if protVar:
+                                    if protVar is not None:
                                         paramChild, paramValue = serializeFormParam(
                                             paramLine,
                                             paramLineName,
