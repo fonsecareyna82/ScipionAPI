@@ -1567,8 +1567,33 @@ class ProjectService:
                 except Exception:
                     param = None
 
-                if isinstance(param, (PointerParam, MultiPointerParam)):
-                    mergedValues[paramName] = copy.deepcopy(runtimeValue)
+                if (
+                        isinstance(
+                            param,
+                            (
+                                    PointerParam,
+                                    MultiPointerParam,
+                            ),
+                        )
+                        or (
+                        bool(
+                            getattr(
+                                param,
+                                "allowsPointers",
+                                False,
+                            )
+                        )
+                        and not isinstance(
+                    param,
+                    RelationParam,
+                )
+                )
+                ):
+                    mergedValues[
+                        paramName
+                    ] = copy.deepcopy(
+                        runtimeValue
+                    )
 
         # Runtime metadata may legitimately have changed in the supplied execution state.
         if runtimeMetadata is not None:

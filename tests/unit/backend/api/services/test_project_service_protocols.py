@@ -4195,3 +4195,50 @@ def test_LaunchPostgresqlContinueSubworkflowForwardsExecutionMetadata(
         launchCall["executionId"]
         == "workflow-execution-123"
     )
+
+
+def test_PreserveStoredProtocolParamsKeepsScalarPointerRuntimeValue(
+        projectServiceModule,
+):
+    class ScalarPointerParam:
+        allowsPointers = True
+
+    class ProtocolStub:
+        def getParam(self, name):
+            if name == "boxSize":
+                return ScalarPointerParam()
+
+            return None
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
+    context = {
+        "values": {
+            "boxSize": "421.boxsize",
+            "threshold": 0.5,
+        },
+        "info": {},
+    }
+
+    storedRow = {
+        "params": {
+            "boxSize": 1000005,
+            "threshold": 0.8,
+        },
+    }
+
+    result = (
+        service
+        ._preserveStoredProtocolParamsInRuntimeContext(
+            protocolContext=context,
+            storedRow=storedRow,
+            protocol=ProtocolStub(),
+        )
+    )
+
+    assert result["values"]["boxSize"] == "421.boxsize"
+    assert result["values"]["threshold"] == 0.8
+
+
