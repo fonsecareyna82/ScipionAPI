@@ -200,9 +200,9 @@ def _buildRuntimePythonPath(repoRoot: Path) -> str:
             _resolveScipionHome(repoRoot)
             / "software"
             / "bindings"
-            / "python"
         ),
     ])
+
 
 def _resolveEnvPath(repoRoot: Path) -> Path:
     # resolveEnvPath
