@@ -470,7 +470,7 @@ def _buildCeleryWorkerCommand(
     concurrency: int,
     hostname: str,
 ) -> List[str]:
-    return [
+    command = [
         sys.executable,
         "-m",
         "celery",
@@ -488,6 +488,14 @@ def _buildCeleryWorkerCommand(
         "--prefetch-multiplier",
         "1",
     ]
+
+    if queueName == "plugins":
+        command.extend([
+            "--max-tasks-per-child",
+            "1",
+        ])
+
+    return command
 
 
 def _getWorkerPidPath(

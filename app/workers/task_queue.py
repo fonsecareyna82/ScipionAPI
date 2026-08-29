@@ -195,7 +195,12 @@ def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
         installStep = "Installing plugin without binaries..." if skip_binaries else "Installing plugin..."
         self.update_state(state="PROGRESS", meta={"step": installStep})
         writePluginTaskStep(taskId, installStep)
-        service.installPlugin(pip_name, taskId=taskId, skipBinaries=skip_binaries)
+        service.installPlugin(
+            pip_name,
+            taskId=taskId,
+            skipBinaries=skip_binaries,
+            refreshDomain=False,
+        )
 
         self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
         writePluginTaskStep(taskId, "Refreshing plugin metadata...")
@@ -256,7 +261,12 @@ def installPluginsBatchTask(self, pip_names: List[str], skip_binaries: bool = Fa
             writePluginTaskStep(taskId, step)
 
             try:
-                service.installPlugin(pipName, taskId=taskId, skipBinaries=skip_binaries)
+                service.installPlugin(
+                    pipName,
+                    taskId=taskId,
+                    skipBinaries=skip_binaries,
+                    refreshDomain=False,
+                )
                 installed.append(pipName)
                 writePluginTaskStep(taskId, f"Completed {index}/{total}: {pipName}")
             except Exception as exc:
@@ -357,7 +367,11 @@ def uninstallPluginTask(self, pip_name: str) -> str:
 
         self.update_state(state="PROGRESS", meta={"step": "Uninstalling plugin..."})
         writePluginTaskStep(taskId, "Uninstalling plugin...")
-        service.uninstallPlugin(pip_name, taskId=taskId)
+        service.uninstallPlugin(
+            pip_name,
+            taskId=taskId,
+            refreshDomain=False,
+        )
 
         self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
         writePluginTaskStep(taskId, "Refreshing plugin metadata...")

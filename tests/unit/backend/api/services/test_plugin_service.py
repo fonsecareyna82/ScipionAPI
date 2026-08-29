@@ -1014,3 +1014,42 @@ def test_install_plugin_reports_detailed_task_progress(
         )
         for message in taskMessages
     )
+
+
+
+def test_clear_cache_can_skip_domain_refresh(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(
+        tmp_path
+    )
+
+    refreshCalls = []
+    recreatedRepository = object()
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "refreshScipionDomain",
+        lambda force=False:
+        refreshCalls.append(force),
+    )
+
+    monkeypatch.setattr(
+        pluginServiceModule,
+        "PluginRepository",
+        lambda: recreatedRepository,
+    )
+
+    service.clearCache(
+        refreshDomain=False
+    )
+
+    assert refreshCalls == []
+
+    assert (
+        service.pluginRepository
+        is recreatedRepository
+    )
+
+

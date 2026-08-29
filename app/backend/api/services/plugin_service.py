@@ -122,7 +122,11 @@ class PluginService:
 
         return installedVersions.get(canonicalize_name(pipName))
 
-    def clearCache(self, reloadRepository: bool = True) -> None:
+    def clearCache(
+            self,
+            reloadRepository: bool = True,
+            refreshDomain: bool = True,
+    ) -> None:
         with self._cacheLock:
             self._pluginsCache = None
             self._pluginsRevision = self._getPluginsRevision()
@@ -130,14 +134,15 @@ class PluginService:
             if not reloadRepository:
                 return
 
-            try:
-                refreshScipionDomain(
-                    force=True
-                )
-            except Exception:
-                logger.exception(
-                    "Could not refresh Scipion domain after plugin change."
-                )
+            if refreshDomain:
+                try:
+                    refreshScipionDomain(
+                        force=True
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not refresh Scipion domain after plugin change."
+                    )
 
             try:
                 self.pluginRepository = PluginRepository()
@@ -764,6 +769,7 @@ class PluginService:
             pluginName: str,
             taskId: Optional[str] = None,
             skipBinaries: bool = False,
+            refreshDomain: bool = True,
     ) -> Dict[str, Any]:
         plugin: Optional[Any] = None
         startedAt = monotonic()
@@ -882,7 +888,12 @@ class PluginService:
                     "Refreshing plugin catalog...",
                 )
 
-            self.clearCache()
+            if refreshDomain:
+                self.clearCache()
+            else:
+                self.clearCache(
+                    refreshDomain=False
+                )
 
             totalElapsed = (
                     monotonic()
@@ -1172,7 +1183,12 @@ class PluginService:
             "alreadyUninstalled": False,
         }
 
-    def uninstallPlugin(self, pluginName: str, taskId: Optional[str] = None) -> Dict[str, Any]:
+    def uninstallPlugin(
+            self,
+            pluginName: str,
+            taskId: Optional[str] = None,
+            refreshDomain: bool = True,
+    ) -> Dict[str, Any]:
         try:
             if taskId:
                 writePluginTaskStep(taskId, "Resolving plugin...")
@@ -1208,7 +1224,13 @@ class PluginService:
                     writePluginTaskStep(taskId, "Plugin is not installed. Nothing to do.")
 
             self.pluginDevelService.unregisterDevelPlugin(pluginName)
-            self.clearCache()
+
+            if refreshDomain:
+                self.clearCache()
+            else:
+                self.clearCache(
+                    refreshDomain=False
+                )
 
             if taskId:
                 writePluginTaskStep(taskId, "Plugin uninstalled successfully.")

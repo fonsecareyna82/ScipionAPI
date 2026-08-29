@@ -406,3 +406,54 @@ def test_StartCommandRecoversInterruptedTasksBeforePluginWorkerLaunch(
     ) == "202"
 
 
+def test_PluginWorkerRecyclesChildAfterEveryTask():
+    command = (
+        runtimeModule
+        ._buildCeleryWorkerCommand(
+            celeryApp=(
+                "app.workers.task_queue"
+            ),
+            celeryLogLevel="info",
+            queueName="plugins",
+            concurrency=1,
+            hostname="plugins@%h",
+        )
+    )
+
+    assert (
+        "--max-tasks-per-child"
+        in command
+    )
+
+    optionIndex = command.index(
+        "--max-tasks-per-child"
+    )
+
+    assert (
+        command[
+            optionIndex + 1
+        ]
+        == "1"
+    )
+
+
+def test_ProtocolWorkerDoesNotRecycleAfterEveryTask():
+    command = (
+        runtimeModule
+        ._buildCeleryWorkerCommand(
+            celeryApp=(
+                "app.workers.task_queue"
+            ),
+            celeryLogLevel="info",
+            queueName="protocols",
+            concurrency=4,
+            hostname="protocols@%h",
+        )
+    )
+
+    assert (
+        "--max-tasks-per-child"
+        not in command
+    )
+
+
