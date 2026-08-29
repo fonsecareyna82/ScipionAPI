@@ -33,7 +33,7 @@ import time
 from typing import Any, Callable, Dict, List
 
 from fastapi import HTTPException, status
-from pyworkflow.protocol import STATUS_ABORTED
+from pyworkflow.protocol import STATUS_ABORTED, STATUS_SCHEDULED
 
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
@@ -1199,19 +1199,21 @@ class RuntimeProtocolStopService:
                 })
 
             processTerminationConfirmed = bool(
-                processReport
-                and processReport.get(
-                    "terminated"
-                )
+                processReport and processReport.get("terminated")
             )
 
-            queueTerminationConfirmed = bool(
-                queueReports
+            queueTerminationConfirmed = bool(queueReports)
+
+            scheduledBeforeDispatch = (
+                    protocolStatus == str(STATUS_SCHEDULED).strip().lower()
+                    and pid is None
+                    and not jobIds
             )
 
             if not (
                     processTerminationConfirmed
                     or queueTerminationConfirmed
+                    or scheduledBeforeDispatch
             ):
                 raise RuntimeError(
                     "Cannot mark PostgreSQL protocol %s "

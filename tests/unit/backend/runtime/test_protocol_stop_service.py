@@ -714,6 +714,41 @@ def test_PostgresqlStopSkipsFinishedProtocol(
     )
 
 
+def test_PostgresqlStopAbortsScheduledProtocolBeforeDispatch(monkeypatch):
+    monkeypatch.setattr(
+        stopModule,
+        "RuntimeProtocolStatusSyncService",
+        FakeStatusService,
+    )
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(
+        protocolId=10,
+        protocolStatus="scheduled",
+        pid=0,
+        jobIds=[],
+    )
+
+    service = RuntimeProtocolStopService()
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["protocolsCount"] == 1
+    assert protocol.getStatus() == STATUS_ABORTED
+    assert protocol.getPid() == 0
+    assert protocol.getJobIds() == []
+    assert result["localStopped"] == []
+    assert result["queueStopped"] == []
+
+
 def test_PostgresqlStopDeduplicatesProtocolIds(
         monkeypatch,
 ):

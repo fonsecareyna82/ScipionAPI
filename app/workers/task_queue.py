@@ -660,6 +660,30 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
             configureLogging=False
         )
 
+        protocolStatus = _getProtocolStatus(
+            runtimeWorker.mapper,
+            projectId,
+            protocolId,
+        )
+
+        if protocolStatus != "scheduled":
+            logger.info(
+                "Skipping PostgreSQL protocol dispatch because protocol is no longer scheduled. "
+                "projectId=%s protocolId=%s status=%s",
+                projectId,
+                protocolId,
+                protocolStatus,
+            )
+
+            return {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "runMode": runMode,
+                "protocolStatus": protocolStatus,
+                "coordinatorPid": None,
+                "dispatched": False,
+            }
+
         self.update_state(
             state="PROGRESS",
             meta={

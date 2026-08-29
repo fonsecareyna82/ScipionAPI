@@ -3043,25 +3043,31 @@ class RuntimePostgresqlProtocolWorker:
             )
         )
 
-    def registerCoordinatorProcess(
-            self,
-    ) -> None:
+    def getStoredProtocolStatus(self) -> str:
+        row = self.mapper.getProjectProtocolByProtocolId(
+            projectId=self.projectId,
+            protocolId=self.protocolId,
+        )
+
+        return str((row or {}).get("status") or "").strip().lower()
+
+    def registerCoordinatorProcess(self) -> None:
         """
         Register the real PostgreSQL worker before waiting
         for dependencies.
 
-        This PID is authoritative for the PostgreSQL-only
-        stop operation.
+        Only process identity is persisted here. The protocol
+        is already scheduled, so this must never overwrite a
+        concurrent terminal status such as aborted.
         """
-        self.protocol.setPid(
-            os.getpid()
-        )
+        self.protocol.setPid(os.getpid())
 
-        self.protocol.setStatus(
-            STATUS_SCHEDULED
+        RuntimeProtocolStatusSyncService().persistProtocolProcessIdentity(
+            mapper=self.mapper,
+            projectId=self.projectId,
+            protocolId=self.protocolId,
+            protocol=self.protocol,
         )
-
-        self.storeProtocol()
 
     def rollbackPostgresqlTransaction(
             self,
@@ -3389,7 +3395,27 @@ class RuntimePostgresqlProtocolWorker:
 
         try:
             if not execute:
+                if self.getStoredProtocolStatus() != str(STATUS_SCHEDULED).strip().lower():
+                    logger.info(
+                        "Skipping PostgreSQL protocol coordinator because protocol is no longer scheduled. "
+                        "projectId=%s protocolId=%s status=%s",
+                        self.projectId,
+                        self.protocolId,
+                        self.getStoredProtocolStatus(),
+                    )
+                    return 0
+
                 self.registerCoordinatorProcess()
+
+                if self.getStoredProtocolStatus() != str(STATUS_SCHEDULED).strip().lower():
+                    logger.info(
+                        "Stopping PostgreSQL protocol coordinator because protocol changed state during dispatch. "
+                        "projectId=%s protocolId=%s status=%s",
+                        self.projectId,
+                        self.protocolId,
+                        self.getStoredProtocolStatus(),
+                    )
+                    return 0
 
             self.waitUntilReady()
 
