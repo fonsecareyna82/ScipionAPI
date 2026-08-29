@@ -27,6 +27,7 @@
 import importlib
 import sys
 import types
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -178,13 +179,13 @@ class FakeCeleryControl:
         })
 
 
-
 def test_CancelPluginTaskRevokesRunningCeleryTask(
         pluginClient,
         pluginRouterModule,
         fakeSystemTaskService,
         monkeypatch,
 ):
+    now = datetime.now(timezone.utc)
     fakeSystemTaskService.tasksById[
         "running-task"
     ] = {
@@ -203,10 +204,10 @@ def test_CancelPluginTaskRevokesRunningCeleryTask(
         "backend": "celery",
         "acknowledged": False,
         "retryOfTaskId": None,
-        "createdAt": None,
-        "startedAt": None,
+        "createdAt": now,
+        "startedAt": now,
         "finishedAt": None,
-        "updatedAt": None,
+        "updatedAt": now,
     }
 
     celery = FakeCeleryApp({
