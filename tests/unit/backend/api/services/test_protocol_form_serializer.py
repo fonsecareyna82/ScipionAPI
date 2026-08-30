@@ -29,13 +29,17 @@ from pyworkflow.object import (
     Integer,
     Object,
     Pointer,
+    String,
 )
 
 from pyworkflow.protocol.params import (
     BooleanParam,
+    FileParam,
     FloatParam,
+    FolderParam,
     Form,
     IntParam,
+    PathParam,
 )
 
 from app.backend.api.services.protocol_form_serializer import (
@@ -275,3 +279,44 @@ def test_group_preserves_nested_lines():
     assert values["alignFrameN"] == 64
     assert values["cropOffsetX"] == 0
     assert values["cropOffsetY"] == 0
+
+
+def test_path_param_subclasses_use_path_param_web_semantics():
+    serializer = ProtocolFormSerializer()
+
+    for ParamClass in (
+            PathParam,
+            FileParam,
+            FolderParam,
+    ):
+        param = ParamClass(
+            label="Input path",
+            default="",
+        )
+
+        value = String(
+            "/tmp/input.mrc"
+        )
+
+        paramDict, paramValue = (
+            serializer
+            .serializeParam(
+                param=param,
+                paramName="inputPath",
+                wizards={},
+                viewerDict=None,
+                visualize=0,
+                protVar=value,
+                mapper=None,
+                projectId=None,
+                protocol=None,
+                getScipionObjectIdCallback=lambda obj: None,
+                resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+                splitPointerValueCallback=lambda value: (None, None),
+            )
+        )
+
+        assert paramDict["paramClass"] == "PathParam"
+        assert paramValue == "/tmp/input.mrc"
+
+

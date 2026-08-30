@@ -32,6 +32,7 @@ from pyworkflow.protocol import (
     Group,
     Line,
     MultiPointerParam,
+    PathParam,
     PointerParam,
     RelationParam,
 )
@@ -243,7 +244,9 @@ class ProtocolFormSerializer:
 
             paramClass = param.__class__.__name__
 
-            if paramClass == "LabelParam":
+            if isinstance(param, PathParam):
+                paramClass = "PathParam"
+            elif paramClass == "LabelParam":
                 paramClass = "Label"
 
             paramDict["paramClass"] = paramClass
