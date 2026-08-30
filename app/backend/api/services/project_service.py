@@ -1752,25 +1752,6 @@ class ProjectService:
             protocolDbId = int(storedRow["id"]) if storedRow and storedRow.get("id") not in (None, "") else None
             syncResult = {"protocolId": str(scipionProtocolId), "protocolDbId": protocolDbId,
                           "protocolStatus": persistedStatus, "postgresqlRuntimeSync": False, "readOnly": True}
-
-            storedStatusText = str(
-                storedStatus or ""
-            ).strip().lower()
-
-            persistedStatusText = str(
-                persistedStatus or ""
-            ).strip().lower()
-
-            if (
-                    storedRow
-                    and persistedStatusText
-                    and persistedStatusText != storedStatusText
-            ):
-                self._touchProjectModificationTime(
-                    mapper=mapper,
-                    projectId=projectId,
-                )
-
             if returnProtocolContext:
                 syncResult["protocolContext"] = protocolContext
 
@@ -1974,6 +1955,24 @@ class ProjectService:
                     relationReport.get("sourceErrors") or []
             ),
         }
+
+        storedStatusText = str(
+            storedStatus or ""
+        ).strip().lower()
+
+        persistedStatusText = str(
+            persistedStatus or ""
+        ).strip().lower()
+
+        if (
+                storedRow
+                and persistedStatusText
+                and persistedStatusText != storedStatusText
+        ):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
 
         if returnProtocolContext:
             syncResult["protocolContext"] = protocolContext
@@ -5756,8 +5755,7 @@ class ProjectService:
                      params,
                      setToSave=True,
                      validateParams=True,
-                     allowMissingParentOutputs=False,
-                     touchProject=False):
+                     allowMissingParentOutputs=False):
         runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
         result = runtimeProtocolSaveService.saveProtocol(
@@ -5776,7 +5774,7 @@ class ProjectService:
             allowMissingParentOutputs=allowMissingParentOutputs,
         )
 
-        if touchProject:
+        if setToSave:
             self._touchProjectModificationTime(
                 mapper=mapper,
                 projectId=projectId,

@@ -670,7 +670,6 @@ def saveProtocol(
             protocolId=protocolId,
             protocolClassName=protocolClassName,
             params=params,
-            touchProject=True,
         )
         errors = errors or []
 

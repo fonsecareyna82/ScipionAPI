@@ -1955,6 +1955,7 @@ def test_SaveProtocolUsesPostgresqlRuntimeService(
     )
 
     assert result is expectedResult
+    assert mapper.touchProjectCalls == [1]
     assert len(saveCalls) == 1
 
     saveCall = saveCalls[0]
@@ -3143,6 +3144,7 @@ def test_SaveProtocolResolvesPostgresqlProtocolIdAndDefersPersistenceForLaunch(
     assert protocol.attributeValues["iterations"] == 7
 
     assert service.currentProject.storedProtocols == []
+    assert mapper.touchProjectCalls == []
 
     assert len(syncCalls) == 1
     assert syncCalls[0]["protocol"] is protocol
