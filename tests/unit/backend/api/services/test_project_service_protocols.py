@@ -1848,6 +1848,7 @@ def test_SaveProtocolUsesPostgresqlRuntimeService(
     assert saveCall["params"] is params
     assert saveCall["setToSave"] is True
     assert saveCall["validateParams"] is True
+    assert saveCall["allowMissingParentOutputs"] is False
     assert saveCall["currentProject"] is service.currentProject
 
     assert set(saveCall) == {
@@ -1858,6 +1859,7 @@ def test_SaveProtocolUsesPostgresqlRuntimeService(
         "params",
         "setToSave",
         "validateParams",
+        "allowMissingParentOutputs",
         "currentProject",
         "getScipionProtocolForRuntimeCallback",
         "resolvePointerParentProtocolCallback",
