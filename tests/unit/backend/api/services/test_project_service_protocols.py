@@ -32,6 +32,7 @@ import pytest
 from fastapi import HTTPException
 from pyworkflow.object import Object as ScipionObject
 from pyworkflow.protocol.params import MultiPointerParam, PointerParam
+from pyworkflow.object import Integer, Object, Pointer
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -4242,3 +4243,65 @@ def test_PreserveStoredProtocolParamsKeepsScalarPointerRuntimeValue(
     assert result["values"]["threshold"] == 0.8
 
 
+def test_PrepareProtocolContextForPersistenceStoresScalarValue(
+        projectServiceModule,
+):
+    class ScalarPointerParam:
+        allowsPointers = True
+
+    pointedValue = Integer(
+        256
+    )
+
+    boxSize = Integer(
+        64
+    )
+
+    boxSize.setPointer(
+        Pointer(
+            pointedValue
+        )
+    )
+
+    class ProtocolStub:
+        def __init__(self):
+            self.boxSize = boxSize
+
+        def getParam(self, name):
+            if name == "boxSize":
+                return ScalarPointerParam()
+
+            return None
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
+    uiContext = {
+        "values": {
+            "boxSize": "421.boxsize",
+        },
+        "info": {},
+    }
+
+    persistenceContext = (
+        service
+        ._prepareProtocolContextForPersistence(
+            protocolContext=uiContext,
+            protocol=ProtocolStub(),
+        )
+    )
+
+    assert (
+        uiContext["values"]["boxSize"]
+        == "421.boxsize"
+    )
+
+    assert (
+        persistenceContext[
+            "values"
+        ][
+            "boxSize"
+        ]
+        == 256
+    )

@@ -56,7 +56,11 @@ from pyworkflow.protocol.executor import (
     ThreadStepExecutor,
 )
 from pyworkflow.protocol.launch import _submit
-from pyworkflow.protocol.params import MultiPointerParam
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
 from pyworkflow.protocol.protocol import anonimizeGPUs
 from pyworkflow.utils import LoggingConfigurator
 from pyworkflow.utils.log import setDefaultLoggingContext
@@ -755,6 +759,20 @@ class RuntimePostgresqlProtocolWorker:
         self._executionInputSetsByRuntimeObjectId = {}
         self._executionInputObjectsByRuntimeObjectId = {}
         self._executionInputObjectIdsResolving = set()
+
+    @staticmethod
+    def _allowsScalarPointers(param) -> bool:
+        return (
+                bool(getattr(param, "allowsPointers", False))
+                and not isinstance(
+            param,
+            (
+                PointerParam,
+                MultiPointerParam,
+                RelationParam,
+            ),
+        )
+        )
 
     def _applyQueueLaunchOverride(self) -> bool:
         if self._queueLaunchOverride is None or self.protocol is None:
@@ -2388,16 +2406,17 @@ class RuntimePostgresqlProtocolWorker:
                         pointer
                     )
 
-                elif bool(
-                        getattr(
-                            param,
-                            "allowsPointers",
-                            False,
-                        )
+                elif self._allowsScalarPointers(
+                        param
                 ):
                     protVar = getattr(
                         self.protocol,
                         inputName,
+                        None,
+                    )
+                    setValue = getattr(
+                        protVar,
+                        "set",
                         None,
                     )
                     setPointer = getattr(
@@ -2405,8 +2424,10 @@ class RuntimePostgresqlProtocolWorker:
                         "setPointer",
                         None,
                     )
-
-                    if not callable(setPointer):
+                    if (
+                            not callable(setValue)
+                            or not callable(setPointer)
+                    ):
                         errors.append({
                             **dict(ref),
                             "error": (
@@ -2416,6 +2437,33 @@ class RuntimePostgresqlProtocolWorker:
                             ),
                         })
                         continue
+
+                    pointedValue = pointer.get()
+
+                    if pointedValue is None:
+                        errors.append({
+                            **dict(ref),
+                            "error": (
+                                    "Scalar input %s resolved "
+                                    "to None"
+                                    % inputName
+                            ),
+                        })
+                        continue
+
+                    valueGetter = getattr(
+                        pointedValue,
+                        "get",
+                        None,
+                    )
+                    scalarValue = (
+                        valueGetter()
+                        if callable(valueGetter)
+                        else pointedValue
+                    )
+                    setValue(
+                        scalarValue
+                    )
                     setPointer(
                         pointer
                     )

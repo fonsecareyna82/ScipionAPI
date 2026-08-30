@@ -100,6 +100,7 @@ class ProtocolGraphRepository:
                     s."outputName" AS "outputName",
                     s."setClassName" AS "className",
                     s."itemClassName" AS "itemClassName",
+                    NULL AS value,
                     s.properties AS properties
                   FROM scipion_sets s
              LEFT JOIN scipion_objects o
@@ -136,6 +137,7 @@ class ProtocolGraphRepository:
                     o.name AS "outputName",
                     o."className" AS "className",
                     NULL AS "itemClassName",
+                    o.value AS value,
                     o.metadata AS properties
                   FROM scipion_objects o
                  WHERE o."projectId" = %s
@@ -874,6 +876,7 @@ class ProtocolGraphRepository:
                 s."outputName" AS "outputName",
                 s."setClassName" AS "className",
                 s."itemClassName" AS "itemClassName",
+                NULL AS value,
                 s.properties AS properties
               FROM scipion_sets s
          LEFT JOIN scipion_objects o
@@ -893,6 +896,7 @@ class ProtocolGraphRepository:
                 o.name AS "outputName",
                 o."className" AS "className",
                 NULL AS "itemClassName",
+                o.value AS value,
                 o.metadata AS properties
               FROM scipion_objects o
              WHERE o."projectId" = %s
@@ -935,6 +939,7 @@ class ProtocolGraphRepository:
                 "itemsCount": None,
                 "tablesCount": None,
                 "tableItemsCount": None,
+                "value": None,
             }
 
         info = dict(row)

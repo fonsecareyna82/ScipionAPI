@@ -27,7 +27,11 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 from pyworkflow.object import Pointer, PointerList
-from pyworkflow.protocol.params import MultiPointerParam
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
 
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
@@ -37,6 +41,20 @@ logger = logging.getLogger(__name__)
 
 class RuntimeProtocolLaunchPrepareService:
     """Prepare PostgreSQL runtime protocol pointers before launch."""
+
+    @staticmethod
+    def _allowsScalarPointers(param) -> bool:
+        return (
+                bool(getattr(param, "allowsPointers", False))
+                and not isinstance(
+            param,
+            (
+                PointerParam,
+                MultiPointerParam,
+                RelationParam,
+            ),
+        )
+        )
 
     def preparePointerOutputsForLaunch(
             self,
@@ -469,6 +487,77 @@ class RuntimeProtocolLaunchPrepareService:
 
                     itemReport[
                         "multiPointer"
+                    ] = True
+
+                elif self._allowsScalarPointers(
+                        param
+                ):
+                    protVar = getattr(
+                        protocol,
+                        inputName,
+                        None,
+                    )
+
+                    setValue = getattr(
+                        protVar,
+                        "set",
+                        None,
+                    )
+
+                    setPointer = getattr(
+                        protVar,
+                        "setPointer",
+                        None,
+                    )
+
+                    if (
+                            not callable(setValue)
+                            or not callable(setPointer)
+                    ):
+                        raise RuntimeError(
+                            "Scalar input %s does not support "
+                            "pointer restoration"
+                            % inputName
+                        )
+
+                    if itemReport.get(
+                            "missingParentOutput"
+                    ):
+                        # Keep the stored scalar value usable until
+                        # the worker can resolve the real output.
+                        setPointer(None)
+
+                    else:
+                        pointedValue = pointer.get()
+
+                        if pointedValue is None:
+                            raise RuntimeError(
+                                "Scalar input %s resolved to None"
+                                % inputName
+                            )
+
+                        valueGetter = getattr(
+                            pointedValue,
+                            "get",
+                            None,
+                        )
+
+                        scalarValue = (
+                            valueGetter()
+                            if callable(valueGetter)
+                            else pointedValue
+                        )
+
+                        setValue(
+                            scalarValue
+                        )
+
+                        setPointer(
+                            pointer
+                        )
+
+                    itemReport[
+                        "scalarPointer"
                     ] = True
 
                 else:

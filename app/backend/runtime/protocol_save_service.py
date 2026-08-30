@@ -524,26 +524,25 @@ class RuntimeProtocolSaveService:
             )
         )
 
-        if not resolvedPointerTarget.get(
-                "ok"
-        ):
+        if not resolvedPointerTarget.get("ok"):
             errorList.append(
-                resolvedPointerTarget.get(
-                    "error"
-                )
+                resolvedPointerTarget.get("error")
             )
             return errorList
 
-        parentProtocol = (
-            resolvedPointerTarget.get(
-                "parentProtocol"
-            )
+        parentProtocol = resolvedPointerTarget.get(
+            "parentProtocol"
         )
 
-        outputName = (
-            resolvedPointerTarget.get(
-                "outputName"
-            )
+        outputName = resolvedPointerTarget.get(
+            "outputName"
+        )
+
+        resolvedOutput = (
+                resolvedPointerTarget.get(
+                    "resolvedOutput"
+                )
+                or {}
         )
 
         if not outputName:
@@ -560,31 +559,101 @@ class RuntimeProtocolSaveService:
             None,
         )
 
+        setValue = getattr(
+            protVar,
+            "set",
+            None,
+        )
+
         setPointer = getattr(
             protVar,
             "setPointer",
             None,
         )
 
-        if not callable(setPointer):
+        if (
+                not callable(setValue)
+                or not callable(setPointer)
+        ):
             errorList.append(
                 "**"
                 + param.label.get()
-                + "** runtime scalar does not support pointers."
+                + "** runtime scalar does not support pointer restoration."
             )
             return errorList
 
-        setPointer(
-            Pointer(
-                parentProtocol,
-                extended=outputName,
-            )
+        pointer = Pointer(
+            parentProtocol,
+            extended=outputName,
         )
 
+        pointedValue = None
+
+        try:
+            pointedValue = pointer.get()
+        except Exception:
+            pass
+
+        if pointedValue is not None:
+            valueGetter = getattr(
+                pointedValue,
+                "get",
+                None,
+            )
+
+            scalarValue = (
+                valueGetter()
+                if callable(valueGetter)
+                else pointedValue
+            )
+
+            setValue(
+                scalarValue
+            )
+
+            setPointer(
+                pointer
+            )
+
+        else:
+            outputInfo = (
+                    resolvedOutput.get(
+                        "outputInfo"
+                    )
+                    or {}
+            )
+
+            if (
+                    outputInfo.get("kind")
+                    != "object"
+                    or "value" not in outputInfo
+            ):
+                errorList.append(
+                    "**"
+                    + param.label.get()
+                    + "** could not resolve scalar value from pointer "
+                    + str(pointerValues[0])
+                    + "."
+                )
+                return errorList
+
+            setValue(
+                outputInfo.get(
+                    "value"
+                )
+            )
+
+            # The parent runtime protocol does not expose the
+            # output attribute. Keep the scalar value usable and
+            # let protocol_input_refs restore the real pointer
+            # before validation/execution.
+            setPointer(None)
+
         logger.info(
-            "[INFO] Scalar param %s set from pointer %s",
+            "[INFO] Scalar param %s set from pointer %s with value %s",
             inputName,
             pointerValues[0],
+            protVar.getObjValue(),
         )
 
         return errorList

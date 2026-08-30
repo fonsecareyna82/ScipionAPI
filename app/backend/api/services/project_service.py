@@ -1722,7 +1722,17 @@ class ProjectService:
 
             return syncResult
 
-        protocolDbId = mapper.saveProtocol(protocolContext)
+        persistenceContext = (
+            self
+            ._prepareProtocolContextForPersistence(
+                protocolContext=protocolContext,
+                protocol=protocol,
+            )
+        )
+
+        protocolDbId = mapper.saveProtocol(
+            persistenceContext
+        )
 
         runtimeProtocolStepPersistenceService = RuntimeProtocolStepPersistenceService()
 
@@ -2005,7 +2015,7 @@ class ProjectService:
             mapper=mapper,
             projectId=projectId,
             currentProject=self.currentProject,
-            buildProtocolContextCallback=self._buildProtocolContext,
+            buildProtocolContextCallback=self._buildProtocolPersistenceContext,
             tryGetScipionProtocolByRuntimeIdCallback=self._tryGetScipionProtocolByRuntimeId,
             getScipionObjectIdCallback=self._getScipionObjectId,
             registerOutputCallback=registerOutputCallback,
@@ -5128,6 +5138,143 @@ class ProjectService:
             getScipionObjectIdCallback=self._getScipionObjectId,
             resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             splitPointerValueCallback=self._splitPointerValue,
+        )
+
+    def _prepareProtocolContextForPersistence(
+            self,
+            protocolContext,
+            protocol,
+    ):
+        persistenceContext = copy.deepcopy(
+            protocolContext
+        )
+
+        values = persistenceContext.get(
+            "values"
+        )
+
+        if (
+                not isinstance(values, dict)
+                or protocol is None
+        ):
+            return persistenceContext
+
+        for paramName in list(
+                values.keys()
+        ):
+            try:
+                param = protocol.getParam(
+                    paramName
+                )
+            except Exception:
+                param = None
+
+            if not (
+                    bool(
+                        getattr(
+                            param,
+                            "allowsPointers",
+                            False,
+                        )
+                    )
+                    and not isinstance(
+                param,
+                (
+                        PointerParam,
+                        MultiPointerParam,
+                        RelationParam,
+                ),
+            )
+            ):
+                continue
+
+            protVar = getattr(
+                protocol,
+                paramName,
+                None,
+            )
+
+            if protVar is None:
+                continue
+
+            valueResolved = False
+            scalarValue = None
+
+            try:
+                hasPointer = getattr(
+                    protVar,
+                    "hasPointer",
+                    None,
+                )
+
+                if (
+                        callable(hasPointer)
+                        and hasPointer()
+                ):
+                    pointer = protVar.getPointer()
+                    pointedValue = pointer.get()
+
+                    if pointedValue is not None:
+                        valueGetter = getattr(
+                            pointedValue,
+                            "get",
+                            None,
+                        )
+
+                        scalarValue = (
+                            valueGetter()
+                            if callable(valueGetter)
+                            else pointedValue
+                        )
+
+                        valueResolved = True
+
+            except Exception:
+                pass
+
+            if not valueResolved:
+                getObjValue = getattr(
+                    protVar,
+                    "getObjValue",
+                    None,
+                )
+
+                if callable(getObjValue):
+                    try:
+                        scalarValue = (
+                            getObjValue()
+                        )
+                        valueResolved = True
+                    except Exception:
+                        pass
+
+            if valueResolved:
+                values[
+                    paramName
+                ] = copy.deepcopy(
+                    scalarValue
+                )
+
+        return persistenceContext
+
+    def _buildProtocolPersistenceContext(
+            self,
+            projectId,
+            protocol,
+            mapper=None,
+    ):
+        return (
+            self
+            ._prepareProtocolContextForPersistence(
+                protocolContext=(
+                    self._buildProtocolContext(
+                        projectId,
+                        protocol,
+                        mapper,
+                    )
+                ),
+                protocol=protocol,
+            )
         )
 
     def getNewProtocolParams(
