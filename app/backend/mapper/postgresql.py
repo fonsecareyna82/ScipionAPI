@@ -1431,10 +1431,23 @@ class PostgresqlFlatMapper(Mapper):
                 WHERE ps."userId" = %s
                   AND p."ownerId" <> %s
             ) AS sub
-            ORDER BY "updatedAt" DESC
+            ORDER BY COALESCE("updatedAt", "createdAt") DESC NULLS LAST,
+                     id DESC
             """,
             (ownerId, ownerId, ownerId),
         )
+
+    def touchProject(self, projectId: int) -> bool:
+        cursor = self.db.execute(
+            """
+            UPDATE projects
+               SET "updatedAt" = NOW()
+             WHERE id = %s
+            """,
+            (int(projectId),),
+        )
+
+        return cursor.rowcount > 0
 
     def updateProject(
         self,

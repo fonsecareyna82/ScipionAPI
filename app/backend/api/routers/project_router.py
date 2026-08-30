@@ -664,7 +664,14 @@ def saveProtocol(
         protocolClassName = request.getProtocolClassName()
         params = request.getParams()
 
-        protocol, errors = service.saveProtocol(mapper, projectId, protocolId, protocolClassName, params)
+        protocol, errors = service.saveProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocolClassName=protocolClassName,
+            params=params,
+            touchProject=True,
+        )
         errors = errors or []
 
         workflow = []

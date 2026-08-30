@@ -1629,6 +1629,22 @@ class ProjectService:
 
         return protocolContext
 
+    @staticmethod
+    def _touchProjectModificationTime(
+            mapper,
+            projectId: int,
+    ) -> None:
+        touchProject = getattr(
+            mapper,
+            "touchProject",
+            None,
+        )
+
+        if callable(touchProject):
+            touchProject(
+                projectId
+            )
+
     def syncPostgresqlRuntimeProtocol(
             self,
             mapper: PostgresqlFlatMapper,
@@ -1736,6 +1752,24 @@ class ProjectService:
             protocolDbId = int(storedRow["id"]) if storedRow and storedRow.get("id") not in (None, "") else None
             syncResult = {"protocolId": str(scipionProtocolId), "protocolDbId": protocolDbId,
                           "protocolStatus": persistedStatus, "postgresqlRuntimeSync": False, "readOnly": True}
+
+            storedStatusText = str(
+                storedStatus or ""
+            ).strip().lower()
+
+            persistedStatusText = str(
+                persistedStatus or ""
+            ).strip().lower()
+
+            if (
+                    storedRow
+                    and persistedStatusText
+                    and persistedStatusText != storedStatusText
+            ):
+                self._touchProjectModificationTime(
+                    mapper=mapper,
+                    projectId=projectId,
+                )
 
             if returnProtocolContext:
                 syncResult["protocolContext"] = protocolContext
@@ -2824,6 +2858,11 @@ class ProjectService:
                 permission=permission or "full",
             )
 
+        self._touchProjectModificationTime(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
         return {
             "id": shareRow["id"],
             "projectId": shareRow["projectId"],
@@ -2880,6 +2919,11 @@ class ProjectService:
         deleted = mapper.revokeProjectShare(projectId=projectId, userId=targetUserId)
         if not deleted:
             raise HTTPException(status_code=404, detail="Share entry not found")
+
+        self._touchProjectModificationTime(
+            mapper=mapper,
+            projectId=projectId,
+        )
 
         return {"success": True}
 
@@ -4170,6 +4214,11 @@ class ProjectService:
                         cleanupFile,
                         exc_info=True,
                     )
+        self._touchProjectModificationTime(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
         # 8) Return a compact, useful payload for the frontend
         return {
             "status": 0,
@@ -5704,12 +5753,14 @@ class ProjectService:
                      projectId,
                      protocolId,
                      protocolClassName,
-                     params, setToSave=True,
+                     params,
+                     setToSave=True,
                      validateParams=True,
-                     allowMissingParentOutputs=False,):
+                     allowMissingParentOutputs=False,
+                     touchProject=False):
         runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
-        return runtimeProtocolSaveService.saveProtocol(
+        result = runtimeProtocolSaveService.saveProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -5724,6 +5775,14 @@ class ProjectService:
             validateParams=validateParams,
             allowMissingParentOutputs=allowMissingParentOutputs,
         )
+
+        if touchProject:
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def listProtocolStepsService(
             self,
@@ -5759,7 +5818,7 @@ class ProjectService:
             RuntimeProtocolStepStatusService()
         )
 
-        return (
+        result = (
             runtimeProtocolStepStatusService
             .updateProtocolStepStatus(
                 mapper=mapper,
@@ -5772,6 +5831,14 @@ class ProjectService:
                 ),
             )
         )
+
+        if result is not None:
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def _releasePostgresqlRuntimeLaunchInputs(
             self,
@@ -5937,7 +6004,7 @@ class ProjectService:
         def executeRuntimeLaunch(
                 executionId=None,
         ):
-            return runtimeProtocolLaunchService.launchProtocol(
+            result = runtimeProtocolLaunchService.launchProtocol(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
@@ -5958,7 +6025,18 @@ class ProjectService:
                 ),
                 currentUserId=currentUserId,
                 executionId=executionId,
-            )
+            ) or {}
+
+            if (
+                    executeMode != "stop"
+                    and not result.get("errors")
+            ):
+                self._touchProjectModificationTime(
+                    mapper=mapper,
+                    projectId=projectId,
+                )
+
+            return result
 
         try:
             if (
@@ -6318,7 +6396,7 @@ class ProjectService:
             RuntimeProtocolRenameService()
         )
 
-        return runtimeProtocolRenameService.renameProtocol(
+        result = runtimeProtocolRenameService.renameProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -6327,12 +6405,20 @@ class ProjectService:
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-        )
+        ) or {}
+
+        if not result.get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def duplicateProtocol(self, mapper, projectId, protocols):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
 
-        return runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
+        result = runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
@@ -6343,7 +6429,15 @@ class ProjectService:
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-        )
+        ) or {}
+
+        if not result.get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def _resolveProtocolWorkingDirectoryForDelete(
             self,
@@ -6615,13 +6709,21 @@ class ProjectService:
     def deleteProtocol(self, mapper, projectId, protocols: Any):
         runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
 
-        return runtimeProtocolDeleteService.deleteProtocols(
+        result = runtimeProtocolDeleteService.deleteProtocols(
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
             cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
-        )
+        ) or {}
+
+        if not result.get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def _clearPostgresqlChildInputRefObjectIdsForOutputProtocols(
             self,
@@ -7173,18 +7275,27 @@ class ProjectService:
                 None,
                 "",
         ):
-            return executeRestart(
+            result = executeRestart(
                 executionId
             )
 
-        return (
-            self
-            ._executeProtocolExecutionWithConcurrencyLimit(
-                mapper=mapper,
-                currentUserId=currentUserId,
-                executeCallback=executeRestart,
+        else:
+            result = (
+                self
+                ._executeProtocolExecutionWithConcurrencyLimit(
+                    mapper=mapper,
+                    currentUserId=currentUserId,
+                    executeCallback=executeRestart,
+                )
             )
-        )
+
+        if not (result or {}).get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def continueProtocolAll(
             self,
@@ -7249,18 +7360,27 @@ class ProjectService:
                 None,
                 "",
         ):
-            return executeContinue(
+            result = executeContinue(
                 executionId
             )
 
-        return (
-            self
-            ._executeProtocolExecutionWithConcurrencyLimit(
-                mapper=mapper,
-                currentUserId=currentUserId,
-                executeCallback=executeContinue,
+        else:
+            result = (
+                self
+                ._executeProtocolExecutionWithConcurrencyLimit(
+                    mapper=mapper,
+                    currentUserId=currentUserId,
+                    executeCallback=executeContinue,
+                )
             )
-        )
+
+        if not (result or {}).get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def resetProtocolFrom(
             self,
@@ -7271,7 +7391,7 @@ class ProjectService:
     ):
         runtimeProtocolResetService = RuntimeProtocolResetService()
 
-        return runtimeProtocolResetService.resetProtocolSubworkflow(
+        result = runtimeProtocolResetService.resetProtocolSubworkflow(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -7286,7 +7406,15 @@ class ProjectService:
             ),
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             includeRoot=includeRoot,
-        )
+        ) or {}
+
+        if not result.get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     def stopProtocol(
             self,
@@ -7296,14 +7424,22 @@ class ProjectService:
     ):
         runtimeProtocolStopService = RuntimeProtocolStopService()
 
-        return runtimeProtocolStopService.stopProtocols(
+        result = runtimeProtocolStopService.stopProtocols(
             mapper=mapper,
             projectId=projectId,
             protocolIds=protocolIds,
             currentProject=self.currentProject,
             getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
-        )
+        ) or {}
+
+        if not result.get("errors"):
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+        return result
 
     _UNSAVED_FS_PROTOCOL_ID = "fake-protocol-id-for-browser-paths-resolution"
 
@@ -9218,6 +9354,13 @@ class ProjectService:
                 protocols=importedProtocols,
                 pointerParamsByProtocolId=pointerParamsByProtocolId,
             )
+
+        if created:
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
 
         return {
             "status": 1 if errors else 0,
@@ -15677,7 +15820,17 @@ class ProjectService:
         }
 
         try:
-            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+            result = mapper.upsertProtocolTag(
+                projectId=projectId,
+                tag=tag,
+            )
+
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+            return result
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -15729,7 +15882,17 @@ class ProjectService:
         }
 
         try:
-            return mapper.upsertProtocolTag(projectId=projectId, tag=tag)
+            result = mapper.upsertProtocolTag(
+                projectId=projectId,
+                tag=tag,
+            )
+
+            self._touchProjectModificationTime(
+                mapper=mapper,
+                projectId=projectId,
+            )
+
+            return result
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -15750,7 +15913,20 @@ class ProjectService:
 
         # cascadeBehavior: protocol_tag_assignments(tagId) has ON DELETE CASCADE
         try:
-            return bool(mapper.deleteProtocolTag(projectId=projectId, tagId=tagId))
+            deleted = bool(
+                mapper.deleteProtocolTag(
+                    projectId=projectId,
+                    tagId=tagId,
+                )
+            )
+
+            if deleted:
+                self._touchProjectModificationTime(
+                    mapper=mapper,
+                    projectId=projectId,
+                )
+
+            return deleted
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -15816,19 +15992,32 @@ class ProjectService:
             )
 
         try:
-            setByDbId = getattr(mapper, "setProtocolTagIdsByProtocolDbId", None)
+            setByDbId = getattr(
+                mapper,
+                "setProtocolTagIdsByProtocolDbId",
+                None,
+            )
+
             if callable(setByDbId):
-                return setByDbId(
+                result = setByDbId(
                     projectId=projectId,
                     protocolDbId=protocolDbId,
                     tagIds=tagIds or [],
                 )
 
-            return mapper.setProtocolTagIds(
+            else:
+                result = mapper.setProtocolTagIds(
+                    projectId=projectId,
+                    protocolId=int(protocolId),
+                    tagIds=tagIds or [],
+                )
+
+            self._touchProjectModificationTime(
+                mapper=mapper,
                 projectId=projectId,
-                protocolId=int(protocolId),
-                tagIds=tagIds or [],
             )
+
+            return result
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -455,6 +455,7 @@ class FakeMapper:
         self.dbProtocolsByProtocolId = {}
         self.savedProtocolContexts = []
         self.deleteProtocolCalls = []
+        self.touchProjectCalls = []
 
     def getProtocolByProtocolId(self, protocolId, projectId):
         return self.dbProtocolsByProtocolId.get((protocolId, projectId))
@@ -469,6 +470,13 @@ class FakeMapper:
                 "protocolList": protocolList,
             }
         )
+
+    def touchProject(self, projectId):
+        self.touchProjectCalls.append(
+            int(projectId)
+        )
+
+        return True
 
 
 @pytest.fixture
@@ -523,6 +531,7 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(
     class FakeMapper:
         def __init__(self):
             self.savedContexts = []
+            self.touchProjectCalls = []
 
         def getProjectProtocolByProtocolId(self, projectId, protocolId):
             return {"id": 71, "status": "finished", "params": {}}
@@ -530,6 +539,13 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(
         def saveProtocol(self, protocolContext):
             self.savedContexts.append(protocolContext)
             return 71
+
+        def touchProject(self, projectId):
+            self.touchProjectCalls.append(
+                int(projectId)
+            )
+
+            return True
 
     class FakeStepPersistenceService:
         def buildProtocolStepsForPostgresql(self, protocol):
@@ -582,6 +598,108 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(
     assert result["protocolId"] == "12"
     assert result["protocolStatus"] == "finished"
     assert len(mapper.savedContexts) == 1
+    assert mapper.touchProjectCalls == []
+
+
+def test_SyncPostgresqlRuntimeProtocolTouchesProjectWhenStatusChanges(
+        projectServiceModule,
+        monkeypatch,
+):
+    class FakeProtocol:
+        def getObjId(self):
+            return 12
+
+        def getStatus(self):
+            return "finished"
+
+    class FakeMapper:
+        def __init__(self):
+            self.touchProjectCalls = []
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return {
+                "id": 71,
+                "status": "running",
+                "params": {},
+            }
+
+        def saveProtocol(self, protocolContext):
+            return 71
+
+        def touchProject(self, projectId):
+            self.touchProjectCalls.append(
+                int(projectId)
+            )
+
+            return True
+
+    class FakeStepPersistenceService:
+        def buildProtocolStepsForPostgresql(self, protocol):
+            return []
+
+    class FakeOutputPersistenceService:
+        def shouldSyncProtocolOutputs(self, protocol):
+            return False
+
+        def countRuntimeOutputKinds(self, outputs):
+            return {}
+
+    protocol = FakeProtocol()
+    mapper = FakeMapper()
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
+    service.currentProject = object()
+
+    service._resolveScipionProtocolId = (
+        lambda mapper, projectId, protocolId:
+        int(protocolId)
+    )
+
+    service._getScipionProtocolByRuntimeId = (
+        lambda protocolId:
+        protocol
+    )
+
+    service._buildProtocolContext = (
+        lambda projectId,
+               protocol,
+               mapper,
+               protocolStatusOverride=None: {
+            "projectId": projectId,
+            "values": {},
+            "info": {
+                "protocolId": protocol.getObjId(),
+                "status": protocolStatusOverride,
+            },
+        }
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStepPersistenceService",
+        FakeStepPersistenceService,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        FakeOutputPersistenceService,
+    )
+
+    result = service.syncPostgresqlRuntimeProtocol(
+        mapper=mapper,
+        projectId=3,
+        protocolId=12,
+        protocol=protocol,
+        registerOutputs=False,
+        syncRelations=False,
+    )
+
+    assert result["protocolStatus"] == "finished"
+    assert mapper.touchProjectCalls == [3]
 
 
 def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModule):
@@ -2195,6 +2313,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
     )
 
     assert result is expectedResult
+    assert mapper.touchProjectCalls == [1]
     assert len(launchCalls) == 1
 
     launchCall = launchCalls[0]
@@ -2579,6 +2698,7 @@ def test_RenameProtocolResolvesPostgresqlProtocolId(service, mapper):
     )
 
     assertSuccessEnvelope(result)
+    assert mapper.touchProjectCalls == [1]
     assert protocol.runName.get() == "Renamed protocol"
     assert protocol._objComment == "Updated comment"
     assert service.currentProject.storedProtocols == [protocol]
