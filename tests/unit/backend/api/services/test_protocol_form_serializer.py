@@ -25,6 +25,7 @@
 # ******************************************************************************
 from pyworkflow.object import (
     Boolean,
+    Float,
     Integer,
     Object,
     Pointer,
@@ -32,6 +33,8 @@ from pyworkflow.object import (
 
 from pyworkflow.protocol.params import (
     BooleanParam,
+    FloatParam,
+    Form,
     IntParam,
 )
 
@@ -148,3 +151,127 @@ def test_regular_boolean_param_preserves_false_value():
     assert paramValue is False
 
 
+def test_group_preserves_nested_lines():
+    class FakeProtocol:
+        def hasAttribute(self, name):
+            return hasattr(self, name)
+
+    protocol = FakeProtocol()
+
+    form = Form(protocol)
+    form.addSection("Input")
+
+    group = form.addGroup("Alignment")
+
+    line = group.addLine(
+        "Frames to ALIGN and SUM",
+        help="Frames range to align.",
+    )
+
+    line.addParam(
+        "alignFrame0",
+        IntParam,
+        default=1,
+        label="from",
+    )
+
+    line.addParam(
+        "alignFrameN",
+        IntParam,
+        default=0,
+        label="to",
+    )
+
+    group.addParam(
+        "binFactor",
+        FloatParam,
+        default=1.0,
+        label="Binning factor",
+    )
+
+    cropLine = group.addLine(
+        "Crop offsets (px)",
+        expertLevel=1,
+    )
+
+    cropLine.addParam(
+        "cropOffsetX",
+        IntParam,
+        default=0,
+        label="X",
+        expertLevel=1,
+    )
+
+    cropLine.addParam(
+        "cropOffsetY",
+        IntParam,
+        default=0,
+        label="Y",
+        expertLevel=1,
+    )
+
+    protocol._definition = form
+    protocol.alignFrame0 = Integer(1)
+    protocol.alignFrameN = Integer(64)
+    protocol.binFactor = Float(1.0)
+    protocol.cropOffsetX = Integer(0)
+    protocol.cropOffsetY = Integer(0)
+
+    sections, values = (
+        ProtocolFormSerializer()
+        .serializeProtocolSections(
+            protocol=protocol,
+            wizards={},
+            mapper=None,
+            projectId=1,
+            headerParams=[],
+            runName="",
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    inputSection = next(
+        section
+        for section in sections
+        if section["label"] == "Input"
+    )
+
+    alignment = inputSection["params"][0]
+
+    assert alignment["paramClass"] == "Group"
+    assert alignment["label"] == "Alignment"
+
+    framesLine = alignment["params"][0]
+
+    assert framesLine["paramClass"] == "Line"
+    assert framesLine["label"] == "Frames to ALIGN and SUM"
+    assert framesLine["help"] == "Frames range to align."
+    assert [
+        param["name"]
+        for param in framesLine["params"]
+    ] == [
+        "alignFrame0",
+        "alignFrameN",
+    ]
+
+    assert alignment["params"][1]["name"] == "binFactor"
+
+    cropLine = alignment["params"][2]
+
+    assert cropLine["paramClass"] == "Line"
+    assert cropLine["label"] == "Crop offsets (px)"
+    assert cropLine["expertLevel"] == 1
+    assert [
+        param["name"]
+        for param in cropLine["params"]
+    ] == [
+        "cropOffsetX",
+        "cropOffsetY",
+    ]
+
+    assert values["alignFrame0"] == 1
+    assert values["alignFrameN"] == 64
+    assert values["cropOffsetX"] == 0
+    assert values["cropOffsetY"] == 0

@@ -734,27 +734,40 @@ class ProtocolFormSerializer:
                                     )
 
                                     if isinstance(paramGroup, Line):
-                                        for paramLineName, paramLine in paramGroup.iterParams():
-                                            protVar = getattr(
-                                                protocol,
-                                                paramLineName,
-                                                None,
-                                            )
+                                        line, _ = serializeFormParam(
+                                            paramGroup,
+                                            paramGroupName,
+                                            protVar,
+                                        )
 
-                                            if protVar is not None:
-                                                paramChild, paramValue = serializeFormParam(
-                                                    paramLine,
+                                        if line is not None:
+                                            line["params"] = []
+
+                                            for paramLineName, paramLine in paramGroup.iterParams():
+                                                paramLineVar = getattr(
+                                                    protocol,
                                                     paramLineName,
-                                                    protVar,
+                                                    None,
                                                 )
 
-                                                if paramChild:
-                                                    group["params"].append(
-                                                        paramChild
+                                                if paramLineVar is not None:
+                                                    paramChild, paramValue = serializeFormParam(
+                                                        paramLine,
+                                                        paramLineName,
+                                                        paramLineVar,
                                                     )
-                                                    paramsValue[paramLineName] = (
-                                                        paramValue
-                                                    )
+
+                                                    if paramChild:
+                                                        line["params"].append(
+                                                            paramChild
+                                                        )
+                                                        paramsValue[paramLineName] = (
+                                                            paramValue
+                                                        )
+
+                                            group["params"].append(
+                                                line
+                                            )
 
                                     elif protVar is not None:
                                         paramChild, paramValue = serializeFormParam(
