@@ -124,6 +124,7 @@ class ProtocolContextService:
             getScipionObjectIdCallback: Callable,
             resolvePostgresqlProtocolDbIdCallback: Callable,
             splitPointerValueCallback: Callable,
+            protocolStatusOverride=None,
     ) -> Dict[str, Any]:
         """
         Build the complete web context for the selected protocol.
@@ -167,7 +168,14 @@ class ProtocolContextService:
         else:
             runName = protocol.runName.get()
 
-        protocolStatus = protocol.getStatus()
+        protocolStatus = (
+            protocolStatusOverride
+            if protocolStatusOverride not in (
+                None,
+                "",
+            )
+            else protocol.getStatus()
+        )
         protocolClassName = protocol.getClassName()
         hosts = project.getHostNames()
 

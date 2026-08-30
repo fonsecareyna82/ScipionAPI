@@ -169,6 +169,7 @@ def patchRuntimePointerTypes(monkeypatch):
         FakePointerList,
     )
 
+
 def patchPostgresqlSaveRuntime(
         monkeypatch,
         service,
@@ -544,7 +545,26 @@ def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(projectServiceModul
     service.currentProject = object()
     service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
     service._getScipionProtocolByRuntimeId = lambda protocolId: protocol
-    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId, "values": {}, "info": {"status": protocol.getStatus()}}
+    service._buildProtocolContext = (
+        lambda projectId,
+               protocol,
+               mapper,
+               protocolStatusOverride=None: {
+            "projectId": projectId,
+            "values": {},
+            "info": {
+                "protocolId": protocol.getObjId(),
+                "status": (
+                    protocolStatusOverride
+                    if protocolStatusOverride not in (
+                        None,
+                        "",
+                    )
+                    else protocol.getStatus()
+                ),
+            },
+        }
+    )
 
     monkeypatch.setattr(projectServiceModule.LegacyRuntimeProtocolLoaderService, "loadProtocolFromRuntimeDb", failLegacyLoad)
     monkeypatch.setattr(projectServiceModule, "RuntimeProtocolStepPersistenceService", FakeStepPersistenceService)
@@ -3910,7 +3930,10 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
     ]
 
 
-def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServiceModule, monkeypatch):
+def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(
+        projectServiceModule,
+        monkeypatch,
+):
     class FakeProtocol:
         def getObjId(self):
             return 12
@@ -3919,46 +3942,166 @@ def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(projectServi
             return "running"
 
     class FakeMapper:
-        def getProjectProtocolByProtocolId(self, projectId, protocolId):
-            return {"id": 71, "projectId": projectId, "protocolId": str(protocolId), "status": "saved", "params": {}}
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "id": 71,
+                "projectId": projectId,
+                "protocolId": str(protocolId),
+                "status": "finished",
+                "params": {},
+            }
 
         def saveProtocol(self, protocolContext):
-            raise AssertionError("Read-only protocol context must not persist protocol state")
+            raise AssertionError(
+                "Read-only protocol context must not persist protocol state"
+            )
 
         def replaceProtocolSteps(self, **kwargs):
-            raise AssertionError("Read-only protocol context must not persist protocol steps")
+            raise AssertionError(
+                "Read-only protocol context must not persist protocol steps"
+            )
 
     class FakeStepPersistenceService:
-        def buildProtocolStepsForPostgresql(self, protocol):
+        def buildProtocolStepsForPostgresql(
+                self,
+                protocol,
+        ):
             return []
 
     class FakeOutputPersistenceService:
-        def shouldSyncProtocolOutputs(self, protocol):
+        def shouldSyncProtocolOutputs(
+                self,
+                protocol,
+        ):
             return False
 
-        def countRuntimeOutputKinds(self, outputs):
+        def countRuntimeOutputKinds(
+                self,
+                outputs,
+        ):
             return {}
+
+    def buildProtocolContext(
+            projectId,
+            protocol,
+            mapper,
+            protocolStatusOverride=None,
+    ):
+        status = (
+            protocolStatusOverride
+            if protocolStatusOverride not in (
+                None,
+                "",
+            )
+            else protocol.getStatus()
+        )
+
+        return {
+            "projectId": projectId,
+            "values": {},
+            "info": {
+                "protocolId": protocol.getObjId(),
+                "status": status,
+                "color": (
+                    "finished-color"
+                    if status == "finished"
+                    else "running-color"
+                ),
+                "executeMode": (
+                    {
+                        "restart": {
+                            "label": "Restart",
+                        },
+                    }
+                    if status == "finished"
+                    else {
+                        "stop": {
+                            "label": "Stop",
+                        },
+                    }
+                ),
+            },
+        }
 
     protocol = FakeProtocol()
     mapper = FakeMapper()
-    service = object.__new__(projectServiceModule.ProjectService)
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
     service.currentProject = object()
-    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
-    service._getScipionProtocolByRuntimeId = lambda protocolId: protocol
-    service._buildProtocolContext = lambda projectId, protocol, mapper: {"projectId": projectId,
-                                                                         "values": {},
-                                                                         "info": {"protocolId": protocol.getObjId(),
-                                                                                  "status": protocol.getStatus()}}
 
-    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolStepPersistenceService", FakeStepPersistenceService)
-    monkeypatch.setattr(projectServiceModule, "RuntimeProtocolOutputPersistenceService", FakeOutputPersistenceService)
-    monkeypatch.setattr(projectServiceModule.logger, "isEnabledFor", lambda level: False)
+    service._resolveScipionProtocolId = (
+        lambda mapper, projectId, protocolId:
+        int(protocolId)
+    )
 
-    result = service.syncPostgresqlRuntimeProtocol(mapper=mapper, projectId=3, protocolId=12, protocol=protocol, registerOutputs=False, syncRelations=False, returnProtocolContext=True, persistRuntimeState=False)
+    service._getScipionProtocolByRuntimeId = (
+        lambda protocolId:
+        protocol
+    )
+
+    service._buildProtocolContext = (
+        buildProtocolContext
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStepPersistenceService",
+        FakeStepPersistenceService,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        FakeOutputPersistenceService,
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule.logger,
+        "isEnabledFor",
+        lambda level: False,
+    )
+
+    result = (
+        service
+        .syncPostgresqlRuntimeProtocol(
+            mapper=mapper,
+            projectId=3,
+            protocolId=12,
+            protocol=protocol,
+            registerOutputs=False,
+            syncRelations=False,
+            returnProtocolContext=True,
+            persistRuntimeState=False,
+        )
+    )
 
     assert result["readOnly"] is True
-    assert result["protocolStatus"] == "saved"
-    assert result["protocolContext"]["info"]["status"] == "saved"
+    assert result["protocolStatus"] == "finished"
+
+    info = (
+        result[
+            "protocolContext"
+        ][
+            "info"
+        ]
+    )
+
+    assert info["status"] == "finished"
+    assert info["color"] == "finished-color"
+    assert list(
+        info["executeMode"]
+    ) == [
+        "restart"
+    ]
+
+    assert protocol.getStatus() == "running"
 
 
 def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(

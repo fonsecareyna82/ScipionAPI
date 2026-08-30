@@ -1662,18 +1662,57 @@ class ProjectService:
             raise RuntimeError(
                 "Cannot synchronize PostgreSQL runtime protocol %s: protocol was not found in PostgreSQL" % scipionProtocolId)
 
-        protocolContext = self._buildProtocolContext(
-            projectId,
-            protocol,
-            mapper,
-        )
-
         storedRow = (
             mapper
             .getProjectProtocolByProtocolId(
                 projectId=projectId,
                 protocolId=scipionProtocolId,
             )
+        )
+
+        storedStatus = (
+            storedRow.get("status")
+            if storedRow
+            else None
+        )
+
+        runtimeStatus = self._safeCall(
+            protocol,
+            "getStatus",
+            None,
+        )
+
+        if not persistRuntimeState:
+            persistedStatus = (
+                storedStatus
+                if storedStatus not in (
+                    None,
+                    "",
+                )
+                else runtimeStatus
+            )
+
+        elif authoritativeProtocolState:
+            persistedStatus = runtimeStatus
+
+        else:
+            runtimeProtocolStatusSyncService = (
+                RuntimeProtocolStatusSyncService()
+            )
+
+            persistedStatus = (
+                runtimeProtocolStatusSyncService
+                .mergeRuntimeProtocolStatus(
+                    storedStatus=storedStatus,
+                    runtimeStatus=runtimeStatus,
+                )
+            )
+
+        protocolContext = self._buildProtocolContext(
+            projectId,
+            protocol,
+            mapper,
+            protocolStatusOverride=persistedStatus,
         )
 
         if not authoritativeProtocolState:
@@ -1686,29 +1725,10 @@ class ProjectService:
                 )
             )
 
-        storedStatus = (
-            storedRow.get("status")
-            if storedRow
-            else None
-        )
-
         protocolInfo = protocolContext.setdefault(
             "info",
             {},
         )
-
-        runtimeStatus = protocolInfo.get(
-            "status"
-        )
-
-        if not persistRuntimeState:
-            persistedStatus = storedStatus if storedStatus not in (None, "") else runtimeStatus
-        elif authoritativeProtocolState:
-            persistedStatus = runtimeStatus
-        else:
-            runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
-            persistedStatus = runtimeProtocolStatusSyncService.mergeRuntimeProtocolStatus(storedStatus=storedStatus,
-                                                                                          runtimeStatus=runtimeStatus)
 
         protocolInfo["status"] = persistedStatus
 
@@ -5122,6 +5142,7 @@ class ProjectService:
             projectId,
             protocol,
             mapper=None,
+            protocolStatusOverride=None,
     ) -> dict:
         protocolContextService = ProtocolContextService()
 
@@ -5138,6 +5159,7 @@ class ProjectService:
             getScipionObjectIdCallback=self._getScipionObjectId,
             resolvePostgresqlProtocolDbIdCallback=self._resolvePostgresqlProtocolDbId,
             splitPointerValueCallback=self._splitPointerValue,
+            protocolStatusOverride=protocolStatusOverride,
         )
 
     def _prepareProtocolContextForPersistence(
