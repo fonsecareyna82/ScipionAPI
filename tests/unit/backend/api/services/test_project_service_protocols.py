@@ -509,8 +509,14 @@ def assertSuccessEnvelope(result):
     assert result["errors"] == []
 
 
-def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(projectServiceModule, monkeypatch):
+def test_SyncPostgresqlRuntimeProtocolDoesNotReadLegacyRunDb(
+        projectServiceModule,
+        monkeypatch,
+):
     class FakeProtocol:
+        def getObjId(self):
+            return 12
+
         def getStatus(self):
             return "finished"
 

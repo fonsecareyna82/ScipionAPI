@@ -108,6 +108,7 @@ class RuntimeProtocolSaveService:
             resolveParentOutputCallback: Callable,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback: Callable,
             validateParams: bool = True,
+            allowMissingParentOutputs: bool = False,
     ) -> Tuple[Any, List[str]]:
         params = params or {}
         errorList: List[str] = []
@@ -148,6 +149,7 @@ class RuntimeProtocolSaveService:
                 params=params,
                 resolvePointerParentProtocolCallback=resolvePointerParentProtocolCallback,
                 resolveParentOutputCallback=resolveParentOutputCallback,
+                allowMissingParentOutputs=allowMissingParentOutputs,
             )
         )
 
@@ -386,6 +388,7 @@ class RuntimeProtocolSaveService:
             params: Dict[str, Any],
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
+            allowMissingParentOutputs: bool = False,
     ) -> List[str]:
         errorList: List[str] = []
         pointerResolver = RuntimePointerResolver()
@@ -443,6 +446,7 @@ class RuntimeProtocolSaveService:
                         pointerResolver=pointerResolver,
                         resolvePointerParentProtocolCallback=resolvePointerParentProtocolCallback,
                         resolveParentOutputCallback=resolveParentOutputCallback,
+                        allowMissingParentOutputs=allowMissingParentOutputs,
                     )
                 )
 
@@ -462,6 +466,7 @@ class RuntimeProtocolSaveService:
                         resolveParentOutputCallback=(
                             resolveParentOutputCallback
                         ),
+                        allowMissingParentOutputs=allowMissingParentOutputs,
                     )
                 )
 
@@ -479,6 +484,7 @@ class RuntimeProtocolSaveService:
             pointerResolver: RuntimePointerResolver,
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
+            allowMissingParentOutputs: bool = False,
     ) -> List[str]:
         errorList: List[str] = []
 
@@ -521,6 +527,7 @@ class RuntimeProtocolSaveService:
                 resolveParentOutputCallback=(
                     resolveParentOutputCallback
                 ),
+                allowMissingParentOutput=allowMissingParentOutputs,
             )
         )
 
@@ -586,6 +593,21 @@ class RuntimeProtocolSaveService:
             parentProtocol,
             extended=outputName,
         )
+
+        if resolvedPointerTarget.get(
+                "missingParentOutput"
+        ):
+            setPointer(
+                pointer
+            )
+
+            logger.info(
+                "[INFO] Deferred scalar pointer %s -> %s",
+                inputName,
+                pointerValues[0],
+            )
+
+            return errorList
 
         pointedValue = None
 
@@ -670,6 +692,7 @@ class RuntimeProtocolSaveService:
             pointerResolver: RuntimePointerResolver,
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
+            allowMissingParentOutputs: bool = False,
     ) -> List[str]:
         errorList: List[str] = []
         newInputs = PointerList()
@@ -703,6 +726,7 @@ class RuntimeProtocolSaveService:
                 paramLabel=param.label.get(),
                 getParentProtocolCallback=resolvePointerParentProtocolCallback,
                 resolveParentOutputCallback=resolveParentOutputCallback,
+                allowMissingParentOutput=allowMissingParentOutputs,
             )
 
             if not resolvedPointerTarget.get("ok"):
@@ -764,6 +788,7 @@ class RuntimeProtocolSaveService:
             pointerResolver: RuntimePointerResolver,
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
+            allowMissingParentOutputs: bool = False,
     ) -> List[str]:
         errorList: List[str] = []
 
@@ -802,6 +827,7 @@ class RuntimeProtocolSaveService:
             paramLabel=param.label.get(),
             getParentProtocolCallback=resolvePointerParentProtocolCallback,
             resolveParentOutputCallback=resolveParentOutputCallback,
+            allowMissingParentOutput=allowMissingParentOutputs,
         )
 
         if not resolvedPointerTarget.get("ok"):

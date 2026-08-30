@@ -5699,7 +5699,14 @@ class ProjectService:
             "outputInfo": outputInfo,
         }
 
-    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params, setToSave=True, validateParams=True):
+    def saveProtocol(self,
+                     mapper,
+                     projectId,
+                     protocolId,
+                     protocolClassName,
+                     params, setToSave=True,
+                     validateParams=True,
+                     allowMissingParentOutputs=False,):
         runtimeProtocolSaveService = RuntimeProtocolSaveService()
 
         return runtimeProtocolSaveService.saveProtocol(
@@ -5715,6 +5722,7 @@ class ProjectService:
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=self.syncPostgresqlRuntimeProtocolInputsAndDependencies,
             validateParams=validateParams,
+            allowMissingParentOutputs=allowMissingParentOutputs,
         )
 
     def listProtocolStepsService(

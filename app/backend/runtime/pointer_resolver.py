@@ -620,6 +620,7 @@ class RuntimePointerResolver:
             paramLabel: str,
             getParentProtocolCallback,
             resolveParentOutputCallback,
+            allowMissingParentOutput: bool = False,
     ) -> Dict[str, Any]:
         """
         Resolve one normalized pointer value into its parent protocol and output.
@@ -698,6 +699,20 @@ class RuntimePointerResolver:
             )
 
             if not resolvedOutput.get("exists"):
+                if allowMissingParentOutput:
+                    return {
+                        "ok": True,
+                        "parentId": parentId,
+                        "outputName": outputName,
+                        "parentScipionProtocolId": parentScipionProtocolId,
+                        "parentProtocol": parentProtocol,
+                        "parentProtocolDbId": int(
+                            parentProtocolDbId
+                        ),
+                        "resolvedOutput": resolvedOutput,
+                        "missingParentOutput": True,
+                    }
+
                 return {
                     "ok": False,
                     "error": "**%s** parent protocol %s does not have output %s in PostgreSQL or runtime."

@@ -86,6 +86,10 @@ class RuntimeProtocolLaunchService:
             executeMode,
         )
 
+        isSchedule = (
+                executeMode == "schedule"
+        )
+
         params = params or {}
 
         protocolIdToken = (
@@ -146,6 +150,8 @@ class RuntimeProtocolLaunchService:
             protocolClassName,
             params,
             setToSave=False,
+            validateParams=not isSchedule,
+            allowMissingParentOutputs=isSchedule,
         )
 
         if errors:
@@ -160,7 +166,7 @@ class RuntimeProtocolLaunchService:
             postgresqlLaunchPointerReport = preparePostgresqlRuntimePointerOutputsForLaunchCallback(mapper=mapper,
                                                                                                     projectId=projectId,
                                                                                                     protocol=protocol,
-                                                                                                    allowMissingParentOutputs=False)
+                                                                                                    allowMissingParentOutputs=isSchedule)
 
             if postgresqlLaunchPointerReport.get("errors"):
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -180,7 +186,11 @@ class RuntimeProtocolLaunchService:
             postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
             postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
 
-            self._validateProtocol(protocol=protocol, errors=errors)
+            if not isSchedule:
+                self._validateProtocol(
+                    protocol=protocol,
+                    errors=errors,
+                )
 
             return self._executeProtocol(
                 mapper=mapper,
