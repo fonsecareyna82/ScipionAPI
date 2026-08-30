@@ -224,6 +224,20 @@ Cleanup must never remove another worker's directory. A cleanup failure must be 
 
 Abrupt process termination such as `SIGKILL`, host failure, or power loss cannot execute Python finalizers and may leave stale worker directories. Those stale directories remain disposable and may be removed later by operating-system temporary-directory cleanup or a dedicated stale-worker scavenger.
 
+## Project activity timestamp semantics
+
+`projects.updatedAt` represents the latest persistent activity in a project. It is not a project access or view timestamp.
+
+Project listing must use the effective modification time, falling back to `createdAt` only for historical rows where `updatedAt` is still `NULL`.
+Read-only operations must never update project activity. In particular, opening a project, loading protocols, polling runtime state, generating summaries, refreshing forms, previews, viewers, and PostgreSQL runtime synchronization that does not change persisted state must not touch `projects.updatedAt`.
+Successful persistent mutations must update project activity. This includes protocol saves, launches, schedules, stops, restarts, continues, resets, renames, duplicates, deletes, workflow imports, workflow applications, tag changes, share changes, and other persisted project modifications.
+Runtime protocol synchronization may update project activity only when the persisted protocol status actually changes. Re-synchronizing the same status must not update the project timestamp.
+Internal protocol preparation must not be treated as independent project activity. In particular, `ProjectService.saveProtocol(..., setToSave=False)` is used by launch and duplication flows and must not touch the project by itself. The enclosing successful mutation owns the project activity update.
+Required regression coverage must preserve both directions of this contract:
+
+- persistent mutation -> project activity is updated;
+- read-only operation or unchanged runtime synchronization -> project activity is not updated.
+
 ## Required regression tests
 
 Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName()`, streaming, or output restoration must preserve tests for all of the following:
