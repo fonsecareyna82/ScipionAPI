@@ -34,6 +34,7 @@ from pyworkflow.object import (
 
 from pyworkflow.protocol.params import (
     BooleanParam,
+    EnumParam,
     FileParam,
     FloatParam,
     FolderParam,
@@ -318,5 +319,64 @@ def test_path_param_subclasses_use_path_param_web_semantics():
 
         assert paramDict["paramClass"] == "PathParam"
         assert paramValue == "/tmp/input.mrc"
+
+
+def test_condition_context_preserves_protocol_constants():
+    class FakeProtocol(Object):
+        IMPORT_FROM_FILES = 0
+
+    protocol = FakeProtocol()
+
+    form = Form(protocol)
+    form.addSection("Import")
+
+    form.addParam(
+        "importFrom",
+        EnumParam,
+        choices=[
+            "files",
+            "emdb",
+        ],
+        default=0,
+    )
+
+    form.addParam(
+        "emdbId",
+        IntParam,
+        condition=(
+            "importFrom "
+            "!= IMPORT_FROM_FILES"
+        ),
+    )
+
+    protocol._definition = form
+
+    param = form.getParam(
+        "emdbId"
+    )
+
+    paramDict, _ = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="emdbId",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=Integer(1),
+            mapper=None,
+            projectId=None,
+            protocol=protocol,
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    assert paramDict[
+        "conditionContext"
+    ] == {
+        "IMPORT_FROM_FILES": 0,
+    }
 
 

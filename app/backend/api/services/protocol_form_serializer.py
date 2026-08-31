@@ -186,6 +186,47 @@ class ProtocolFormSerializer:
             "value": value,
         }
 
+    @staticmethod
+    def _buildConditionContext(
+            param,
+            protocol,
+    ) -> Dict[str, Any]:
+        if protocol is None:
+            return {}
+
+        definition = getattr(
+            protocol,
+            "_definition",
+            None,
+        )
+
+        context = {}
+
+        for token in getattr(
+                param,
+                "_conditionParams",
+                [],
+        ) or []:
+            if token in (
+                    "True",
+                    "False",
+                    "None",
+            ):
+                continue
+
+            if (
+                    definition is not None
+                    and definition.hasParam(token)
+            ):
+                continue
+
+            if protocol.hasAttribute(token):
+                context[token] = serializeToJson(
+                    protocol.getAttributeValue(token)
+                )
+
+        return context
+
     def serializeParam(
             self,
             *,
@@ -250,6 +291,19 @@ class ProtocolFormSerializer:
                 paramClass = "Label"
 
             paramDict["paramClass"] = paramClass
+
+            conditionContext = (
+                self._buildConditionContext(
+                    param,
+                    protocol,
+                )
+            )
+
+            if conditionContext:
+                paramDict["conditionContext"] = (
+                    conditionContext
+                )
+
 
             allowsScalarPointers = (
                 self._allowsScalarPointers(
