@@ -46,6 +46,7 @@ from pyworkflow.protocol import (
     STATUS_FINISHED,
     STATUS_INTERACTIVE,
     STATUS_LAUNCHED,
+    STATUS_RUNNING,
     STATUS_SAVED,
     STATUS_SCHEDULED,
 )
@@ -3153,6 +3154,225 @@ class RuntimePostgresqlProtocolWorker:
             )
         )
 
+    def getProtocolExecutionUserId(
+            self,
+    ):
+        row = (
+            self.mapper
+            .getProjectProtocolByProtocolId(
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+            )
+            or {}
+        )
+
+        statusService = (
+            RuntimeProtocolStatusSyncService()
+        )
+
+        params = statusService.normalizeParams(
+            row.get("params")
+        )
+
+        runtimeMetadata = params.get(
+            statusService.RUNTIME_METADATA_KEY
+        ) or {}
+
+        if not isinstance(
+                runtimeMetadata,
+                dict,
+        ):
+            return None
+
+        userId = runtimeMetadata.get(
+            "launchedByUserId"
+        )
+
+        try:
+            return int(userId)
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+            return None
+
+    def getMaxConcurrentRunsPerUser(
+            self,
+    ) -> int:
+        instanceSettings = (
+            SettingsService()
+            .getRuntimeInstanceSettings(
+                mapper=self.mapper,
+                currentUser=None,
+            )
+        )
+
+        try:
+            maxConcurrentRuns = int(
+                instanceSettings.get(
+                    "maxConcurrentRunsPerUser"
+                )
+                or 4
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+            maxConcurrentRuns = 4
+
+        return max(
+            1,
+            min(
+                64,
+                maxConcurrentRuns,
+            ),
+        )
+
+    def waitForUserExecutionSlot(
+            self,
+    ) -> bool:
+        userId = (
+            self.getProtocolExecutionUserId()
+        )
+
+        if userId is None:
+            return True
+
+        pollSeconds = max(
+            0.1,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_EXECUTION_SLOT_POLL_SECONDS",
+                    "5",
+                )
+                or 5
+            ),
+        )
+
+        heartbeatSeconds = max(
+            pollSeconds,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_EXECUTION_SLOT_HEARTBEAT_SECONDS",
+                    "60",
+                )
+                or 60
+            ),
+        )
+
+        lastWaitLogAt = None
+
+        while True:
+            with self.mapper.protocolExecutionUserLock(
+                    userId
+            ):
+                storedStatus = (
+                    self.getStoredProtocolStatus()
+                )
+
+                if storedStatus == "running":
+                    self.protocol.setStatus(
+                        STATUS_RUNNING
+                    )
+
+                    return True
+
+                if storedStatus in {
+                    "finished",
+                    "failed",
+                    "aborted",
+                    "interactive",
+                }:
+                    logger.info(
+                        "Protocol execution slot is no longer "
+                        "required because the protocol became "
+                        "terminal. projectId=%s protocolId=%s "
+                        "status=%s",
+                        self.projectId,
+                        self.protocolId,
+                        storedStatus,
+                    )
+
+                    return False
+
+                if storedStatus not in {
+                    "scheduled",
+                    "launched",
+                }:
+                    raise RuntimeError(
+                        "Cannot acquire protocol execution slot "
+                        "from status '%s'. "
+                        "projectId=%s protocolId=%s"
+                        % (
+                            storedStatus,
+                            self.projectId,
+                            self.protocolId,
+                        )
+                    )
+
+                maxConcurrentRuns = (
+                    self.getMaxConcurrentRunsPerUser()
+                )
+
+                runningProtocols = (
+                    self.mapper
+                    .countRunningProtocolsForUser(
+                        userId
+                    )
+                )
+
+                if (
+                        runningProtocols
+                        < maxConcurrentRuns
+                ):
+                    self.protocol.setStatus(
+                        STATUS_RUNNING
+                    )
+
+                    self.storeProtocol()
+
+                    logger.info(
+                        "Acquired protocol execution slot. "
+                        "userId=%s running=%s limit=%s "
+                        "projectId=%s protocolId=%s",
+                        userId,
+                        runningProtocols + 1,
+                        maxConcurrentRuns,
+                        self.projectId,
+                        self.protocolId,
+                    )
+
+                    return True
+
+            now = time.monotonic()
+
+            if (
+                    lastWaitLogAt is None
+                    or (
+                        now
+                        - lastWaitLogAt
+                        >= heartbeatSeconds
+                    )
+            ):
+                logger.info(
+                    "Waiting for protocol execution slot. "
+                    "userId=%s running=%s limit=%s "
+                    "projectId=%s protocolId=%s",
+                    userId,
+                    runningProtocols,
+                    maxConcurrentRuns,
+                    self.projectId,
+                    self.protocolId,
+                )
+
+                lastWaitLogAt = now
+
+            time.sleep(
+                pollSeconds
+            )
+
     def getStoredProtocolStatus(self) -> str:
         row = self.mapper.getProjectProtocolByProtocolId(
             projectId=self.projectId,
@@ -3454,6 +3674,9 @@ class RuntimePostgresqlProtocolWorker:
         self.storeProtocol()
 
         self.markProtocolExecutionLaunched()
+
+        if not self.waitForUserExecutionSlot():
+            return 0
 
         self.protocol.setStepsExecutor(
             self.buildStepsExecutor()

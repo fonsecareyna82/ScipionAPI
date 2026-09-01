@@ -1164,6 +1164,32 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         failGlobalSync,
     )
 
+    executionUserCalls = []
+
+    class RuntimeProtocolStatusSyncServiceStub:
+        def persistProtocolExecutionUser(
+                self,
+                **kwargs,
+        ):
+            executionUserCalls.append(
+                kwargs
+            )
+
+            service.currentProject.events.append(
+                (
+                    "execution-user",
+                    kwargs,
+                )
+            )
+
+            return kwargs
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStatusSyncService",
+        RuntimeProtocolStatusSyncServiceStub,
+    )
+
     result = service.runMetadataTableActionService(
         projectId=1,
         protocolId=10,
@@ -1225,10 +1251,47 @@ def test_RunMetadataTableActionServiceLaunchesSubsetProtocol(
         "store",
         "commit",
         "input-sync",
+        "execution-user",
         "launch",
         "protocol-sync",
         "input-sync",
     ]
+    assert len(
+        executionUserCalls
+    ) == 1
+
+    executionUserCall = (
+        executionUserCalls[0]
+    )
+
+    assert executionUserCall[
+        "mapper"
+    ] is mapper
+
+    assert executionUserCall[
+        "projectId"
+    ] == 1
+
+    assert executionUserCall[
+        "protocolId"
+    ] == 900
+
+    assert executionUserCall[
+        "userId"
+    ] == 1
+
+    assert isinstance(
+        executionUserCall[
+            "executionId"
+        ],
+        str,
+    )
+
+    assert len(
+        executionUserCall[
+            "executionId"
+        ]
+    ) == 32
     assert service.currentProject.mapper.storeCalls == [launchedProtocol]
     assert service.currentProject.mapper.commitCalls == 1
     assert calls == [
@@ -1405,6 +1468,19 @@ def test_RunMetadataTableActionServiceBuildsChildTableSelectionArgument(
                             "parentProtocolIds": [10],
                         },
                     )
+
+    class RuntimeProtocolStatusSyncServiceStub:
+        def persistProtocolExecutionUser(
+                self,
+                **kwargs,
+        ):
+            return kwargs
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStatusSyncService",
+        RuntimeProtocolStatusSyncServiceStub,
+    )
 
     result = service.runMetadataTableActionService(
         projectId=1,

@@ -13,7 +13,7 @@ from pyworkflow.mapper.mapper import Mapper  # Base class from Scipion
 
 POSTGRESQL_PROTOCOL_ID_START = 2
 POSTGRESQL_RUNTIME_OBJECT_ID_START = 1_000_000
-PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE = 21335
+PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE = 21335
 
 PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
     CASE
@@ -2456,33 +2456,15 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
 
-    def countActiveProtocolExecutionsForUser(
+    def countRunningProtocolsForUser(
             self,
             userId: int,
     ) -> int:
         row = self.db.fetchOne(
             """
-            SELECT COUNT(
-                   DISTINCT COALESCE(
-                       NULLIF(
-                           params::jsonb
-                               -> '_scipionWebRuntime'
-                               ->> 'executionId',
-                           ''
-                       ),
-                       CONCAT(
-                           "projectId",
-                           ':',
-                           "protocolId"
-                       )
-                   )
-               )::integer AS count
+            SELECT COUNT(*)::integer AS count
               FROM protocols
-             WHERE LOWER(COALESCE(status, '')) IN (
-                 'scheduled',
-                 'launched',
-                 'running'
-             )
+             WHERE LOWER(COALESCE(status, '')) = 'running'
                AND (
                    params::jsonb
                        -> '_scipionWebRuntime'
@@ -2503,7 +2485,7 @@ class PostgresqlFlatMapper(Mapper):
         )
 
     @contextmanager
-    def protocolLaunchUserLock(
+    def protocolExecutionUserLock(
             self,
             userId: int,
     ):
@@ -2517,7 +2499,7 @@ class PostgresqlFlatMapper(Mapper):
             )
             """,
             (
-                PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+                PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE,
                 userId,
             ),
         )
@@ -2534,7 +2516,7 @@ class PostgresqlFlatMapper(Mapper):
                 )
                 """,
                 (
-                    PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+                    PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE,
                     userId,
                 ),
             )

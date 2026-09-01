@@ -26,7 +26,7 @@
 import pytest
 
 from app.backend.mapper.postgresql import (
-    PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+    PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE,
     PostgresqlFlatMapper,
 )
 
@@ -35,7 +35,7 @@ class FakeDb:
     def __init__(self):
         self.fetchOneCalls = []
         self.executeCalls = []
-        self.activeCount = 0
+        self.runningCount = 0
 
     def fetchOne(
             self,
@@ -52,7 +52,7 @@ class FakeDb:
         })
 
         return {
-            "count": self.activeCount,
+            "count": self.runningCount,
         }
 
     def execute(
@@ -84,11 +84,11 @@ def buildMapper():
     return mapper
 
 
-def test_CountActiveProtocolExecutionsForUser():
+def test_CountRunningProtocolsForUser():
     mapper = buildMapper()
-    mapper.db.activeCount = 2
+    mapper.db.runningCount = 2
 
-    count = mapper.countActiveProtocolExecutionsForUser(
+    count = mapper.countRunningProtocolsForUser(
         7
     )
 
@@ -100,23 +100,22 @@ def test_CountActiveProtocolExecutionsForUser():
 
     call = mapper.db.fetchOneCalls[0]
 
-    assert "'scheduled'" in call["query"]
-    assert "'launched'" in call["query"]
     assert "'running'" in call["query"]
+    assert "'scheduled'" not in call["query"]
+    assert "'launched'" not in call["query"]
+    assert "'executionId'" not in call["query"]
     assert "'_scipionWebRuntime'" in call["query"]
     assert "'launchedByUserId'" in call["query"]
-    assert '"projectId"' in call["query"]
-    assert '"protocolId"' in call["query"]
 
     assert call["params"] == (
         "7",
     )
 
 
-def test_ProtocolLaunchUserLockAcquiresAndReleases():
+def test_ProtocolExecutionUserLockAcquiresAndReleases():
     mapper = buildMapper()
 
-    with mapper.protocolLaunchUserLock(
+    with mapper.protocolExecutionUserLock(
         7
     ):
         assert len(
@@ -138,25 +137,25 @@ def test_ProtocolLaunchUserLockAcquiresAndReleases():
     )
 
     assert mapper.db.executeCalls[0]["params"] == (
-        PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+        PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE,
         7,
     )
 
     assert mapper.db.executeCalls[1]["params"] == (
-        PROTOCOL_LAUNCH_USER_LOCK_NAMESPACE,
+        PROTOCOL_EXECUTION_USER_LOCK_NAMESPACE,
         7,
     )
 
 
-def test_ProtocolLaunchUserLockReleasesAfterError():
+def test_ProtocolExecutionUserLockReleasesAfterError():
     mapper = buildMapper()
 
     with pytest.raises(
             RuntimeError,
             match="boom",
     ):
-        with mapper.protocolLaunchUserLock(
-            7
+        with mapper.protocolExecutionUserLock(
+                7
         ):
             raise RuntimeError(
                 "boom"

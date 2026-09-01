@@ -23,7 +23,6 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from contextlib import contextmanager
 import importlib
 import inspect
 import json
@@ -2347,100 +2346,7 @@ def test_LaunchProtocolUsesPostgresqlRuntimeService(
     }
 
 
-def test_LaunchProtocolRejectsWhenUserConcurrencyLimitReached(
-        projectServiceModule,
-        service,
-        mapper,
-        monkeypatch,
-):
-    class FakeSettingsService:
-        def getRuntimeInstanceSettings(
-                self,
-                mapper,
-                currentUser,
-        ):
-            return {
-                "maxConcurrentRunsPerUser": 2,
-            }
-
-    class FailLaunchService:
-        def launchProtocol(
-                self,
-                **kwargs,
-        ):
-            raise AssertionError(
-                "Runtime launch must not be called "
-                "when the user concurrency limit "
-                "has been reached."
-            )
-
-    lockEvents = []
-
-    @contextmanager
-    def protocolLaunchUserLock(
-            userId,
-    ):
-        lockEvents.append(
-            ("enter", userId)
-        )
-
-        try:
-            yield
-        finally:
-            lockEvents.append(
-                ("exit", userId)
-            )
-
-    monkeypatch.setattr(
-        projectServiceModule,
-        "SettingsService",
-        FakeSettingsService,
-    )
-
-    monkeypatch.setattr(
-        projectServiceModule,
-        "RuntimeProtocolLaunchService",
-        FailLaunchService,
-    )
-
-    mapper.protocolLaunchUserLock = (
-        protocolLaunchUserLock
-    )
-
-    mapper.countActiveProtocolExecutionsForUser = (
-        lambda userId: 2
-    )
-
-    with pytest.raises(
-            HTTPException
-    ) as errorInfo:
-        service.launchProtocol(
-            mapper=mapper,
-            projectId=1,
-            protocolId=500,
-            protocolClassName="ProtClass",
-            params={},
-            executeMode="launch",
-            currentUserId=7,
-        )
-
-    assert (
-        errorInfo.value.status_code
-        == 409
-    )
-
-    assert (
-        "Maximum concurrent protocol runs"
-        in str(errorInfo.value.detail)
-    )
-
-    assert lockEvents == [
-        ("enter", 7),
-        ("exit", 7),
-    ]
-
-
-def test_LaunchProtocolRunsBelowUserConcurrencyLimit(
+def test_LaunchProtocolDefersUserConcurrencyLimitToRuntimeWorker(
         projectServiceModule,
         service,
         mapper,
@@ -2452,43 +2358,18 @@ def test_LaunchProtocolRunsBelowUserConcurrencyLimit(
         "postgresqlRuntimeLaunch": True,
     }
 
-    class FakeSettingsService:
-        def getRuntimeInstanceSettings(
-                self,
-                mapper,
-                currentUser,
-        ):
-            return {
-                "maxConcurrentRunsPerUser": 2,
-            }
-
-    lockActive = {
-        "value": False,
-    }
-
-    @contextmanager
-    def protocolLaunchUserLock(
-            userId,
-    ):
-        assert userId == 7
-
-        lockActive["value"] = True
-
-        try:
-            yield
-        finally:
-            lockActive["value"] = False
+    class FailSettingsService:
+        def __init__(self):
+            raise AssertionError(
+                "Protocol launch must not enforce "
+                "the runtime user concurrency limit."
+            )
 
     class FakeLaunchService:
         def launchProtocol(
                 self,
                 **kwargs,
         ):
-            assert (
-                lockActive["value"]
-                is True
-            )
-
             assert (
                 kwargs["currentUserId"]
                 == 7
@@ -2511,21 +2392,13 @@ def test_LaunchProtocolRunsBelowUserConcurrencyLimit(
     monkeypatch.setattr(
         projectServiceModule,
         "SettingsService",
-        FakeSettingsService,
+        FailSettingsService,
     )
 
     monkeypatch.setattr(
         projectServiceModule,
         "RuntimeProtocolLaunchService",
         FakeLaunchService,
-    )
-
-    mapper.protocolLaunchUserLock = (
-        protocolLaunchUserLock
-    )
-
-    mapper.countActiveProtocolExecutionsForUser = (
-        lambda userId: 1
     )
 
     result = service.launchProtocol(
@@ -2539,7 +2412,6 @@ def test_LaunchProtocolRunsBelowUserConcurrencyLimit(
     )
 
     assert result is expectedResult
-    assert lockActive["value"] is False
 
 
 def test_StopProtocolBypassesUserConcurrencyLimit(

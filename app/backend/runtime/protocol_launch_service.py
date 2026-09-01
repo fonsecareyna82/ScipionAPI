@@ -284,22 +284,24 @@ class RuntimeProtocolLaunchService:
     ) -> Dict[str, Any]:
         try:
             if executeMode == "schedule":
-                currentProject.scheduleProtocol(
-                    protocol
-                )
+                scheduledProtocolId = getattr(
+                    protocol,
+                    "getObjId",
+                    lambda: protocolId,
+                )()
 
                 if currentUserId is not None:
                     RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
                         mapper=mapper,
                         projectId=projectId,
-                        protocolId=getattr(
-                            protocol,
-                            "getObjId",
-                            lambda: protocolId,
-                        )(),
+                        protocolId=scheduledProtocolId,
                         userId=currentUserId,
                         executionId=executionId,
                     )
+
+                currentProject.scheduleProtocol(
+                    protocol
+                )
 
                 return self._syncPostgresqlRuntimeAfterLaunch(
                     mapper=mapper,
@@ -337,10 +339,6 @@ class RuntimeProtocolLaunchService:
                     cleanupInfo,
                 )
 
-            currentProject.launchProtocol(
-                protocol
-            )
-
             launchedProtocolId = getattr(
                 protocol,
                 "getObjId",
@@ -355,6 +353,10 @@ class RuntimeProtocolLaunchService:
                     userId=currentUserId,
                     executionId=executionId,
                 )
+
+            currentProject.launchProtocol(
+                protocol
+            )
 
             # The PostgreSQL worker owns the execution lifecycle.
             # While it waits for dependencies, the authoritative

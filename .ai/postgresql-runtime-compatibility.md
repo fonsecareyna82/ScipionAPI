@@ -238,6 +238,44 @@ Required regression coverage must preserve both directions of this contract:
 - persistent mutation -> project activity is updated;
 - read-only operation or unchanged runtime synchronization -> project activity is not updated.
 
+## Per-user protocol runtime concurrency
+
+`maxConcurrentRunsPerUser` limits protocols that are actually in the
+`running` state for a user.
+
+Protocols in `scheduled` or `launched` state do not consume a user execution
+slot.
+
+Protocol launch requests must not be rejected merely because all execution
+slots for the user are currently occupied. The protocol is accepted and the
+PostgreSQL runtime worker waits until an execution slot becomes available.
+
+The execution slot must be acquired atomically per user:
+
+1. acquire the PostgreSQL per-user execution advisory lock;
+2. count the user's protocols whose authoritative status is `running`;
+3. if the count is below `maxConcurrentRunsPerUser`, persist the current
+   protocol as `running` before releasing the lock;
+4. otherwise release the lock, wait, and retry.
+
+The per-user limit applies across projects.
+
+Execution ownership metadata, including `launchedByUserId` and `executionId`,
+must be persisted before the protocol worker is spawned or enqueued. A worker
+must never be able to bypass the concurrency limit because its execution-user
+metadata has not yet been persisted.
+
+Dependency waiting happens before execution-slot acquisition. A protocol
+waiting for inputs or prerequisites therefore does not consume an execution
+slot.
+
+For protocols submitted to an external queue, queue submission and scheduler
+waiting do not consume a user execution slot. The actual PostgreSQL execute
+worker acquires the slot before protocol execution begins.
+
+Protocols without an authenticated execution user are not subject to the
+per-user concurrency limit.
+
 ## Required regression tests
 
 Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName()`, streaming, or output restoration must preserve tests for all of the following:
@@ -301,6 +339,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 57. PostgreSQL restart and continue launchers must not leave a spawned protocol worker running when persistence of its coordinator PID or scheduled runtime state fails. Once a worker process has been created, any exception before successful launch-state persistence must best-effort terminate that verified PostgreSQL worker process group before the protocol is persisted as failed.
 58. PostgreSQL subworkflow discovery must preserve converging/shared descendants by resolving graph edges from both `protocol_dependencies` and `protocol_input_refs`. Restart and continue preflight validation may defer a missing external parent output only while that parent is in a non-terminal state capable of producing the output later; terminal parents with missing outputs must remain validation errors.
 59. PostgreSQL dependency readiness must distinguish parent protocol status from concrete output availability. A failed or aborted input parent must not automatically invalidate a child pointer to a concrete persisted output: when that output exists, the consumer must reconstruct it and run normal Scipion input validation before launch. A failed or aborted parent with a missing required output remains a terminal dependency error, and direct protocol pointers still require the parent protocol itself to finish successfully.
+60. Per-user protocol runtime concurrency counts only authoritative `running` protocols. `scheduled` and `launched` protocols do not consume a slot; launches remain accepted when the limit is full; workers acquire the slot atomically under the per-user PostgreSQL advisory lock and persist `running` before releasing it; execution-user metadata is persisted before worker enqueue/spawn; dependency-waiting and external-queue-waiting protocols do not consume a slot.
 
 ## Historical failure mode
 

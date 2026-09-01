@@ -5923,64 +5923,21 @@ class ProjectService:
                         exc_info=True,
                     )
 
-    def _executeProtocolExecutionWithConcurrencyLimit(
+    def _resolveProtocolExecutionId(
             self,
-            mapper,
             currentUserId,
-            executeCallback,
+            executionId=None,
     ):
-        if currentUserId is None:
-            return executeCallback(
-                None
-            )
-
-        runtimeInstanceSettings = (
-            SettingsService()
-            .getRuntimeInstanceSettings(
-                mapper=mapper,
-                currentUser=None,
-            )
-        )
-
-        maxConcurrentRunsPerUser = int(
-            runtimeInstanceSettings.get(
-                "maxConcurrentRunsPerUser"
-            )
-            or 2
-        )
-
-        with mapper.protocolLaunchUserLock(
-                currentUserId
+        if executionId not in (
+                None,
+                "",
         ):
-            activeRuns = (
-                mapper
-                .countActiveProtocolExecutionsForUser(
-                    currentUserId
-                )
-            )
+            return executionId
 
-            if (
-                    activeRuns
-                    >= maxConcurrentRunsPerUser
-            ):
-                raise HTTPException(
-                    status_code=(
-                        status.HTTP_409_CONFLICT
-                    ),
-                    detail=(
-                        "Maximum concurrent protocol runs "
-                        "per user reached "
-                        f"({activeRuns}/"
-                        f"{maxConcurrentRunsPerUser}). "
-                        "Wait for an active protocol to "
-                        "finish or stop one before "
-                        "launching another."
-                    ),
-                )
+        if currentUserId is None:
+            return None
 
-            return executeCallback(
-                uuid4().hex
-            )
+        return uuid4().hex
 
     def launchProtocol(
             self,
@@ -6037,36 +5994,18 @@ class ProjectService:
             return result
 
         try:
-            if (
-                    currentUserId is None
-                    or executeMode == "stop"
-            ):
-                return executeRuntimeLaunch(
-                    executionId=executionId
+            resolvedExecutionId = executionId
+
+            if executeMode != "stop":
+                resolvedExecutionId = (
+                    self._resolveProtocolExecutionId(
+                        currentUserId=currentUserId,
+                        executionId=executionId,
+                    )
                 )
 
-            if executionId not in (
-                    None,
-                    "",
-            ):
-                return executeRuntimeLaunch(
-                    executionId=executionId
-                )
-
-            return (
-                self
-                ._executeProtocolExecutionWithConcurrencyLimit(
-                    mapper=mapper,
-                    currentUserId=currentUserId,
-                    executeCallback=(
-                        lambda generatedExecutionId:
-                        executeRuntimeLaunch(
-                            executionId=(
-                                generatedExecutionId
-                            )
-                        )
-                    ),
-                )
+            return executeRuntimeLaunch(
+                executionId=resolvedExecutionId
             )
 
         finally:
@@ -7201,12 +7140,11 @@ class ProjectService:
         ):
             return executeWorkflow()
 
-        return (
-            self
-            ._executeProtocolExecutionWithConcurrencyLimit(
-                mapper=mapper,
-                currentUserId=currentUserId,
-                executeCallback=executeWorkflow,
+        return executeWorkflow(
+            executionId=(
+                self._resolveProtocolExecutionId(
+                    currentUserId=currentUserId,
+                )
             )
         )
 
@@ -7269,23 +7207,16 @@ class ProjectService:
                 )
             )
 
-        if executionId not in (
-                None,
-                "",
-        ):
-            result = executeRestart(
-                executionId
+        currentExecutionId = (
+            self._resolveProtocolExecutionId(
+                currentUserId=currentUserId,
+                executionId=executionId,
             )
+        )
 
-        else:
-            result = (
-                self
-                ._executeProtocolExecutionWithConcurrencyLimit(
-                    mapper=mapper,
-                    currentUserId=currentUserId,
-                    executeCallback=executeRestart,
-                )
-            )
+        result = executeRestart(
+            currentExecutionId
+        )
 
         if not (result or {}).get("errors"):
             self._touchProjectModificationTime(
@@ -7354,23 +7285,16 @@ class ProjectService:
                 )
             )
 
-        if executionId not in (
-                None,
-                "",
-        ):
-            result = executeContinue(
-                executionId
+        currentExecutionId = (
+            self._resolveProtocolExecutionId(
+                currentUserId=currentUserId,
+                executionId=executionId,
             )
+        )
 
-        else:
-            result = (
-                self
-                ._executeProtocolExecutionWithConcurrencyLimit(
-                    mapper=mapper,
-                    currentUserId=currentUserId,
-                    executeCallback=executeContinue,
-                )
-            )
+        result = executeContinue(
+            currentExecutionId
+        )
 
         if not (result or {}).get("errors"):
             self._touchProjectModificationTime(
@@ -14183,7 +14107,39 @@ class ProjectService:
                     f"Could not persist subset dependency on protocol {parentProtocolId}.{outputName} before launch"
                 )
 
-            self.currentProject.launchProtocol(batchProt)
+            currentUserId = (
+                currentUser.get("id")
+                if isinstance(
+                    currentUser,
+                    dict,
+                )
+                else getattr(
+                    currentUser,
+                    "id",
+                    None,
+                )
+            )
+
+            if currentUserId is not None:
+                currentUserId = int(
+                    currentUserId
+                )
+
+                RuntimeProtocolStatusSyncService().persistProtocolExecutionUser(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=batchProtocolId,
+                    userId=currentUserId,
+                    executionId=(
+                        self._resolveProtocolExecutionId(
+                            currentUserId=currentUserId,
+                        )
+                    ),
+                )
+
+            self.currentProject.launchProtocol(
+                batchProt
+            )
 
             postgresqlSync = None
 

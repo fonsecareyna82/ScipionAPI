@@ -26,6 +26,7 @@
 import threading
 import inspect
 from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pytest
 
@@ -1869,6 +1870,289 @@ def test_CompatibilitySqliteCleanupFailureIsBestEffort(
     assert report["deletedCount"] == 0
     assert report["registryEntriesRemoved"] == 0
     assert report["error"] == "cleanup failure"
+
+
+def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
+        monkeypatch,
+):
+    runningCounts = iter([
+        2,
+        1,
+    ])
+
+    lockEvents = []
+    sleepCalls = []
+    storedStatuses = []
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "status": "launched",
+                "params": {
+                    "_scipionWebRuntime": {
+                        "launchedByUserId": 7,
+                    },
+                },
+            }
+
+        @contextmanager
+        def protocolExecutionUserLock(
+                self,
+                userId,
+        ):
+            lockEvents.append(
+                ("enter", userId)
+            )
+
+            try:
+                yield
+            finally:
+                lockEvents.append(
+                    ("exit", userId)
+                )
+
+        def countRunningProtocolsForUser(
+                self,
+                userId,
+        ):
+            assert userId == 7
+            return next(
+                runningCounts
+            )
+
+    class ProtocolStub:
+        def __init__(self):
+            self.status = "launched"
+
+        def getStatus(self):
+            return self.status
+
+        def setStatus(
+                self,
+                status,
+        ):
+            self.status = status
+
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(
+                self,
+                mapper,
+                currentUser,
+        ):
+            return {
+                "maxConcurrentRunsPerUser": 2,
+            }
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+
+    worker.storeProtocol = lambda: (
+        storedStatuses.append(
+            worker.protocol.getStatus()
+        )
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        SettingsServiceStub,
+    )
+
+    monkeypatch.setenv(
+        "SCIPION_POSTGRESQL_EXECUTION_SLOT_POLL_SECONDS",
+        "0.25",
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.time,
+        "sleep",
+        lambda seconds: sleepCalls.append(
+            seconds
+        ),
+    )
+
+    assert (
+        worker.waitForUserExecutionSlot()
+        is True
+    )
+
+    assert sleepCalls == [
+        0.25,
+    ]
+
+    assert lockEvents == [
+        ("enter", 7),
+        ("exit", 7),
+        ("enter", 7),
+        ("exit", 7),
+    ]
+
+    assert storedStatuses == [
+        "running",
+    ]
+
+    assert (
+        worker.protocol.getStatus()
+        == "running"
+    )
+
+
+def test_WaitForUserExecutionSlotDoesNotLimitProtocolWithoutExecutionUser(
+        monkeypatch,
+):
+    class MapperStub:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "status": "launched",
+                "params": {},
+            }
+
+        def countRunningProtocolsForUser(
+                self,
+                userId,
+        ):
+            raise AssertionError(
+                "Protocol without execution user "
+                "must not use the per-user limit."
+            )
+
+    class ProtocolStub:
+        def __init__(self):
+            self.status = "launched"
+
+        def getStatus(self):
+            return self.status
+
+        def setStatus(
+                self,
+                status,
+        ):
+            self.status = status
+
+    class FailSettingsService:
+        def __init__(self):
+            raise AssertionError(
+                "Protocol without execution user "
+                "must not read the concurrency setting."
+            )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        FailSettingsService,
+    )
+
+    assert (
+        worker.waitForUserExecutionSlot()
+        is True
+    )
+
+    assert (
+        worker.protocol.getStatus()
+        == "launched"
+    )
+
+
+def test_WaitForUserExecutionSlotStopsWaitingAfterProtocolBecomesTerminal(
+        monkeypatch,
+):
+    @contextmanager
+    def executionLock(
+            userId,
+    ):
+        yield
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "status": "aborted",
+                "params": {
+                    "_scipionWebRuntime": {
+                        "launchedByUserId": 7,
+                    },
+                },
+            }
+
+        protocolExecutionUserLock = staticmethod(
+            executionLock
+        )
+
+        def countRunningProtocolsForUser(
+                self,
+                userId,
+        ):
+            raise AssertionError(
+                "Terminal protocol must not "
+                "try to acquire a slot."
+            )
+
+    class ProtocolStub:
+        def getStatus(self):
+            return "launched"
+
+        def setStatus(
+                self,
+                status,
+        ):
+            pass
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+
+    assert (
+        worker.waitForUserExecutionSlot()
+        is False
+    )
+
+
+def test_ExecuteWaitsForUserExecutionSlotBeforeRunningProtocol():
+    source = inspect.getsource(
+        RuntimePostgresqlProtocolWorker.execute
+    )
+
+    assert (
+        "waitForUserExecutionSlot"
+        in source
+    )
+
+    assert (
+        source.index(
+            "waitForUserExecutionSlot"
+        )
+        < source.index(
+            "self.protocol.run()"
+        )
+    )
 
 
 def test_EffectiveQueueLaunchParamsUsesRuntimeApiSettings(monkeypatch):
