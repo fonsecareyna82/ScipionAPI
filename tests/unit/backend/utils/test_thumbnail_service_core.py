@@ -276,6 +276,187 @@ def test_ScoreOutputRewardsUsefulOutputs(service):
     assert service._scoreOutput("tmpDebug", generic) == 0
 
 
+def test_RenderMoviesPreviewStopsAfterFirstRenderableMovie(
+        thumbnailServiceModule,
+        service,
+        monkeypatch,
+):
+    class FakeMoviesSet(list):
+        pass
+
+    monkeypatch.setattr(
+        thumbnailServiceModule,
+        "SetOfMovies",
+        FakeMoviesSet,
+    )
+
+    movies = [
+        object(),
+        object(),
+        object(),
+        object(),
+    ]
+
+    output = FakeMoviesSet(
+        movies
+    )
+
+    renderedMovies = []
+    composeCalls = []
+
+    def renderMovie(
+            protocol,
+            movie,
+    ):
+        renderedMovies.append(
+            movie
+        )
+        return object()
+
+    def composeGrid(
+            **kwargs,
+    ):
+        composeCalls.append(
+            kwargs
+        )
+        return "movie-preview"
+
+    monkeypatch.setattr(
+        service,
+        "_renderMovieItemPreview",
+        renderMovie,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_composeCleanGrid",
+        composeGrid,
+    )
+
+    result = (
+        service
+        ._renderMoviesPreview(
+            protocol=FakeProtocol(1),
+            output=output,
+            size=320,
+        )
+    )
+
+    assert result == (
+        "movie-preview"
+    )
+
+    assert renderedMovies == [
+        movies[0],
+    ]
+
+    assert len(
+        composeCalls
+    ) == 1
+
+    assert composeCalls[0][
+        "tiles"
+    ] == [
+        composeCalls[0]["tiles"][0]
+    ]
+
+    assert composeCalls[0][
+        "maxCols"
+    ] == 1
+
+    assert composeCalls[0][
+        "targetWidth"
+    ] == 320
+
+
+def test_RenderMoviesPreviewStopsAfterFirstRenderableMovie(
+        thumbnailServiceModule,
+        service,
+        monkeypatch,
+):
+    class FakeMoviesSet(list):
+        pass
+
+    monkeypatch.setattr(
+        thumbnailServiceModule,
+        "SetOfMovies",
+        FakeMoviesSet,
+    )
+
+    movies = [
+        object(),
+        object(),
+        object(),
+        object(),
+    ]
+
+    output = FakeMoviesSet(
+        movies
+    )
+
+    renderedMovies = []
+    composeCalls = []
+
+    expectedTile = object()
+
+    def renderMovie(
+            protocol,
+            movie,
+    ):
+        renderedMovies.append(
+            movie
+        )
+        return expectedTile
+
+    def composeGrid(
+            **kwargs,
+    ):
+        composeCalls.append(
+            kwargs
+        )
+        return "movie-preview"
+
+    monkeypatch.setattr(
+        service,
+        "_renderMovieItemPreview",
+        renderMovie,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_composeCleanGrid",
+        composeGrid,
+    )
+
+    result = (
+        service
+        ._renderMoviesPreview(
+            protocol=FakeProtocol(1),
+            output=output,
+            size=320,
+        )
+    )
+
+    assert result == "movie-preview"
+
+    assert renderedMovies == [
+        movies[0],
+    ]
+
+    assert composeCalls == [{
+        "tiles": [
+            expectedTile,
+        ],
+        "maxCols": 1,
+        "targetWidth": 320,
+        "background": (
+            246,
+            249,
+            252,
+        ),
+    }]
+
+
 def test_IterProtocolsSkipsProjectAndSortsByStatus(thumbnailServiceModule, tmp_path):
     projectPath = tmp_path / "DemoProject"
     projectPath.mkdir(parents=True, exist_ok=True)

@@ -86,7 +86,17 @@ def test_InteractiveAndBackgroundPreviewExecutorsAreSeparated(
     assert interactiveExecutor is not backgroundExecutor
     assert len(createdExecutors) == 2
 
-    assert interactiveExecutor.max_workers == 1
+    assert (
+            interactiveExecutor.max_workers
+            == preview_process_executor.INTERACTIVE_PREVIEW_WORKERS
+    )
+
+    assert (
+            backgroundExecutor.max_workers
+            == preview_process_executor.BACKGROUND_THUMBNAIL_WORKERS
+    )
+
+    assert interactiveExecutor.max_workers == 2
     assert backgroundExecutor.max_workers == 1
 
     assert (

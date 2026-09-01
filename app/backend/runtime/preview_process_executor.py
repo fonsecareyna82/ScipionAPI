@@ -40,6 +40,9 @@ from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
+INTERACTIVE_PREVIEW_WORKERS = 2
+BACKGROUND_THUMBNAIL_WORKERS = 1
+
 _interactivePreviewExecutor = None
 _backgroundThumbnailExecutor = None
 
@@ -47,10 +50,17 @@ _interactivePreviewExecutorLock = threading.Lock()
 _backgroundThumbnailExecutorLock = threading.Lock()
 
 
-def _createPreviewExecutor() -> ProcessPoolExecutor:
+def _createPreviewExecutor(
+        maxWorkers: int,
+) -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=1,
-        mp_context=multiprocessing.get_context("spawn"),
+        max_workers=max(
+            1,
+            int(maxWorkers),
+        ),
+        mp_context=multiprocessing.get_context(
+            "spawn"
+        ),
     )
 
 
@@ -63,7 +73,11 @@ def _getInteractivePreviewExecutor() -> ProcessPoolExecutor:
     with _interactivePreviewExecutorLock:
         if _interactivePreviewExecutor is None:
             _interactivePreviewExecutor = (
-                _createPreviewExecutor()
+                _createPreviewExecutor(
+                    maxWorkers=(
+                        INTERACTIVE_PREVIEW_WORKERS
+                    )
+                )
             )
 
     return _interactivePreviewExecutor
@@ -78,7 +92,11 @@ def _getBackgroundThumbnailExecutor() -> ProcessPoolExecutor:
     with _backgroundThumbnailExecutorLock:
         if _backgroundThumbnailExecutor is None:
             _backgroundThumbnailExecutor = (
-                _createPreviewExecutor()
+                _createPreviewExecutor(
+                    maxWorkers=(
+                        BACKGROUND_THUMBNAIL_WORKERS
+                    )
+                )
             )
 
     return _backgroundThumbnailExecutor

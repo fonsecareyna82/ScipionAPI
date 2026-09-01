@@ -1588,34 +1588,63 @@ class ThumbnailService:
 
         return None
 
-    def _renderMoviesPreview(self, protocol, output, size: int) -> Optional[Image.Image]:
+    def _renderMoviesPreview(
+            self,
+            protocol,
+            output,
+            size: int,
+    ) -> Optional[Image.Image]:
         tiles: List[Image.Image] = []
-        maxItems = 4
 
-        if isinstance(output, SetOfMovies):
-            movieIterator = self._iterItemsDirect(output)
+        if isinstance(
+                output,
+                SetOfMovies,
+        ):
+            movieIterator = (
+                self._iterItemsDirect(
+                    output
+                )
+            )
+
         else:
-            movieIterator = iter([output])
+            movieIterator = iter([
+                output,
+            ])
 
         for movie in movieIterator:
             try:
-                tile = self._renderMovieItemPreview(protocol, movie)
-                if tile is not None:
-                    tiles.append(tile)
+                tile = (
+                    self
+                    ._renderMovieItemPreview(
+                        protocol,
+                        movie,
+                    )
+                )
 
-                if len(tiles) >= maxItems:
+                if tile is not None:
+                    tiles.append(
+                        tile
+                    )
                     break
+
             except Exception:
-                logger.debug("Movie preview failed", exc_info=True)
+                logger.debug(
+                    "Movie preview failed",
+                    exc_info=True,
+                )
 
         if not tiles:
             return None
 
         return self._composeCleanGrid(
-            tiles=tiles[:maxItems],
-            maxCols=2,
+            tiles=tiles,
+            maxCols=1,
             targetWidth=size,
-            background=(246, 249, 252),
+            background=(
+                246,
+                249,
+                252,
+            ),
         )
 
     def _renderMovieItemPreview(self, protocol, movie) -> Optional[Image.Image]:
