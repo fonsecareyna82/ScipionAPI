@@ -871,28 +871,18 @@ class OutputsPreview(FileHandlers):
     # Helpers (robust)
     # ------------------------------------------------------------------ #
     def _pickSampleRows(
-        self, objectManager, tableName: str, want: int
+            self, objectManager, tableName: str, want: int
     ) -> list:
         """
-        Deterministically sample up to `want` rows from a table, spreading them
-        across the full rowCount range. This avoids biased previews toward the
-        first page while keeping the output stable across calls.
+        Deterministically return up to `want` rows from the beginning of the
+        current table order using a single paged metadata read.
         """
         rowCount = objectManager.getTableRowCount(tableName) or 0
         if rowCount <= 0:
             return []
 
         n = max(1, min(want, rowCount))
-        if rowCount <= n:
-            return objectManager.getRows(tableName, 0, n) or []
-
-        rows = []
-        for k in range(n):
-            idx = k
-            chunk = objectManager.getRows(tableName, idx, 1) or []
-            if chunk:
-                rows.append(chunk[0])
-        return rows
+        return objectManager.getRows(tableName, 0, n) or []
 
     def getRenderColumnIndex(
         self, renderField: Union[str, List[str]], columns

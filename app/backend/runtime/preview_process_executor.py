@@ -40,24 +40,48 @@ from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
-_previewExecutor = None
-_previewExecutorLock = threading.Lock()
+_interactivePreviewExecutor = None
+_backgroundThumbnailExecutor = None
+
+_interactivePreviewExecutorLock = threading.Lock()
+_backgroundThumbnailExecutorLock = threading.Lock()
 
 
-def _getPreviewExecutor() -> ProcessPoolExecutor:
-    global _previewExecutor
+def _createPreviewExecutor() -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
 
-    if _previewExecutor is not None:
-        return _previewExecutor
 
-    with _previewExecutorLock:
-        if _previewExecutor is None:
-            _previewExecutor = ProcessPoolExecutor(
-                max_workers=1,
-                mp_context=multiprocessing.get_context("spawn"),
+def _getInteractivePreviewExecutor() -> ProcessPoolExecutor:
+    global _interactivePreviewExecutor
+
+    if _interactivePreviewExecutor is not None:
+        return _interactivePreviewExecutor
+
+    with _interactivePreviewExecutorLock:
+        if _interactivePreviewExecutor is None:
+            _interactivePreviewExecutor = (
+                _createPreviewExecutor()
             )
 
-    return _previewExecutor
+    return _interactivePreviewExecutor
+
+
+def _getBackgroundThumbnailExecutor() -> ProcessPoolExecutor:
+    global _backgroundThumbnailExecutor
+
+    if _backgroundThumbnailExecutor is not None:
+        return _backgroundThumbnailExecutor
+
+    with _backgroundThumbnailExecutorLock:
+        if _backgroundThumbnailExecutor is None:
+            _backgroundThumbnailExecutor = (
+                _createPreviewExecutor()
+            )
+
+    return _backgroundThumbnailExecutor
 
 
 def _serializeResponse(value: Any) -> Dict[str, Any]:
@@ -449,7 +473,7 @@ async def runOutputPreviewInProcess(
     loop = asyncio.get_running_loop()
 
     result = await loop.run_in_executor(
-        _getPreviewExecutor(),
+        _getInteractivePreviewExecutor(),
         _runPreviewJob,
         {
             "operation": "output-preview",
@@ -478,7 +502,7 @@ async def runOutputThumbnailsBatchInProcess(
     loop = asyncio.get_running_loop()
 
     result = await loop.run_in_executor(
-        _getPreviewExecutor(),
+        _getBackgroundThumbnailExecutor(),
         _runPreviewJob,
         {
             "operation":

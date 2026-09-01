@@ -264,6 +264,48 @@ def test_PickSampleRowsReturnsFirstDeterministicRows(preview):
     assert [row._id for row in result] == [0, 1, 2, 3]
 
 
+def test_PickSampleRowsUsesSinglePagedRead(preview):
+    class TrackingObjectManager(FakeObjectManager):
+        def __init__(self, rowsByTable):
+            super().__init__(rowsByTable)
+            self.getRowsCalls = []
+
+        def getRows(self, tableName, offset, limit):
+            self.getRowsCalls.append(
+                (tableName, offset, limit)
+            )
+            return super().getRows(
+                tableName,
+                offset,
+                limit,
+            )
+
+    rows = [
+        FakeRow(i, [i])
+        for i in range(100)
+    ]
+
+    objMgr = TrackingObjectManager({
+        "objects": rows,
+    })
+
+    result = preview._pickSampleRows(
+        objMgr,
+        "objects",
+        want=32,
+    )
+
+    assert len(result) == 32
+    assert [
+        row._id
+        for row in result
+    ] == list(range(32))
+
+    assert objMgr.getRowsCalls == [
+        ("objects", 0, 32),
+    ]
+
+
 def test_GetRenderColumnIndexSupportsCaseInsensitiveAndSubstring(preview):
     columns = [
         FakeColumn("_filename"),
