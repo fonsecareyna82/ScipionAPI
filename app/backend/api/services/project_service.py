@@ -8781,18 +8781,17 @@ class ProjectService:
                         rowIndex
                     ] = image
 
-            renderedImages = [
-                renderedByIndex[
-                    rowIndex
+                renderedImages = [
+                    renderedByIndex[
+                        rowIndex
+                    ]
+                    for rowIndex
+                    in rowIndexes
+                    if rowIndex in renderedByIndex
                 ]
-                for rowIndex
-                in rowIndexes
-                if rowIndex
-                   in renderedByIndex
-            ]
 
-            if not renderedImages:
-                continue
+                if not renderedImages:
+                    continue
 
                 galleryColumns = (
                     1
@@ -8906,6 +8905,7 @@ class ProjectService:
                 )
 
             return None
+
 
     def outputPreview(
             self,
