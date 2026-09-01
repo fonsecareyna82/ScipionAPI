@@ -276,6 +276,35 @@ worker acquires the slot before protocol execution begins.
 Protocols without an authenticated execution user are not subject to the
 per-user concurrency limit.
 
+## Project graph read performance
+
+Opening or refreshing a project workflow is a PostgreSQL read-only summary
+operation.
+
+The project graph must load persisted protocol outputs through lightweight
+output-summary queries. It must not use full Set integrity/signature readers
+that aggregate `scipion_set_items`, `scipion_set_table_items`, nested table
+items, columns, properties or item-value signatures.
+
+In particular, project graph loading must not compute item-level
+`string_agg`, JSON payload signatures or MD5 hashes merely to render protocol
+outputs.
+
+The graph requires only lightweight persisted output metadata such as output
+name, class, item class, persisted item count, dimensions, sampling rate and
+display information already available from Set properties or root object
+metadata.
+
+Full Set integrity/signature readers remain valid for runtime persistence,
+revision detection, diagnostics and compatibility paths that explicitly need
+those signatures. They must not be reused by the ordinary project-open or
+project-refresh path.
+
+Project graph loading must remain independent of total item cardinality in
+unrelated projects. Adding millions of persisted Set items elsewhere in the
+instance must not make opening a small project perform global item-level
+aggregations.
+
 ## Required regression tests
 
 Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName()`, streaming, or output restoration must preserve tests for all of the following:
@@ -340,6 +369,7 @@ Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName(
 58. PostgreSQL subworkflow discovery must preserve converging/shared descendants by resolving graph edges from both `protocol_dependencies` and `protocol_input_refs`. Restart and continue preflight validation may defer a missing external parent output only while that parent is in a non-terminal state capable of producing the output later; terminal parents with missing outputs must remain validation errors.
 59. PostgreSQL dependency readiness must distinguish parent protocol status from concrete output availability. A failed or aborted input parent must not automatically invalidate a child pointer to a concrete persisted output: when that output exists, the consumer must reconstruct it and run normal Scipion input validation before launch. A failed or aborted parent with a missing required output remains a terminal dependency error, and direct protocol pointers still require the parent protocol itself to finish successfully.
 60. Per-user protocol runtime concurrency counts only authoritative `running` protocols. `scheduled` and `launched` protocols do not consume a slot; launches remain accepted when the limit is full; workers acquire the slot atomically under the per-user PostgreSQL advisory lock and persist `running` before releasing it; execution-user metadata is persisted before worker enqueue/spawn; dependency-waiting and external-queue-waiting protocols do not consume a slot.
+61. PostgreSQL project graph loading uses lightweight persisted output summaries and does not invoke full Set integrity/signature readers or perform item-level aggregation over `scipion_set_items` or `scipion_set_table_items`; output display information remains available from persisted Set properties and root object metadata.
 
 ## Historical failure mode
 

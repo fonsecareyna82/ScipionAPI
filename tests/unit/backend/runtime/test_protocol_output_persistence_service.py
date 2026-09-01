@@ -883,6 +883,121 @@ def test_ProjectOutputSummaryReaderDelegatesOutputRows(monkeypatch):
     assert ".db.execute(" not in source
 
 
+def test_ProjectOutputSummaryReaderBuildsDisplayInfo(
+        monkeypatch,
+):
+    mapper = FakeMapper()
+
+    service = (
+        RuntimeProtocolOutputPersistenceService()
+    )
+
+    class SetMapperStub:
+        def __init__(
+                self,
+                database,
+        ):
+            assert database is mapper.db
+
+        def listProjectSetOutputSummaryRows(
+                self,
+                projectId,
+        ):
+            assert projectId == 7
+
+            return [{
+                "protocolId": 10,
+                "id": 21,
+                "objectId": 31,
+                "outputName": (
+                    "outputParticles"
+                ),
+                "setClassName": (
+                    "SetOfParticles"
+                ),
+                "itemClassName": (
+                    "Particle"
+                ),
+                "properties": {
+                    "itemsCount": 372,
+                    "samplingRate": 1.5,
+                    "dimensions": [
+                        256,
+                        256,
+                    ],
+                },
+                "createdAt": None,
+                "updatedAt": None,
+            }]
+
+    class ObjectMapperStub:
+        def __init__(
+                self,
+                database,
+        ):
+            assert database is mapper.db
+
+        def listProjectTreeOutputRows(
+                self,
+                projectId,
+        ):
+            assert projectId == 7
+
+            return [{
+                "protocolId": 20,
+                "id": 41,
+                "scipionObjId": 51,
+                "name": "outputVolume",
+                "path": "outputVolume",
+                "className": "Volume",
+                "value": None,
+                "label": "Final volume",
+                "comment": None,
+                "metadata": {},
+                "createdAt": None,
+                "updatedAt": None,
+            }]
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionSetPostgresqlMapper",
+        SetMapperStub,
+    )
+
+    monkeypatch.setattr(
+        backendMapperModule,
+        "ScipionObjectPostgresqlMapper",
+        ObjectMapperStub,
+    )
+
+    result = (
+        service
+        .loadPersistedOutputSummariesByProtocolId(
+            mapper=mapper,
+            projectId=7,
+        )
+    )
+
+    assert result[
+        "10"
+    ][
+        "outputParticles"
+    ][
+        "info"
+    ] == (
+        "Particles "
+        "(372 items, 256x256, 1.50 Å/px)"
+    )
+
+    assert result[
+        "20"
+    ][
+        "outputVolume"
+    ][
+        "info"
+    ] == "Final volume"
+
+
 def test_ProtocolOutputNameReaderDelegatesOutputRows(monkeypatch):
     mapper = FakeMapper()
     service = RuntimeProtocolOutputPersistenceService()

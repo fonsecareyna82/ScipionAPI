@@ -1290,24 +1290,40 @@ def test_GetProjectByIdLoadsWorkflowFromPostgresql(
     assert capturedPgLoad["mapper"] is mapper
 
 
-def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
-    service,
-    mapper,
-    monkeypatch,
+def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputSummariesLoader(
+        service,
+        mapper,
+        monkeypatch,
 ):
-    mapper.getProjectProtocolTagIdsByProtocolId = lambda projectId: {}
-    mapper.getProjectProtocolAdjacencyMap = lambda projectId: {}
-    mapper.getProtocols = lambda projectId: []
+    mapper.getProjectProtocolTagIdsByProtocolId = (
+        lambda projectId: {}
+    )
+
+    mapper.getProjectProtocolAdjacencyMap = (
+        lambda projectId: {}
+    )
+
+    mapper.getProtocols = (
+        lambda projectId: []
+    )
 
     called = {}
 
-    def fakeLoadPersistedOutputs(mapperArg, projectIdArg):
+    def fakeLoadPersistedOutputSummaries(
+            mapperArg,
+            projectIdArg,
+    ):
         called["mapper"] = mapperArg
-        called["projectId"] = projectIdArg
+        called["projectId"] = (
+            projectIdArg
+        )
+
         return {
             "10": {
                 "outputMovies": {
-                    "className": "SetOfMovies",
+                    "className": (
+                        "SetOfMovies"
+                    ),
                     "itemsCount": 25,
                 },
             },
@@ -1315,13 +1331,19 @@ def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
 
     monkeypatch.setattr(
         service,
-        "_loadPersistedOutputsByProtocolId",
-        fakeLoadPersistedOutputs,
+        (
+            "_loadPersistedOutput"
+            "SummariesByProtocolId"
+        ),
+        fakeLoadPersistedOutputSummaries,
     )
 
-    result = service._loadProjectGraphDataFromPostgresql(
-        mapper=mapper,
-        projectId=1,
+    result = (
+        service
+        ._loadProjectGraphDataFromPostgresql(
+            mapper=mapper,
+            projectId=1,
+        )
     )
 
     assert called == {
@@ -1329,14 +1351,21 @@ def test_LoadProjectGraphDataFromPostgresqlUsesPersistedOutputsLoader(
         "projectId": 1,
     }
 
-    assert result["persistedOutputsByProtocolId"] == {
-        "10": {
-            "outputMovies": {
-                "className": "SetOfMovies",
-                "itemsCount": 25,
+    assert (
+        result[
+            "persistedOutputsByProtocolId"
+        ]
+        == {
+            "10": {
+                "outputMovies": {
+                    "className": (
+                        "SetOfMovies"
+                    ),
+                    "itemsCount": 25,
+                },
             },
-        },
-    }
+        }
+    )
 
 
 def test_BuildProtocolsGraphUsesPersistedOutputInfoWithoutRuntime(service):

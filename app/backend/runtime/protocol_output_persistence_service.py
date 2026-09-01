@@ -1908,63 +1908,244 @@ class RuntimeProtocolOutputPersistenceService:
         def toOptionalInt(value: Any) -> Optional[int]:
             if value is None or value == "":
                 return None
+
             try:
                 return int(value)
             except Exception:
                 return None
 
-        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        result: Dict[
+            str,
+            Dict[str, Dict[str, Any]],
+        ] = {}
 
-        from app.backend.mapper import ScipionObjectPostgresqlMapper, ScipionSetPostgresqlMapper
+        from app.backend.mapper import (
+            ScipionObjectPostgresqlMapper,
+            ScipionSetPostgresqlMapper,
+        )
 
-        setMapper = ScipionSetPostgresqlMapper(mapper.db)
-        objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
+        setMapper = ScipionSetPostgresqlMapper(
+            mapper.db
+        )
 
-        setRows = setMapper.listProjectSetOutputSummaryRows(projectId=projectId)
+        objectMapper = ScipionObjectPostgresqlMapper(
+            mapper.db
+        )
+
+        setRows = (
+            setMapper
+            .listProjectSetOutputSummaryRows(
+                projectId=projectId
+            )
+        )
 
         for row in setRows:
-            protocolId = str(row.get("protocolId"))
-            outputName = str(row.get("outputName") or "")
+            protocolId = str(
+                row.get("protocolId")
+            )
+
+            outputName = str(
+                row.get("outputName")
+                or ""
+            )
+
             if not protocolId or not outputName:
                 continue
 
-            properties = row.get("properties") or {}
+            properties = (
+                    row.get("properties")
+                    or {}
+            )
 
-            result.setdefault(protocolId, {})[outputName] = {
-                "mapperKind": "flat_set",
-                "setId": row.get("id"),
-                "rootObjectId": row.get("objectId"),
-                "className": row.get("setClassName"),
-                "itemClassName": row.get("itemClassName"),
-                "itemsCount": toOptionalInt(properties.get("itemsCount")) if isinstance(properties, dict) else None,
-                "maxItemId": toOptionalInt(properties.get("maxItemId")) if isinstance(properties, dict) else None,
-                "columnsCount": toOptionalInt(properties.get("columnsCount")) if isinstance(properties, dict) else None,
-                "lastSyncAt": properties.get("lastSyncAt") if isinstance(properties, dict) else None,
-                "lastCheckedAt": properties.get("lastCheckedAt") if isinstance(properties, dict) else None,
-                "skippedLastSync": properties.get("skippedLastSync") if isinstance(properties, dict) else None,
-                "createdAt": row.get("createdAt"),
-                "updatedAt": row.get("updatedAt"),
+            if not isinstance(
+                    properties,
+                    dict,
+            ):
+                properties = {}
+
+            persistedOutput = {
+                "className": row.get(
+                    "setClassName"
+                ),
+                "itemClassName": row.get(
+                    "itemClassName"
+                ),
+                "itemsCount": toOptionalInt(
+                    properties.get(
+                        "itemsCount"
+                    )
+                ),
+                "maxItemId": toOptionalInt(
+                    properties.get(
+                        "maxItemId"
+                    )
+                ),
+                "columnsCount": toOptionalInt(
+                    properties.get(
+                        "columnsCount"
+                    )
+                ),
             }
 
-        treeRows = objectMapper.listProjectTreeOutputRows(projectId=projectId)
+            persistedOutputInfo = (
+                self
+                ._buildPersistedOutputInfo(
+                    outputName=outputName,
+                    persistedOutput=persistedOutput,
+                    properties=properties,
+                )
+            )
+
+            result.setdefault(
+                protocolId,
+                {},
+            )[outputName] = {
+                "mapperKind": "flat_set",
+                "setId": row.get("id"),
+                "rootObjectId": row.get(
+                    "objectId"
+                ),
+                "className": row.get(
+                    "setClassName"
+                ),
+                "itemClassName": row.get(
+                    "itemClassName"
+                ),
+                "info": (
+                    persistedOutputInfo
+                ),
+                "itemsCount": (
+                    persistedOutput[
+                        "itemsCount"
+                    ]
+                ),
+                "maxItemId": (
+                    persistedOutput[
+                        "maxItemId"
+                    ]
+                ),
+                "columnsCount": (
+                    persistedOutput[
+                        "columnsCount"
+                    ]
+                ),
+                "lastSyncAt": (
+                    properties.get(
+                        "lastSyncAt"
+                    )
+                ),
+                "lastCheckedAt": (
+                    properties.get(
+                        "lastCheckedAt"
+                    )
+                ),
+                "skippedLastSync": (
+                    properties.get(
+                        "skippedLastSync"
+                    )
+                ),
+                "createdAt": row.get(
+                    "createdAt"
+                ),
+                "updatedAt": row.get(
+                    "updatedAt"
+                ),
+            }
+
+        treeRows = (
+            objectMapper
+            .listProjectTreeOutputRows(
+                projectId=projectId
+            )
+        )
 
         for row in treeRows:
-            protocolId = str(row.get("protocolId"))
-            outputName = str(row.get("path") or row.get("name") or "")
+            protocolId = str(
+                row.get("protocolId")
+            )
+
+            outputName = str(
+                row.get("path")
+                or row.get("name")
+                or ""
+            )
+
             if not protocolId or not outputName:
                 continue
 
-            result.setdefault(protocolId, {})[outputName] = {
-                "mapperKind": "tree",
-                "rootObjectId": row.get("id"),
-                "scipionObjId": row.get("scipionObjId"),
-                "className": row.get("className"),
-                "value": row.get("value"),
-                "label": row.get("label"),
-                "comment": row.get("comment"),
-                "metadata": row.get("metadata") or {},
-                "createdAt": row.get("createdAt"),
-                "updatedAt": row.get("updatedAt"),
+            metadata = (
+                    row.get("metadata")
+                    or {}
+            )
+
+            if isinstance(
+                    metadata,
+                    str,
+            ):
+                try:
+                    metadata = json.loads(
+                        metadata
+                    )
+                except Exception:
+                    metadata = {}
+
+            if not isinstance(
+                    metadata,
+                    dict,
+            ):
+                metadata = {}
+
+            className = row.get(
+                "className"
+            )
+
+            displayText = (
+                    metadata.get(
+                        "displayText"
+                    )
+                    or row.get("value")
+                    or row.get("label")
+                    or className
+                    or outputName
+            )
+
+            result.setdefault(
+                protocolId,
+                {},
+            )[outputName] = {
+                "mapperKind": (
+                        metadata.get(
+                            "mapperKind"
+                        )
+                        or "tree"
+                ),
+                "rootObjectId": row.get(
+                    "id"
+                ),
+                "scipionObjId": row.get(
+                    "scipionObjId"
+                ),
+                "className": className,
+                "info": str(
+                    displayText
+                    or ""
+                ),
+                "value": row.get(
+                    "value"
+                ),
+                "label": row.get(
+                    "label"
+                ),
+                "comment": row.get(
+                    "comment"
+                ),
+                "metadata": metadata,
+                "createdAt": row.get(
+                    "createdAt"
+                ),
+                "updatedAt": row.get(
+                    "updatedAt"
+                ),
             }
 
         return result

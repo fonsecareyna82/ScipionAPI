@@ -3165,16 +3165,21 @@ class ProjectService:
         except Exception:
             return None
 
-    def _loadPersistedOutputsByProtocolId(
+    def _loadPersistedOutputSummariesByProtocolId(
             self,
             mapper: PostgresqlFlatMapper,
             projectId: int,
     ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        runtimeProtocolOutputPersistenceService = RuntimeProtocolOutputPersistenceService()
+        runtimeProtocolOutputPersistenceService = (
+            RuntimeProtocolOutputPersistenceService()
+        )
 
-        return runtimeProtocolOutputPersistenceService.loadPersistedOutputsByProtocolId(
-            mapper=mapper,
-            projectId=projectId,
+        return (
+            runtimeProtocolOutputPersistenceService
+            .loadPersistedOutputSummariesByProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+            )
         )
 
     def _formatProtocolElapsedSecondsFromPostgresql(self, value: Any) -> str:
@@ -3709,10 +3714,8 @@ class ProjectService:
             protocolRows = []
 
         try:
-            persistedOutputsByProtocolId = self._loadPersistedOutputsByProtocolId(
-                mapper,
-                projectId,
-            ) or {}
+            persistedOutputsByProtocolId = self._loadPersistedOutputSummariesByProtocolId(mapper,
+                                                                                          projectId,) or {}
         except Exception:
             logger.exception(
                 "Failed to load persisted Scipion outputs for graph. projectId=%s",
