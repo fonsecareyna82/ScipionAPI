@@ -8439,6 +8439,12 @@ class ProjectService:
             size: int = 400,
             fmt: str = "webp",
     ) -> Optional[Response]:
+        from concurrent.futures import (
+            ThreadPoolExecutor,
+            as_completed,
+        )
+        from PIL import Image as PILImage
+
         if mapper is None:
             return None
 
@@ -8514,17 +8520,40 @@ class ProjectService:
 
             return None
 
-        for tableInfo in tables or []:
+        candidateTables = [
+            tableInfo
+            for tableInfo in (
+                    tables
+                    or []
+            )
+            if (
+                    str(
+                        tableInfo.get("name")
+                        or ""
+                    ).strip().lower()
+                    != "properties"
+            )
+        ]
+
+        candidateTables.sort(
+            key=lambda tableInfo: (
+                0
+                if str(
+                    tableInfo.get("name")
+                    or ""
+                ).strip().lower()
+                   == "objects"
+                else 1
+            )
+        )
+
+        for tableInfo in candidateTables:
             tableName = str(
                 tableInfo.get("name")
                 or ""
             ).strip()
 
-            if (
-                    not tableName
-                    or tableName.lower()
-                    == "properties"
-            ):
+            if not tableName:
                 continue
 
             try:
@@ -8532,6 +8561,7 @@ class ProjectService:
                     tableInfo.get("rowCount")
                     or 0
                 )
+
             except (
                     TypeError,
                     ValueError,
@@ -8568,28 +8598,92 @@ class ProjectService:
 
                 continue
 
-            for column in (
-                    schema.get("columns")
-                    or []
-            ):
-                rendererType = str(
-                    column.get(
-                        "rendererType"
+            imageColumns = [
+                column
+                for column in (
+                        schema.get("columns")
+                        or []
+                )
+                if (
+                        str(
+                            column.get(
+                                "rendererType"
+                            )
+                            or ""
+                        ).strip().lower()
+                        == "image"
+                )
+            ]
+
+            if not imageColumns:
+                continue
+
+            columnName = str(
+                imageColumns[0].get("name")
+                or ""
+            ).strip()
+
+            if not columnName:
+                continue
+
+            previewCount = min(
+                4,
+                rowCount,
+            )
+
+            if previewCount == 1:
+                rowIndexes = [
+                    0,
+                ]
+
+            else:
+                rowIndexes = [
+                    int(
+                        round(
+                            position
+                            * (
+                                    rowCount
+                                    - 1
+                            )
+                            / float(
+                                previewCount
+                                - 1
+                            )
+                        )
                     )
-                    or ""
-                ).strip().lower()
+                    for position
+                    in range(
+                        previewCount
+                    )
+                ]
 
-                if rendererType != "image":
-                    continue
+            galleryColumns = (
+                1
+                if previewCount == 1
+                else 2
+            )
 
-                columnName = str(
-                    column.get("name")
-                    or ""
-                ).strip()
+            gap = 8
 
-                if not columnName:
-                    continue
+            tileSize = max(
+                16,
+                (
+                        max(
+                            16,
+                            int(size),
+                        )
+                        - gap
+                        * (
+                                galleryColumns
+                                - 1
+                        )
+                )
+                // galleryColumns,
+            )
 
+            def renderMovieRow(
+                    rowIndex: int,
+            ):
                 try:
                     response = (
                         self
@@ -8599,9 +8693,9 @@ class ProjectService:
                             outputName=outputName,
                             tableName=tableName,
                             rowId=None,
-                            rowIndex=0,
+                            rowIndex=rowIndex,
                             columnName=columnName,
-                            size=size,
+                            size=tileSize,
                             applyTransform=False,
                             inline=True,
                             fmt=fmt,
@@ -8609,72 +8703,309 @@ class ProjectService:
                         )
                     )
 
+                    if (
+                            response.headers.get(
+                                "x-image-placeholder"
+                            )
+                            == "1"
+                    ):
+                        return None
+
+                    image = PILImage.open(
+                        io.BytesIO(
+                            response.body
+                        )
+                    )
+
+                    image.load()
+
+                    return (
+                        rowIndex,
+                        image.convert(
+                            "RGB"
+                        ),
+                    )
+
                 except Exception:
                     logger.debug(
-                        "Could not render PostgreSQL movie "
-                        "metadata preview. "
+                        "Could not render PostgreSQL "
+                        "movie metadata preview row. "
                         "projectId=%s protocolId=%s "
                         "outputName=%s table=%s "
-                        "column=%s",
+                        "rowIndex=%s",
                         projectId,
                         protocolId,
                         outputName,
                         tableName,
-                        columnName,
+                        rowIndex,
                         exc_info=True,
                     )
 
-                    continue
+                    return None
 
-                if (
-                        response.headers.get(
-                            "x-image-placeholder"
-                        )
-                        == "1"
-                ):
-                    continue
+            renderedByIndex = {}
 
-                response.headers[
-                    "X-Preview-Type"
-                ] = "movie"
-
-                response.headers[
-                    "X-Preview-Fast-Path"
-                ] = (
-                    "postgresql-metadata-movie"
-                )
-
-                exposedHeaders = [
-                    header.strip()
-                    for header in (
-                        response.headers.get(
-                            "Access-Control-Expose-Headers",
-                            "",
-                        )
-                        or ""
-                    ).split(",")
-                    if header.strip()
+            with ThreadPoolExecutor(
+                    max_workers=min(
+                        4,
+                        len(
+                            rowIndexes
+                        ),
+                    )
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        renderMovieRow,
+                        rowIndex,
+                    )
+                    for rowIndex
+                    in rowIndexes
                 ]
 
-                for headerName in (
-                        "X-Preview-Type",
-                        "X-Preview-Fast-Path",
+                for future in as_completed(
+                        futures
                 ):
-                    if (
-                            headerName
-                            not in exposedHeaders
-                    ):
-                        exposedHeaders.append(
-                            headerName
-                        )
+                    rendered = (
+                        future.result()
+                    )
 
-                response.headers[
-                    "Access-Control-Expose-Headers"
-                ] = ", ".join(
-                    exposedHeaders
+                    if rendered is None:
+                        continue
+
+                    (
+                        rowIndex,
+                        image,
+                    ) = rendered
+
+                    renderedByIndex[
+                        rowIndex
+                    ] = image
+
+            renderedImages = [
+                renderedByIndex[
+                    rowIndex
+                ]
+                for rowIndex
+                in rowIndexes
+                if rowIndex
+                   in renderedByIndex
+            ]
+
+            if not renderedImages:
+                continue
+
+            galleryColumns = (
+                1
+                if len(
+                    renderedImages
+                ) == 1
+                else 2
+            )
+
+            galleryRows = (
+                                  len(
+                                      renderedImages
+                                  )
+                                  + galleryColumns
+                                  - 1
+                          ) // galleryColumns
+
+            galleryWidth = (
+                    galleryColumns
+                    * tileSize
+                    + gap
+                    * (
+                            galleryColumns
+                            - 1
+                    )
+            )
+
+            galleryHeight = (
+                    galleryRows
+                    * tileSize
+                    + gap
+                    * (
+                            galleryRows
+                            - 1
+                    )
+            )
+
+            gallery = PILImage.new(
+                "RGB",
+                (
+                    galleryWidth,
+                    galleryHeight,
+                ),
+                (
+                    246,
+                    249,
+                    252,
+                ),
+            )
+
+            for index, sourceImage in enumerate(
+                    renderedImages
+            ):
+                tile = (
+                    sourceImage.copy()
                 )
 
-                return response
+                tile.thumbnail(
+                    (
+                        tileSize,
+                        tileSize,
+                    )
+                )
+
+                column = (
+                        index
+                        % galleryColumns
+                )
+
+                row = (
+                        index
+                        // galleryColumns
+                )
+
+                cellX = column * (
+                        tileSize
+                        + gap
+                )
+
+                cellY = row * (
+                        tileSize
+                        + gap
+                )
+
+                x = (
+                        cellX
+                        + (
+                                tileSize
+                                - tile.width
+                        )
+                        // 2
+                )
+
+                y = (
+                        cellY
+                        + (
+                                tileSize
+                                - tile.height
+                        )
+                        // 2
+                )
+
+                gallery.paste(
+                    tile,
+                    (
+                        x,
+                        y,
+                    ),
+                )
+
+            buffer = io.BytesIO()
+
+            fmtLower = str(
+                fmt
+                or "webp"
+            ).strip().lower()
+
+            if fmtLower in (
+                    "jpg",
+                    "jpeg",
+            ):
+                pilFormat = "JPEG"
+                mediaType = "image/jpeg"
+                saveKw = {
+                    "quality": 75,
+                }
+
+            elif fmtLower == "png":
+                pilFormat = "PNG"
+                mediaType = "image/png"
+                saveKw = {}
+
+            else:
+                fmtLower = "webp"
+                pilFormat = "WEBP"
+                mediaType = "image/webp"
+                saveKw = {
+                    "quality": 75,
+                }
+
+            gallery.save(
+                buffer,
+                format=pilFormat,
+                **saveKw,
+            )
+
+            shownCount = len(
+                renderedImages
+            )
+
+            itemLabel = (
+                "item"
+                if rowCount == 1
+                else "items"
+            )
+
+            if shownCount < rowCount:
+                previewNote = (
+                    f"SetOfMovies · "
+                    f"{rowCount} {itemLabel} · "
+                    f"showing {shownCount} "
+                    f"representative movies"
+                )
+
+            else:
+                previewNote = (
+                    f"SetOfMovies · "
+                    f"{rowCount} {itemLabel}"
+                )
+
+            headers = {
+                "Content-Disposition": (
+                    "inline; "
+                    f'filename="movie_set_preview.{fmtLower}"'
+                ),
+                "X-Preview-Type": (
+                    "movie-set"
+                ),
+                "X-Preview-RowCount": str(
+                    rowCount
+                ),
+                "X-Preview-Note": (
+                    previewNote
+                ),
+                "X-Preview-Mime": (
+                    mediaType
+                ),
+                "X-Preview-Width": str(
+                    gallery.width
+                ),
+                "X-Preview-Height": str(
+                    gallery.height
+                ),
+                "X-Preview-Fast-Path": (
+                    "postgresql-metadata-movie"
+                ),
+                "Access-Control-Expose-Headers": (
+                    "Content-Disposition, "
+                    "X-Preview-Type, "
+                    "X-Preview-RowCount, "
+                    "X-Preview-Note, "
+                    "X-Preview-Mime, "
+                    "X-Preview-Width, "
+                    "X-Preview-Height, "
+                    "X-Preview-Fast-Path"
+                ),
+            }
+
+            return Response(
+                content=buffer.getvalue(),
+                media_type=mediaType,
+                headers=headers,
+            )
 
         return None
 

@@ -1754,7 +1754,10 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
         projectServiceModule,
         monkeypatch,
 ):
+    import io as ioModule
+
     from fastapi.responses import Response
+    from PIL import Image as PILImage
 
     mapper = object()
 
@@ -1834,11 +1837,6 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
         },
     )
 
-    expectedResponse = Response(
-        content=b"movie-preview",
-        media_type="image/webp",
-    )
-
     def renderMetadataImageCell(
             **kwargs,
     ):
@@ -1846,7 +1844,24 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
             kwargs
         )
 
-        return expectedResponse
+        buffer = ioModule.BytesIO()
+
+        PILImage.new(
+            "L",
+            (
+                32,
+                32,
+            ),
+            128,
+        ).save(
+            buffer,
+            format="PNG",
+        )
+
+        return Response(
+            content=buffer.getvalue(),
+            media_type="image/png",
+        )
 
     monkeypatch.setattr(
         service,
@@ -1862,10 +1877,12 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
             protocolId=3486,
             outputName="outputMovies",
             currentUser=currentUser,
+            fmt="png",
         )
     )
 
-    assert result is expectedResponse
+    assert result.status_code == 200
+    assert result.media_type == "image/png"
 
     assert repositoryCalls == [{
         "mapper": mapper,
@@ -1874,26 +1891,86 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
         "outputName": "outputMovies",
     }]
 
-    assert renderCalls == [{
-        "projectId": 12,
-        "protocolId": 3486,
-        "outputName": "outputMovies",
-        "tableName": "objects",
-        "rowId": None,
-        "rowIndex": 0,
-        "columnName": "image",
-        "size": 400,
-        "applyTransform": False,
-        "inline": True,
-        "fmt": "webp",
-        "mapper": mapper,
-    }]
+    sortedRenderCalls = sorted(
+        renderCalls,
+        key=lambda call: call[
+            "rowIndex"
+        ],
+    )
+
+    assert [
+        call["rowIndex"]
+        for call in sortedRenderCalls
+    ] == [
+        0,
+        3,
+        6,
+        9,
+    ]
+
+    for call in sortedRenderCalls:
+        assert call[
+            "projectId"
+        ] == 12
+
+        assert call[
+            "protocolId"
+        ] == 3486
+
+        assert call[
+            "outputName"
+        ] == "outputMovies"
+
+        assert call[
+            "tableName"
+        ] == "objects"
+
+        assert call[
+            "columnName"
+        ] == "image"
+
+        assert call[
+            "size"
+        ] == 196
+
+        assert call[
+            "applyTransform"
+        ] is False
+
+        assert call[
+            "inline"
+        ] is True
+
+        assert call[
+            "fmt"
+        ] == "png"
+
+        assert call[
+            "mapper"
+        ] is mapper
 
     assert (
         result.headers[
             "x-preview-type"
         ]
-        == "movie"
+        == "movie-set"
+    )
+
+    assert (
+        result.headers[
+            "x-preview-rowcount"
+        ]
+        == "10"
+    )
+
+    assert (
+        result.headers[
+            "x-preview-note"
+        ]
+        == (
+            "SetOfMovies · 10 items · "
+            "showing 4 representative movies"
+        )
     )
 
     assert (
@@ -1901,6 +1978,17 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
             "x-preview-fast-path"
         ]
         == "postgresql-metadata-movie"
+    )
+
+    gallery = PILImage.open(
+        ioModule.BytesIO(
+            result.body
+        )
+    )
+
+    assert gallery.size == (
+        400,
+        400,
     )
 
 
