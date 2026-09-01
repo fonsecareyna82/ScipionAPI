@@ -8794,220 +8794,118 @@ class ProjectService:
             if not renderedImages:
                 continue
 
-            galleryColumns = (
-                1
-                if len(
-                    renderedImages
-                ) == 1
-                else 2
-            )
-
-            galleryRows = (
-                                  len(
-                                      renderedImages
-                                  )
-                                  + galleryColumns
-                                  - 1
-                          ) // galleryColumns
-
-            galleryWidth = (
-                    galleryColumns
-                    * tileSize
-                    + gap
-                    * (
-                            galleryColumns
-                            - 1
-                    )
-            )
-
-            galleryHeight = (
-                    galleryRows
-                    * tileSize
-                    + gap
-                    * (
-                            galleryRows
-                            - 1
-                    )
-            )
-
-            gallery = PILImage.new(
-                "RGB",
-                (
-                    galleryWidth,
-                    galleryHeight,
-                ),
-                (
-                    246,
-                    249,
-                    252,
-                ),
-            )
-
-            for index, sourceImage in enumerate(
-                    renderedImages
-            ):
-                tile = (
-                    sourceImage.copy()
+                galleryColumns = (
+                    1
+                    if len(
+                        renderedImages
+                    ) == 1
+                    else 2
                 )
 
-                tile.thumbnail(
-                    (
-                        tileSize,
-                        tileSize,
+                galleryTiles = [
+                    np.asarray(
+                        image.convert("RGB"),
+                        dtype=np.uint8,
+                    )
+                    for image in renderedImages
+                ]
+
+                itemLabel = (
+                    "item"
+                    if rowCount == 1
+                    else "items"
+                )
+
+                galleryBuilder = OutputsPreview(
+                    currentProject=None,
+                    protocol=None,
+                    output=None,
+                )
+
+                galleryBytes, galleryMeta = (
+                    galleryBuilder
+                    .makeGalleryFromTiles(
+                        tiles=galleryTiles,
+                        cols=galleryColumns,
+                        tileSize=tileSize,
+                        labels=None,
+                        summary=(
+                            f"{rowCount} "
+                            f"{itemLabel}"
+                        ),
+                        scale=1,
+                        forceRgb=True,
                     )
                 )
 
-                column = (
-                        index
-                        % galleryColumns
+                previewHeaders = (
+                    galleryBuilder
+                    ._buildPreviewHeaders({
+                        "mime": "image/png",
+                        **galleryMeta,
+                    })
                 )
 
-                row = (
-                        index
-                        // galleryColumns
-                )
+                previewHeaders[
+                    "X-Preview-Type"
+                ] = "movie-set"
 
-                cellX = column * (
-                        tileSize
-                        + gap
-                )
-
-                cellY = row * (
-                        tileSize
-                        + gap
-                )
-
-                x = (
-                        cellX
-                        + (
-                                tileSize
-                                - tile.width
-                        )
-                        // 2
-                )
-
-                y = (
-                        cellY
-                        + (
-                                tileSize
-                                - tile.height
-                        )
-                        // 2
-                )
-
-                gallery.paste(
-                    tile,
-                    (
-                        x,
-                        y,
-                    ),
-                )
-
-            buffer = io.BytesIO()
-
-            fmtLower = str(
-                fmt
-                or "webp"
-            ).strip().lower()
-
-            if fmtLower in (
-                    "jpg",
-                    "jpeg",
-            ):
-                pilFormat = "JPEG"
-                mediaType = "image/jpeg"
-                saveKw = {
-                    "quality": 75,
-                }
-
-            elif fmtLower == "png":
-                pilFormat = "PNG"
-                mediaType = "image/png"
-                saveKw = {}
-
-            else:
-                fmtLower = "webp"
-                pilFormat = "WEBP"
-                mediaType = "image/webp"
-                saveKw = {
-                    "quality": 75,
-                }
-
-            gallery.save(
-                buffer,
-                format=pilFormat,
-                **saveKw,
-            )
-
-            shownCount = len(
-                renderedImages
-            )
-
-            itemLabel = (
-                "item"
-                if rowCount == 1
-                else "items"
-            )
-
-            if shownCount < rowCount:
-                previewNote = (
-                    f"SetOfMovies · "
-                    f"{rowCount} {itemLabel} · "
-                    f"showing {shownCount} "
-                    f"representative movies"
-                )
-
-            else:
-                previewNote = (
-                    f"SetOfMovies · "
-                    f"{rowCount} {itemLabel}"
-                )
-
-            headers = {
-                "Content-Disposition": (
-                    "inline; "
-                    f'filename="movie_set_preview.{fmtLower}"'
-                ),
-                "X-Preview-Type": (
-                    "movie-set"
-                ),
-                "X-Preview-RowCount": str(
+                previewHeaders[
+                    "X-Preview-RowCount"
+                ] = str(
                     rowCount
-                ),
-                "X-Preview-Note": (
-                    previewNote
-                ),
-                "X-Preview-Mime": (
-                    mediaType
-                ),
-                "X-Preview-Width": str(
-                    gallery.width
-                ),
-                "X-Preview-Height": str(
-                    gallery.height
-                ),
-                "X-Preview-Fast-Path": (
-                    "postgresql-metadata-movie"
-                ),
-                "Access-Control-Expose-Headers": (
-                    "Content-Disposition, "
-                    "X-Preview-Type, "
-                    "X-Preview-RowCount, "
-                    "X-Preview-Note, "
-                    "X-Preview-Mime, "
-                    "X-Preview-Width, "
-                    "X-Preview-Height, "
+                )
+
+                previewHeaders[
                     "X-Preview-Fast-Path"
-                ),
-            }
+                ] = (
+                    "postgresql-metadata-movie"
+                )
 
-            return Response(
-                content=buffer.getvalue(),
-                media_type=mediaType,
-                headers=headers,
-            )
+                exposedHeaders = [
+                    header.strip()
+                    for header in (
+                            previewHeaders.get(
+                                "Access-Control-Expose-Headers",
+                                "",
+                            )
+                            or ""
+                    ).split(",")
+                    if header.strip()
+                ]
 
-        return None
+                for headerName in (
+                        "X-Preview-Type",
+                        "X-Preview-RowCount",
+                        "X-Preview-Fast-Path",
+                ):
+                    if (
+                            headerName
+                            not in exposedHeaders
+                    ):
+                        exposedHeaders.append(
+                            headerName
+                        )
+
+                previewHeaders[
+                    "Access-Control-Expose-Headers"
+                ] = ", ".join(
+                    exposedHeaders
+                )
+
+                return Response(
+                    content=galleryBytes,
+                    media_type="image/png",
+                    headers={
+                        "Content-Disposition": (
+                            "inline; "
+                            'filename="movie_set_preview.png"'
+                        ),
+                        **previewHeaders,
+                    },
+                )
+
+            return None
 
     def outputPreview(
             self,

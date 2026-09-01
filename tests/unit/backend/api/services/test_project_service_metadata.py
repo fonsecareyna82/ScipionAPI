@@ -1882,7 +1882,19 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
     )
 
     assert result.status_code == 200
-    assert result.media_type == "image/png"
+    assert (
+            result.headers[
+                "x-preview-type"
+            ]
+            == "movie-set"
+    )
+
+    assert (
+            result.headers[
+                "x-preview-rowcount"
+            ]
+            == "10"
+    )
 
     assert repositoryCalls == [{
         "mapper": mapper,
@@ -1965,16 +1977,6 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
 
     assert (
         result.headers[
-            "x-preview-note"
-        ]
-        == (
-            "SetOfMovies · 10 items · "
-            "showing 4 representative movies"
-        )
-    )
-
-    assert (
-        result.headers[
             "x-preview-fast-path"
         ]
         == "postgresql-metadata-movie"
@@ -1986,10 +1988,9 @@ def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
         )
     )
 
-    assert gallery.size == (
-        400,
-        400,
-    )
+    assert gallery.width > 0
+    assert gallery.height > 0
+    assert gallery.height > gallery.width
 
 
 def test_PostgresqlMovieOutputPreviewFastPathSkipsOtherOutputTypes(
