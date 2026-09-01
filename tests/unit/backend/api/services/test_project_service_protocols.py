@@ -4112,26 +4112,23 @@ def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(
         mapper,
         monkeypatch,
 ):
-    concurrencyCalls = []
+    executionIdCalls = []
     workflowAllCalls = []
 
     expectedResult = {
         "postgresqlRuntimeRestart": True,
     }
 
-    def executeWithConcurrencyLimit(
-            mapper,
+    def resolveProtocolExecutionId(
             currentUserId,
-            executeCallback,
+            executionId=None,
     ):
-        concurrencyCalls.append({
-            "mapper": mapper,
+        executionIdCalls.append({
             "currentUserId": currentUserId,
+            "executionId": executionId,
         })
 
-        return executeCallback(
-            "workflow-execution-123"
-        )
+        return "workflow-execution-123"
 
     def executeWorkflowAll(
             **kwargs,
@@ -4168,11 +4165,8 @@ def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(
 
     monkeypatch.setattr(
         service,
-        (
-            "_executeProtocolExecution"
-            "WithConcurrencyLimit"
-        ),
-        executeWithConcurrencyLimit,
+        "_resolveProtocolExecutionId",
+        resolveProtocolExecutionId,
     )
 
     monkeypatch.setattr(
@@ -4210,9 +4204,9 @@ def test_ExecuteProtocolWorkflowAllUsesSingleUserExecutionId(
 
     assert result is expectedResult
 
-    assert concurrencyCalls == [{
-        "mapper": mapper,
+    assert executionIdCalls == [{
         "currentUserId": 7,
+        "executionId": None,
     }]
 
     assert len(
