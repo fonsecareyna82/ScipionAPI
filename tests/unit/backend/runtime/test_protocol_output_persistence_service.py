@@ -874,13 +874,28 @@ def test_ProjectOutputSummaryReaderDelegatesOutputRows(monkeypatch):
     assert treeReadCalls == [{"projectId": 7}]
     assert mapper.db.queries == []
 
-    source = inspect.getsource(RuntimeProtocolOutputPersistenceService.loadPersistedOutputSummariesByProtocolId)
+    source = inspect.getsource(
+        RuntimeProtocolOutputPersistenceService
+        .loadPersistedOutputSummariesByProtocolId
+    )
 
-    assert "setMapper.listProjectSetOutputSummaryRows(" in source
-    assert "objectMapper.listProjectTreeOutputRows(" in source
-    assert ".db.fetchOne(" not in source
-    assert ".db.fetchAll(" not in source
-    assert ".db.execute(" not in source
+    normalizedSource = "".join(
+        source.split()
+    )
+
+    assert (
+            "setMapper.listProjectSetOutputSummaryRows("
+            in normalizedSource
+    )
+
+    assert (
+            "objectMapper.listProjectTreeOutputRows("
+            in normalizedSource
+    )
+
+    assert ".db.fetchOne(" not in normalizedSource
+    assert ".db.fetchAll(" not in normalizedSource
+    assert ".db.execute(" not in normalizedSource
 
 
 def test_ProjectOutputSummaryReaderBuildsDisplayInfo(
