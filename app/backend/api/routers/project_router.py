@@ -17,6 +17,7 @@ from fastapi import (
 )
 from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse, FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from pydantic import BaseModel, Field
 
@@ -1902,7 +1903,15 @@ async def previewOutput(
     outputName: str,
     request: Request,
     currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(
+        getMapper
+    ),
+    service: ProjectService = Depends(
+        getProjectService
+    ),
 ):
+    requestStartedAt = perf_counter()
+
     cmapHeader = (
         request.headers.get(
             "x-scipion-colormap"
@@ -1930,11 +1939,91 @@ async def previewOutput(
         )
     )
 
+    fastPathStartedAt = (
+        perf_counter()
+    )
+
+    fastPreview = await run_in_threadpool(
+        service
+        .tryRenderPostgresqlMovieOutputPreviewService,
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        currentUser=currentUser,
+    )
+
+    fastPathMs = (
+        perf_counter()
+        - fastPathStartedAt
+    ) * 1000
+
+    if fastPreview is not None:
+        totalMs = (
+            perf_counter()
+            - requestStartedAt
+        ) * 1000
+
+        fastPreview.headers[
+            "Server-Timing"
+        ] = (
+            f"fastpath;dur={fastPathMs:.1f}, "
+            f"total;dur={totalMs:.1f}"
+        )
+
+        fastPreview.headers[
+            "Vary"
+        ] = "Authorization"
+
+        exposedHeaders = [
+            header.strip()
+            for header in (
+                fastPreview.headers.get(
+                    "Access-Control-Expose-Headers",
+                    "",
+                )
+                or ""
+            ).split(",")
+            if header.strip()
+        ]
+
+        for headerName in (
+                "Server-Timing",
+                "X-Preview-Fast-Path",
+        ):
+            if (
+                    headerName
+                    not in exposedHeaders
+            ):
+                exposedHeaders.append(
+                    headerName
+                )
+
+        fastPreview.headers[
+            "Access-Control-Expose-Headers"
+        ] = ", ".join(
+            exposedHeaders
+        )
+
+        logger.info(
+            "PostgreSQL movie preview fast path. "
+            "projectId=%s protocolId=%s "
+            "outputName=%s durationMs=%.1f",
+            projectId,
+            protocolId,
+            outputName,
+            totalMs,
+        )
+
+        return fastPreview
+
     return await runOutputPreviewInProcess(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
-        userId=int(currentUser["id"]),
+        userId=int(
+            currentUser["id"]
+        ),
         requestHeaders=dict(
             request.headers
         ),

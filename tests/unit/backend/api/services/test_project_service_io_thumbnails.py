@@ -1275,3 +1275,116 @@ def test_LoadProjectForThumbnailsRequiresPostgresqlMapper(
         )
 
 
+@pytest.mark.asyncio
+async def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
+        monkeypatch,
+):
+    projectRouterModule = (
+        importlib.import_module(
+            "app.backend.api.routers.project_router"
+        )
+    )
+
+    mapper = object()
+    fastPathCalls = []
+
+    class RequestStub:
+        headers = {}
+        query_params = {}
+
+    class ServiceStub:
+        def tryRenderPostgresqlMovieOutputPreviewService(
+                self,
+                **kwargs,
+        ):
+            fastPathCalls.append(
+                kwargs
+            )
+
+            return (
+                projectRouterModule.Response(
+                    content=b"movie-preview",
+                    media_type="image/webp",
+                    headers={
+                        "X-Preview-Fast-Path":
+                            "postgresql-metadata-movie",
+                    },
+                )
+            )
+
+    async def runInThreadpool(
+            function,
+            *args,
+            **kwargs,
+    ):
+        return function(
+            *args,
+            **kwargs,
+        )
+
+    async def failRuntimePreview(
+            **kwargs,
+    ):
+        raise AssertionError(
+            "Movie metadata fast path must "
+            "not enter the preview process pool."
+        )
+
+    monkeypatch.setattr(
+        projectRouterModule,
+        "run_in_threadpool",
+        runInThreadpool,
+    )
+
+    monkeypatch.setattr(
+        projectRouterModule,
+        "runOutputPreviewInProcess",
+        failRuntimePreview,
+    )
+
+    response = await (
+        projectRouterModule
+        .previewOutput(
+            projectId=12,
+            protocolId=3486,
+            outputName="outputMovies",
+            request=RequestStub(),
+            currentUser={
+                "id": 7,
+            },
+            mapper=mapper,
+            service=ServiceStub(),
+        )
+    )
+
+    assert response.status_code == 200
+
+    assert response.media_type == (
+        "image/webp"
+    )
+
+    assert fastPathCalls == [{
+        "mapper": mapper,
+        "projectId": 12,
+        "protocolId": 3486,
+        "outputName": "outputMovies",
+        "currentUser": {
+            "id": 7,
+        },
+    }]
+
+    assert (
+        response.headers[
+            "x-preview-fast-path"
+        ]
+        == "postgresql-metadata-movie"
+    )
+
+    assert (
+        "fastpath;dur="
+        in response.headers[
+            "server-timing"
+        ]
+    )
+
+

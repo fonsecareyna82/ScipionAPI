@@ -1747,3 +1747,228 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
         "shifts": None,
     }
     assert pilOpenCalls == []
+
+
+def test_PostgresqlMovieOutputPreviewUsesMetadataImageFastPath(
+        service,
+        projectServiceModule,
+        monkeypatch,
+):
+    from fastapi.responses import Response
+
+    mapper = object()
+
+    currentUser = {
+        "id": 7,
+    }
+
+    repositoryCalls = []
+    renderCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "getProjectDbRow",
+        lambda mapperArg,
+               projectIdArg,
+               currentUserArg: {
+            "id": projectIdArg,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda **kwargs: 77,
+    )
+
+    class ProtocolGraphRepositoryStub:
+        def getPersistedOutputInfoForInputRef(
+                self,
+                **kwargs,
+        ):
+            repositoryCalls.append(
+                kwargs
+            )
+
+            return {
+                "className": (
+                    "SetOfMovies"
+                ),
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "listOutputMetadataTablesService",
+        lambda **kwargs: [
+            {
+                "name": "objects",
+                "rowCount": 10,
+            },
+            {
+                "name": "Properties",
+                "rowCount": 5,
+            },
+        ],
+    )
+
+    monkeypatch.setattr(
+        service,
+        "getMetadataTableSchemaService",
+        lambda **kwargs: {
+            "columns": [
+                {
+                    "name": "id",
+                    "rendererType": "int",
+                },
+                {
+                    "name": "image",
+                    "rendererType": "image",
+                },
+            ],
+        },
+    )
+
+    expectedResponse = Response(
+        content=b"movie-preview",
+        media_type="image/webp",
+    )
+
+    def renderMetadataImageCell(
+            **kwargs,
+    ):
+        renderCalls.append(
+            kwargs
+        )
+
+        return expectedResponse
+
+    monkeypatch.setattr(
+        service,
+        "renderMetadataImageCellService",
+        renderMetadataImageCell,
+    )
+
+    result = (
+        service
+        .tryRenderPostgresqlMovieOutputPreviewService(
+            mapper=mapper,
+            projectId=12,
+            protocolId=3486,
+            outputName="outputMovies",
+            currentUser=currentUser,
+        )
+    )
+
+    assert result is expectedResponse
+
+    assert repositoryCalls == [{
+        "mapper": mapper,
+        "projectId": 12,
+        "parentProtocolDbId": 77,
+        "outputName": "outputMovies",
+    }]
+
+    assert renderCalls == [{
+        "projectId": 12,
+        "protocolId": 3486,
+        "outputName": "outputMovies",
+        "tableName": "objects",
+        "rowId": None,
+        "rowIndex": 0,
+        "columnName": "image",
+        "size": 400,
+        "applyTransform": False,
+        "inline": True,
+        "fmt": "webp",
+        "mapper": mapper,
+    }]
+
+    assert (
+        result.headers[
+            "x-preview-type"
+        ]
+        == "movie"
+    )
+
+    assert (
+        result.headers[
+            "x-preview-fast-path"
+        ]
+        == "postgresql-metadata-movie"
+    )
+
+
+def test_PostgresqlMovieOutputPreviewFastPathSkipsOtherOutputTypes(
+        service,
+        projectServiceModule,
+        monkeypatch,
+):
+    mapper = object()
+
+    monkeypatch.setattr(
+        service,
+        "getProjectDbRow",
+        lambda *args, **kwargs: {
+            "id": 12,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbId",
+        lambda **kwargs: 77,
+    )
+
+    class ProtocolGraphRepositoryStub:
+        def getPersistedOutputInfoForInputRef(
+                self,
+                **kwargs,
+        ):
+            return {
+                "className": (
+                    "SetOfMicrographs"
+                ),
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    def failMetadataLookup(
+            **kwargs,
+    ):
+        raise AssertionError(
+            "Non-Movie outputs must not "
+            "use the Movie metadata fast path."
+        )
+
+    monkeypatch.setattr(
+        service,
+        "listOutputMetadataTablesService",
+        failMetadataLookup,
+    )
+
+    result = (
+        service
+        .tryRenderPostgresqlMovieOutputPreviewService(
+            mapper=mapper,
+            projectId=12,
+            protocolId=3486,
+            outputName="outputMicrographs",
+            currentUser={
+                "id": 7,
+            },
+        )
+    )
+
+    assert result is None
+
+

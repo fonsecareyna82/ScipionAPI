@@ -8428,6 +8428,256 @@ class ProjectService:
 
         return output, outputInfo
 
+    def tryRenderPostgresqlMovieOutputPreviewService(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId: Union[int, str],
+            outputName: str,
+            currentUser,
+            size: int = 400,
+            fmt: str = "webp",
+    ) -> Optional[Response]:
+        if mapper is None:
+            return None
+
+        project = self.getProjectDbRow(
+            mapper,
+            projectId,
+            currentUser,
+        )
+
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found",
+            )
+
+        protocolDbId = (
+            self
+            ._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if protocolDbId is None:
+            return None
+
+        outputInfo = (
+            ProtocolGraphRepository()
+            .getPersistedOutputInfoForInputRef(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(
+                    protocolDbId
+                ),
+                outputName=outputName,
+            )
+        )
+
+        outputClassName = str(
+            outputInfo.get("className")
+            or ""
+        ).strip()
+
+        if (
+                outputClassName.lower()
+                != "setofmovies"
+        ):
+            return None
+
+        try:
+            tables = (
+                self
+                .listOutputMetadataTablesService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    mapper=mapper,
+                )
+            )
+
+        except Exception:
+            logger.debug(
+                "Could not resolve PostgreSQL metadata "
+                "tables for movie preview. "
+                "projectId=%s protocolId=%s "
+                "outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+                exc_info=True,
+            )
+
+            return None
+
+        for tableInfo in tables or []:
+            tableName = str(
+                tableInfo.get("name")
+                or ""
+            ).strip()
+
+            if (
+                    not tableName
+                    or tableName.lower()
+                    == "properties"
+            ):
+                continue
+
+            try:
+                rowCount = int(
+                    tableInfo.get("rowCount")
+                    or 0
+                )
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                rowCount = 0
+
+            if rowCount <= 0:
+                continue
+
+            try:
+                schema = (
+                    self
+                    .getMetadataTableSchemaService(
+                        projectId=projectId,
+                        protocolId=protocolId,
+                        outputName=outputName,
+                        tableName=tableName,
+                        mapper=mapper,
+                    )
+                )
+
+            except Exception:
+                logger.debug(
+                    "Could not resolve PostgreSQL metadata "
+                    "schema for movie preview. "
+                    "projectId=%s protocolId=%s "
+                    "outputName=%s table=%s",
+                    projectId,
+                    protocolId,
+                    outputName,
+                    tableName,
+                    exc_info=True,
+                )
+
+                continue
+
+            for column in (
+                    schema.get("columns")
+                    or []
+            ):
+                rendererType = str(
+                    column.get(
+                        "rendererType"
+                    )
+                    or ""
+                ).strip().lower()
+
+                if rendererType != "image":
+                    continue
+
+                columnName = str(
+                    column.get("name")
+                    or ""
+                ).strip()
+
+                if not columnName:
+                    continue
+
+                try:
+                    response = (
+                        self
+                        .renderMetadataImageCellService(
+                            projectId=projectId,
+                            protocolId=protocolId,
+                            outputName=outputName,
+                            tableName=tableName,
+                            rowId=None,
+                            rowIndex=0,
+                            columnName=columnName,
+                            size=size,
+                            applyTransform=False,
+                            inline=True,
+                            fmt=fmt,
+                            mapper=mapper,
+                        )
+                    )
+
+                except Exception:
+                    logger.debug(
+                        "Could not render PostgreSQL movie "
+                        "metadata preview. "
+                        "projectId=%s protocolId=%s "
+                        "outputName=%s table=%s "
+                        "column=%s",
+                        projectId,
+                        protocolId,
+                        outputName,
+                        tableName,
+                        columnName,
+                        exc_info=True,
+                    )
+
+                    continue
+
+                if (
+                        response.headers.get(
+                            "x-image-placeholder"
+                        )
+                        == "1"
+                ):
+                    continue
+
+                response.headers[
+                    "X-Preview-Type"
+                ] = "movie"
+
+                response.headers[
+                    "X-Preview-Fast-Path"
+                ] = (
+                    "postgresql-metadata-movie"
+                )
+
+                exposedHeaders = [
+                    header.strip()
+                    for header in (
+                        response.headers.get(
+                            "Access-Control-Expose-Headers",
+                            "",
+                        )
+                        or ""
+                    ).split(",")
+                    if header.strip()
+                ]
+
+                for headerName in (
+                        "X-Preview-Type",
+                        "X-Preview-Fast-Path",
+                ):
+                    if (
+                            headerName
+                            not in exposedHeaders
+                    ):
+                        exposedHeaders.append(
+                            headerName
+                        )
+
+                response.headers[
+                    "Access-Control-Expose-Headers"
+                ] = ", ".join(
+                    exposedHeaders
+                )
+
+                return response
+
+        return None
+
     def outputPreview(
             self,
             protocolId: Union[int, str],
