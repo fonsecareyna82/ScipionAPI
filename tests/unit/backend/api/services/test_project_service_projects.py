@@ -1034,6 +1034,8 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
                 "protocolId": "10",
                 "protocolClassName": "ProtImportMovies",
                 "status": "finished",
+                "createdAt": "2026-09-01T09:00:00+00:00",
+                "updatedAt": "2026-09-03T08:30:00+00:00",
             },
         ],
         tags={
@@ -1059,6 +1061,20 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
     assert graph["10"]["label"] == "ProtImportMovies"
     assert graph["10"]["status"] == "finished"
     assert graph["10"]["tags"] == ["import"]
+    assert graph["10"]["extraTableColumns"] == {
+        "updatedAt": {
+            "label": "Updated",
+            "value": "2026-09-03T08:30:00+00:00",
+            "type": "datetime",
+            "defaultVisible": True,
+        },
+        "createdAt": {
+            "label": "Created",
+            "value": "2026-09-01T09:00:00+00:00",
+            "type": "datetime",
+            "defaultVisible": False,
+        },
+    }
 
     assert graph["10"]["outputs"] == [
         {

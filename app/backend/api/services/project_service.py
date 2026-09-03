@@ -3369,6 +3369,13 @@ class ProjectService:
             comment = storedComment
             title = storedTitle
 
+            extraTableColumns = {
+                "updatedAt": {"label": "Updated", "value": row.get("updatedAt"), "type": "datetime",
+                              "defaultVisible": True},
+                "createdAt": {"label": "Created", "value": row.get("createdAt"), "type": "datetime",
+                              "defaultVisible": False},
+            }
+
             # Prefer the live protocol object coming from runs graph.
             # Runtime fallback is optional so the graph can be built from PostgreSQL only.
             protocol = liveRuns.get(nodeId)
@@ -3612,6 +3619,7 @@ class ProjectService:
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
                 "tags": tags.get(nodeId, []),
+                "extraTableColumns": extraTableColumns,
                 "thumbnailUrl": thumbnailUrl,
                 "thumbnailRebuildUrl": thumbnailRebuildUrl,
             }
