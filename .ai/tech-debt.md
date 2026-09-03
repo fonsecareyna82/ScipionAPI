@@ -25,7 +25,8 @@ scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 ## Resolved since 2026-08-04
 
 - **CI action versions** — `.github/workflows/tests.yml` is now on `actions/checkout@v7`/`actions/setup-python@v7` (`960c5dd`), matching the 3 core repos.
-- **Test suite needed real infrastructure** — `backend-tests` in CI now spins up real `postgres:16`/`redis:7` service containers and runs the full `pytest` (including `tests/integration/`) across the Python 3.8–3.12 matrix, not just `tests/unit`/`tests/smoke`. A dedicated `tests/integration/db/test_set_sqlite_compatibility.py` now validates the SQLite-compatibility layer below against a real database.
+- **Test suite needed real infrastructure** — `backend-tests` in CI now spins up real PostgreSQL and Valkey service containers and runs the full `pytest` (including `tests/integration/`) across the Python 3.8–3.12 matrix, not just `tests/unit`/`tests/smoke`. The Celery integration test validates broker/result-backend connectivity against Valkey, while `tests/integration/db/test_set_sqlite_compatibility.py` validates the SQLite-compatibility layer against a real PostgreSQL database.
+- - **Redis server dependency replaced by Valkey** — Valkey is now the supported Celery broker/result-backend server. Celery deliberately continues to use `celery[redis]`, `redis-py`, and `redis://` URLs because those are the compatible Celery transport/client interfaces used to communicate with Valkey.
 - **`dump.rdb`/`.backend_reload_marker` tracked in git** — untracked and gitignored (`23cbe02`).
 
 ## The native-SQLite staging bridge is permanent, load-bearing debt — not a bug to remove

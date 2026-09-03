@@ -6,8 +6,8 @@ A FastAPI-based backend that exposes a REST API around Scipion project
 management, protocol interaction, output browsing/previews, plugin inspection,
 and user authentication.
 
-The backend uses PostgreSQL for persistence, Redis for task brokering, and runs
-inside a Scipion-capable Python environment.
+The backend uses PostgreSQL for persistence, Valkey for Celery task brokering
+and result storage, and runs inside a Scipion-capable Python environment.
 
 This repository is backend-only, but it can optionally serve a precompiled
 ScipionWeb (React/Vite) bundle in integrated mode.
@@ -42,9 +42,11 @@ ScipionWeb (React/Vite) bundle in integrated mode.
   - Text/CSV/STAR/PDF/archive/SQLite previews (where applicable)
   - Preview metadata returned via response headers
 
-* Celery + Redis:
-  - Task queue available (plugin install task is implemented)
-  - Redis is used as broker and result backend (default configuration)
+* Celery + Valkey:
+  - Task queue available for plugin and protocol execution tasks
+  - Valkey is used as broker and result backend
+  - Celery keeps the ``redis://`` transport URL because Valkey is
+    protocol-compatible with the Redis transport used by Celery
 
 * Human-friendly provisioning workflow:
   - Conda environment bootstrap
@@ -121,7 +123,7 @@ Notes:
 * Conda (Miniconda/Anaconda) available in PATH (required by the wrapper script)
 * Python version managed by conda (default used by wrapper: 3.8)
 * PostgreSQL (required)
-* Redis (required for Celery broker/backend in default config)
+* Valkey (required for Celery broker/result backend in default config)
 * Sudo privileges for local DB bootstrap (only if using automatic DB/user creation)
 
 ----------------------------------------------------------
@@ -165,24 +167,24 @@ Notes:
 * This is only supported for local PostgreSQL (``POSTGRES_HOST=localhost``).
 
 ----------------------------------------------------------
-5.3 Install Redis (system service)
+5.3 Install Valkey (system service)
 ----------------------------------------------------------
 
-Redis is used for Celery broker/result backend (default config):
+Valkey is used for the Celery broker and result backend:
 
 ::
 
     sudo apt update
-    sudo apt install -y redis-server
-    sudo systemctl enable redis-server
-    sudo systemctl start redis-server
-    sudo systemctl status redis-server
+    sudo apt install -y valkey-server valkey-tools
+    sudo systemctl enable valkey-server
+    sudo systemctl start valkey-server
+    sudo systemctl status valkey-server
 
 Quick check:
 
 ::
 
-    redis-cli ping
+    valkey-cli ping
 
 Expected output:
 
@@ -573,7 +575,8 @@ Runtime paths:
 
 Services:
 
-* ``BROKER_URL`` (default: ``redis://localhost:6379/0``)
+* ``BROKER_URL`` (default: ``redis://localhost:6379/0``; Valkey uses the Redis-compatible transport expected by Celery)
+* ``RESULT_BACKEND_URL`` (optional; defaults to ``BROKER_URL``)
 * ``API_HOST`` (default: ``0.0.0.0``)
 * ``API_PORT`` (a free port is selected automatically on first install; the persisted value is reused afterwards; override with ``--api-port``)
 * ``CELERY_APP`` (default: ``app.workers.task_queue``)
@@ -675,14 +678,14 @@ Docs (integrated mode with API mounted at ``/api``):
 * ``http://localhost:8080/api/docs``
 
 ----------------------------------------------------------
-13. Running Celery (Redis Broker)
+13. Running Celery (Valkey Broker)
 ----------------------------------------------------------
 
-Redis (local):
+Valkey (local):
 
 ::
 
-    redis-server
+    valkey-server
 
 Celery is started automatically by:
 
@@ -784,7 +787,9 @@ The API exposes preview-related headers (examples):
   - Re-run ``provision --web-dist ...``.
 
 * Celery task not executing
-  - Ensure Redis is running and reachable at ``BROKER_URL``.
+  - Ensure Valkey is running and reachable at ``BROKER_URL``.
+  - Remember that ``redis://`` is the expected Celery transport URL even
+    when the server is Valkey.
   - Check ``${LOGS_PATH}/celery.log`` and run ``./scripts/scipionapi logs``.
 
 ----------------------------------------------------------

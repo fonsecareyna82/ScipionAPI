@@ -24,8 +24,19 @@
 # *
 # ******************************************************************************
 
-broker_url = "redis://localhost:6379/0"       # broker to send tasks
-result_backend = "redis://localhost:6379/0"   # backend to store results
+import os
+
+
+broker_url = (
+    os.getenv("BROKER_URL")
+    or "redis://localhost:6379/0"
+)
+
+result_backend = (
+    os.getenv("RESULT_BACKEND_URL")
+    or broker_url
+)
+
 accept_content = ["json"]
 task_serializer = "json"
 result_serializer = "json"

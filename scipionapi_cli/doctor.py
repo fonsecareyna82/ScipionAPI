@@ -343,23 +343,29 @@ def _checkPostgres(env: Dict[str, str]) -> StatusRow:
         return _fail("PostgreSQL", str(exc))
 
 
-def _checkRedis(env: Dict[str, str]) -> StatusRow:
-    # Check Redis broker TCP connectivity.
+def _checkValkey(env: Dict[str, str]) -> StatusRow:
+    # Check Valkey broker TCP connectivity.
     brokerUrl = (env.get("BROKER_URL") or "").strip()
+
     if not brokerUrl:
-        return _warn("Redis", "BROKER_URL is missing")
+        return _warn("Valkey", "BROKER_URL is missing",)
 
-    parsed = urlparse(brokerUrl)
-    if parsed.scheme not in ("redis", "rediss"):
-        return _warn("Redis", f"Unsupported broker scheme for TCP check: {parsed.scheme}")
+    parsed = urlparse(brokerUrl,)
 
-    host = parsed.hostname or "localhost"
+    if parsed.scheme not in ("redis", "rediss",):
+        return _warn("Valkey", f"Unsupported broker scheme for TCP check: {parsed.scheme}",)
+
+    host = (parsed.hostname or "localhost")
+
     port = str(parsed.port or 6379)
 
-    if _tcpReachable(host, port):
-        return _ok("Redis", f"Reachable at {host}:{port}")
+    if _tcpReachable(
+        host,
+        port,
+    ):
+        return _ok("Valkey", f"Reachable at {host}:{port}",)
 
-    return _fail("Redis", f"Not reachable at {host}:{port}")
+    return _fail("Valkey", f"Not reachable at {host}:{port}",)
 
 
 def _checkAlembic(repoRoot: Path) -> StatusRow:
@@ -533,7 +539,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
 
     rows.append(_checkCommand("alembic", required=True))
     rows.append(_checkCommand("psql", required=False))
-    rows.append(_checkCommand("redis-server", required=False))
+    rows.append(_checkCommand("valkey-server", required=False))
 
     rows.append(_checkImport("fastapi", "Import fastapi", required=True))
     rows.append(_checkImport("uvicorn", "Import uvicorn", required=True))
@@ -544,10 +550,10 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
 
     if envExists:
         rows.append(_checkPostgres(env))
-        rows.append(_checkRedis(env))
+        rows.append(_checkValkey(env))
     else:
         rows.append(_warn("PostgreSQL", "Skipped because .env file is missing"))
-        rows.append(_warn("Redis", "Skipped because .env file is missing"))
+        rows.append(_warn("Valkey", "Skipped because .env file is missing"))
 
     apiHost = env.get("API_HOST") or "0.0.0.0"
     apiPort = env.get("API_PORT") or "8080"

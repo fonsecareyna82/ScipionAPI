@@ -212,14 +212,14 @@ check_prerequisites() {
   fi
 
   if command -v psql >/dev/null 2>&1; then print_ok "PostgreSQL client (psql)"; else command_missing "PostgreSQL (psql)"; print_error "PostgreSQL client (psql)"; fi
-  if command -v redis-cli >/dev/null 2>&1; then print_ok "Redis client (redis-cli)"; else command_missing "Redis (redis-cli)"; print_error "Redis client (redis-cli)"; fi
+  if command -v valkey-cli >/dev/null 2>&1; then print_ok "Valkey client (valkey-cli)"; else command_missing "Valkey (valkey-cli)"; print_error "Valkey client (valkey-cli)"; fi
 
-  if command -v redis-cli >/dev/null 2>&1; then
-    if [[ "$(redis-cli ping 2>/dev/null || true)" == "PONG" ]]; then
-      print_ok "Redis server is responding"
+  if command -v valkey-cli >/dev/null 2>&1; then
+    if [[ "$(valkey-cli ping 2>/dev/null || true)" == "PONG" ]]; then
+      print_ok "Valkey server is responding"
     else
-      service_failed "Redis is installed but the server is not responding."
-      print_error "Redis server is not responding"
+      service_failed "Valkey is installed but the server is not responding."
+      print_error "Valkey server is not responding"
     fi
   fi
 
@@ -265,11 +265,11 @@ check_prerequisites() {
 
 Ubuntu/Debian example for common system packages:
   sudo apt update
-  sudo apt install -y postgresql postgresql-contrib redis-server unzip curl
+  sudo apt install -y postgresql postgresql-contrib valkey-server valkey-tools unzip curl
 
 Then ensure services are running:
   sudo systemctl enable --now postgresql
-  sudo systemctl enable --now redis-server
+  sudo systemctl enable --now valkey-server
 
 If Conda is missing, install Miniconda or Anaconda first, reopen your shell,
 and run this installer again. You may also set:

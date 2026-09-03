@@ -23,3 +23,30 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import os
+
+
+def test_TaskQueueConnectsToConfiguredBrokerAndBackend():
+    from app.workers.task_queue import celeryApp
+
+    expectedBrokerUrl = (
+        os.getenv("BROKER_URL")
+        or "redis://localhost:6379/0"
+    )
+
+    expectedBackendUrl = (
+        os.getenv("RESULT_BACKEND_URL")
+        or expectedBrokerUrl
+    )
+
+    assert celeryApp.conf.broker_url == expectedBrokerUrl
+    assert celeryApp.conf.result_backend == expectedBackendUrl
+
+    with celeryApp.connection_for_write() as connection:
+        connection.ensure_connection(
+            max_retries=1,
+        )
+
+    backendClient = celeryApp.backend.client
+
+    assert backendClient.ping() is True

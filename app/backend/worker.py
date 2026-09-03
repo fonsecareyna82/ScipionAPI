@@ -26,10 +26,16 @@
 
 from celery import Celery
 
+from app.workers.celeryconfig import (
+    broker_url,
+    result_backend,
+)
+
+
 CeleryApp = Celery(
-    'worker',
-    broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/0',
+    "worker",
+    broker=broker_url,
+    backend=result_backend,
 )
 
 
