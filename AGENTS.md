@@ -50,7 +50,7 @@ Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatib
 
 - **`requirements.txt` pulls `scipion-pyworkflow`/`scipion-em`/`scipion-app` from a personal fork** (`git+https://github.com/fonsecareyna82/...@devel`), not the official `scipion-em` GitHub org. Installing from this file alone gets you Yunior's fork state, which may be ahead of or diverge from the official repos — if you're testing changes made in this workspace's own checkouts of those 3 repos, you likely need an editable local install instead, not whatever `requirements.txt` resolves to.
 - **Runtime-generated persistence artifacts are not source files**: files such as `dump.rdb` and `.backend_reload_marker` are gitignored and must remain untracked.
-- - **Valkey intentionally still uses the Redis Celery transport/client stack**: `celery[redis]`, `redis-py`, and `redis://`/`rediss://` URLs remain correct. Do not replace them merely because the server is Valkey.
+- **Valkey intentionally still uses the Redis Celery transport/client stack**: `celery[redis]`, `redis-py`, and `redis://`/`rediss://` URLs remain correct. Do not replace them merely because the server is Valkey.
 - `pydantic==1.10.x` pin (see Stack above) — a real, easy-to-violate-by-accident constraint.
 - `scipion_home/` is gitignored and holds a local `.env` — not a leak, just local config; don't assume secrets belong there or that it's meant to be committed.
 
