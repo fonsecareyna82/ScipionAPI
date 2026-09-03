@@ -297,6 +297,44 @@ def _envInt(env: Dict[str, str], key: str, default: int) -> int:
         return default
 
 
+def _envBool(env: Dict[str, str], key: str, default: bool) -> bool:
+    # readBoolEnv
+    raw = env.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _buildUvicornArgs(env: Dict[str, str], repoRoot: Path, apiHost: str, apiPort: str) -> List[str]:
+    # buildUvicornArgs
+    args = [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)]
+
+    autoReloadEnabled = _envBool(env, "AUTO_RELOAD_ON_PLUGIN_CHANGE", False)
+    reloadMode = (env.get("BACKEND_RELOAD_MODE", "") or "dev").strip().lower()
+
+    if not (autoReloadEnabled and reloadMode == "dev"):
+        return args
+
+    # dev mode: uvicorn --reload watches the same marker file
+    # app/backend/api/services/reload_trigger.py touches on every
+    # plugin install/uninstall, so the API process restarts itself and
+    # picks up the refreshed Domain/plugin state without a manual
+    # `scipionapi restart`. --reload-include is passed explicitly
+    # (rather than relying on uvicorn's default *.py-only watch glob)
+    # because BACKEND_RELOAD_TOUCH_PATH is not required to end in .py --
+    # its default resolves to .backend_reload_marker (a prod-mode
+    # convention meant for systemd/k8s to watch, reused here for dev too
+    # since AUTO_RELOAD_ON_PLUGIN_CHANGE/BACKEND_RELOAD_TOUCH_PATH aren't
+    # reset between install runs, see scipionapi_cli/install.py).
+    touchPathRaw = (env.get("BACKEND_RELOAD_TOUCH_PATH", "") or "").strip() or ".backend_reload_marker"
+    touchPath = Path(touchPathRaw)
+    touchPath = touchPath if touchPath.is_absolute() else (repoRoot / touchPath)
+
+    args += ["--reload", "--reload-include", str(touchPath)]
+
+    return args
+
+
 def _waitForTcp(host: str, port: str, timeoutSec: float, intervalSec: float = 0.5) -> bool:
     # waitForTcpEndpoint
     deadline = time.time() + max(0.1, timeoutSec)
@@ -916,8 +954,13 @@ def startCommand() -> None:
         apiEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
         apiEnv["PYTHONUNBUFFERED"] = "1"
 
+        uvicornArgs = _buildUvicornArgs(env, repoRoot, apiHost, apiPort)
+
+        if "--reload" in uvicornArgs:
+            _printInfo("Dev auto-reload enabled (AUTO_RELOAD_ON_PLUGIN_CHANGE=1, BACKEND_RELOAD_MODE=dev)")
+
         apiPid = _startDetachedProcess(
-            [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)],
+            uvicornArgs,
             cwd=repoRoot,
             env=apiEnv,
             logPath=apiLogPath,

@@ -57,6 +57,23 @@ def _buildCondaActivationCmd(condaExe: str) -> str:
     return f'eval "$({condaExe} shell.bash hook)"'
 
 
+def _buildBackendReloadEnvUpdates(existing: Dict[str, str]) -> Dict[str, str]:
+    # buildBackendReloadEnvUpdates
+    #
+    # Preserve any existing choice (e.g. a dev override of
+    # BACKEND_RELOAD_MODE) across repeat install/provision runs -- same
+    # existing.get(key) or default pattern as every other .env key. These
+    # 3 used to be force-reset to their prod defaults on every run,
+    # silently reverting BACKEND_RELOAD_MODE=dev back to "prod" and
+    # breaking the uvicorn --reload wiring in scipionapi_cli/runtime.py
+    # that depends on it (see _buildUvicornArgs there).
+    return {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": existing.get("AUTO_RELOAD_ON_PLUGIN_CHANGE") or "1",
+        "BACKEND_RELOAD_MODE": existing.get("BACKEND_RELOAD_MODE") or "prod",
+        "BACKEND_RELOAD_TOUCH_PATH": existing.get("BACKEND_RELOAD_TOUCH_PATH") or ".backend_reload_marker",
+    }
+
+
 def _buildDatabaseUrl(
     dbUser: str,
     dbPass: str,
@@ -460,9 +477,7 @@ def installCommand(
         "ADMIN_USERNAME": adminUser,
         "ADMIN_EMAIL": adminEmail,
         "SCIPION_PORT": scipionPort,
-        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
-        "BACKEND_RELOAD_MODE": "prod",
-        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
+        **_buildBackendReloadEnvUpdates(existing),
     }
 
     if condaExe and not existing.get("CONDA_EXE"):
