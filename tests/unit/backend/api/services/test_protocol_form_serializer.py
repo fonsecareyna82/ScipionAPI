@@ -40,6 +40,7 @@ from pyworkflow.protocol.params import (
     FolderParam,
     Form,
     IntParam,
+    KeyedEnumParam,
     PathParam,
 )
 
@@ -125,6 +126,47 @@ def test_regular_scalar_param_preserves_runtime_value():
 
     assert paramDict["paramClass"] == "IntParam"
     assert paramValue == 256
+
+
+def test_keyed_enum_param_serializes_key_pairs_and_string_value():
+    """KeyedEnumParam backs pyworkflow.plugin.Domain's CapabilityProvider
+    registry (e.g. pwem's ProtImportParticles 'importFrom') -- its choices
+    are (key, label) pairs and its value is the selected KEY string, not a
+    positional index like plain EnumParam. Both need to survive
+    serialization unchanged, generically -- no paramClass special-casing
+    exists (or should be added) in the serializer for this."""
+    param = KeyedEnumParam(
+        label="Import from",
+        choices=[("files", "Files"), ("cryosparc", "cryoSPARC")],
+        default="files",
+    )
+
+    value = String("cryosparc")
+
+    paramDict, paramValue = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="importFrom",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=value,
+            mapper=None,
+            projectId=None,
+            protocol=None,
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    assert paramDict["paramClass"] == "KeyedEnumParam"
+    assert paramDict["choices"] == [
+        ["files", "Files"],
+        ["cryosparc", "cryoSPARC"],
+    ]
+    assert paramValue == "cryosparc"
 
 
 def test_regular_boolean_param_preserves_false_value():

@@ -18,6 +18,7 @@ FastAPI + Uvicorn, PostgreSQL via SQLAlchemy 2.0 + Alembic migrations, Celery + 
 ## Architecture map
 
 - `app/backend/api/` — FastAPI routers.
+- `app/backend/api/services/protocol_form_serializer.py` — walks `protocol._definition` (pyworkflow's `Form`) and turns it into the JSON the web form renders. This is fully generic by param type: `paramClass` is `param.__class__.__name__` verbatim, `choices`/`value` are serialized via `app/utils/scipion_helper.toSerializable` (recurses through lists/tuples/`.get()`-able scalars with no per-type branching). This is why `pyworkflow.protocol.params.KeyedEnumParam` (used by `Domain.findCapabilityProviders`-driven params, e.g. pwem's `ProtImportParticles.importFrom` — see `scipion-pyworkflow`'s `.ai/capability-providers.md`) needed **zero changes here**: `choices` naturally serializes as `[[key, label], ...]` and `value` as the selected key string, same generic path as `EnumParam`. Don't add `KeyedEnumParam`-specific branches to this file without a real reason — the genericity is deliberate and already covers it.
 - `app/backend/mapper/` — data-access layer (SQLAlchemy models + a separate flat Postgres mapper for some relational features, e.g. project shares).
 - `app/backend/models/` — Pydantic (v1) request/response schemas.
 - `app/backend/project/`, `app/backend/runtime/` — the layer that actually talks to Scipion (`pyworkflow`/`pwem` imports live here).
