@@ -326,11 +326,22 @@ def _buildUvicornArgs(env: Dict[str, str], repoRoot: Path, apiHost: str, apiPort
     # convention meant for systemd/k8s to watch, reused here for dev too
     # since AUTO_RELOAD_ON_PLUGIN_CHANGE/BACKEND_RELOAD_TOUCH_PATH aren't
     # reset between install runs, see scipionapi_cli/install.py).
-    touchPathRaw = (env.get("BACKEND_RELOAD_TOUCH_PATH", "") or "").strip() or ".backend_reload_marker"
-    touchPath = Path(touchPathRaw)
-    touchPath = touchPath if touchPath.is_absolute() else (repoRoot / touchPath)
+    args += ["--reload"]
 
-    args += ["--reload", "--reload-include", str(touchPath)]
+    touchPathRaw = (env.get("BACKEND_RELOAD_TOUCH_PATH", "") or "").strip() or ".backend_reload_marker"
+
+    # uvicorn's --reload-include must be a pattern relative to the
+    # process's cwd (it globs via Path.glob(), which rejects absolute
+    # patterns) -- _startDetachedProcess always launches uvicorn with
+    # cwd=repoRoot, and reload_trigger.py's own dev-mode resolution
+    # always writes the marker under repoRoot too when the configured
+    # path is relative, so passing the raw relative value through here
+    # points uvicorn at the exact same file. An absolute
+    # BACKEND_RELOAD_TOUCH_PATH can't be expressed as a cwd-relative
+    # glob at all -- skip --reload-include for it and fall back to
+    # uvicorn's default *.py watch rather than crashing the launch.
+    if not Path(touchPathRaw).is_absolute():
+        args += ["--reload-include", touchPathRaw]
 
     return args
 
