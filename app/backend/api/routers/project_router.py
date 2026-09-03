@@ -176,28 +176,26 @@ def importProject(
 @router.get("/{projectId}", response_model=Any)
 def getProject(
     projectId: int,
+    includeTableMetrics: bool = False,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    project = service.getProjectById(
-        mapper=mapper,
-        projectId=projectId,
-        currentUser=currentUser,
-    )
+    if includeTableMetrics:
+        project = service.getProjectById(mapper=mapper, projectId=projectId, currentUser=currentUser,
+                                         includeTableMetrics=True)
+    else:
+        project = service.getProjectById(mapper=mapper, projectId=projectId, currentUser=currentUser)
 
     if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
     return project
 
-@router.get(
-    "/{projectId}/summary",
-    response_model=ProjectOut,
-    status_code=status.HTTP_200_OK,
+
+@router.get("/{projectId}/summary",
+            response_model=ProjectOut,
+            status_code=status.HTTP_200_OK,
 )
 def getProjectSummary(
         projectId: int,

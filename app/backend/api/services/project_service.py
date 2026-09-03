@@ -2931,6 +2931,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             currentUser: dict,
+            includeTableMetrics: bool = False,
     ) -> Optional[dict]:
         # Retrieve project from PostgreSQL using the mapper
         userId = currentUser["id"]
@@ -2942,10 +2943,10 @@ class ProjectService:
         if not os.path.exists(projectPath):
             return None
 
-        project = self.loadProjectFromPostgresql(
-            dbProj=dbProj,
-            mapper=mapper,
-        )
+        if includeTableMetrics:
+            project = self.loadProjectFromPostgresql(dbProj=dbProj, mapper=mapper, includeTableMetrics=True)
+        else:
+            project = self.loadProjectFromPostgresql(dbProj=dbProj, mapper=mapper)
 
         return project
 
@@ -3101,6 +3102,94 @@ class ProjectService:
         return int(result.stdout.split()[0]) if result.stdout else 0
 
     @staticmethod
+    def getProtocolWorkingDirSizes(projectPath: Path, protocolRows: Sequence[Dict[str, Any]]) -> Dict[
+        str, Optional[int]]:
+        runsPath = Path(projectPath) / "Runs"
+        protocolIds = {str(row.get("protocolId")).strip() for row in protocolRows if
+                       row.get("protocolId") not in (None, "")}
+        sizes: Dict[str, Optional[int]] = {protocolId: None for protocolId in protocolIds}
+
+        if not protocolIds or not runsPath.is_dir():
+            return sizes
+
+        try:
+            runDirectories = [entry for entry in runsPath.iterdir() if entry.is_dir()]
+        except OSError:
+            logger.exception("Could not list protocol working directories. projectPath=%s", projectPath)
+            return sizes
+
+        fallbackPaths: Dict[str, Path] = {}
+
+        for entry in runDirectories:
+            match = re.match(r"^0*(\d+)_", entry.name)
+            if not match:
+                continue
+
+            protocolId = str(int(match.group(1)))
+
+            if protocolId in protocolIds:
+                fallbackPaths.setdefault(protocolId, entry)
+
+        pathsByProtocolId: Dict[str, Path] = {}
+
+        for row in protocolRows:
+            rawProtocolId = row.get("protocolId")
+            if rawProtocolId in (None, ""):
+                continue
+
+            protocolId = str(rawProtocolId).strip()
+            protocolClassName = str(row.get("protocolClassName") or "").strip()
+            workingDir = None
+
+            try:
+                numericProtocolId = int(protocolId)
+            except Exception:
+                numericProtocolId = None
+
+            if numericProtocolId is not None and protocolClassName:
+                exactPath = runsPath / ("%06d_%s" % (numericProtocolId, protocolClassName))
+                if exactPath.is_dir():
+                    workingDir = exactPath
+
+            if workingDir is None:
+                workingDir = fallbackPaths.get(protocolId)
+
+            if workingDir is not None:
+                pathsByProtocolId[protocolId] = workingDir
+
+        if not pathsByProtocolId:
+            return sizes
+
+        protocolIdByPath = {str(path): protocolId for protocolId, path in pathsByProtocolId.items()}
+        workingDirPaths = list(protocolIdByPath.keys())
+        batchSize = 128
+
+        for offset in range(0, len(workingDirPaths), batchSize):
+            batchPaths = workingDirPaths[offset:offset + batchSize]
+
+            try:
+                result = subprocess.run(["du", "-sb", *batchPaths], capture_output=True, text=True, check=False)
+            except Exception:
+                logger.exception("Could not calculate protocol working directory sizes. projectPath=%s", projectPath)
+                continue
+
+            if result.returncode != 0:
+                logger.warning(
+                    "du returned status %s while calculating protocol working directory sizes. projectPath=%s error=%s",
+                    result.returncode, projectPath, result.stderr.strip())
+
+            for line in result.stdout.splitlines():
+                try:
+                    sizeText, pathText = line.split("\t", 1)
+                    protocolId = protocolIdByPath.get(pathText)
+                    if protocolId is not None:
+                        sizes[protocolId] = int(sizeText)
+                except Exception:
+                    logger.debug("Ignoring malformed du output line: %r", line)
+
+        return sizes
+
+    @staticmethod
     def countProtocols(path: str) -> int:
         try:
             return sum(1 for entry in Path(path).iterdir() if entry.is_dir())
@@ -3199,6 +3288,7 @@ class ProjectService:
             persistedOutputsByProtocolId: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
             protocolStepSummaryByProtocolId: Optional[Dict[str, Dict[str, Any]]] = None,
             inputRefsByProtocolId: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+            workingDirSizeByProtocolId: Optional[Dict[str, Optional[int]]] = None,
             allowRuntimeFallback: bool = True,
     ) -> dict:
         """Assemble protocol graph using PostgreSQL as source of truth for nodes + edges."""
@@ -3375,6 +3465,11 @@ class ProjectService:
                 "createdAt": {"label": "Created", "value": row.get("createdAt"), "type": "datetime",
                               "defaultVisible": False},
             }
+
+            if workingDirSizeByProtocolId is not None:
+                extraTableColumns["workingDirSize"] = {"label": "Working dir",
+                                                       "value": workingDirSizeByProtocolId.get(nodeId), "type": "bytes",
+                                                       "defaultVisible": True}
 
             # Prefer the live protocol object coming from runs graph.
             # Runtime fallback is optional so the graph can be built from PostgreSQL only.
@@ -3744,6 +3839,7 @@ class ProjectService:
             self,
             dbProj: dict,
             mapper: PostgresqlFlatMapper,
+            includeTableMetrics: bool = False,
     ) -> dict:
         """
         Load a project workflow tree using PostgreSQL only.
@@ -3758,6 +3854,11 @@ class ProjectService:
             projectId=dbProj['id'],
         )
 
+        workingDirSizeByProtocolId = None
+
+        if includeTableMetrics:
+            workingDirSizeByProtocolId = self.getProtocolWorkingDirSizes(projPath, pgGraphData["protocolRows"])
+
         graphData = self.buildProtocolsGraph(
             dbProj['id'],
             pgGraphData["protocolRows"],
@@ -3767,6 +3868,7 @@ class ProjectService:
             persistedOutputsByProtocolId=pgGraphData["persistedOutputsByProtocolId"],
             protocolStepSummaryByProtocolId=pgGraphData.get("protocolStepSummaryByProtocolId"),
             inputRefsByProtocolId=pgGraphData.get("inputRefsByProtocolId"),
+            workingDirSizeByProtocolId=workingDirSizeByProtocolId,
             allowRuntimeFallback=False,
         )
 

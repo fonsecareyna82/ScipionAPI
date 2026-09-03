@@ -1052,6 +1052,7 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
                 },
             },
         },
+        workingDirSizeByProtocolId={"10": 2147483648},
         allowRuntimeFallback=False,
     )
 
@@ -1073,6 +1074,12 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
             "value": "2026-09-01T09:00:00+00:00",
             "type": "datetime",
             "defaultVisible": False,
+        },
+        "workingDirSize": {
+            "label": "Working dir",
+            "value": 2147483648,
+            "type": "bytes",
+            "defaultVisible": True,
         },
     }
 
@@ -1432,3 +1439,51 @@ def test_BuildProtocolsGraphUsesPersistedOutputInfoWithoutRuntime(service):
             },
         },
     ]
+
+
+def test_GetProtocolWorkingDirSizesCalculatesSizesInBatch(service, tmp_path, monkeypatch):
+    projectPath = tmp_path / "project"
+    runsPath = projectPath / "Runs"
+    firstWorkingDir = runsPath / "000010_ProtImportMovies"
+    secondWorkingDir = runsPath / "000020_ProtMotionCorr"
+
+    firstWorkingDir.mkdir(parents=True)
+    secondWorkingDir.mkdir(parents=True)
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fakeRun(command, capture_output, text, check):
+        calls.append(command)
+        paths = command[2:]
+        values = {
+            str(firstWorkingDir): 1024,
+            str(secondWorkingDir): 2147483648,
+        }
+        return Result("\n".join(f"{values[path]}\t{path}" for path in paths))
+
+    monkeypatch.setattr("app.backend.api.services.project_service.subprocess.run", fakeRun)
+
+    sizes = service.getProtocolWorkingDirSizes(
+        projectPath,
+        [
+            {"protocolId": "10", "protocolClassName": "ProtImportMovies"},
+            {"protocolId": "20", "protocolClassName": "ProtMotionCorr"},
+        ],
+    )
+
+    assert sizes == {
+        "10": 1024,
+        "20": 2147483648,
+    }
+
+    assert len(calls) == 1
+    assert calls[0][0:2] == ["du", "-sb"]
+
+
