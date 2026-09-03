@@ -517,10 +517,16 @@ def test_BuildUvicornArgsAddsReloadInDevModeWhenEnabled():
     # (a prod/systemd convention, not a .py file). Regression coverage for
     # exactly the bug this fixes: relying on the default watch glob
     # silently never reloads on plugin install/uninstall.
-    assert args[includeIdx + 1] == "/repo/.backend_reload_marker"
+    #
+    # Must stay relative to cwd (repoRoot, per _startDetachedProcess's
+    # cwd=repoRoot) -- uvicorn's --reload-include globs via Path.glob(),
+    # which raises NotImplementedError for an absolute pattern.
+    # Regression coverage: an earlier version of this fix passed an
+    # absolute path here and crashed uvicorn's own startup.
+    assert args[includeIdx + 1] == ".backend_reload_marker"
 
 
-def test_BuildUvicornArgsResolvesRelativeTouchPathAgainstRepoRoot():
+def test_BuildUvicornArgsPassesThroughARelativeTouchPathAsIs():
     env = {
         "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
         "BACKEND_RELOAD_MODE": "dev",
@@ -530,7 +536,7 @@ def test_BuildUvicornArgsResolvesRelativeTouchPathAgainstRepoRoot():
     args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
 
     includeIdx = args.index("--reload-include")
-    assert args[includeIdx + 1] == "/repo/app/backend/_reload_marker.py"
+    assert args[includeIdx + 1] == "app/backend/_reload_marker.py"
 
 
 def test_BuildUvicornArgsDefaultsTouchPathWhenUnset():
@@ -542,4 +548,17 @@ def test_BuildUvicornArgsDefaultsTouchPathWhenUnset():
     args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
 
     includeIdx = args.index("--reload-include")
-    assert args[includeIdx + 1] == "/repo/.backend_reload_marker"
+    assert args[includeIdx + 1] == ".backend_reload_marker"
+
+
+def test_BuildUvicornArgsSkipsReloadIncludeForAnAbsoluteTouchPath():
+    env = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "dev",
+        "BACKEND_RELOAD_TOUCH_PATH": "/var/lib/scipion/.backend_reload_marker",
+    }
+
+    args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
+
+    assert "--reload" in args
+    assert "--reload-include" not in args
