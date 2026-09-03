@@ -49,6 +49,35 @@ def test_ResolveApiPortSelectsFreePort(monkeypatch):
     assert installModule._resolveApiPort({}) == "45000"
 
 
+def test_BuildBackendReloadEnvUpdatesDefaultsToProdOnFreshInstall():
+    updates = installModule._buildBackendReloadEnvUpdates({})
+
+    assert updates == {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "prod",
+        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
+    }
+
+
+def test_BuildBackendReloadEnvUpdatesPreservesDevOverrideAcrossReinstall():
+    # Regression: these 3 keys used to be force-reset to their prod
+    # defaults on every install/provision run, silently reverting a
+    # user's BACKEND_RELOAD_MODE=dev back to "prod" and breaking the
+    # uvicorn --reload wiring that depends on it.
+    existing = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "dev",
+        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
+        "API_PORT": "41000",
+    }
+
+    updates = installModule._buildBackendReloadEnvUpdates(existing)
+
+    assert updates["BACKEND_RELOAD_MODE"] == "dev"
+    assert updates["AUTO_RELOAD_ON_PLUGIN_CHANGE"] == "1"
+    assert updates["BACKEND_RELOAD_TOUCH_PATH"] == ".backend_reload_marker"
+
+
 def test_FindFreePortSkipsExcludedPort(monkeypatch):
     ports = iter([
         45000,

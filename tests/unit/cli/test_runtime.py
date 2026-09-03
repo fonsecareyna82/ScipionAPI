@@ -26,10 +26,15 @@
 import socket
 import sys
 import types
+from pathlib import Path
 
 import scipionapi_cli.runtime as runtimeModule
 
-from scipionapi_cli.runtime import _canBindTcpPort
+from scipionapi_cli.runtime import (
+    _buildUvicornArgs,
+    _canBindTcpPort,
+    _envBool,
+)
 
 
 def test_CanBindTcpPortDetectsOccupiedPort():
@@ -457,3 +462,84 @@ def test_ProtocolWorkerDoesNotRecycleAfterEveryTask():
     )
 
 
+
+
+def test_EnvBoolParsesTruthyStringsCaseInsensitively():
+    for truthy in ("1", "true", "True", "YES", "on"):
+        assert _envBool({"FLAG": truthy}, "FLAG", False) is True
+
+    for falsy in ("0", "false", "no", "off", "", "garbage"):
+        assert _envBool({"FLAG": falsy}, "FLAG", True) is False
+
+
+def test_EnvBoolFallsBackToDefaultWhenKeyMissing():
+    assert _envBool({}, "FLAG", True) is True
+    assert _envBool({}, "FLAG", False) is False
+
+
+def test_BuildUvicornArgsOmitsReloadByDefault():
+    # No AUTO_RELOAD_ON_PLUGIN_CHANGE / BACKEND_RELOAD_MODE set at all --
+    # this is the fresh-install default (BACKEND_RELOAD_MODE=prod), so
+    # --reload must never be added unless a real dev opt-in is present.
+    args = _buildUvicornArgs({}, Path("/repo"), "0.0.0.0", "8080")
+
+    assert "--reload" not in args
+    assert args[:2] == [sys.executable, "-m"]
+
+
+def test_BuildUvicornArgsOmitsReloadInProdMode():
+    env = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "prod",
+    }
+
+    args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
+
+    assert "--reload" not in args
+
+
+def test_BuildUvicornArgsAddsReloadInDevModeWhenEnabled():
+    env = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "dev",
+        "BACKEND_RELOAD_TOUCH_PATH": ".backend_reload_marker",
+    }
+
+    args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
+
+    assert "--reload" in args
+    assert "--reload-include" in args
+
+    includeIdx = args.index("--reload-include")
+    # Explicit --reload-include is what makes this work regardless of the
+    # marker's extension -- uvicorn's default reload watch is *.py only,
+    # and BACKEND_RELOAD_TOUCH_PATH's own default is .backend_reload_marker
+    # (a prod/systemd convention, not a .py file). Regression coverage for
+    # exactly the bug this fixes: relying on the default watch glob
+    # silently never reloads on plugin install/uninstall.
+    assert args[includeIdx + 1] == "/repo/.backend_reload_marker"
+
+
+def test_BuildUvicornArgsResolvesRelativeTouchPathAgainstRepoRoot():
+    env = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "dev",
+        "BACKEND_RELOAD_TOUCH_PATH": "app/backend/_reload_marker.py",
+    }
+
+    args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
+
+    includeIdx = args.index("--reload-include")
+    assert args[includeIdx + 1] == "/repo/app/backend/_reload_marker.py"
+
+
+def test_BuildUvicornArgsDefaultsTouchPathWhenUnset():
+    env = {
+        "AUTO_RELOAD_ON_PLUGIN_CHANGE": "1",
+        "BACKEND_RELOAD_MODE": "dev",
+    }
+
+    args = _buildUvicornArgs(env, Path("/repo"), "0.0.0.0", "8080")
+
+    includeIdx = args.index("--reload-include")
+    assert args[includeIdx + 1] == "/repo/.backend_reload_marker"
