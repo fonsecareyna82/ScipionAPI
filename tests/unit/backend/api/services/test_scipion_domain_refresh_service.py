@@ -60,6 +60,12 @@ class DomainStub:
         "OldProtocol": object(),
     }
 
+    _capabilityProviders = {
+        "oldProvider": object(),
+    }
+
+    _capabilityProvidersLoaded = True
+
     getPluginsCalls = 0
     getProtocolsCalls = 0
     newProtocol = object()
@@ -140,6 +146,13 @@ def test_RefreshScipionDomainClearsCachedRegistries(monkeypatch):
     assert DomainStub._wizards == {}
     assert DomainStub._preferred_viewers is None
     assert DomainStub._Domain__mapperDict is None
+    # Regression: a newly (un)installed plugin's CapabilityProvider (e.g.
+    # cryoSPARC's ProtImportParticles import provider) must stop showing
+    # stale after a plugin-revision-triggered refresh, same as every
+    # other Domain registry above -- this cache was originally missing
+    # from _resetScipionDomainCaches entirely.
+    assert DomainStub._capabilityProviders == {}
+    assert DomainStub._capabilityProvidersLoaded is False
     assert DomainStub.getPluginsCalls == 1
     assert DomainStub.getProtocolsCalls == 1
 

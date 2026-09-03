@@ -55,6 +55,16 @@ def _resetScipionDomainCaches(domain) -> None:
     domain._viewers = {}
     domain._wizards = {}
     domain._preferred_viewers = None
+    # CapabilityProvider registry (pyworkflow.plugin.Domain, see
+    # scipion-pyworkflow's .ai/capability-providers.md) -- e.g. pwem's
+    # ProtImportParticles 'importFrom' choices. Was missing here: every
+    # other Domain cache above gets reset on plugin install/uninstall via
+    # the plugins_revision file check, but this one didn't, so a newly
+    # (un)installed plugin's capability provider (cryoSPARC's import
+    # provider, for example) kept showing stale until the whole process
+    # was restarted.
+    domain._capabilityProviders = {}
+    domain._capabilityProvidersLoaded = False
     setattr(domain, "_Domain__mapperDict", None)
 
 
