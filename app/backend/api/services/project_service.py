@@ -10088,6 +10088,271 @@ class ProjectService:
         return {"handled": False}
 
     # ======================================================================
+    # Analyze Results: CTF (SetOfCTF)
+    # ======================================================================
+
+    def _getPostgresqlCtfReaderIfAvailable(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ):
+        if mapper is None:
+            return None
+
+        try:
+            from app.backend.viewers.postgresql_ctf_reader import (
+                PostgresqlCtfReader,
+            )
+
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+
+            reader = PostgresqlCtfReader(
+                db=mapper.db,
+                projectId=projectId,
+                protocolId=readerProtocolId,
+                outputName=outputName,
+            )
+
+            if reader.hasOutput():
+                return reader
+
+        except Exception:
+            logger.exception(
+                "Failed to initialize PostgreSQL CTF reader. "
+                "projectId=%s protocolId=%s outputName=%s",
+                projectId,
+                protocolId,
+                outputName,
+            )
+
+        return None
+
+    def listOutputCtfService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            mapper=None,
+    ) -> Dict[str, Any]:
+        pgReader = self._getPostgresqlCtfReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.listCtfs()
+
+            if payload is not None:
+                return payload
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="SetOfCTF",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=(
+                    getattr(pgReader, "lastSkipReason", None)
+                    if pgReader is not None
+                    else "reader_not_available"
+                ),
+            )
+
+        raise HTTPException(
+            status_code=404,
+            detail="SetOfCTF output is not available",
+        )
+
+    def _renderCtfPostgresqlImage(
+            self,
+            projectId: int,
+            rawPath: Any,
+            defaultIndex: Optional[int],
+            size: int,
+            fmt: str,
+            inline: bool,
+            quality: int,
+            mapper,
+    ) -> Response:
+        pathText = str(rawPath or "").strip()
+
+        if not pathText:
+            raise HTTPException(
+                status_code=404,
+                detail="CTF image path is missing",
+            )
+
+        imageIndex = (
+            int(defaultIndex)
+            if defaultIndex is not None
+            else 0
+        )
+
+        imagePath = pathText
+
+        if "@" in pathText:
+            indexText, imagePath = pathText.split("@", 1)
+
+            try:
+                imageIndex = int(float(indexText))
+            except Exception:
+                pass
+
+        from app.backend.viewers.postgresql_path_resolver import (
+            PostgresqlProjectPathResolver,
+        )
+
+        resolvedPath = PostgresqlProjectPathResolver(
+            db=mapper.db,
+            projectId=projectId,
+        ).resolveExistingPath(imagePath)
+
+        if resolvedPath is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "CTF image path could not be resolved "
+                    "from PostgreSQL metadata: %s"
+                    % imagePath
+                ),
+            )
+
+        preview = OutputsPreview(
+            currentProject=self.currentProject,
+            protocol=None,
+            output=None,
+        )
+
+        return preview.renderImageFromFilePath(
+            filePath=resolvedPath,
+            size=size,
+            fmt=fmt,
+            index=imageIndex,
+            inline=inline,
+            quality=quality,
+            applyTransform=False,
+        )
+
+    def renderCtfPsdImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            ctfId: Union[int, str],
+            size: int = 1024,
+            fmt: str = "png",
+            inline: bool = True,
+            quality: int = 75,
+            mapper=None,
+    ) -> Response:
+        pgReader = self._getPostgresqlCtfReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            ctf = pgReader.getCtf(ctfId)
+
+            if ctf is not None:
+                psdFile = ctf.get("psdFile")
+
+                if psdFile:
+                    return self._renderCtfPostgresqlImage(
+                        projectId=projectId,
+                        rawPath=psdFile,
+                        defaultIndex=0,
+                        size=size,
+                        fmt=fmt,
+                        inline=inline,
+                        quality=quality,
+                        mapper=mapper,
+                    )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="SetOfCTF PSD",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=(
+                    getattr(pgReader, "lastSkipReason", None)
+                    if pgReader is not None
+                    else "reader_not_available"
+                ),
+                ctfId=ctfId,
+            )
+
+        raise HTTPException(
+            status_code=404,
+            detail="CTF PSD is not available",
+        )
+
+    def renderCtfMicrographImageService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            ctfId: Union[int, str],
+            size: int = 1024,
+            fmt: str = "png",
+            inline: bool = True,
+            quality: int = 75,
+            mapper=None,
+    ) -> Response:
+        pgReader = self._getPostgresqlCtfReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            micrograph = pgReader.getMicrographImageInfo(
+                ctfId
+            )
+
+            if micrograph is not None:
+                return self._renderCtfPostgresqlImage(
+                    projectId=projectId,
+                    rawPath=micrograph.get("fileName"),
+                    defaultIndex=micrograph.get("locationIndex"),
+                    size=size,
+                    fmt=fmt,
+                    inline=inline,
+                    quality=quality,
+                    mapper=mapper,
+                )
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="SetOfCTF micrograph",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=(
+                    getattr(pgReader, "lastSkipReason", None)
+                    if pgReader is not None
+                    else "reader_not_available"
+                ),
+                ctfId=ctfId,
+            )
+
+        raise HTTPException(
+            status_code=404,
+            detail="CTF micrograph is not available",
+        )
+
+    # ======================================================================
     # Analyze Results: CTF Tomography (CTFTomoSeries)
     # ======================================================================
     def _resolveOutputForCtftomoSeries(

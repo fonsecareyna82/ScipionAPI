@@ -2602,8 +2602,152 @@ def createNewSetOfTiltSeries(
         )
 
 # ==============================================================================
+#        ANALYZE RESULTS: CTF (SetOfCTF)
+# ==============================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctf",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listCtfModels(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(
+        mapper,
+        projectId,
+        currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+    return service.listOutputCtfService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        mapper=mapper,
+    )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctf/{ctfId}/psd",
+    response_model=None,
+)
+def renderCtfPsdImage(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    ctfId: str,
+    size: int = Query(
+        1024,
+        ge=16,
+        le=4096,
+    ),
+    fmt: str = Query(
+        "png",
+        alias="format",
+    ),
+    inline: bool = Query(True),
+    quality: int = Query(
+        75,
+        ge=1,
+        le=100,
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(
+        mapper,
+        projectId,
+        currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+    return service.renderCtfPsdImageService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        ctfId=ctfId,
+        size=size,
+        fmt=fmt,
+        inline=inline,
+        quality=quality,
+        mapper=mapper,
+    )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/ctf/{ctfId}/micrograph",
+    response_model=None,
+)
+def renderCtfMicrographImage(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    ctfId: str,
+    size: int = Query(
+        1024,
+        ge=16,
+        le=4096,
+    ),
+    fmt: str = Query(
+        "png",
+        alias="format",
+    ),
+    inline: bool = Query(True),
+    quality: int = Query(
+        75,
+        ge=1,
+        le=100,
+    ),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(
+        mapper,
+        projectId,
+        currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
+    return service.renderCtfMicrographImageService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        ctfId=ctfId,
+        size=size,
+        fmt=fmt,
+        inline=inline,
+        quality=quality,
+        mapper=mapper,
+    )
+
+
+# ==============================================================================
 #        ANALYZE RESULTS: CTF TOMOGRAPHY (SetOfCTFTomoSeries)
 # ==============================================================================
+
 
 class CtftomoNewSetRequest(BaseModel):
     """
