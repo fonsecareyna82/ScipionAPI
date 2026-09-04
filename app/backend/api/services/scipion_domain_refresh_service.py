@@ -26,10 +26,12 @@
 import importlib
 import logging
 import threading
+from typing import Set
 
 from pyworkflow.config import Config
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,32 @@ def _resetScipionDomainCaches(domain) -> None:
     setattr(domain, "_Domain__mapperDict", None)
 
 
+def _getCleanScipionPluginNames() -> Set[str]:
+    code = """
+    import contextlib
+    import sys
+
+    with contextlib.redirect_stdout(sys.stderr):
+        from pyworkflow.config import Config
+
+        Config.setDomain("pwem")
+        domain = Config.getDomain()
+
+        _scipionPayload = sorted((domain.getPlugins() or {}).keys())
+    """
+
+    pluginNames = JsonSubprocessRunner().run(
+        code=code,
+        operationName="Inspect clean Scipion plugins",
+    )
+
+    return {
+        str(pluginName).strip()
+        for pluginName in pluginNames or []
+        if str(pluginName).strip()
+    }
+
+
 def _refreshScipionDomainLocked(force: bool = False) -> bool:
     global _lastDomainRevision
 
@@ -72,7 +100,26 @@ def _refreshScipionDomainLocked(force: bool = False) -> bool:
 
     _resetScipionDomainCaches(domain)
 
-    domain.getPlugins()
+    currentPlugins = domain.getPlugins()
+    cleanPluginNames = _getCleanScipionPluginNames()
+
+    stalePluginNames = sorted(set(currentPlugins) - cleanPluginNames)
+
+    if stalePluginNames:
+        logger.warning(
+            "Removing stale Scipion plugins from runtime domain: %s",
+            stalePluginNames,
+        )
+
+    domain._plugins = {
+        pluginName: pluginModule
+        for pluginName, pluginModule in currentPlugins.items()
+        if pluginName in cleanPluginNames
+    }
+
+    domain._protocols = {}
+    setattr(domain, "_Domain__mapperDict", None)
+
     domain.getProtocols()
 
     _lastDomainRevision = revision
