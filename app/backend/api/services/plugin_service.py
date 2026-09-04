@@ -666,6 +666,7 @@ class PluginService:
             serializedPlugin["devel"] = False
             return
 
+        serializedPlugin["installed"] = True
         serializedPlugin["installMode"] = "devel"
         serializedPlugin["localPath"] = develPlugin.get("path", "")
         serializedPlugin["devel"] = True

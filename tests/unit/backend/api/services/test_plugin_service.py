@@ -228,6 +228,36 @@ def test_existing_repository_plugins_are_not_duplicated_by_devel_manifest(tmp_pa
     assert serializedList == [{"pipName": "scipion-em-local", "name": "Catalog Plugin"}]
 
 
+def test_devel_metadata_marks_existing_catalog_plugin_as_installed(tmp_path):
+    pluginPath = tmp_path / "scipion-em-local"
+    pluginPath.mkdir()
+
+    service = makeService(
+        tmp_path,
+        plugins=[
+            {
+                "pipName": "scipion-em-local",
+                "path": str(pluginPath),
+                "installedAt": "2026-06-01T10:00:00",
+                "updatedAt": "2026-06-01T11:00:00",
+            }
+        ],
+    )
+
+    serializedPlugin = {
+        "pipName": "scipion-em-local",
+        "installed": False,
+        "toUpdate": False,
+    }
+
+    service._applyDevelMetadata(serializedPlugin)
+
+    assert serializedPlugin["installed"] is True
+    assert serializedPlugin["devel"] is True
+    assert serializedPlugin["installMode"] == "devel"
+    assert serializedPlugin["localPath"] == str(pluginPath)
+
+
 class DummyCatalogPlugin:
     latestRelease = "1.0.0"
     pipVersion = "1.0.0"
