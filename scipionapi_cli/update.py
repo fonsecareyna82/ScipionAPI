@@ -623,16 +623,17 @@ def _runPipInstall(repoRoot: Path, args: List[str]) -> None:
 
 def _installUpdatedApi(repoRoot: Path) -> None:
     # installUpdatedApi
-    reqPath = repoRoot / "requirements.txt"
-    if reqPath.exists():
-        _printStep("Installing updated Python requirements", str(reqPath))
-        _printInfo("This can take a few minutes depending on network and package cache.")
-        _runPipInstall(repoRoot, ["-r", str(reqPath)])
-    else:
-        _printWarning("requirements.txt not found after API update; skipping requirements install")
-
-    _printStep("Installing ScipionAPI package in editable mode", str(repoRoot))
-    _runPipInstall(repoRoot, ["-e", str(repoRoot)])
+    _printStep(
+        "Installing updated ScipionAPI and Python dependencies",
+        str(repoRoot),
+    )
+    _printInfo(
+        "This can take a few minutes depending on network and package cache."
+    )
+    _runPipInstall(
+        repoRoot,
+        ["-e", str(repoRoot)],
+    )
 
 
 def _cleanupOldBackups(scipionHome: Path, keepBackups: int) -> None:

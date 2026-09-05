@@ -26,14 +26,22 @@ FastAPI + Uvicorn, PostgreSQL via SQLAlchemy 2.0 + Alembic migrations, Celery + 
 - `scipionapi_cli/` — a separate, packaged admin/provisioning CLI (`scipionapi` console script): `bootstrap.py`, `provision.py`, `db.py`, `admin.py`, `doctor.py`. This is what sets up Postgres/Valkey/the Scipion env for a fresh install — not "clone and pytest," there's a real provisioning flow.
 - `tests/{unit,integration,smoke}/` — `integration/` needs real Postgres+Valkey running (`tests/integration/db/test_migrations.py`, `tests/integration/workers/test_task_queue.py` will fail without them); `unit/` and `smoke/` don't.
 
-## Packaging note (two files, deliberately)
+## Packaging
 
-Unlike the 3 core repos (which consolidated test deps into `pyproject.toml`'s `[project.optional-dependencies]`), **this repo currently splits dependencies across two files**: `pyproject.toml` only packages the `scipionapi_cli` CLI itself (`typer`, `rich`, `python-dotenv` — installed via `pip install -e .`), while `requirements.txt` carries the full backend runtime stack (FastAPI, Celery, SQLAlchemy, pydantic, and the ecosystem packages below). Both are installed together in CI (`pip install -r requirements.txt && pip install -e .`). See `.ai/tech-debt.md` for the consolidation recommendation.
+`pyproject.toml` is the authoritative dependency definition for both the
+ScipionAPI backend and the packaged `scipionapi_cli` CLI.
+
+Runtime dependencies live in `[project].dependencies`. Test-only
+dependencies (`pytest`, `httpx`) live in `[project.optional-dependencies].test`.
+
+`requirements.txt` is retained only as a compatibility shim and installs
+the editable project with test dependencies. New install/bootstrap/update
+code must install from `pyproject.toml`, not maintain a second dependency list.
 
 ## Testing
 
 - CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.
-- Run locally: needs real Postgres + Valkey (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -r requirements.txt && pip install -e . && pytest`.
+- Run locally: needs real Postgres + Valkey (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -e ".[test]" && pytest`.
 - `tests/smoke/` (e.g. `test_app_import.py`, `test_main_app.py`) is the fastest thing to run to sanity-check the app still imports/boots.
 
 ## PostgreSQL runtime Set contract
@@ -48,7 +56,7 @@ Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatib
 
 ## Known gotchas
 
-- **`requirements.txt` pulls `scipion-pyworkflow`/`scipion-em`/`scipion-app` from a personal fork** (`git+https://github.com/fonsecareyna82/...@devel`), not the official `scipion-em` GitHub org. Installing from this file alone gets you Yunior's fork state, which may be ahead of or diverge from the official repos — if you're testing changes made in this workspace's own checkouts of those 3 repos, you likely need an editable local install instead, not whatever `requirements.txt` resolves to.
+- **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.
 - **Runtime-generated persistence artifacts are not source files**: files such as `dump.rdb` and `.backend_reload_marker` are gitignored and must remain untracked.
 - **Valkey intentionally still uses the Redis Celery transport/client stack**: `celery[redis]`, `redis-py`, and `redis://`/`rediss://` URLs remain correct. Do not replace them merely because the server is Valkey.
 - `pydantic==1.10.x` pin (see Stack above) — a real, easy-to-violate-by-accident constraint.

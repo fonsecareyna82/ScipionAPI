@@ -8,11 +8,16 @@ Findings from a real audit of this repo (2026-08-04), refreshed 2026-08-12 again
 
 Other large files for context: `utils/thumbnail_service.py` (7685 lines), `mapper/postgresql_runtime_mapper.py` (6379 lines, up from 5676 — grew during the identity/atomicity/SQLite-compat hardening work), `mapper/scipion_set_mapper.py` (4604 lines), `api/routers/project_router.py` (4250 lines).
 
-## Dependency management split across two files
+## Dependency management consolidated in `pyproject.toml`
 
-`pyproject.toml` only packages the `scipionapi_cli` CLI (a handful of deps: `typer`, `rich`, `python-dotenv`); the full backend stack (FastAPI, Celery, SQLAlchemy, pydantic, and the ecosystem packages) lives in `requirements.txt`, installed separately. **Recommended fix (not executed - documentation only for now): consolidate into `pyproject.toml`'s `dependencies`/`[project.optional-dependencies]`, same pattern already applied to `scipion-pyworkflow`/`scipion-em`/`scipion-app`.** This would also be the natural place to fix the fork-pin issue below while touching this file.
+Resolved: `pyproject.toml` is now the authoritative dependency definition
+for both the backend runtime and CLI. Test-only dependencies live under
+`[project.optional-dependencies].test`.
 
-## `requirements.txt` points at a personal fork, not the official org - intentional for now
+`requirements.txt` remains only as a compatibility shim and does not
+duplicate dependency versions.
+
+## Scipion core dependencies point at a personal fork, not the official org - intentional for now
 
 ```
 scipion-pyworkflow @ git+https://github.com/fonsecareyna82/scipion-pyworkflow.git@devel

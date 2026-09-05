@@ -428,19 +428,14 @@ def bootstrapCommand(
     )
     _printSuccess("pip upgrade completed")
 
-    reqPath = repoRoot / "requirements.txt"
-    _printStep("Installing requirements", str(reqPath))
-    if reqPath.exists():
-        _printInfo("Streaming pip output live")
-        _pip(
-            condaExe,
-            envName,
-            ["install", "-r", str(reqPath)],
-            cwd=repoRoot,
-        )
-        _printSuccess("requirements.txt installation completed")
-    else:
-        _printWarning("requirements.txt not found, skipping requirements installation")
+    _printStep("Installing ScipionAPI and dependencies", str(repoRoot))
+    _pip(
+        condaExe,
+        envName,
+        ["install", "-e", str(repoRoot)],
+        cwd=repoRoot,
+    )
+    _printSuccess("ScipionAPI package installation completed")
 
     _printStep("Checking Scipion core packages")
     if installScipionCore:
@@ -464,14 +459,5 @@ def bootstrapCommand(
             _printSuccess("Scipion core packages already available")
     else:
         _printWarning("Skipping Scipion core package installation")
-
-    _printStep("Installing package in editable mode", str(repoRoot))
-    _pip(
-        condaExe,
-        envName,
-        ["install", "-e", str(repoRoot)],
-        cwd=repoRoot,
-    )
-    _printSuccess("Editable package installation completed")
 
     _printPanel("Bootstrap completed", f"Environment ready: {envName}")

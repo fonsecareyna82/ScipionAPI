@@ -239,15 +239,10 @@ bootstrapEnv() {
   echo "[bootstrap] Upgrading pip"
   runPipInstall --upgrade pip
 
-  if [[ -f "${repoRoot}/requirements.txt" ]]; then
-    echo "[bootstrap] Installing requirements.txt"
-    runPipInstall -r "${repoRoot}/requirements.txt"
-  fi
+  echo "[bootstrap] Installing ScipionAPI and dependencies"
+  runPipInstall -e "${repoRoot}"
 
   ensureScipionCoreInstalled
-
-  echo "[bootstrap] Installing package in editable mode"
-  runPipInstall -e "${repoRoot}"
 
   echo "Bootstrap completed."
 }

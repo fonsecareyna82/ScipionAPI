@@ -7,9 +7,47 @@ name = "scipionapi"
 dynamic = ["version"]
 requires-python = ">=3.8"
 dependencies = [
-  "typer>=0.12",
-  "rich>=13",
-  "python-dotenv>=1.0",
+  "scipion-pyworkflow @ git+https://github.com/fonsecareyna82/scipion-pyworkflow.git@devel",
+  "scipion-em @ git+https://github.com/fonsecareyna82/scipion-em.git@devel",
+  "scipion-app @ git+https://github.com/fonsecareyna82/scipion-app.git@devel",
+  "scipion-em-tomo",
+  "pyxmipp3",
+  "xmipp3-installer",
+
+  "fastapi==0.116.1",
+  "uvicorn[standard]==0.33.0",
+
+  "celery[redis]==5.5.3",
+  "redis>=5.2.1,<6",
+
+  "psycopg2-binary==2.9.10",
+  "sqlalchemy==2.0.43",
+  "alembic==1.14.1",
+  "python-dotenv==1.0.1",
+
+  "passlib[bcrypt]==1.7.4",
+  "bcrypt==4.0.1",
+  "python-jose==3.4.0",
+  "pydantic==1.10.13; python_version == '3.8'",
+  "pydantic==1.10.26; python_version >= '3.9'",
+  "email-validator>=2,<3",
+
+  "pillow==10.1.0",
+  "numpy~=1.24.4; python_version == '3.8'",
+  "numpy==1.26.1; python_version >= '3.9'",
+  "matplotlib~=3.7.3; python_version == '3.8'",
+  "matplotlib==3.8.1; python_version >= '3.9'",
+  "scikit-image===0.19.3; python_version < '3.10'",
+  "scikit-image>=0.22; python_version >= '3.10'",
+
+  "typer==0.20.0",
+  "rich==14.2.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx==0.28.1",
+  "pytest==8.3.5",
 ]
 
 [project.scripts]
