@@ -20,6 +20,9 @@ fi
 effectiveEnvName="${SCIPIONAPI_CONDA_ENV:-${SCIPIONAPI_ENV_NAME:-scipion4Web}}"
 pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
 
+javaPackage="${SCIPIONAPI_JAVA_PACKAGE:-openjdk=21}"
+minJavaVersion=21
+
 # pipRobustnessDefaults
 pipRetries="${SCIPIONAPI_PIP_RETRIES:-10}"
 pipTimeout="${SCIPIONAPI_PIP_TIMEOUT:-120}"
@@ -151,6 +154,75 @@ ensureScipionCoreInstalled() {
   }
 }
 
+javaMajorVersion() {
+  "${condaExe}" run -n "${effectiveEnvName}" python -c '
+import re
+import subprocess
+
+try:
+    proc = subprocess.run(
+        ["java", "-version"],
+        capture_output=True,
+        text=True,
+    )
+except Exception:
+    raise SystemExit(1)
+
+if proc.returncode != 0:
+    raise SystemExit(1)
+
+text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+match = re.search(r'\''version\s+"([^"]+)"'\'', text)
+
+if not match:
+    raise SystemExit(1)
+
+version = match.group(1)
+parts = version.split(".")
+
+if parts[0] == "1" and len(parts) > 1:
+    print(int(parts[1]))
+else:
+    print(int(re.split(r"[^0-9]", parts[0])[0]))
+' 2>/dev/null
+}
+
+
+ensureJavaRuntime() {
+  local javaVersion
+  javaVersion="$(javaMajorVersion || true)"
+
+  if [[ "${javaVersion}" =~ ^[0-9]+$ ]] && \
+     (( javaVersion >= minJavaVersion )); then
+    echo "[bootstrap] Java ${javaVersion} runtime ready"
+    return 0
+  fi
+
+  if [[ "${javaVersion}" =~ ^[0-9]+$ ]]; then
+    echo "[bootstrap] Java ${javaVersion} detected; Java ${minJavaVersion}+ is required"
+  else
+    echo "[bootstrap] Java runtime not found"
+  fi
+
+  echo "[bootstrap] Installing ${javaPackage}"
+
+  "${condaExe}" install \
+    -y \
+    -n "${effectiveEnvName}" \
+    -c conda-forge \
+    "${javaPackage}"
+
+  javaVersion="$(javaMajorVersion || true)"
+
+  if [[ ! "${javaVersion}" =~ ^[0-9]+$ ]] || \
+     (( javaVersion < minJavaVersion )); then
+    echo "ERROR: Java ${minJavaVersion}+ could not be prepared in '${effectiveEnvName}'." >&2
+    exit 1
+  fi
+
+  echo "[bootstrap] Java ${javaVersion} runtime ready"
+}
+
 bootstrapEnv() {
   cd "${repoRoot}"
 
@@ -161,6 +233,8 @@ bootstrapEnv() {
     echo "Creating conda env: ${effectiveEnvName} (python=${pythonVersion})"
     "${condaExe}" create -y -n "${effectiveEnvName}" "python=${pythonVersion}"
   fi
+
+  ensureJavaRuntime
 
   echo "[bootstrap] Upgrading pip"
   runPipInstall --upgrade pip

@@ -1,3 +1,30 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
+import re
+import sys
 from pathlib import Path
 import os
 import secrets
@@ -160,6 +187,81 @@ def _writeFileIfMissingOrEmpty(path: Path, content: str) -> Path:
 
     path.write_text(content, encoding="utf-8")
     return path
+
+
+_scipionJavaHomePattern = re.compile(
+    r"(?mi)^\s*SCIPION_JAVA_HOME\s*=\s*(.*?)\s*$"
+)
+
+
+def _isValidJavaHome(value: str) -> bool:
+    # isValidJavaHome
+    if not value:
+        return False
+
+    expanded = os.path.expandvars(
+        os.path.expanduser(value.strip())
+    )
+
+    javaBin = Path(expanded) / "bin" / "java"
+    return javaBin.is_file() and os.access(javaBin, os.X_OK)
+
+
+def _resolveManagedJavaHome() -> Optional[Path]:
+    # resolveManagedJavaHome
+    javaHome = Path(sys.prefix).resolve()
+    javaBin = javaHome / "bin" / "java"
+
+    if javaBin.is_file() and os.access(javaBin, os.X_OK):
+        return javaHome
+
+    return None
+
+
+def _ensureScipionJavaHome(
+    scipionConfPath: Path,
+    javaHome: Path,
+) -> bool:
+    # ensureScipionJavaHome
+    text = scipionConfPath.read_text(encoding="utf-8")
+    match = _scipionJavaHomePattern.search(text)
+
+    if match and _isValidJavaHome(match.group(1)):
+        return False
+
+    javaLine = f"SCIPION_JAVA_HOME = {javaHome}"
+
+    if match:
+        updated = (
+            text[:match.start()]
+            + javaLine
+            + text[match.end():]
+        )
+    else:
+        sectionMatch = re.search(
+            r"(?mi)^\s*\[PYWORKFLOW\]\s*$",
+            text,
+        )
+
+        if sectionMatch:
+            updated = (
+                text[:sectionMatch.end()]
+                + "\n"
+                + javaLine
+                + text[sectionMatch.end():]
+            )
+        else:
+            separator = "" if text.endswith("\n") else "\n"
+            updated = (
+                text
+                + separator
+                + "[PYWORKFLOW]\n"
+                + javaLine
+                + "\n"
+            )
+
+    scipionConfPath.write_text(updated, encoding="utf-8")
+    return True
 
 
 def _writeDefaultScipionConf(configDir: Path, condaActivationCmd: str) -> Path:
@@ -395,6 +497,29 @@ def installCommand(
     )
     _printSuccess(f"Scipion config ready: {scipionConfPath}")
     _printSuccess(f"Hosts config ready: {hostsConfPath}")
+
+    javaHome = _resolveManagedJavaHome()
+
+    if javaHome:
+        changed = _ensureScipionJavaHome(
+            scipionConfPath,
+            javaHome,
+        )
+
+        if changed:
+            _printSuccess(
+                f"SCIPION_JAVA_HOME configured: {javaHome}"
+            )
+        else:
+            _printInfo(
+                "Existing valid SCIPION_JAVA_HOME preserved"
+            )
+    else:
+        _printWarning(
+            "Java runtime was not found in the current conda environment. "
+            "Run `scipionapi bootstrap` first."
+        )
+
     apiPort = _resolveApiPort(
         existing,
         requestedApiPort=apiPort,

@@ -1,6 +1,32 @@
+# ******************************************************************************
+# *
+# * Authors:     Yunior C. Fonseca Reyna
+# *
+# * Unidad de  Bioinformatica of Centro Nacional de Biotecnologia , CSIC
+# *
+# * This program is free software; you can redistribute it and/or modify
+# * it under the terms of the GNU General Public License as published by
+# * the Free Software Foundation; either version 3 of the License, or
+# * (at your option) any later version.
+# *
+# * This program is distributed in the hope that it will be useful,
+# * but WITHOUT ANY WARRANTY; without even the implied warranty of
+# * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# * GNU General Public License for more details.
+# *
+# * You should have received a copy of the GNU General Public License
+# * along with this program; if not, write to the Free Software
+# * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
+# * 02111-1307  USA
+# *
+# *  All comments concerning this program package may be sent to the
+# *  e-mail address 'scipion@cnb.csic.es'
+# *
+# ******************************************************************************
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from shutil import which
@@ -117,6 +143,88 @@ def _condaEnvHealthy(condaExe: str, envName: str) -> bool:
         [condaExe, "run", "-n", envName, "python", "-m", "pip", "--version"]
     )
     return pipCheck.returncode == 0
+
+
+_MIN_JAVA_VERSION = 21
+_DEFAULT_JAVA_PACKAGE = "openjdk=21"
+
+
+def _parseJavaMajorVersion(output: str) -> Optional[int]:
+    # parseJavaMajorVersion
+    match = re.search(r'version\s+"([^"]+)"', output or "")
+    if not match:
+        return None
+
+    version = match.group(1)
+    parts = version.split(".")
+
+    try:
+        if parts[0] == "1" and len(parts) > 1:
+            return int(parts[1])
+
+        return int(re.split(r"[^0-9]", parts[0])[0])
+    except Exception:
+        return None
+
+
+def _getJavaMajorVersion(condaExe: str, envName: str) -> Optional[int]:
+    # getJavaMajorVersion
+    proc = _runCapture([
+        condaExe,
+        "run",
+        "-n",
+        envName,
+        "java",
+        "-version",
+    ])
+
+    if proc.returncode != 0:
+        return None
+
+    output = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    return _parseJavaMajorVersion(output)
+
+
+def _ensureJavaRuntime(condaExe: str, envName: str) -> int:
+    # ensureJavaRuntime
+    javaVersion = _getJavaMajorVersion(condaExe, envName)
+
+    if javaVersion is not None and javaVersion >= _MIN_JAVA_VERSION:
+        return javaVersion
+
+    javaPackage = (
+        os.getenv("SCIPIONAPI_JAVA_PACKAGE")
+        or _DEFAULT_JAVA_PACKAGE
+    ).strip()
+
+    if javaVersion is None:
+        _printInfo(f"Java runtime not found; installing {javaPackage}")
+    else:
+        _printInfo(
+            f"Java {javaVersion} detected; "
+            f"Java {_MIN_JAVA_VERSION}+ is required. Installing {javaPackage}"
+        )
+
+    _run([
+        condaExe,
+        "install",
+        "-y",
+        "-n",
+        envName,
+        "-c",
+        "conda-forge",
+        javaPackage,
+    ])
+
+    javaVersion = _getJavaMajorVersion(condaExe, envName)
+
+    if javaVersion is None or javaVersion < _MIN_JAVA_VERSION:
+        raise RuntimeError(
+            f"Java {_MIN_JAVA_VERSION}+ is required but the runtime "
+            f"could not be prepared correctly in conda env '{envName}'."
+        )
+
+    return javaVersion
 
 
 def _removeCondaEnv(condaExe: str, envName: str) -> None:
@@ -306,6 +414,10 @@ def bootstrapCommand(
         _printInfo(f"Creating conda env '{envName}' with python={pythonVersion}")
         _run([condaExe, "create", "-y", "-n", envName, f"python={pythonVersion}"])
         _printSuccess(f"Conda env created: {envName}")
+
+    _printStep("Checking Java runtime", envName)
+    javaVersion = _ensureJavaRuntime(condaExe, envName)
+    _printSuccess(f"Java {javaVersion} runtime ready")
 
     _printStep("Upgrading pip", envName)
     _pip(

@@ -32,6 +32,8 @@ from urllib.parse import urlparse
 
 from scipionapi_cli.envfile import exportEnvToOs, readEnvFile
 from scipionapi_cli.shell import resolveRepoRoot, runCmd
+from configparser import RawConfigParser
+from scipionapi_cli.bootstrap import _parseJavaMajorVersion
 
 
 try:
@@ -453,6 +455,92 @@ def _checkScipionConfig(scipionHome: Path) -> List[StatusRow]:
     ]
 
 
+def _readScipionJavaHome(scipionHome: Path) -> str:
+    # readScipionJavaHome
+    configPath = scipionHome / "config" / "scipion.conf"
+
+    if not configPath.exists():
+        return ""
+
+    parser = RawConfigParser()
+    parser.optionxform = str
+
+    try:
+        parser.read(configPath, encoding="utf-8")
+        return parser.get(
+            "PYWORKFLOW",
+            "SCIPION_JAVA_HOME",
+            fallback="",
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _checkJavaRuntime(scipionHome: Path) -> StatusRow:
+    # checkJavaRuntime
+    javaHome = _readScipionJavaHome(scipionHome)
+
+    if not javaHome:
+        return _fail(
+            "Java runtime",
+            "SCIPION_JAVA_HOME is not configured in scipion.conf",
+        )
+
+    javaHomePath = Path(
+        os.path.expandvars(
+            os.path.expanduser(javaHome)
+        )
+    )
+
+    javaBin = javaHomePath / "bin" / "java"
+
+    if not javaBin.is_file():
+        return _fail(
+            "Java runtime",
+            f"Java executable not found: {javaBin}",
+        )
+
+    try:
+        proc = runCmd(
+            [str(javaBin), "-version"],
+            capture=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return _fail("Java runtime", str(exc))
+
+    output = (
+        (proc.stdout or "")
+        + "\n"
+        + (proc.stderr or "")
+    ).strip()
+
+    if proc.returncode != 0:
+        return _fail(
+            "Java runtime",
+            output or f"Failed to run {javaBin}",
+        )
+
+    javaVersion = _parseJavaMajorVersion(output)
+
+    if javaVersion is None:
+        return _fail(
+            "Java runtime",
+            f"Could not determine Java version from: {javaBin}",
+        )
+
+    if javaVersion < 21:
+        return _fail(
+            "Java runtime",
+            f"Java {javaVersion} detected; Java 21+ is required",
+        )
+
+    return _ok(
+        "Java runtime",
+        f"Java {javaVersion} · {javaBin}",
+    )
+
+
 def _checkFilesystem(env: Dict[str, str], scipionHome: Path) -> List[StatusRow]:
     # Check core filesystem paths.
     logsPath = Path(env.get("LOGS_PATH") or (scipionHome / "logs")).expanduser()
@@ -495,6 +583,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
 
     rows.extend(_checkFilesystem(env, scipionHome))
     rows.extend(_checkScipionConfig(scipionHome))
+    rows.append(_checkJavaRuntime(scipionHome))
 
     if envExists:
         rows.extend(

@@ -27,3 +27,15 @@ def test_ScipionApiWrapperProtectsFullUninstallRoot():
     assert 'local allowCleanedLegacy="${2:-0}"' in content
     assert 'validateFullInstallRoot "${allowLegacy}" "1"' in content
     assert 'SCIPION_HOME=${repoRoot}/scipion_home' in content
+
+
+def test_ScipionApiWrapperBootstrapsJava21():
+    content = WRAPPER.read_text(encoding="utf-8")
+
+    assert 'javaPackage="${SCIPIONAPI_JAVA_PACKAGE:-openjdk=21}"' in content
+    assert "ensureJavaRuntime()" in content
+    assert "javaMajorVersion()" in content
+    assert "ensureJavaRuntime" in content
+    assert "conda-forge" in content
+
+

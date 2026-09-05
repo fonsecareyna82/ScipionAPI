@@ -64,3 +64,89 @@ def test_FindFreePortSkipsExcludedPort(monkeypatch):
     assert installModule._findFreePort(
         excludedPorts=["45000"],
     ) == "45001"
+
+
+def test_EnsureScipionJavaHomeAddsManagedJava(monkeypatch, tmp_path):
+    javaHome = tmp_path / "env"
+    javaBin = javaHome / "bin" / "java"
+    javaBin.parent.mkdir(parents=True)
+    javaBin.write_text("", encoding="utf-8")
+    javaBin.chmod(0o755)
+
+    configPath = tmp_path / "scipion.conf"
+    configPath.write_text(
+        "[PYWORKFLOW]\nSCIPION_DOMAIN = pwem\n",
+        encoding="utf-8",
+    )
+
+    changed = installModule._ensureScipionJavaHome(
+        configPath,
+        javaHome,
+    )
+
+    assert changed is True
+    assert (
+        f"SCIPION_JAVA_HOME = {javaHome}"
+        in configPath.read_text(encoding="utf-8")
+    )
+
+
+def test_EnsureScipionJavaHomeRepairsInvalidPath(tmp_path):
+    javaHome = tmp_path / "scipion4Web"
+    javaBin = javaHome / "bin" / "java"
+    javaBin.parent.mkdir(parents=True)
+    javaBin.write_text("", encoding="utf-8")
+    javaBin.chmod(0o755)
+
+    configPath = tmp_path / "scipion.conf"
+    configPath.write_text(
+        "[PYWORKFLOW]\n"
+        "SCIPION_JAVA_HOME = /old/scipion3Web\n",
+        encoding="utf-8",
+    )
+
+    changed = installModule._ensureScipionJavaHome(
+        configPath,
+        javaHome,
+    )
+
+    assert changed is True
+
+    content = configPath.read_text(encoding="utf-8")
+
+    assert "/old/scipion3Web" not in content
+    assert f"SCIPION_JAVA_HOME = {javaHome}" in content
+
+
+def test_EnsureScipionJavaHomePreservesValidCustomPath(tmp_path):
+    customHome = tmp_path / "custom-java"
+    customBin = customHome / "bin" / "java"
+    customBin.parent.mkdir(parents=True)
+    customBin.write_text("", encoding="utf-8")
+    customBin.chmod(0o755)
+
+    managedHome = tmp_path / "scipion4Web"
+    managedBin = managedHome / "bin" / "java"
+    managedBin.parent.mkdir(parents=True)
+    managedBin.write_text("", encoding="utf-8")
+    managedBin.chmod(0o755)
+
+    configPath = tmp_path / "scipion.conf"
+    configPath.write_text(
+        "[PYWORKFLOW]\n"
+        f"SCIPION_JAVA_HOME = {customHome}\n",
+        encoding="utf-8",
+    )
+
+    changed = installModule._ensureScipionJavaHome(
+        configPath,
+        managedHome,
+    )
+
+    assert changed is False
+    assert (
+        f"SCIPION_JAVA_HOME = {customHome}"
+        in configPath.read_text(encoding="utf-8")
+    )
+
+
