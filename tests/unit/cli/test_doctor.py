@@ -108,3 +108,58 @@ def test_ApiHealthAcceptsScipionApi(monkeypatch):
 
     assert row[1] == "OK"
     assert "mode=api-only" in row[2]
+
+
+def test_WritableDirectoryIsOk(tmp_path):
+    row = doctor._checkDirectoryWritable(tmp_path, "Projects directory")
+
+    assert row[1] == "OK"
+    assert "Writable" in row[2]
+
+
+def test_NonWritableDirectoryFails(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.os, "access", lambda path, mode: False)
+
+    row = doctor._checkDirectoryWritable(tmp_path, "Projects directory")
+
+    assert row[1] == "FAIL"
+    assert "Not writable" in row[2]
+
+
+def test_RuntimeDirectoryCanBeCreated(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.os, "access", lambda path, mode: True)
+
+    row = doctor._checkRuntimeDirectory(tmp_path)
+
+    assert row[1] == "OK"
+    assert "Can be created" in row[2]
+
+
+def test_DiskSpaceWarnsWhenLow(tmp_path, monkeypatch):
+    class Usage:
+        total = 100 * doctor._GIB
+        used = 91 * doctor._GIB
+        free = 9 * doctor._GIB
+
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda path: Usage())
+
+    row = doctor._checkDiskSpace(tmp_path, "Disk space")
+
+    assert row[1] == "WARN"
+    assert "9.0 GiB free" in row[2]
+
+
+def test_DiskSpaceFailsWhenCritical(tmp_path, monkeypatch):
+    class Usage:
+        total = 100 * doctor._GIB
+        used = 99 * doctor._GIB
+        free = 1 * doctor._GIB
+
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda path: Usage())
+
+    row = doctor._checkDiskSpace(tmp_path, "Disk space")
+
+    assert row[1] == "FAIL"
+    assert "1.0 GiB free" in row[2]
+
+

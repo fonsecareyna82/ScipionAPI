@@ -25,6 +25,7 @@
 # ******************************************************************************
 import json
 import os
+import shutil
 import socket
 import sys
 from pathlib import Path
@@ -53,6 +54,7 @@ except Exception:
 
 
 StatusRow = Tuple[str, str, str]
+_GIB = 1024 ** 3
 
 
 def _printPanel(title: str, body: str = "") -> None:
@@ -635,16 +637,89 @@ def _checkJavaRuntime(scipionHome: Path) -> StatusRow:
     )
 
 
-def _checkFilesystem(env: Dict[str, str], scipionHome: Path) -> List[StatusRow]:
-    # Check core filesystem paths.
+def _checkDirectoryWritable(path: Path, label: str, required: bool = True) -> StatusRow:
+    # Check that a directory exists and is writable without modifying it.
+    if not path.exists():
+        detail = f"Missing: {path}"
+        return _fail(label, detail) if required else _warn(label, detail)
+
+    if not path.is_dir():
+        return _fail(label, f"Not a directory: {path}")
+
+    if not os.access(path, os.W_OK | os.X_OK):
+        return _fail(label, f"Not writable: {path}")
+
+    return _ok(label, f"Writable · {path}")
+
+
+def _checkRuntimeDirectory(repoRoot: Path) -> StatusRow:
+    # Check whether runtime PID files can be stored.
+    runDir = repoRoot / ".run"
+
+    if runDir.exists():
+        return _checkDirectoryWritable(runDir, "Runtime directory", required=True)
+
+    if os.access(repoRoot, os.W_OK | os.X_OK):
+        return _ok("Runtime directory", f"Can be created · {runDir}")
+
+    return _fail(
+        "Runtime directory",
+        f"Cannot create {runDir}; repository root is not writable",
+    )
+
+
+def _checkDiskSpace(path: Path, label: str) -> StatusRow:
+    # Check available disk space without writing to the filesystem.
+    if not path.exists():
+        return _warn(label, f"Path not found: {path}")
+
+    try:
+        usage = shutil.disk_usage(path)
+    except Exception as exc:
+        return _warn(label, f"Could not read disk usage for {path}: {exc}")
+
+    if usage.total <= 0:
+        return _warn(label, f"Invalid filesystem size reported for {path}")
+
+    freeGiB = usage.free / _GIB
+    totalGiB = usage.total / _GIB
+    freePercent = usage.free * 100.0 / usage.total
+    detail = f"{freeGiB:.1f} GiB free of {totalGiB:.1f} GiB ({freePercent:.1f}% free) · {path}"
+
+    if freeGiB < 5.0 or freePercent < 2.0:
+        return _fail(label, detail)
+
+    if freeGiB < 20.0 or freePercent < 10.0:
+        return _warn(label, detail)
+
+    return _ok(label, detail)
+
+
+def _checkFilesystem(env: Dict[str, str], scipionHome: Path, repoRoot: Path) -> List[StatusRow]:
+    # Check core filesystem paths, permissions, and available space.
+    configPath = scipionHome / "config"
+    softwarePath = scipionHome / "software"
     logsPath = Path(env.get("LOGS_PATH") or (scipionHome / "logs")).expanduser()
     projectsPath = Path(env.get("PROJECTS_PATH") or (scipionHome / "projects")).expanduser()
 
-    return [
-        _pathExists(scipionHome, "SCIPION_HOME", required=True),
-        _pathExists(logsPath, "Logs directory", required=False),
-        _pathExists(projectsPath, "Projects directory", required=False),
+    rows = [
+        _checkDirectoryWritable(scipionHome, "SCIPION_HOME", required=True),
+        _checkDirectoryWritable(configPath, "Config directory", required=False),
+        _checkDirectoryWritable(logsPath, "Logs directory", required=False),
+        _checkDirectoryWritable(projectsPath, "Projects directory", required=False),
+        _checkDirectoryWritable(softwarePath, "Software directory", required=False),
+        _checkRuntimeDirectory(repoRoot),
+        _checkDiskSpace(scipionHome, "SCIPION_HOME disk space"),
     ]
+
+    if projectsPath.exists() and scipionHome.exists():
+        try:
+            if projectsPath.stat().st_dev != scipionHome.stat().st_dev:
+                rows.append(_checkDiskSpace(projectsPath, "Projects disk space"))
+        except OSError:
+            pass
+
+    return rows
 
 
 def _summary(rows: List[StatusRow]) -> Tuple[int, int, int]:
@@ -675,7 +750,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     envExists = envPath.exists()
     rows.append(_pathExists(envPath, ".env file", required=False))
 
-    rows.extend(_checkFilesystem(env, scipionHome))
+    rows.extend(_checkFilesystem(env, scipionHome, repoRoot))
     rows.extend(_checkScipionConfig(scipionHome))
     rows.append(_checkJavaRuntime(scipionHome))
     rows.extend(_checkRuntimeRevisions(scipionHome))
