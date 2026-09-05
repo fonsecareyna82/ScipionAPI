@@ -269,3 +269,157 @@ def test_CudaVisibilityReportsSelectedDevices(monkeypatch):
     assert "0,2" in row[2]
 
 
+def test_PostgresReportsServerAndLatency(monkeypatch):
+    class Cursor:
+        def execute(self, query):
+            pass
+
+        def fetchone(self):
+            return "scipion_db", "scipion_user", "16.9"
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    class Psycopg2:
+        @staticmethod
+        def connect(*args, **kwargs):
+            return Connection()
+
+    times = iter([1.000, 1.010, 2.000, 2.005])
+
+    monkeypatch.setitem(__import__("sys").modules, "psycopg2", Psycopg2())
+    monkeypatch.setattr(doctor.time, "perf_counter", lambda: next(times))
+
+    rows = doctor._checkPostgres(
+        {"DATABASE_URL": "postgresql://user:pass@localhost/db"}
+    )
+
+    serviceRow = next(row for row in rows if row[0] == "PostgreSQL")
+    latencyRow = next(row for row in rows if row[0] == "PostgreSQL latency")
+
+    assert serviceRow[1] == "OK"
+    assert "PostgreSQL 16.9" in serviceRow[2]
+    assert "database=scipion_db" in serviceRow[2]
+
+    assert latencyRow[1] == "OK"
+    assert "connect=10.0 ms" in latencyRow[2]
+    assert "query=5.0 ms" in latencyRow[2]
+
+
+def test_PostgresSlowQueryWarns(monkeypatch):
+    class Cursor:
+        def execute(self, query):
+            pass
+
+        def fetchone(self):
+            return "scipion_db", "scipion_user", "16.9"
+
+        def close(self):
+            pass
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    class Psycopg2:
+        @staticmethod
+        def connect(*args, **kwargs):
+            return Connection()
+
+    times = iter([1.000, 1.010, 2.000, 2.250])
+
+    monkeypatch.setitem(__import__("sys").modules, "psycopg2", Psycopg2())
+    monkeypatch.setattr(doctor.time, "perf_counter", lambda: next(times))
+
+    rows = doctor._checkPostgres(
+        {"DATABASE_URL": "postgresql://user:pass@localhost/db"}
+    )
+
+    latencyRow = next(row for row in rows if row[0] == "PostgreSQL latency")
+
+    assert latencyRow[1] == "WARN"
+    assert "query=250.0 ms" in latencyRow[2]
+
+
+def test_ValkeyReportsPingVersionAndLatency(monkeypatch):
+    class Client:
+        def ping(self):
+            return True
+
+        def info(self, section=None):
+            return {
+                "server_name": "valkey",
+                "valkey_version": "8.1.3",
+            }
+
+        def close(self):
+            pass
+
+    class Redis:
+        class Redis:
+            @staticmethod
+            def from_url(*args, **kwargs):
+                return Client()
+
+    times = iter([1.000, 1.003])
+
+    monkeypatch.setitem(__import__("sys").modules, "redis", Redis())
+    monkeypatch.setattr(doctor.time, "perf_counter", lambda: next(times))
+
+    rows = doctor._checkValkey(
+        {"BROKER_URL": "redis://localhost:6379/0"}
+    )
+
+    serviceRow = next(row for row in rows if row[0] == "Valkey")
+    latencyRow = next(row for row in rows if row[0] == "Valkey latency")
+
+    assert serviceRow[1] == "OK"
+    assert "PONG" in serviceRow[2]
+    assert "valkey 8.1.3" in serviceRow[2]
+
+    assert latencyRow[1] == "OK"
+    assert "PING=3.0 ms" in latencyRow[2]
+
+
+def test_ValkeySlowPingWarns(monkeypatch):
+    class Client:
+        def ping(self):
+            return True
+
+        def info(self, section=None):
+            return {"redis_version": "8.0.0"}
+
+        def close(self):
+            pass
+
+    class Redis:
+        class Redis:
+            @staticmethod
+            def from_url(*args, **kwargs):
+                return Client()
+
+    times = iter([1.000, 1.150])
+
+    monkeypatch.setitem(__import__("sys").modules, "redis", Redis())
+    monkeypatch.setattr(doctor.time, "perf_counter", lambda: next(times))
+
+    rows = doctor._checkValkey(
+        {"BROKER_URL": "redis://localhost:6379/0"}
+    )
+
+    latencyRow = next(row for row in rows if row[0] == "Valkey latency")
+
+    assert latencyRow[1] == "WARN"
+    assert "PING=150.0 ms" in latencyRow[2]
+
+

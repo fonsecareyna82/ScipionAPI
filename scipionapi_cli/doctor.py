@@ -29,6 +29,7 @@ import re
 import shutil
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -362,55 +363,154 @@ def _checkOptionalEnv(env: Dict[str, str], keys: List[str]) -> List[StatusRow]:
     return rows
 
 
-def _checkPostgres(env: Dict[str, str]) -> StatusRow:
-    # Check database connectivity through psycopg2.
+def _checkPostgres(env: Dict[str, str]) -> List[StatusRow]:
+    # Check PostgreSQL connectivity, server identity, and latency.
     databaseUrl = (env.get("DATABASE_URL") or "").strip()
+
     if not databaseUrl:
-        return _fail("PostgreSQL", "DATABASE_URL is missing")
+        return [_fail("PostgreSQL", "DATABASE_URL is missing")]
 
     try:
         import psycopg2
     except Exception as exc:
-        return _fail("PostgreSQL", f"psycopg2 import failed: {exc}")
+        return [_fail("PostgreSQL", f"psycopg2 import failed: {exc}")]
+
+    conn = None
+    cur = None
 
     try:
+        connectStart = time.perf_counter()
         conn = psycopg2.connect(databaseUrl, connect_timeout=3)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.fetchone()
-            cur.close()
-        finally:
-            conn.close()
+        connectMs = (time.perf_counter() - connectStart) * 1000.0
 
-        return _ok("PostgreSQL", "Connection OK")
+        cur = conn.cursor()
+
+        queryStart = time.perf_counter()
+        cur.execute(
+            "SELECT current_database(), current_user, current_setting('server_version')"
+        )
+        databaseName, databaseUser, serverVersion = cur.fetchone()
+        queryMs = (time.perf_counter() - queryStart) * 1000.0
+
+        rows = [
+            _ok(
+                "PostgreSQL",
+                f"PostgreSQL {serverVersion} · database={databaseName} · user={databaseUser}",
+            )
+        ]
+
+        detail = f"connect={connectMs:.1f} ms · query={queryMs:.1f} ms"
+
+        if connectMs >= 500.0 or queryMs >= 100.0:
+            rows.append(_warn("PostgreSQL latency", detail))
+        else:
+            rows.append(_ok("PostgreSQL latency", detail))
+
+        return rows
+
     except Exception as exc:
-        return _fail("PostgreSQL", str(exc))
+        return [_fail("PostgreSQL", str(exc))]
+
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
-def _checkValkey(env: Dict[str, str]) -> StatusRow:
-    # Check Valkey broker TCP connectivity.
+def _checkValkey(env: Dict[str, str]) -> List[StatusRow]:
+    # Check Valkey using the Redis-compatible protocol and measure PING latency.
     brokerUrl = (env.get("BROKER_URL") or "").strip()
 
     if not brokerUrl:
-        return _warn("Valkey", "BROKER_URL is missing",)
+        return [_warn("Valkey", "BROKER_URL is missing")]
 
-    parsed = urlparse(brokerUrl,)
+    parsed = urlparse(brokerUrl)
 
-    if parsed.scheme not in ("redis", "rediss",):
-        return _warn("Valkey", f"Unsupported broker scheme for TCP check: {parsed.scheme}",)
+    if parsed.scheme not in ("redis", "rediss"):
+        return [
+            _warn(
+                "Valkey",
+                f"Unsupported broker scheme: {parsed.scheme}",
+            )
+        ]
 
-    host = (parsed.hostname or "localhost")
+    try:
+        import redis
+    except Exception as exc:
+        return [_fail("Valkey", f"redis-py import failed: {exc}")]
 
-    port = str(parsed.port or 6379)
+    client = None
 
-    if _tcpReachable(
-        host,
-        port,
-    ):
-        return _ok("Valkey", f"Reachable at {host}:{port}",)
+    try:
+        client = redis.Redis.from_url(
+            brokerUrl,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            decode_responses=True,
+        )
 
-    return _fail("Valkey", f"Not reachable at {host}:{port}",)
+        pingStart = time.perf_counter()
+        pong = client.ping()
+        pingMs = (time.perf_counter() - pingStart) * 1000.0
+
+        if not pong:
+            return [_fail("Valkey", "PING did not return PONG")]
+
+        serverInfo = client.info(section="server")
+
+        serverName = str(
+            serverInfo.get("server_name")
+            or "Valkey/Redis"
+        ).strip()
+
+        serverVersion = str(
+            serverInfo.get("valkey_version")
+            or serverInfo.get("redis_version")
+            or ""
+        ).strip()
+
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+
+        versionDetail = (
+            f"{serverName} {serverVersion}"
+            if serverVersion
+            else serverName
+        )
+
+        rows = [
+            _ok(
+                "Valkey",
+                f"PONG · {versionDetail} · {host}:{port}",
+            )
+        ]
+
+        detail = f"PING={pingMs:.1f} ms"
+
+        if pingMs >= 100.0:
+            rows.append(_warn("Valkey latency", detail))
+        else:
+            rows.append(_ok("Valkey latency", detail))
+
+        return rows
+
+    except Exception as exc:
+        return [_fail("Valkey", str(exc))]
+
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _checkAlembic(repoRoot: Path) -> StatusRow:
@@ -1004,13 +1104,14 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_checkImport("fastapi", "Import fastapi", required=True))
     rows.append(_checkImport("uvicorn", "Import uvicorn", required=True))
     rows.append(_checkImport("celery", "Import celery", required=True))
+    rows.append(_checkImport("redis", "Import redis", required=True))
     rows.append(_checkImport("sqlalchemy", "Import sqlalchemy", required=True))
     rows.append(_checkImport("psycopg2", "Import psycopg2", required=True))
     rows.append(_checkImport("pyworkflow", "Import pyworkflow", required=False))
 
     if envExists:
-        rows.append(_checkPostgres(env))
-        rows.append(_checkValkey(env))
+        rows.extend(_checkPostgres(env))
+        rows.extend(_checkValkey(env))
     else:
         rows.append(_warn("PostgreSQL", "Skipped because .env file is missing"))
         rows.append(_warn("Valkey", "Skipped because .env file is missing"))
