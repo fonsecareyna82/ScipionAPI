@@ -59,6 +59,7 @@ class FakeSettingsService:
                 "description": "API bind host",
                 "source": "env",
                 "isDefault": True,
+                "isOverride": False,
                 "type": "string",
             },
             {
@@ -68,6 +69,7 @@ class FakeSettingsService:
                 "description": "API bind port",
                 "source": "env",
                 "isDefault": True,
+                "isOverride": False,
                 "type": "int",
             },
         ]
