@@ -23,12 +23,15 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 import os
 import socket
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from scipionapi_cli.envfile import exportEnvToOs, readEnvFile
 from scipionapi_cli.shell import resolveRepoRoot, runCmd
@@ -291,6 +294,43 @@ def _checkTcp(host: str, port: str, label: str, required: bool = False) -> Statu
     return _warn(label, detail)
 
 
+def _checkApiHealth(env: Dict[str, str]) -> StatusRow:
+    # Check the actual ScipionAPI health endpoint.
+    host = (env.get("API_HOST") or "0.0.0.0").strip()
+    port = (env.get("API_PORT") or "8080").strip()
+    targetHost = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    url = f"http://{targetHost}:{port}/health"
+
+    try:
+        with urlopen(url, timeout=2.0) as response:
+            status = int(getattr(response, "status", None) or response.getcode())
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return _fail("API health", f"{url} returned HTTP {exc.code}")
+    except URLError as exc:
+        return _warn("API health", f"Unavailable at {url}: {exc.reason}")
+    except Exception as exc:
+        return _fail("API health", f"Failed to check {url}: {exc}")
+
+    if status < 200 or status >= 300:
+        return _fail("API health", f"{url} returned HTTP {status}")
+
+    try:
+        payload = json.loads(body)
+    except Exception as exc:
+        return _fail("API health", f"Invalid JSON from {url}: {exc}")
+
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return _fail("API health", f"Unexpected payload from {url}")
+
+    mode = payload.get("mode")
+    detail = f"Healthy at {url}"
+    if mode:
+        detail += f" · mode={mode}"
+
+    return _ok("API health", detail)
+
+
 def _checkRequiredEnv(env: Dict[str, str], keys: List[str]) -> List[StatusRow]:
     # Check required .env keys.
     rows: List[StatusRow] = []
@@ -424,6 +464,60 @@ def _checkPidFile(path: Path, label: str) -> StatusRow:
         return _ok(label, f"Running with pid={pid}")
 
     return _warn(label, f"Stale PID file: {path} pid={pid}")
+
+
+def _checkRevisionFile(scipionHome: Path, fileName: str, label: str) -> StatusRow:
+    # Check a persisted runtime revision.
+    path = scipionHome / fileName
+
+    if not path.exists():
+        return _ok(label, f"0 · not initialized · {path}")
+
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        revision = int(raw or "0")
+    except Exception as exc:
+        return _fail(label, f"Invalid revision file {path}: {exc}")
+
+    if revision < 0:
+        return _fail(label, f"Invalid negative revision {revision} · {path}")
+
+    return _ok(label, f"{revision} · {path}")
+
+
+def _checkRuntimeRevisions(scipionHome: Path) -> List[StatusRow]:
+    # Check revisions shared across backend and workers.
+    return [
+        _checkRevisionFile(scipionHome, ".environment_revision", "Environment revision"),
+        _checkRevisionFile(scipionHome, ".plugins_revision", "Plugins revision"),
+    ]
+
+
+def _checkRuntimeOverrides(scipionHome: Path) -> StatusRow:
+    # Check ScipionWeb runtime overrides without exposing their values.
+    path = scipionHome / "config" / "scipionweb_environment.json"
+
+    if not path.exists():
+        return _ok("Runtime overrides", f"None configured · {path}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _fail("Runtime overrides", f"Invalid JSON {path}: {exc}")
+
+    if not isinstance(raw, dict):
+        return _fail("Runtime overrides", f"Expected JSON object · {path}")
+
+    validNames = [str(name).strip() for name in raw if str(name).strip()]
+    ignoredCount = len(raw) - len(validNames)
+
+    if ignoredCount:
+        return _warn(
+            "Runtime overrides",
+            f"{len(validNames)} configured · {ignoredCount} invalid name(s) ignored · {path}",
+        )
+
+    return _ok("Runtime overrides", f"{len(validNames)} configured · {path}")
 
 
 def _checkWebDist(env: Dict[str, str]) -> StatusRow:
@@ -584,6 +678,8 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.extend(_checkFilesystem(env, scipionHome))
     rows.extend(_checkScipionConfig(scipionHome))
     rows.append(_checkJavaRuntime(scipionHome))
+    rows.extend(_checkRuntimeRevisions(scipionHome))
+    rows.append(_checkRuntimeOverrides(scipionHome))
 
     if envExists:
         rows.extend(
@@ -647,6 +743,11 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     apiHost = env.get("API_HOST") or "0.0.0.0"
     apiPort = env.get("API_PORT") or "8080"
     rows.append(_checkTcp(apiHost, apiPort, "API TCP", required=False))
+
+    if envExists:
+        rows.append(_checkApiHealth(env))
+    else:
+        rows.append(_warn("API health", "Skipped because .env file is missing"))
 
     runDir = repoRoot / ".run"
     rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
