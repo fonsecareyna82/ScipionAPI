@@ -130,6 +130,7 @@ class EnvironmentVariableOut(BaseModel):
     description: str
     source: str
     isDefault: bool
+    isOverride: bool = False
     type: str
 
 

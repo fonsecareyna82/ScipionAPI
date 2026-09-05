@@ -28,7 +28,7 @@ from types import SimpleNamespace
 import app.backend.api.services.settings_service as settingsModule
 
 
-def test_PatchEnvironmentVariablesPersistsRegisteredVariableAsRuntimeOverride(
+def test_PatchEnvironmentVariablesPersistsRuntimeOverrideWithoutRewritingScipionConfig(
     monkeypatch,
 ):
     variable = SimpleNamespace(
@@ -170,9 +170,7 @@ def test_PatchEnvironmentVariablesPersistsRegisteredVariableAsRuntimeOverride(
         }
     )
 
-    assert savedConfigs == [
-        "/tmp/scipion.conf",
-    ]
+    assert savedConfigs == []
 
     assert revisionCalls == [
         True,
@@ -197,3 +195,108 @@ def test_PatchEnvironmentVariablesPersistsRegisteredVariableAsRuntimeOverride(
         row["value"]
         == "/new/path"
     )
+
+
+def test_ResetEnvironmentVariableRemovesOverrideAndRestoresBase(
+    monkeypatch,
+):
+    variable = SimpleNamespace(
+        name="TEST_PLUGIN_HOME",
+        value="/web/override",
+        default="/default/path",
+        isDefault=False,
+    )
+
+    customEnvironment = {
+        "TEST_PLUGIN_HOME": "/web/override",
+    }
+
+    revisionCalls = []
+    refreshCalls = []
+    reloadCalls = []
+
+    class FakeVariablesRegistry:
+        @classmethod
+        def __iter__(cls):
+            yield variable
+
+    def writeCustomEnvironment(values):
+        customEnvironment.clear()
+        customEnvironment.update(values)
+
+    service = settingsModule.SettingsService()
+
+    monkeypatch.setattr(
+        settingsModule,
+        "VariablesRegistry",
+        FakeVariablesRegistry,
+    )
+    monkeypatch.setattr(
+        settingsModule.SettingsService,
+        "_warmupEnvironmentRegistry",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "_readCustomEnvironmentVariables",
+        lambda: dict(customEnvironment),
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "_writeCustomEnvironmentVariablesAtomic",
+        writeCustomEnvironment,
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "_resolveEnvironmentBaseValue",
+        lambda name, registeredVariable=None: (
+            True,
+            "/configured/path",
+        ),
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "bumpEnvironmentRevision",
+        lambda: revisionCalls.append(True) or 8,
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "refreshScipionDomainIfNeeded",
+        lambda: refreshCalls.append(True) or True,
+    )
+    monkeypatch.setattr(
+        settingsModule,
+        "triggerBackendReloadIfEnabled",
+        lambda: reloadCalls.append(True),
+    )
+
+    monkeypatch.setenv(
+        "TEST_PLUGIN_HOME",
+        "/web/override",
+    )
+
+    result = service.resetEnvironmentVariable(
+        currentUser={"role": "admin"},
+        variableName="TEST_PLUGIN_HOME",
+    )
+
+    assert customEnvironment == {}
+    assert settingsModule.os.environ[
+        "TEST_PLUGIN_HOME"
+    ] == "/configured/path"
+
+    assert variable.value == "/configured/path"
+    assert variable.isDefault is False
+
+    assert revisionCalls == [True]
+    assert refreshCalls == [True]
+    assert reloadCalls == [True]
+
+    row = next(
+        item
+        for item in result
+        if item["name"] == "TEST_PLUGIN_HOME"
+    )
+
+    assert row["value"] == "/configured/path"
+    assert row["isOverride"] is False

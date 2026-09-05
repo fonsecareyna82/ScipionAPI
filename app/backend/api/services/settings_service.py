@@ -41,6 +41,8 @@ import socket
 import subprocess
 
 import psutil
+from pathlib import Path
+
 
 from collections import OrderedDict
 from configparser import RawConfigParser
@@ -67,6 +69,8 @@ from app.backend.api.schemas.settings_schema import (
     HostSettingsPatch,
     InstanceResourcesOut
 )
+
+from scipionapi_cli.envfile import readEnvFile
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +143,108 @@ def _writeCustomEnvironmentVariablesAtomic(values: dict[str, str]) -> None:
                 os.remove(tempPath)
             except Exception:
                 pass
+
+
+def _readScipionConfiguredEnvironmentValue(variableName: str) -> Optional[str]:
+    # Read the configured value using Scipion global/local config precedence.
+    configPaths = []
+
+    for rawPath in (
+        getattr(pyworkflow.Config, "SCIPION_CONFIG", ""),
+        getattr(pyworkflow.Config, "SCIPION_LOCAL_CONFIG", ""),
+    ):
+        pathText = _toStr(rawPath).strip()
+
+        if not pathText:
+            continue
+
+        path = os.path.abspath(
+            os.path.expanduser(
+                os.path.expandvars(pathText)
+            )
+        )
+
+        if path not in configPaths:
+            configPaths.append(path)
+
+    configuredValue = None
+
+    for path in configPaths:
+        if not os.path.isfile(path):
+            continue
+
+        parser = RawConfigParser()
+        parser.optionxform = str
+
+        try:
+            parser.read(path, encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to read Scipion configuration {path}: {exc}",
+            )
+
+        for sectionName in parser.sections():
+            if not parser.has_option(sectionName, variableName):
+                continue
+
+            rawValue = parser.get(
+                sectionName,
+                variableName,
+                raw=True,
+            )
+
+            configuredValue = rawValue.split("#", 1)[0].strip()
+
+    if configuredValue is None:
+        return None
+
+    hadCurrentValue = variableName in os.environ
+    currentValue = os.environ.get(variableName)
+
+    try:
+        os.environ.pop(variableName, None)
+        configuredValue = os.path.expandvars(configuredValue)
+    finally:
+        if hadCurrentValue:
+            os.environ[variableName] = currentValue or ""
+
+    return os.path.expanduser(configuredValue)
+
+
+def _resolveEnvironmentBaseValue(
+    variableName: str,
+    registeredVariable: Any = None,
+) -> tuple[bool, Any]:
+    # Resolve the effective value below the ScipionWeb override layer.
+    envPath = Path(_getScipionHome()) / ".env"
+
+    try:
+        envValues = readEnvFile(envPath)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read base environment {envPath}: {exc}",
+        )
+
+    if variableName in envValues:
+        return True, envValues[variableName]
+
+    configuredValue = _readScipionConfiguredEnvironmentValue(
+        variableName
+    )
+
+    if configuredValue is not None:
+        return True, configuredValue
+
+    if registeredVariable is not None:
+        return True, getattr(
+            registeredVariable,
+            "default",
+            None,
+        )
+
+    return False, None
 
 
 def _toStr(value: Any) -> str:
@@ -893,6 +999,8 @@ class SettingsService:
             rows = []
             seenNames: set[str] = set()
 
+            customVars = _readCustomEnvironmentVariables()
+
             for variable in VariablesRegistry.__iter__():
                 try:
                     variableName = _toStr(getattr(variable, "name", "")).strip()
@@ -919,6 +1027,7 @@ class SettingsService:
                             "source": "" if getattr(variable, "source", None) is None else str(variable.source),
                             "isDefault": False if getattr(variable, "isDefault", None) is None else bool(
                                 variable.isDefault),
+                            "isOverride": variableName in customVars,
                             "type": "STRING"
                             if getattr(variable, "var_type", None) is None
                             else str(variable.var_type.name),
@@ -926,8 +1035,6 @@ class SettingsService:
                     )
                 except Exception:
                     continue
-
-            customVars = _readCustomEnvironmentVariables()
 
             for variableName, storedValue in customVars.items():
                 if variableName in seenNames:
@@ -945,6 +1052,7 @@ class SettingsService:
                         "source": "ScipionWeb",
                         "isDefault": False,
                         "type": "STRING",
+                        "isOverride": True,
                     }
                 )
 
@@ -983,9 +1091,6 @@ class SettingsService:
                 patchItems[name] = "" if rawValue is None else str(rawValue)
 
             if patchItems:
-                registryNames: set[str] = set()
-                registryChanged = False
-
                 for variable in VariablesRegistry.__iter__():
                     try:
                         variableName = _toStr(
@@ -996,115 +1101,58 @@ class SettingsService:
                             )
                         ).strip()
 
-                        if not variableName:
-                            continue
-
-                        registryNames.add(
-                            variableName
-                        )
-
                         if (
-                                variableName
-                                not in patchItems
+                                not variableName
+                                or variableName not in patchItems
                         ):
                             continue
 
-                        nextValue = (
-                            patchItems[
-                                variableName
-                            ]
-                        )
+                        nextValue = patchItems[variableName]
 
                         currentValue = (
                             ""
-                            if getattr(
-                                variable,
-                                "value",
-                                None,
-                            )
-                               is None
-                            else str(
-                                variable.value
-                            )
+                            if getattr(variable, "value", None) is None
+                            else str(variable.value)
                         )
 
                         if (
-                                currentValue
-                                == nextValue
-                                and os.environ.get(
-                            variableName
-                        )
-                                == nextValue
+                                currentValue == nextValue
+                                and os.environ.get(variableName) == nextValue
                         ):
                             continue
 
-                        os.environ[
-                            variableName
-                        ] = nextValue
+                        os.environ[variableName] = nextValue
+                        variable.value = nextValue
 
-                        variable.value = (
-                            nextValue
+                        defaultValue = getattr(
+                            variable,
+                            "default",
+                            None,
                         )
 
-                        defaultValue = (
-                            getattr(
-                                variable,
-                                "default",
-                                None,
-                            )
-                        )
-
-                        if (
-                                defaultValue
-                                is not None
-                        ):
+                        if defaultValue is not None:
                             variable.isDefault = (
                                     str(defaultValue)
                                     == str(nextValue)
                             )
                         else:
-                            variable.isDefault = (
-                                False
-                            )
+                            variable.isDefault = False
 
-                        registryChanged = True
                         changed = True
 
                     except Exception:
                         continue
 
-                customVars = (
-                    _readCustomEnvironmentVariables()
-                )
-
+                customVars = _readCustomEnvironmentVariables()
                 customChanged = False
 
-                for (
-                        variableName,
-                        nextValue,
-                ) in patchItems.items():
-                    if (
-                            os.environ.get(
-                                variableName
-                            )
-                            != nextValue
-                    ):
-                        os.environ[
-                            variableName
-                        ] = nextValue
-
+                for variableName, nextValue in patchItems.items():
+                    if os.environ.get(variableName) != nextValue:
+                        os.environ[variableName] = nextValue
                         changed = True
 
-                    if (
-                            customVars.get(
-                                variableName
-                            )
-                            != nextValue
-                    ):
-                        customVars[
-                            variableName
-                        ] = nextValue
-
+                    if customVars.get(variableName) != nextValue:
+                        customVars[variableName] = nextValue
                         customChanged = True
                         changed = True
 
@@ -1113,18 +1161,104 @@ class SettingsService:
                         customVars
                     )
 
-                if registryChanged:
-                    VariablesRegistry.save(
-                        pyworkflow.Config.SCIPION_CONFIG
-                    )
-
         if changed:
-            environmentRevision = (
-                bumpEnvironmentRevision()
-            )
+            environmentRevision = bumpEnvironmentRevision()
 
             logger.info(
                 "Environment revision bumped to %s",
+                environmentRevision,
+            )
+
+            refreshScipionDomainIfNeeded()
+            triggerBackendReloadIfEnabled()
+
+        return self.getEnvironmentVariables(
+            currentUser
+        )
+
+    def resetEnvironmentVariable(
+            self,
+            currentUser: Any,
+            variableName: str,
+    ) -> list[dict[str, str]]:
+        # resetEnvironmentVariable
+        self._requireAdmin(currentUser)
+
+        name = _toStr(variableName).strip()
+
+        if not name or not _isValidEnvironmentName(name):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid environment variable name: {name}",
+            )
+
+        changed = False
+
+        with _envLock:
+            self._warmupEnvironmentRegistry()
+
+            customVars = _readCustomEnvironmentVariables()
+
+            if name in customVars:
+                registeredVariable = None
+
+                for variable in VariablesRegistry.__iter__():
+                    variableName = _toStr(
+                        getattr(
+                            variable,
+                            "name",
+                            "",
+                        )
+                    ).strip()
+
+                    if variableName == name:
+                        registeredVariable = variable
+                        break
+
+                hasBaseValue, baseValue = (
+                    _resolveEnvironmentBaseValue(
+                        name,
+                        registeredVariable,
+                    )
+                )
+
+                customVars.pop(name, None)
+
+                _writeCustomEnvironmentVariablesAtomic(
+                    customVars
+                )
+
+                if hasBaseValue and baseValue is not None:
+                    os.environ[name] = str(baseValue)
+                else:
+                    os.environ.pop(name, None)
+
+                if registeredVariable is not None:
+                    registeredVariable.value = (
+                        baseValue
+                        if hasBaseValue
+                        else None
+                    )
+
+                    defaultValue = getattr(
+                        registeredVariable,
+                        "default",
+                        None,
+                    )
+
+                    registeredVariable.isDefault = (
+                            registeredVariable.value
+                            == defaultValue
+                    )
+
+                changed = True
+
+        if changed:
+            environmentRevision = bumpEnvironmentRevision()
+
+            logger.info(
+                "Environment override %s reset; revision bumped to %s",
+                name,
                 environmentRevision,
             )
 

@@ -408,6 +408,34 @@ def patchEnvironmentVariables(
         )
 
 
+@router.delete(
+    "/environment/{variableName}",
+    response_model=List[EnvironmentVariableOut],
+    status_code=status.HTTP_200_OK,
+)
+def resetEnvironmentVariable(
+    variableName: str,
+    currentUser=Depends(requireAdmin),
+    service: SettingsService = Depends(getSettingsService),
+):
+    try:
+        return service.resetEnvironmentVariable(
+            currentUser,
+            variableName,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(
+            "Error in resetEnvironmentVariable: %s",
+            e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reset environment variable: {e}",
+        )
+
+
 @router.get(
     "/host",
     response_model=HostSettingsOut,

@@ -119,6 +119,8 @@ class FakeSettingsService:
         self.lastGetHostSettingsCall = None  # type: Optional[Dict[str, Any]]
         self.lastPutHostSettingsCall = None  # type: Optional[Dict[str, Any]]
         self.lastPatchHostSettingsCall = None  # type: Optional[Dict[str, Any]]
+        self.resetEnvironmentVariableError = None
+        self.lastResetEnvironmentVariableCall = None
 
     def getUserSettings(self, mapper, currentUser):
         self.lastGetUserSettingsCall = {
@@ -224,6 +226,21 @@ class FakeSettingsService:
         if self.patchHostSettingsError is not None:
             raise self.patchHostSettingsError
         return self.hostSettingsResult
+
+    def resetEnvironmentVariable(
+            self,
+            currentUser,
+            variableName,
+    ):
+        self.lastResetEnvironmentVariableCall = {
+            "currentUser": currentUser,
+            "variableName": variableName,
+        }
+
+        if self.resetEnvironmentVariableError is not None:
+            raise self.resetEnvironmentVariableError
+
+        return self.environmentVariablesResult
 
 
 @pytest.fixture
@@ -555,3 +572,29 @@ def test_PatchHostSettingsWrapsUnexpectedError(settingsClient, fakeSettingsServi
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Failed to patch host settings: host patch failed"
+
+
+def test_ResetEnvironmentVariableDelegatesToService(
+    settingsClient,
+    fakeSettingsService,
+):
+    response = settingsClient.delete(
+        "/settings/environment/TEST_PLUGIN_HOME"
+    )
+
+    assert response.status_code == 200
+
+    assert (
+        fakeSettingsService
+        .lastResetEnvironmentVariableCall
+        == {
+            "currentUser": {
+                "id": 99,
+                "email": "admin@example.com",
+                "role": "admin",
+            },
+            "variableName": "TEST_PLUGIN_HOME",
+        }
+    )
+
+
