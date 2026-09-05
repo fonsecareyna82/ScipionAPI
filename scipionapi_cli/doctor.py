@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import importlib.metadata
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -183,6 +185,46 @@ def _checkPythonVersion() -> StatusRow:
         return _warn("Python", f"Python {versionText}; project target is Python 3.8")
 
     return _fail("Python", f"Python {versionText}; Python 3.8 is required")
+
+
+def _checkScipionCoreVersions() -> StatusRow:
+    # Report installed Scipion core distribution versions.
+    packages = [
+        ("ScipionAPI", "scipionapi"),
+        ("scipion-pyworkflow", "scipion-pyworkflow"),
+        ("scipion-em", "scipion-em"),
+        ("scipion-app", "scipion-app"),
+    ]
+
+    versions = []
+    missing = []
+
+    for label, distributionName in packages:
+        try:
+            packageVersion = importlib.metadata.version(distributionName)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(label)
+            continue
+        except Exception as exc:
+            return _fail(
+                "Scipion core",
+                f"Could not read {label} version: {exc}",
+            )
+
+        versions.append(f"{label} {packageVersion}")
+
+    detail = " · ".join(versions)
+
+    if missing:
+        missingDetail = ", ".join(missing)
+        if detail:
+            detail += f" · missing: {missingDetail}"
+        else:
+            detail = f"Missing: {missingDetail}"
+
+        return _fail("Scipion core", detail)
+
+    return _ok("Scipion core", detail)
 
 
 def _resolveCondaExe(env: Dict[str, str]) -> str:
@@ -1045,6 +1087,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_pathExists(repoRoot / "alembic.ini", "Repository alembic.ini", required=True))
     rows.append(_pathExists(repoRoot / "app", "Repository app package", required=True))
     rows.append(_checkPythonVersion())
+    rows.append(_checkScipionCoreVersions())
     rows.extend(_checkConda(env))
     envExists = envPath.exists()
     rows.append(_pathExists(envPath, ".env file", required=False))

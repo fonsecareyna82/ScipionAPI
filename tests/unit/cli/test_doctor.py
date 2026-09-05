@@ -423,3 +423,27 @@ def test_ValkeySlowPingWarns(monkeypatch):
     assert "PING=150.0 ms" in latencyRow[2]
 
 
+def test_ScipionCoreVersionsAreReported(monkeypatch):
+    versions = {
+        "scipionapi": "4.0.0",
+        "scipion-pyworkflow": "3.10.0",
+        "scipion-em": "3.10.0",
+        "scipion-app": "3.10.0",
+    }
+
+    monkeypatch.setattr(
+        doctor.importlib.metadata,
+        "version",
+        lambda name: versions[name],
+    )
+
+    row = doctor._checkScipionCoreVersions()
+
+    assert row[1] == "OK"
+    assert "ScipionAPI 4.0.0" in row[2]
+    assert "scipion-pyworkflow 3.10.0" in row[2]
+    assert "scipion-em 3.10.0" in row[2]
+    assert "scipion-app 3.10.0" in row[2]
+
+
+
