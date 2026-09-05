@@ -223,44 +223,135 @@ def _ensureScipionJavaHome(
     javaHome: Path,
 ) -> bool:
     # ensureScipionJavaHome
-    text = scipionConfPath.read_text(encoding="utf-8")
-    match = _scipionJavaHomePattern.search(text)
+    text = scipionConfPath.read_text(
+        encoding="utf-8"
+    )
 
-    if match and _isValidJavaHome(match.group(1)):
-        return False
+    lines = text.splitlines()
+    candidates: List[Tuple[str, str]] = []
 
-    javaLine = f"SCIPION_JAVA_HOME = {javaHome}"
+    currentSection = ""
 
-    if match:
-        updated = (
-            text[:match.start()]
-            + javaLine
-            + text[match.end():]
-        )
-    else:
-        sectionMatch = re.search(
-            r"(?mi)^\s*\[PYWORKFLOW\]\s*$",
-            text,
+    for line in lines:
+        sectionMatch = re.match(
+            r"^\s*\[([^\]]+)\]\s*$",
+            line,
         )
 
         if sectionMatch:
-            updated = (
-                text[:sectionMatch.end()]
-                + "\n"
-                + javaLine
-                + text[sectionMatch.end():]
+            currentSection = (
+                sectionMatch.group(1)
+                .strip()
+                .upper()
             )
-        else:
-            separator = "" if text.endswith("\n") else "\n"
-            updated = (
-                text
-                + separator
-                + "[PYWORKFLOW]\n"
-                + javaLine
-                + "\n"
+            continue
+
+        javaMatch = (
+            _scipionJavaHomePattern.match(
+                line
+            )
+        )
+
+        if javaMatch:
+            candidates.append(
+                (
+                    currentSection,
+                    javaMatch.group(1).strip(),
+                )
             )
 
-    scipionConfPath.write_text(updated, encoding="utf-8")
+    selectedJavaHome = None
+
+    for section, value in candidates:
+        if (
+            section == "PYWORKFLOW"
+            and _isValidJavaHome(value)
+        ):
+            selectedJavaHome = value
+            break
+
+    if selectedJavaHome is None:
+        for _, value in candidates:
+            if _isValidJavaHome(value):
+                selectedJavaHome = value
+                break
+
+    if selectedJavaHome is None:
+        selectedJavaHome = str(javaHome)
+
+    javaLine = (
+        f"SCIPION_JAVA_HOME = "
+        f"{selectedJavaHome}"
+    )
+
+    updatedLines: List[str] = []
+    currentSection = ""
+    javaInserted = False
+    pyworkflowFound = False
+
+    for line in lines:
+        sectionMatch = re.match(
+            r"^\s*\[([^\]]+)\]\s*$",
+            line,
+        )
+
+        if sectionMatch:
+            currentSection = (
+                sectionMatch.group(1)
+                .strip()
+                .upper()
+            )
+
+            updatedLines.append(line)
+
+            if (
+                currentSection == "PYWORKFLOW"
+                and not pyworkflowFound
+            ):
+                pyworkflowFound = True
+                updatedLines.append(javaLine)
+                javaInserted = True
+
+            continue
+
+        if _scipionJavaHomePattern.match(line):
+            continue
+
+        updatedLines.append(line)
+
+    if not pyworkflowFound:
+        if (
+            updatedLines
+            and updatedLines[-1].strip()
+        ):
+            updatedLines.append("")
+
+        updatedLines.extend([
+            "[PYWORKFLOW]",
+            javaLine,
+        ])
+
+        javaInserted = True
+
+    if not javaInserted:
+        raise RuntimeError(
+            "Could not configure "
+            "SCIPION_JAVA_HOME"
+        )
+
+    updated = "\n".join(updatedLines)
+
+    if text.endswith("\n"):
+        updated += "\n"
+
+    if updated == text:
+        return False
+
+    scipionConfPath.write_text(
+        updated,
+        encoding="utf-8",
+    )
+
     return True
 
 

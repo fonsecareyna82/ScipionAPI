@@ -148,5 +148,148 @@ def test_EnsureScipionJavaHomePreservesValidCustomPath(tmp_path):
         f"SCIPION_JAVA_HOME = {customHome}"
         in configPath.read_text(encoding="utf-8")
     )
+    assert (
+        configPath
+        .read_text(encoding="utf-8")
+        .count("SCIPION_JAVA_HOME")
+        == 1
+    )
+
+
+def test_EnsureScipionJavaHomeRemovesDuplicateFromPlugins(
+    tmp_path,
+):
+    javaHome = tmp_path / "scipion4Web"
+    javaBin = javaHome / "bin" / "java"
+    javaBin.parent.mkdir(parents=True)
+    javaBin.write_text(
+        "",
+        encoding="utf-8",
+    )
+    javaBin.chmod(0o755)
+
+    configPath = tmp_path / "scipion.conf"
+    configPath.write_text(
+        "[PYWORKFLOW]\n"
+        "SCIPION_DOMAIN=pwem\n"
+        f"SCIPION_JAVA_HOME={javaHome}\n"
+        "\n"
+        "[PLUGINS]\n"
+        f"SCIPION_JAVA_HOME={javaHome}\n"
+        "RELION_HOME=/opt/relion\n",
+        encoding="utf-8",
+    )
+
+    changed = (
+        installModule
+        ._ensureScipionJavaHome(
+            configPath,
+            javaHome,
+        )
+    )
+
+    assert changed is True
+
+    content = configPath.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        content.count(
+            "SCIPION_JAVA_HOME"
+        )
+        == 1
+    )
+
+    assert (
+        f"SCIPION_JAVA_HOME = {javaHome}"
+        in content
+    )
+
+    pluginsSection = content.split(
+        "[PLUGINS]",
+        1,
+    )[1]
+
+    assert (
+        "SCIPION_JAVA_HOME"
+        not in pluginsSection
+    )
+
+    assert (
+        "RELION_HOME=/opt/relion"
+        in pluginsSection
+    )
+
+
+def test_EnsureScipionJavaHomeMovesValidPluginValueToPyworkflow(
+    tmp_path,
+):
+    customHome = tmp_path / "custom-java"
+    customBin = customHome / "bin" / "java"
+    customBin.parent.mkdir(parents=True)
+    customBin.write_text(
+        "",
+        encoding="utf-8",
+    )
+    customBin.chmod(0o755)
+
+    managedHome = tmp_path / "scipion4Web"
+    managedBin = managedHome / "bin" / "java"
+    managedBin.parent.mkdir(parents=True)
+    managedBin.write_text(
+        "",
+        encoding="utf-8",
+    )
+    managedBin.chmod(0o755)
+
+    configPath = tmp_path / "scipion.conf"
+    configPath.write_text(
+        "[PYWORKFLOW]\n"
+        "SCIPION_DOMAIN=pwem\n"
+        "\n"
+        "[PLUGINS]\n"
+        f"SCIPION_JAVA_HOME={customHome}\n",
+        encoding="utf-8",
+    )
+
+    changed = (
+        installModule
+        ._ensureScipionJavaHome(
+            configPath,
+            managedHome,
+        )
+    )
+
+    assert changed is True
+
+    content = configPath.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        content.count(
+            "SCIPION_JAVA_HOME"
+        )
+        == 1
+    )
+
+    assert (
+        f"SCIPION_JAVA_HOME = {customHome}"
+        in content
+    )
+
+    pyworkflowSection = (
+        content
+        .split("[PYWORKFLOW]", 1)[1]
+        .split("[PLUGINS]", 1)[0]
+    )
+
+    assert (
+        f"SCIPION_JAVA_HOME = {customHome}"
+        in pyworkflowSection
+    )
+
+
 
 
