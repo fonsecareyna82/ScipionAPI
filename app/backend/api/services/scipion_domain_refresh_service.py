@@ -31,6 +31,7 @@ from typing import Set
 from pyworkflow.config import Config
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
+from app.backend.api.services.environment_revision import getEnvironmentRevision
 from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
 
 
@@ -46,7 +47,18 @@ def _readPluginsRevision() -> int:
         return 0
 
 
+def _readEnvironmentRevision() -> int:
+    try:
+        return int(
+            getEnvironmentRevision()
+            or 0
+        )
+    except Exception:
+        return 0
+
+
 _lastDomainRevision = _readPluginsRevision()
+_lastEnvironmentRevision = _readEnvironmentRevision()
 
 
 def _resetScipionDomainCaches(domain) -> None:
@@ -86,24 +98,50 @@ def _getCleanScipionPluginNames() -> Set[str]:
     }
 
 
-def _refreshScipionDomainLocked(force: bool = False) -> bool:
+def _refreshScipionDomainLocked(
+    force: bool = False,
+) -> bool:
     global _lastDomainRevision
+    global _lastEnvironmentRevision
 
-    revision = _readPluginsRevision()
+    pluginsRevision = (
+        _readPluginsRevision()
+    )
 
-    if not force and revision == _lastDomainRevision:
+    environmentRevision = (
+        _readEnvironmentRevision()
+    )
+
+    if (
+        not force
+        and pluginsRevision
+        == _lastDomainRevision
+        and environmentRevision
+        == _lastEnvironmentRevision
+    ):
         return False
 
     importlib.invalidate_caches()
+
     Config.setDomain("pwem")
     domain = Config.getDomain()
 
-    _resetScipionDomainCaches(domain)
+    _resetScipionDomainCaches(
+        domain
+    )
 
-    currentPlugins = domain.getPlugins()
-    cleanPluginNames = _getCleanScipionPluginNames()
+    currentPlugins = (
+        domain.getPlugins()
+    )
 
-    stalePluginNames = sorted(set(currentPlugins) - cleanPluginNames)
+    cleanPluginNames = (
+        _getCleanScipionPluginNames()
+    )
+
+    stalePluginNames = sorted(
+        set(currentPlugins)
+        - cleanPluginNames
+    )
 
     if stalePluginNames:
         logger.warning(
@@ -113,18 +151,38 @@ def _refreshScipionDomainLocked(force: bool = False) -> bool:
 
     domain._plugins = {
         pluginName: pluginModule
-        for pluginName, pluginModule in currentPlugins.items()
-        if pluginName in cleanPluginNames
+        for pluginName, pluginModule
+        in currentPlugins.items()
+        if pluginName
+        in cleanPluginNames
     }
 
     domain._protocols = {}
-    setattr(domain, "_Domain__mapperDict", None)
+    setattr(
+        domain,
+        "_Domain__mapperDict",
+        None,
+    )
 
     domain.getProtocols()
 
-    _lastDomainRevision = revision
+    _lastDomainRevision = (
+        pluginsRevision
+    )
 
-    logger.info("Refreshed Scipion domain after plugin change. pluginsRevision=%s protocols=%s", revision, len(domain._protocols))
+    _lastEnvironmentRevision = (
+        environmentRevision
+    )
+
+    logger.info(
+        "Refreshed Scipion domain. "
+        "pluginsRevision=%s "
+        "environmentRevision=%s "
+        "protocols=%s",
+        pluginsRevision,
+        environmentRevision,
+        len(domain._protocols),
+    )
 
     return True
 

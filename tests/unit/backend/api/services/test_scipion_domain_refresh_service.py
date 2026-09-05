@@ -295,8 +295,20 @@ def test_RefreshScipionDomainSkipsUnchangedRevision(monkeypatch):
 
     monkeypatch.setattr(
         domainRefreshModule,
+        "_lastEnvironmentRevision",
+        8,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
         "getPluginsRevision",
         lambda: 4,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getEnvironmentRevision",
+        lambda: 8,
     )
 
     monkeypatch.setattr(
@@ -310,3 +322,115 @@ def test_RefreshScipionDomainSkipsUnchangedRevision(monkeypatch):
     )
 
     assert domainRefreshModule.refreshScipionDomain() is False
+
+
+def test_RefreshScipionDomainWhenEnvironmentRevisionChanges(
+    monkeypatch,
+):
+    class EnvironmentDomainStub:
+        _plugins = {}
+        _protocols = {}
+        _objects = {}
+        _viewers = {}
+        _wizards = {}
+
+        _pluginsLoaded = True
+        _preferred_viewers = None
+        _Domain__mapperDict = None
+
+        @classmethod
+        def getPlugins(cls):
+            cls._plugins = {
+                "pluginA": object(),
+            }
+
+            cls._pluginsLoaded = True
+
+            return dict(
+                cls._plugins
+            )
+
+        @classmethod
+        def getProtocols(cls):
+            cls._protocols = {
+                "ProtocolA": object(),
+            }
+
+            return dict(
+                cls._protocols
+            )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastDomainRevision",
+        5,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastEnvironmentRevision",
+        10,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getPluginsRevision",
+        lambda: 5,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getEnvironmentRevision",
+        lambda: 11,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.importlib,
+        "invalidate_caches",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "setDomain",
+        lambda value: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "getDomain",
+        lambda: EnvironmentDomainStub,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_getCleanScipionPluginNames",
+        lambda: {"pluginA"},
+    )
+
+    refreshed = (
+        domainRefreshModule
+        .refreshScipionDomain()
+    )
+
+    assert refreshed is True
+
+    assert (
+        domainRefreshModule
+        ._lastDomainRevision
+        == 5
+    )
+
+    assert (
+        domainRefreshModule
+        ._lastEnvironmentRevision
+        == 11
+    )
+
+    assert (
+        "ProtocolA"
+        in EnvironmentDomainStub
+        ._protocols
+    )
+
+

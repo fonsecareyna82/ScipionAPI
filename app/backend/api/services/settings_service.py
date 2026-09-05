@@ -49,7 +49,9 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException, status
 
 import pyworkflow
+from app.backend.api.services.environment_revision import bumpEnvironmentRevision
 from app.backend.api.services.reload_trigger import triggerBackendReloadIfEnabled
+from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
 from pyworkflow import VariablesRegistry
 
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -986,67 +988,152 @@ class SettingsService:
 
                 for variable in VariablesRegistry.__iter__():
                     try:
-                        variableName = _toStr(getattr(variable, "name", "")).strip()
+                        variableName = _toStr(
+                            getattr(
+                                variable,
+                                "name",
+                                "",
+                            )
+                        ).strip()
+
                         if not variableName:
                             continue
 
-                        registryNames.add(variableName)
+                        registryNames.add(
+                            variableName
+                        )
 
-                        if variableName not in patchItems:
+                        if (
+                                variableName
+                                not in patchItems
+                        ):
                             continue
 
-                        nextValue = patchItems[variableName]
-                        currentValue = "" if getattr(variable, "value", None) is None else str(variable.value)
+                        nextValue = (
+                            patchItems[
+                                variableName
+                            ]
+                        )
 
-                        if currentValue == nextValue and os.environ.get(variableName) == nextValue:
+                        currentValue = (
+                            ""
+                            if getattr(
+                                variable,
+                                "value",
+                                None,
+                            )
+                               is None
+                            else str(
+                                variable.value
+                            )
+                        )
+
+                        if (
+                                currentValue
+                                == nextValue
+                                and os.environ.get(
+                            variableName
+                        )
+                                == nextValue
+                        ):
                             continue
 
-                        os.environ[variableName] = nextValue
-                        variable.value = nextValue
+                        os.environ[
+                            variableName
+                        ] = nextValue
 
-                        defaultValue = getattr(variable, "default", None)
-                        if defaultValue is not None:
-                            variable.isDefault = str(defaultValue) == str(nextValue)
+                        variable.value = (
+                            nextValue
+                        )
+
+                        defaultValue = (
+                            getattr(
+                                variable,
+                                "default",
+                                None,
+                            )
+                        )
+
+                        if (
+                                defaultValue
+                                is not None
+                        ):
+                            variable.isDefault = (
+                                    str(defaultValue)
+                                    == str(nextValue)
+                            )
                         else:
-                            variable.isDefault = False
+                            variable.isDefault = (
+                                False
+                            )
 
                         registryChanged = True
                         changed = True
+
                     except Exception:
                         continue
 
-                customPatch = {
-                    name: value
-                    for name, value in patchItems.items()
-                    if name not in registryNames
-                }
+                customVars = (
+                    _readCustomEnvironmentVariables()
+                )
 
-                if customPatch:
-                    customVars = _readCustomEnvironmentVariables()
-                    customChanged = False
+                customChanged = False
 
-                    for variableName, nextValue in customPatch.items():
-                        currentStoredValue = customVars.get(variableName)
-                        currentEnvValue = os.environ.get(variableName)
+                for (
+                        variableName,
+                        nextValue,
+                ) in patchItems.items():
+                    if (
+                            os.environ.get(
+                                variableName
+                            )
+                            != nextValue
+                    ):
+                        os.environ[
+                            variableName
+                        ] = nextValue
 
-                        if currentStoredValue == nextValue and currentEnvValue == nextValue:
-                            continue
+                        changed = True
 
-                        os.environ[variableName] = nextValue
-                        customVars[variableName] = nextValue
+                    if (
+                            customVars.get(
+                                variableName
+                            )
+                            != nextValue
+                    ):
+                        customVars[
+                            variableName
+                        ] = nextValue
+
                         customChanged = True
                         changed = True
 
-                    if customChanged:
-                        _writeCustomEnvironmentVariablesAtomic(customVars)
+                if customChanged:
+                    _writeCustomEnvironmentVariablesAtomic(
+                        customVars
+                    )
 
                 if registryChanged:
-                    VariablesRegistry.save(pyworkflow.Config.SCIPION_CONFIG)
+                    VariablesRegistry.save(
+                        pyworkflow.Config.SCIPION_CONFIG
+                    )
 
         if changed:
+            environmentRevision = (
+                bumpEnvironmentRevision()
+            )
+
+            logger.info(
+                "Environment revision bumped to %s",
+                environmentRevision,
+            )
+
+            refreshScipionDomainIfNeeded()
             triggerBackendReloadIfEnabled()
 
-        return self.getEnvironmentVariables(currentUser)
+        return self.getEnvironmentVariables(
+            currentUser
+        )
 
     def getHostSettings(
         self,
