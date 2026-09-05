@@ -25,6 +25,7 @@
 # ******************************************************************************
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -637,6 +638,204 @@ def _checkJavaRuntime(scipionHome: Path) -> StatusRow:
     )
 
 
+def _hasNvidiaDisplayDevice() -> Optional[bool]:
+    # Detect NVIDIA display hardware independently from the NVIDIA driver.
+    pciRoot = Path("/sys/bus/pci/devices")
+
+    if not pciRoot.is_dir():
+        return None
+
+    try:
+        devices = list(pciRoot.iterdir())
+    except OSError:
+        return None
+
+    for devicePath in devices:
+        try:
+            vendor = (devicePath / "vendor").read_text(encoding="utf-8").strip().lower()
+            deviceClass = (devicePath / "class").read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            continue
+
+        if vendor == "0x10de" and deviceClass.startswith("0x03"):
+            return True
+
+    return False
+
+def _checkNvidiaRuntime() -> List[StatusRow]:
+    # Check NVIDIA hardware, driver, and CUDA capability exposed by the driver.
+    rows: List[StatusRow] = []
+    hardwareDetected = _hasNvidiaDisplayDevice()
+    executable = shutil.which("nvidia-smi")
+
+    if not executable:
+        if hardwareDetected is True:
+            rows.append(_ok("NVIDIA GPU", "NVIDIA display device detected through PCI"))
+            rows.append(_fail("NVIDIA driver", "GPU detected but nvidia-smi was not found in PATH"))
+        elif hardwareDetected is False:
+            rows.append(_warn("NVIDIA GPU", "No NVIDIA display device detected"))
+            rows.append(_warn("NVIDIA driver", "nvidia-smi not found in PATH"))
+        else:
+            rows.append(_warn("NVIDIA GPU", "Could not determine whether NVIDIA hardware is present"))
+            rows.append(_warn("NVIDIA driver", "nvidia-smi not found in PATH"))
+
+        rows.append(_warn("CUDA driver capability", "Unavailable because nvidia-smi is not available"))
+        return rows
+
+    try:
+        proc = runCmd(
+            [
+                executable,
+                "--query-gpu=index,name,memory.total,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            capture=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        status = _fail if hardwareDetected is True else _warn
+        rows.append(status("NVIDIA driver", f"Failed to execute {executable}: {exc}"))
+        rows.append(_warn("NVIDIA GPU", "GPU inventory unavailable because nvidia-smi failed"))
+        rows.append(_warn("CUDA driver capability", "Unavailable because nvidia-smi failed"))
+        return rows
+
+    if proc.returncode != 0:
+        output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        status = _fail if hardwareDetected is True else _warn
+        rows.append(status("NVIDIA driver", output or "nvidia-smi failed"))
+        rows.append(_warn("NVIDIA GPU", "GPU inventory unavailable because nvidia-smi failed"))
+        rows.append(_warn("CUDA driver capability", "Unavailable because nvidia-smi failed"))
+        return rows
+
+    gpus = []
+    driverVersions = set()
+
+    for line in (proc.stdout or "").splitlines():
+        parts = [part.strip() for part in line.split(",", 3)]
+
+        if len(parts) != 4:
+            continue
+
+        try:
+            gpuIndex = int(parts[0])
+        except ValueError:
+            continue
+
+        try:
+            memoryMiB = int(float(parts[2]))
+        except ValueError:
+            memoryMiB = None
+
+        driverVersion = parts[3]
+        if driverVersion:
+            driverVersions.add(driverVersion)
+
+        gpus.append(
+            {
+                "index": gpuIndex,
+                "name": parts[1],
+                "memoryMiB": memoryMiB,
+            }
+        )
+
+    if gpus:
+        descriptions = []
+
+        for gpu in gpus[:4]:
+            detail = f"{gpu['index']}: {gpu['name']}"
+
+            if gpu["memoryMiB"] is not None:
+                detail += f" ({gpu['memoryMiB']} MiB)"
+
+            descriptions.append(detail)
+
+        if len(gpus) > 4:
+            descriptions.append(f"+{len(gpus) - 4} more")
+
+        rows.append(_ok("NVIDIA GPU", f"{len(gpus)} device(s) · {'; '.join(descriptions)}"))
+    else:
+        rows.append(_warn("NVIDIA GPU", "nvidia-smi returned no GPU devices"))
+
+    if driverVersions:
+        rows.append(_ok("NVIDIA driver", f"{', '.join(sorted(driverVersions))} · {executable}"))
+    else:
+        rows.append(_ok("NVIDIA driver", f"nvidia-smi operational · {executable}"))
+
+    try:
+        versionProc = runCmd([executable], capture=True, timeout=5)
+        versionOutput = ((versionProc.stdout or "") + "\n" + (versionProc.stderr or "")).strip()
+    except Exception as exc:
+        rows.append(_warn("CUDA driver capability", f"Could not query CUDA capability: {exc}"))
+        return rows
+
+    if versionProc.returncode != 0:
+        rows.append(_warn("CUDA driver capability", "Could not query CUDA capability from nvidia-smi"))
+        return rows
+
+    match = re.search(r"CUDA Version:\s*([0-9.]+)", versionOutput)
+
+    if match:
+        rows.append(
+            _ok(
+                "CUDA driver capability",
+                f"CUDA {match.group(1)} maximum supported by NVIDIA driver",
+            )
+        )
+    else:
+        rows.append(_warn("CUDA driver capability", "CUDA capability not reported by nvidia-smi"))
+
+    return rows
+
+
+def _checkCudaToolkit() -> StatusRow:
+    # Check the optional CUDA compiler toolkit.
+    executable = shutil.which("nvcc")
+
+    if not executable:
+        return _warn(
+            "CUDA toolkit",
+            "nvcc not found in PATH; runtime-only CUDA installations may still be valid",
+        )
+
+    try:
+        proc = runCmd([executable, "--version"], capture=True, timeout=5)
+    except Exception as exc:
+        return _warn("CUDA toolkit", f"Failed to execute {executable}: {exc}")
+
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+
+    if proc.returncode != 0:
+        return _warn("CUDA toolkit", output or f"{executable} --version failed")
+
+    match = re.search(r"\brelease\s+([0-9.]+)", output, flags=re.IGNORECASE)
+
+    if not match:
+        return _warn("CUDA toolkit", f"nvcc found but version could not be determined · {executable}")
+
+    return _ok("CUDA toolkit", f"CUDA {match.group(1)} · {executable}")
+
+
+def _checkCudaVisibility() -> StatusRow:
+    # Check process-level CUDA device filtering.
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        return _ok("CUDA visibility", "CUDA_VISIBLE_DEVICES is not set")
+
+    value = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+
+    if value in ("", "-1"):
+        return _warn("CUDA visibility", f"CUDA GPUs are explicitly hidden · CUDA_VISIBLE_DEVICES={value!r}")
+
+    return _ok("CUDA visibility", f"CUDA_VISIBLE_DEVICES={value}")
+
+
+def _checkGpuDiagnostics() -> List[StatusRow]:
+    # Check NVIDIA GPU and CUDA runtime/toolkit visibility.
+    rows = _checkNvidiaRuntime()
+    rows.append(_checkCudaToolkit())
+    rows.append(_checkCudaVisibility())
+    return rows
+
+
 def _checkDirectoryWritable(path: Path, label: str, required: bool = True) -> StatusRow:
     # Check that a directory exists and is writable without modifying it.
     if not path.exists():
@@ -739,7 +938,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
 
     _printPanel(
         "ScipionAPI doctor",
-        "Read-only checks for repository, Python environment, configuration, database, broker, and runtime.",
+        "Read-only checks for repository, Python environment, hardware, configuration, database, broker, and runtime.",
     )
 
     rows.append(_pathExists(repoRoot / "pyproject.toml", "Repository pyproject.toml", required=True))
@@ -753,6 +952,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.extend(_checkFilesystem(env, scipionHome, repoRoot))
     rows.extend(_checkScipionConfig(scipionHome))
     rows.append(_checkJavaRuntime(scipionHome))
+    rows.extend(_checkGpuDiagnostics())
     rows.extend(_checkRuntimeRevisions(scipionHome))
     rows.append(_checkRuntimeOverrides(scipionHome))
 

@@ -163,3 +163,109 @@ def test_DiskSpaceFailsWhenCritical(tmp_path, monkeypatch):
     assert "1.0 GiB free" in row[2]
 
 
+def test_NvidiaGpuDetectedWithoutSmiFailsDriver(monkeypatch):
+    monkeypatch.setattr(doctor, "_hasNvidiaDisplayDevice", lambda: True)
+    monkeypatch.setattr(doctor.shutil, "which", lambda command: None)
+
+    rows = doctor._checkNvidiaRuntime()
+
+    gpuRow = next(row for row in rows if row[0] == "NVIDIA GPU")
+    driverRow = next(row for row in rows if row[0] == "NVIDIA driver")
+
+    assert gpuRow[1] == "OK"
+    assert driverRow[1] == "FAIL"
+    assert "nvidia-smi" in driverRow[2]
+
+
+def test_NoNvidiaGpuWithoutSmiWarns(monkeypatch):
+    monkeypatch.setattr(doctor, "_hasNvidiaDisplayDevice", lambda: False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda command: None)
+
+    rows = doctor._checkNvidiaRuntime()
+
+    gpuRow = next(row for row in rows if row[0] == "NVIDIA GPU")
+    driverRow = next(row for row in rows if row[0] == "NVIDIA driver")
+
+    assert gpuRow[1] == "WARN"
+    assert driverRow[1] == "WARN"
+
+
+def test_NvidiaRuntimeReportsGpuDriverAndCuda(monkeypatch):
+    class Result:
+        def __init__(self, stdout="", stderr="", returncode=0):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    def fakeRunCmd(args, **kwargs):
+        if any(str(arg).startswith("--query-gpu=") for arg in args):
+            return Result(
+                stdout="0, NVIDIA RTX 4090, 24564, 580.82.09\n",
+            )
+
+        return Result(
+            stdout="NVIDIA-SMI 580.82.09    Driver Version: 580.82.09    CUDA Version: 13.0\n",
+        )
+
+    monkeypatch.setattr(doctor, "_hasNvidiaDisplayDevice", lambda: True)
+    monkeypatch.setattr(doctor.shutil, "which", lambda command: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(doctor, "runCmd", fakeRunCmd)
+
+    rows = doctor._checkNvidiaRuntime()
+
+    gpuRow = next(row for row in rows if row[0] == "NVIDIA GPU")
+    driverRow = next(row for row in rows if row[0] == "NVIDIA driver")
+    cudaRow = next(row for row in rows if row[0] == "CUDA driver capability")
+
+    assert gpuRow[1] == "OK"
+    assert "NVIDIA RTX 4090" in gpuRow[2]
+
+    assert driverRow[1] == "OK"
+    assert "580.82.09" in driverRow[2]
+
+    assert cudaRow[1] == "OK"
+    assert "CUDA 13.0" in cudaRow[2]
+
+
+def test_CudaToolkitWarnsWhenNvccMissing(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda command: None)
+
+    row = doctor._checkCudaToolkit()
+
+    assert row[1] == "WARN"
+    assert "nvcc not found" in row[2]
+
+
+def test_CudaToolkitReportsVersion(monkeypatch):
+    class Result:
+        stdout = "Cuda compilation tools, release 12.4, V12.4.131"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda command: "/usr/local/cuda/bin/nvcc")
+    monkeypatch.setattr(doctor, "runCmd", lambda *args, **kwargs: Result())
+
+    row = doctor._checkCudaToolkit()
+
+    assert row[1] == "OK"
+    assert "CUDA 12.4" in row[2]
+
+
+def test_CudaVisibilityWarnsWhenDisabled(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+
+    row = doctor._checkCudaVisibility()
+
+    assert row[1] == "WARN"
+    assert "explicitly hidden" in row[2]
+
+
+def test_CudaVisibilityReportsSelectedDevices(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2")
+
+    row = doctor._checkCudaVisibility()
+
+    assert row[1] == "OK"
+    assert "0,2" in row[2]
+
+
