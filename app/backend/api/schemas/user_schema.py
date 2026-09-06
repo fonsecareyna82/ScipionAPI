@@ -52,6 +52,18 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str = Field(..., min_length=1)
+    newPassword: str = Field(..., min_length=8)
+
+    @validator("newPassword")
+    @classmethod
+    def validateNewPassword(cls, passwordValue: str) -> str:
+        if not any(char.isalpha() for char in passwordValue) or not any(char.isdigit() for char in passwordValue):
+            raise ValueError("Password must contain at least one letter and one number")
+        return passwordValue
+
+
 class LoginResponse(BaseModel):
     accessToken: str
     refreshToken: str

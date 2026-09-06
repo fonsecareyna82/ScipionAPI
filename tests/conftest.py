@@ -1881,6 +1881,7 @@ class FakeMapper:
         self.insertedUsers: list[dict[str, Any]] = []
         self.updatedVerificationCodes: list[tuple[int, str]] = []
         self.updatedUserFields: list[tuple[int, dict[str, Any]]] = []
+        self.updatedUserPasswords: list[tuple[int, str]] = []
         self.verifiedUserIds: list[int] = []
         self.nextUserId = 1
 
@@ -1947,6 +1948,11 @@ class FakeMapper:
         user = self.usersById[userId]
         user.update(fields)
         self.updatedUserFields.append((userId, fields))
+
+    def updateUserPassword(self, userId: int, hashedPassword: str):
+        user = self.usersById[userId]
+        user["hashedPassword"] = hashedPassword
+        self.updatedUserPasswords.append((userId, hashedPassword))
 
 @pytest.fixture
 def mainModule(monkeypatch: pytest.MonkeyPatch, authTestEnv: Path):

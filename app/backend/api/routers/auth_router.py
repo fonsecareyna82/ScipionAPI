@@ -28,7 +28,7 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
-                                                 UserUpdate)
+                                                 UserUpdate, ChangePasswordRequest)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.utils.security import hashPassword, verifyPassword
@@ -187,6 +187,39 @@ def updateMe(
         )
 
     return userProfile
+
+
+@router.put("/me/password", status_code=status.HTTP_200_OK)
+def changeMyPassword(
+    passwordData: ChangePasswordRequest,
+    currentUser: dict = Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    user = mapper.getUserById(currentUser["id"])
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not verifyPassword(passwordData.currentPassword, user["hashedPassword"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    if passwordData.currentPassword == passwordData.newPassword:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password",
+        )
+
+    mapper.updateUserPassword(
+        currentUser["id"],
+        hashPassword(passwordData.newPassword),
+    )
+
+    return {"message": "Password changed successfully"}
 
 
 @router.post("/refresh")

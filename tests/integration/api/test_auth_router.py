@@ -335,3 +335,110 @@ def test_RefreshReturnsNewAccessToken(authClient):
 
     assert response.status_code == 200
     assert response.json() == {"accessToken": "access::user@example.com"}
+
+
+def test_ChangePasswordUpdatesPassword(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.put(
+        "/auth/me/password",
+        json={
+            "currentPassword": "secret123",
+            "newPassword": "newsecret456",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Password changed successfully"}
+    assert fakeMapper.usersById[1]["hashedPassword"] == "hashed::newsecret456"
+    assert fakeMapper.updatedUserPasswords == [(1, "hashed::newsecret456")]
+
+
+def test_ChangePasswordRejectsWrongCurrentPassword(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.put(
+        "/auth/me/password",
+        json={
+            "currentPassword": "wrong123",
+            "newPassword": "newsecret456",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Current password is incorrect"
+    assert fakeMapper.usersById[1]["hashedPassword"] == "hashed::secret123"
+    assert fakeMapper.updatedUserPasswords == []
+
+
+def test_ChangePasswordRejectsSamePassword(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.put(
+        "/auth/me/password",
+        json={
+            "currentPassword": "secret123",
+            "newPassword": "secret123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "New password must be different from current password"
+    assert fakeMapper.updatedUserPasswords == []
+
+
+def test_ChangePasswordValidatesNewPassword(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.put(
+        "/auth/me/password",
+        json={
+            "currentPassword": "secret123",
+            "newPassword": "abcdefgh",
+        },
+    )
+
+    assert response.status_code == 422
+    assert fakeMapper.updatedUserPasswords == []
+
+
