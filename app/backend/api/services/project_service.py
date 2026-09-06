@@ -15994,6 +15994,30 @@ class ProjectService:
         className = getattr(viewerClass, "__name__", "") or str(viewerClass)
         moduleName = str(getattr(viewerClass, "__module__", "") or "")
 
+        plugin = getattr(viewerClass, "_plugin", None)
+        validateInstallation = getattr(plugin, "validateInstallation", None) if plugin is not None else None
+
+        if callable(validateInstallation):
+            try:
+                validationErrors = validateInstallation() or []
+            except Exception as error:
+                return False, f"{className} plugin availability check failed: {error}"
+
+            if isinstance(validationErrors, str):
+                validationErrors = [validationErrors]
+            elif not isinstance(validationErrors, (list, tuple, set)):
+                validationErrors = [validationErrors]
+
+            validationErrors = [
+                str(error).strip()
+                for error in validationErrors
+                if str(error).strip()
+            ]
+
+            if validationErrors:
+                pluginName = moduleName.split(".", 1)[0] or className
+                return False, f"{pluginName} is not available: {'; '.join(validationErrors)}"
+
         if moduleName == "pwem.viewers.viewer_chimera" and className in {
             "ChimeraViewer",
             "ChimeraOldViewer",

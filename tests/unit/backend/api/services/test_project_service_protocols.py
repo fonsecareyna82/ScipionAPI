@@ -4501,6 +4501,51 @@ def test_BuildExternalViewerDescriptorMarksExecutableChimeraAvailable(
     assert descriptor["reason"] is None
 
 
+def test_BuildExternalViewerDescriptorMarksInvalidPluginViewerUnavailable(
+        service,
+):
+    class FakePlugin:
+        def validateInstallation(self):
+            return ["External program is not installed"]
+
+    class FakePluginViewer:
+        _label = "Plugin viewer"
+        _plugin = FakePlugin()
+
+    FakePluginViewer.__module__ = "fakeplugin.viewers"
+
+    descriptor = service._buildExternalViewerDescriptor(
+        FakePluginViewer
+    )
+
+    assert descriptor["available"] is False
+    assert descriptor["reason"] == (
+        "fakeplugin is not available: "
+        "External program is not installed"
+    )
+
+
+def test_BuildExternalViewerDescriptorMarksValidPluginViewerAvailable(
+        service,
+):
+    class FakePlugin:
+        def validateInstallation(self):
+            return []
+
+    class FakePluginViewer:
+        _label = "Plugin viewer"
+        _plugin = FakePlugin()
+
+    FakePluginViewer.__module__ = "fakeplugin.viewers"
+
+    descriptor = service._buildExternalViewerDescriptor(
+        FakePluginViewer
+    )
+
+    assert descriptor["available"] is True
+    assert descriptor["reason"] is None
+
+
 def test_ListExternalViewersOmitsUnavailableViewers(
         service,
         monkeypatch,
