@@ -1180,13 +1180,11 @@ class PostgresqlFlatMapper(Mapper):
         self.db.execute(
             """
             UPDATE users
-               SET "hashedPassword" = %s,
-                   "updatedAt" = NOW()
+               SET "hashedPassword" = %s
              WHERE id = %s
             """,
             (hashedPassword, userId),
         )
-
 
     def listUsers(self, excludeUserId: Optional[int] = None) -> List[Dict[str, Any]]:
         """
