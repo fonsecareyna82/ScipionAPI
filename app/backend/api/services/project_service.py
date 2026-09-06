@@ -15979,6 +15979,44 @@ class ProjectService:
             )
             return []
 
+    @staticmethod
+    def _isExternalViewerExecutableAvailable(program: Any) -> bool:
+        programPath = str(program or "").strip()
+        if not programPath:
+            return False
+
+        if os.path.isabs(programPath):
+            return os.path.isfile(programPath) and os.access(programPath, os.X_OK)
+
+        return shutil.which(programPath) is not None
+
+    def _getExternalViewerAvailability(self, viewerClass: Any) -> Tuple[bool, Optional[str]]:
+        className = getattr(viewerClass, "__name__", "") or str(viewerClass)
+        moduleName = str(getattr(viewerClass, "__module__", "") or "")
+
+        if moduleName == "pwem.viewers.viewer_chimera" and className in {
+            "ChimeraViewer",
+            "ChimeraOldViewer",
+        }:
+            label = "Chimera" if className == "ChimeraOldViewer" else "ChimeraX"
+
+            try:
+                if className == "ChimeraOldViewer":
+                    from pwem import Config as emConfig
+                    program = emConfig.CHIMERA_OLD_BINARY_PATH
+                else:
+                    from pwem.viewers.viewer_chimera import Chimera
+                    program = Chimera.getProgram()
+            except Exception as error:
+                return False, f"{label} availability check failed: {error}"
+
+            programPath = str(program or "").strip()
+
+            if not self._isExternalViewerExecutableAvailable(programPath):
+                return False, f"{label} executable not found: {programPath or '<not configured>'}"
+
+        return True, None
+
     def _normalizeExternalViewerId(self, viewerClass: Any) -> str:
         className = getattr(viewerClass, "__name__", "") or str(viewerClass)
         viewerId = className.strip()
@@ -15994,20 +16032,21 @@ class ProjectService:
         moduleName = getattr(viewerClass, "__module__", None)
 
         label = (
-            getattr(viewerClass, "_label", None)
-            or getattr(viewerClass, "label", None)
-            or className
+                getattr(viewerClass, "_label", None)
+                or getattr(viewerClass, "label", None)
+                or className
         )
 
         label = str(label).replace("Viewer", "").strip() or className
+        available, reason = self._getExternalViewerAvailability(viewerClass)
 
         return {
             "id": self._normalizeExternalViewerId(viewerClass),
             "label": label,
             "className": className,
             "moduleName": moduleName,
-            "available": True,
-            "reason": None,
+            "available": available,
+            "reason": reason,
         }
 
     def _unwrapScipionObject(self, obj: Any) -> Any:
@@ -16295,7 +16334,7 @@ class ProjectService:
         for viewerClass in viewerClasses:
             descriptor = self._buildExternalViewerDescriptor(viewerClass)
             viewerId = descriptor["id"]
-            if descriptor['className'] in excludedViewer:
+            if descriptor["className"] in excludedViewer or not descriptor["available"]:
                 continue
 
             if viewerId in seenIds:
@@ -16331,6 +16370,12 @@ class ProjectService:
                 tokens.add(className[:-6].lower())
 
             if requested in tokens:
+                if not descriptor.get("available", True):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=descriptor.get("reason") or f"{descriptor['label']} is not available",
+                    )
+
                 return viewerClass, descriptor
 
         raise HTTPException(

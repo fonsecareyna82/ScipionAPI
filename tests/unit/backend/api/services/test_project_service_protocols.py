@@ -4444,3 +4444,161 @@ def test_PrepareProtocolContextForPersistenceStoresScalarValue(
         ]
         == 256
     )
+
+
+
+def test_BuildExternalViewerDescriptorMarksMissingChimeraUnavailable(
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    chimeraModule = importlib.import_module(
+        "pwem.viewers.viewer_chimera"
+    )
+    missingProgram = tmp_path / "missing" / "ChimeraX"
+
+    monkeypatch.setattr(
+        chimeraModule.Chimera,
+        "getProgram",
+        classmethod(
+            lambda cls: str(missingProgram)
+        ),
+    )
+
+    descriptor = service._buildExternalViewerDescriptor(
+        chimeraModule.ChimeraViewer
+    )
+
+    assert descriptor["available"] is False
+    assert "ChimeraX executable not found" in descriptor["reason"]
+
+
+def test_BuildExternalViewerDescriptorMarksExecutableChimeraAvailable(
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    chimeraModule = importlib.import_module(
+        "pwem.viewers.viewer_chimera"
+    )
+    program = tmp_path / "ChimeraX"
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+
+    monkeypatch.setattr(
+        chimeraModule.Chimera,
+        "getProgram",
+        classmethod(
+            lambda cls: str(program)
+        ),
+    )
+
+    descriptor = service._buildExternalViewerDescriptor(
+        chimeraModule.ChimeraViewer
+    )
+
+    assert descriptor["available"] is True
+    assert descriptor["reason"] is None
+
+
+def test_ListExternalViewersOmitsUnavailableViewers(
+        service,
+        monkeypatch,
+):
+    class AvailableViewer:
+        _label = "Available"
+
+    class UnavailableViewer:
+        _label = "Unavailable"
+
+    monkeypatch.setattr(
+        service,
+        "_getProtocolOutputObject",
+        lambda **kwargs: (
+            object(),
+            object(),
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolveExternalViewerTargetObject",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_findExternalViewerClasses",
+        lambda targetObj: [
+            UnavailableViewer,
+            AvailableViewer,
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_getExternalViewerAvailability",
+        lambda viewerClass: (
+            (False, "Program not installed")
+            if viewerClass is UnavailableViewer
+            else (True, None)
+        ),
+    )
+
+    viewers = service.listExternalViewers(
+        protocolId=1,
+        outputName="outputVolumes",
+    )
+
+    assert [
+        viewer["className"]
+        for viewer in viewers
+    ] == [
+        "AvailableViewer",
+    ]
+
+
+def test_LaunchExternalViewerRejectsUnavailableViewer(
+        service,
+        monkeypatch,
+):
+    class UnavailableViewer:
+        _label = "Unavailable"
+
+    monkeypatch.setattr(
+        service,
+        "_getProtocolOutputObject",
+        lambda **kwargs: (
+            object(),
+            object(),
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolveExternalViewerTargetObject",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_findExternalViewerClasses",
+        lambda targetObj: [
+            UnavailableViewer,
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_getExternalViewerAvailability",
+        lambda viewerClass: (
+            False,
+            "Program not installed",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        service.launchExternalViewer(
+            protocolId=1,
+            outputName="outputVolumes",
+            viewerId="unavailable",
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "Program not installed"
+
+
