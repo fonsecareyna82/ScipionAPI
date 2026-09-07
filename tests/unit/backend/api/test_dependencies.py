@@ -23,12 +23,13 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-import importlib
+
 import asyncio
-import pytest
+import importlib
 from inspect import signature
+
+import pytest
 from fastapi import HTTPException
-from app.backend.api import dependencies
 
 
 def test_volume_slice_auth_reuses_request_scoped_mapper_dependency(
@@ -63,37 +64,45 @@ def test_volume_slice_auth_reuses_request_scoped_mapper_dependency(
         is sliceDependency.dependency
     )
 
-    def test_GetCurrentUserRejectsInactiveUser(monkeypatch, authTestEnv):
-        class MapperStub:
-            def getUserByEmail(self, email):
-                return {
-                    "id": 2,
-                    "email": email,
-                    "role": "user",
-                    "isActive": False,
-                }
 
-        monkeypatch.setattr(
-            dependencies,
-            "_requireJwtSecretKey",
-            lambda: "test-secret",
-        )
+def test_GetCurrentUserRejectsInactiveUser(
+    monkeypatch,
+    authTestEnv,
+):
+    dependenciesModule = importlib.import_module(
+        "app.backend.api.dependencies"
+    )
 
-        monkeypatch.setattr(
-            dependencies.jwt,
-            "decode",
-            lambda *args, **kwargs: {
-                "sub": "inactive@example.com",
-            },
-        )
+    class MapperStub:
+        def getUserByEmail(self, email):
+            return {
+                "id": 2,
+                "email": email,
+                "role": "user",
+                "isActive": False,
+            }
 
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(
-                dependencies.getCurrentUser(
-                    token="valid-token",
-                    mapper=MapperStub(),
-                )
+    monkeypatch.setattr(
+        dependenciesModule,
+        "_requireJwtSecretKey",
+        lambda: "test-secret",
+    )
+
+    monkeypatch.setattr(
+        dependenciesModule.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "sub": "inactive@example.com",
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            dependenciesModule.getCurrentUser(
+                token="valid-token",
+                mapper=MapperStub(),
             )
+        )
 
-        assert error.value.status_code == 403
-        assert error.value.detail == "User account is inactive"
+    assert error.value.status_code == 403
+    assert error.value.detail == "User account is inactive"

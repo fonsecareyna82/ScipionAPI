@@ -187,6 +187,31 @@ def test_LoginFailsWhenPasswordIsWrong(authClient, fakeMapper):
     assert response.json()["detail"] == "Invalid credentials"
 
 
+def test_LoginFailsWhenUserIsInactive(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="inactive@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Inactive",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=False,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.post(
+        "/auth/login",
+        json={
+            "email": "inactive@example.com",
+            "password": "secret123",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is inactive"
+
+
 def test_LoginFailsWhenEmailIsNotVerified(authClient, fakeMapper):
     fakeMapper.insertUser(
         email="user@example.com",
