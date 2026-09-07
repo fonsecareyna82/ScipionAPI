@@ -64,6 +64,12 @@ async def getCurrentUser(
             detail="User not found",
         )
 
+    if not bool(userRecord.get("isActive", True)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
     return userRecord
 
 

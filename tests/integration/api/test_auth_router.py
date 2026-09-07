@@ -330,11 +330,50 @@ def test_RefreshFailsWhenTokenIsInvalid(authClient):
     assert response.json()["detail"] == "Invalid refresh token"
 
 
-def test_RefreshReturnsNewAccessToken(authClient):
-    response = authClient.post("/auth/refresh", json={"token": "valid-refresh"})
+def test_RefreshReturnsNewAccessToken(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.post(
+        "/auth/refresh",
+        json={"token": "valid-refresh"},
+    )
 
     assert response.status_code == 200
-    assert response.json() == {"accessToken": "access::user@example.com"}
+    assert response.json() == {
+        "accessToken": "access::user@example.com"
+    }
+
+
+def test_RefreshRejectsInactiveUser(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="user@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Test",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=False,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.post(
+        "/auth/refresh",
+        json={"token": "valid-refresh"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is inactive"
 
 
 def test_ChangePasswordUpdatesPassword(authClient, fakeMapper):
@@ -440,5 +479,33 @@ def test_ChangePasswordValidatesNewPassword(authClient, fakeMapper):
 
     assert response.status_code == 422
     assert fakeMapper.updatedUserPasswords == []
+
+
+def test_LoginFailsWhenUserIsInactive(authClient, fakeMapper):
+    fakeMapper.insertUser(
+        email="inactive@example.com",
+        hashedPassword="hashed::secret123",
+        firstName="Inactive",
+        lastName="User",
+        institution="Lab",
+        role="user",
+        isActive=False,
+        isVerified=True,
+        verificationCode="code-1",
+    )
+
+    response = authClient.post(
+        "/auth/login",
+        json={
+            "email": "inactive@example.com",
+            "password": "secret123",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is inactive"
+
+
+
 
 

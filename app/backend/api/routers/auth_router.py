@@ -126,6 +126,12 @@ def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Invalid credentials")
 
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
     if not user["isVerified"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Email not verified")
@@ -223,7 +229,10 @@ def changeMyPassword(
 
 
 @router.post("/refresh")
-def refreshToken(payload: dict = Body(...)):
+def refreshToken(
+    payload: dict = Body(...),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
     refresh_token = payload.get("token")
     if not refresh_token:
         raise HTTPException(status_code=400, detail="Missing token")
@@ -232,6 +241,19 @@ def refreshToken(payload: dict = Body(...)):
     user_email = decoded.get("sub")
     if not user_email:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    user = mapper.getUserByEmail(user_email)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
 
     new_access_token = createAccessToken(data={"sub": user_email})
     return {"accessToken": new_access_token}

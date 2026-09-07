@@ -1222,6 +1222,24 @@ class PostgresqlFlatMapper(Mapper):
             (excludeUserId,),
         )
 
+    def listUsersForAdmin(self) -> List[Dict[str, Any]]:
+        """Return users with account administration fields."""
+        return self.db.fetchAll(
+            """
+            SELECT
+              id,
+              email,
+              "firstName",
+              "lastName",
+              institution,
+              role,
+              "isActive",
+              "isVerified"
+            FROM users
+            ORDER BY "firstName", "lastName", email
+            """
+        )
+
     # -----------------------------
     # Project Methods
     # -----------------------------

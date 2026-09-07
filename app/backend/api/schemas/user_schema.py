@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, validator
 
@@ -45,6 +45,25 @@ class UserOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    email: EmailStr
+    firstName: str
+    lastName: Optional[str] = None
+    institution: Optional[str] = None
+    role: str
+    isActive: bool
+    isVerified: bool
+
+    class Config:
+        orm_mode = True
+
+
+class AdminUserUpdate(BaseModel):
+    role: Optional[Literal["user", "admin"]] = None
+    isActive: Optional[bool] = None
 
 
 class LoginRequest(BaseModel):

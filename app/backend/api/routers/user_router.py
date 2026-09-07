@@ -26,11 +26,12 @@
 
 # app/backend/api/routers/user_router.py
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Dict, Any
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.database import getMapper
-from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.dependencies import getCurrentUser, requireAdmin
+from app.backend.api.schemas.user_schema import AdminUserOut, AdminUserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -45,3 +46,57 @@ def listUsers(
     The current user is excluded from the result.
     """
     return mapper.listUsers(excludeUserId=currentUser["id"])
+
+@router.get("/admin", response_model=List[AdminUserOut])
+def listAdminUsers(
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    adminUser: dict = Depends(requireAdmin),
+):
+    return mapper.listUsersForAdmin()
+
+
+@router.patch("/admin/{userId}", response_model=AdminUserOut)
+def updateAdminUser(
+    userId: int,
+    updates: AdminUserUpdate,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    adminUser: dict = Depends(requireAdmin),
+):
+    user = mapper.getUserById(userId)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    updateFields = updates.dict(exclude_unset=True)
+    if not updateFields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No user administration fields provided",
+        )
+
+    if int(userId) == int(adminUser["id"]):
+        if updateFields.get("isActive") is False:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot deactivate your own account",
+            )
+
+        nextRole = updateFields.get("role")
+        if nextRole is not None and nextRole != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot remove your own admin role",
+            )
+
+    mapper.updateUserFields(userId, updateFields)
+
+    updatedUser = mapper.getUserById(userId)
+    if not updatedUser:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    return updatedUser
