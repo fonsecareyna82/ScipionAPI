@@ -226,6 +226,11 @@ def test_WorkerLoadUsesMapperProjectRuntimeMetadata(
     runtimeMapper = object()
 
     class ProtocolStub:
+        def getHostConfig(self):
+            return SimpleNamespace(
+                isQueueMandatory=lambda: 0,
+            )
+
         def makeWorkingDir(self):
             calls["workingDirCreated"] = True
 
@@ -375,6 +380,128 @@ def test_WorkerAppliesTransientQueueOverrideInMemory():
 
     assert worker._applyQueueLaunchOverride() is True
 
+    assert protocol.queueParams == [
+        "gpu",
+        {
+            "JOB_TIME": "72",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    (
+        "mandatoryCores",
+        "numberOfMpi",
+        "numberOfThreads",
+        "initialUseQueue",
+        "expectedUseQueue",
+        "expectedApplied",
+    ),
+    [
+        (0, 1, 1, False, False, False),
+        (1, 1, 1, False, True, True),
+        (1, 1, 1, True, True, False),
+        (8, 2, 2, False, False, False),
+        (8, 2, 4, False, True, True),
+    ],
+)
+def test_WorkerAppliesMandatoryQueueRequirement(
+        mandatoryCores,
+        numberOfMpi,
+        numberOfThreads,
+        initialUseQueue,
+        expectedUseQueue,
+        expectedApplied,
+):
+    class ValueStub:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class HostConfigStub:
+        def isQueueMandatory(self):
+            return mandatoryCores
+
+    class QueueProtocolStub:
+        def __init__(self):
+            self._useQueue = ValueStub(initialUseQueue)
+            self.numberOfMpi = ValueStub(numberOfMpi)
+            self.numberOfThreads = ValueStub(numberOfThreads)
+
+        def getHostConfig(self):
+            return HostConfigStub()
+
+        def useQueue(self):
+            return bool(self._useQueue.get())
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = protocol
+
+    applied = worker._applyMandatoryQueueRequirement()
+
+    assert applied is expectedApplied
+    assert protocol.useQueue() is expectedUseQueue
+
+
+def test_WorkerMandatoryQueueAllowsQueueLaunchOverride():
+    class ValueStub:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class HostConfigStub:
+        def isQueueMandatory(self):
+            return 1
+
+    class QueueProtocolStub:
+        def __init__(self):
+            self._useQueue = ValueStub(False)
+            self.numberOfMpi = ValueStub(1)
+            self.numberOfThreads = ValueStub(1)
+            self.queueParams = None
+
+        def getHostConfig(self):
+            return HostConfigStub()
+
+        def useQueue(self):
+            return bool(self._useQueue.get())
+
+        def setQueueParams(self, queueParams):
+            self.queueParams = queueParams
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+        queueName="gpu",
+        queueParams={
+            "JOB_TIME": "72",
+        },
+    )
+
+    worker.protocol = protocol
+
+    assert worker._applyMandatoryQueueRequirement() is True
+    assert worker._applyQueueLaunchOverride() is True
+
+    assert protocol.useQueue() is True
     assert protocol.queueParams == [
         "gpu",
         {

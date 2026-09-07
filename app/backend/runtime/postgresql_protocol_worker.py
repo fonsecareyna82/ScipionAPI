@@ -775,6 +775,36 @@ class RuntimePostgresqlProtocolWorker:
         )
         )
 
+    def _applyMandatoryQueueRequirement(self) -> bool:
+        if self.protocol is None:
+            return False
+
+        hostConfig = self.protocol.getHostConfig()
+        mandatoryCores = int(hostConfig.isQueueMandatory() or 0)
+
+        if mandatoryCores <= 0:
+            return False
+
+        numberOfMpi = max(int(self.protocol.numberOfMpi.get() or 1), 1)
+        numberOfThreads = max(int(self.protocol.numberOfThreads.get() or 1), 1)
+        cores = numberOfMpi * numberOfThreads
+
+        if cores < mandatoryCores or self.protocol.useQueue():
+            return False
+
+        self.protocol._useQueue.set(True)
+
+        logger.info(
+            "Enforcing mandatory queue execution. "
+            "projectId=%s protocolId=%s cores=%s mandatoryCores=%s",
+            self.projectId,
+            self.protocolId,
+            cores,
+            mandatoryCores,
+        )
+
+        return True
+
     def _applyQueueLaunchOverride(self) -> bool:
         if self._queueLaunchOverride is None or self.protocol is None:
             return False
@@ -846,6 +876,7 @@ class RuntimePostgresqlProtocolWorker:
                 % self.protocolId
             )
 
+        self._applyMandatoryQueueRequirement()
         self._applyQueueLaunchOverride()
         self.protocol.makeWorkingDir()
 
