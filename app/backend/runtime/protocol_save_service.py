@@ -137,6 +137,11 @@ class RuntimeProtocolSaveService:
             params=params,
         )
 
+        self._applyQueueParams(
+            protocol=protocol,
+            params=params,
+        )
+
         errorList.extend(self._applyScalarParams(protocol=protocol,
                                                  params=params,
                                                  validateParams=validateParams))
@@ -245,6 +250,44 @@ class RuntimeProtocolSaveService:
                 protVar.set(value)
             except Exception:
                 setattr(protocol, paramName, value)
+
+    @staticmethod
+    def _applyQueueParams(
+            *,
+            protocol,
+            params: Dict[str, Any],
+    ) -> None:
+        if (
+                "_queueName" not in params
+                and "_queueParams" not in params
+        ):
+            return
+
+        queueName = str(
+            params.get("_queueName")
+            or ""
+        ).strip()
+
+        queueParams = params.get(
+            "_queueParams"
+        )
+
+        if queueParams is None:
+            queueParams = {}
+
+        if not isinstance(
+                queueParams,
+                dict,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="_queueParams must be a dictionary.",
+            )
+
+        protocol.setQueueParams([
+            queueName,
+            queueParams,
+        ])
 
     def _applyScalarParams(
             self,

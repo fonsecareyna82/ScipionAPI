@@ -292,6 +292,25 @@ class ProtocolContextService:
         except Exception:
             paramsValue = {}
 
+        if protocol.hasQueueParams():
+            queueName, queueParams = (
+                protocol.getQueueParams()
+            )
+
+            paramsValue["_queueName"] = str(
+                queueName
+                or ""
+            )
+
+            paramsValue["_queueParams"] = (
+                queueParams
+                if isinstance(
+                    queueParams,
+                    dict,
+                )
+                else {}
+            )
+
         runtimeStatusSyncService = (
             RuntimeProtocolStatusSyncService()
         )

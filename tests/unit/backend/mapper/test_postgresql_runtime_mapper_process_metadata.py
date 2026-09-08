@@ -23,6 +23,8 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
+
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
@@ -270,7 +272,7 @@ def test_PostgresqlProtocolHostConfigIsRestored():
     )
 
 
-def test_ProtocolContextDoesNotPersistTransientQueueParams():
+def test_ProtocolContextPersistsNativeQueueParams():
     mapper = object.__new__(
         PostgresqlRuntimeMapper
     )
@@ -296,41 +298,41 @@ def test_ProtocolContextDoesNotPersistTransientQueueParams():
 
     assert "_useQueue" in values
     assert "_queueName" not in values
-    assert "_queueParams" not in values
+    assert "_queueParams" in values
 
-    queueName, queueParams = protocol.getQueueParams()
-
-    assert queueName == "gpu"
-    assert queueParams == {
-        "JOB_TIME": "72",
-        "JOB_MEMORY": "64000",
-    }
-
-
-def test_StoredTransientQueueParamsAreNotHydrated():
-    mapper = buildMapper()
-    protocol = FakeProtocolWithHost()
-
-    protocol.setQueueParams([
-        "current",
+    assert json.loads(
+        values["_queueParams"]
+    ) == [
+        "gpu",
         {
             "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
         },
-    ])
+    ]
+
+
+def test_StoredNativeQueueParamsAreHydrated():
+    mapper = buildMapper()
+    protocol = FakeProtocolWithHost()
 
     mapper._applyStoredProtocolParams(
         protocol,
         {
             "_queueName": "stale",
-            "_queueParams": '["stale", {"JOB_TIME": "24"}]',
+            "_queueParams": (
+                '["gpu", {"JOB_TIME": "24"}]'
+            ),
         },
     )
 
-    queueName, queueParams = protocol.getQueueParams()
+    queueName, queueParams = (
+        protocol.getQueueParams()
+    )
 
-    assert queueName == "current"
+    assert queueName == "gpu"
+
     assert queueParams == {
-        "JOB_TIME": "72",
+        "JOB_TIME": "24",
     }
 
     assert not hasattr(

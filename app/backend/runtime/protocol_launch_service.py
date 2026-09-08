@@ -178,10 +178,36 @@ class RuntimeProtocolLaunchService:
                     "message": "PostgreSQL runtime pointer preparation was skipped. The protocol cannot be launched safely because its runtime inputs may not be restored in the execution DB.",
                     "report": postgresqlLaunchPointerReport})
 
-            if protocol.useQueue():
-                queueName = params.get("_queueName")
-                queueParams = params.get("_queueParams")
-                protocol.setQueueParams([queueName, queueParams])
+            if (
+                    protocol.useQueue()
+                    and (
+                    "_queueName" in params
+                    or "_queueParams" in params
+            )
+            ):
+                queueName = str(
+                    params.get("_queueName")
+                    or ""
+                ).strip()
+
+                queueParams = (
+                        params.get("_queueParams")
+                        or {}
+                )
+
+                if not isinstance(
+                        queueParams,
+                        dict,
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="_queueParams must be a dictionary.",
+                    )
+
+                protocol.setQueueParams([
+                    queueName,
+                    queueParams,
+                ])
 
             postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
             postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True

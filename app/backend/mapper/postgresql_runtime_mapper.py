@@ -180,7 +180,6 @@ class PostgresqlRuntimeMapper(Mapper):
 
     TRANSIENT_PROTOCOL_PARAM_NAMES = frozenset({
         "_queueName",
-        "_queueParams",
     })
 
     def commit(self):
