@@ -2078,9 +2078,20 @@ class OutputsPreview(FileHandlers):
 
         # Thumbnail
         if thumb is not None and thumb > 0:
-            pilTmp = Image.fromarray(gray.astype(np.uint8), mode="L")
-            pilTmp.thumbnail((thumb, thumb))
-            gray = np.array(pilTmp, copy=False)
+            pilTmp = Image.fromarray(
+                gray.astype(np.uint8),
+                mode="L",
+            )
+
+            pilTmp.thumbnail(
+                (thumb, thumb),
+                resample=Image.Resampling.LANCZOS,
+            )
+
+            gray = np.array(
+                pilTmp,
+                copy=False,
+            )
 
         # Colormap + scale
         rgb = self._applyColormap(

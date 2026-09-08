@@ -84,15 +84,13 @@ def readVolumeSlice2d(
     k = max(0, min(int(sliceIndex), dim - 1))
 
     step = 1
-    if maxSide is not None and int(maxSide) > 0:
-        step = max(1, int(np.ceil(max(outH, outW) / float(maxSide))))
 
     if axis == "z":
-        slice2d = vol3d[k, ::step, ::step]
+        slice2d = vol3d[k, :, :]
     elif axis == "y":
-        slice2d = vol3d[::step, k, ::step]
+        slice2d = vol3d[:, k, :]
     else:
-        slice2d = vol3d[::step, ::step, k]
+        slice2d = vol3d[:, :, k]
 
     meta = {
         "axis": axis,
