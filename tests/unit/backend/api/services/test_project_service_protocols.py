@@ -3828,6 +3828,7 @@ def test_GetNewProtocolParamsCacheIsScopedByProject(
     assert second["info"]["projectId"] == 2
     assert buildCalls == [1, 2]
 
+
 def test_PreserveStoredProtocolParamsInRuntimeContext(
         service,
 ):
@@ -3880,6 +3881,59 @@ def test_PreserveStoredProtocolParamsInRuntimeContext(
     assert (
         result["info"]["runName"]
         == "Edited protocol"
+    )
+
+
+def test_PreserveStoredProtocolParamsKeepsNormalizedQueueContext(
+        service,
+):
+    protocolContext = {
+        "info": {
+            "protocolId": 10,
+        },
+        "values": {
+            "iterations": 99,
+            "_queueName": "gpu",
+            "_queueParams": {
+                "JOB_GPU": "2",
+                "JOB_TIME": "08:00:00",
+            },
+        },
+    }
+
+    storedRow = {
+        "params": {
+            "iterations": 4,
+            "_queueParams": (
+                '["gpu", '
+                '{"JOB_GPU": "2", '
+                '"JOB_TIME": "08:00:00"}]'
+            ),
+        },
+    }
+
+    result = (
+        service
+        ._preserveStoredProtocolParamsInRuntimeContext(
+            protocolContext=protocolContext,
+            storedRow=storedRow,
+            protocol=None,
+        )
+    )
+
+    assert result["values"]["iterations"] == 4
+
+    assert (
+        result["values"]["_queueName"]
+        == "gpu"
+    )
+
+    assert (
+        result["values"]["_queueParams"]
+        == {
+            "JOB_GPU": "2",
+            "JOB_TIME": "08:00:00",
+        }
     )
 
 

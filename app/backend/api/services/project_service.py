@@ -1601,6 +1601,23 @@ class ProjectService:
                 runtimeMetadataKey
             ] = runtimeMetadata
 
+        # Queue configuration is stored in PostgreSQL using Scipion's native
+        # _queueParams representation, but ProtocolContextService exposes the
+        # normalized Web representation: _queueName + _queueParams dictionary.
+        # Preserve that normalized representation when building the Web context.
+        for queueParamName in (
+                "_queueName",
+                "_queueParams",
+        ):
+            if queueParamName in runtimeValues:
+                mergedValues[
+                    queueParamName
+                ] = copy.deepcopy(
+                    runtimeValues[
+                        queueParamName
+                    ]
+                )
+
         protocolContext[
             "values"
         ] = mergedValues
