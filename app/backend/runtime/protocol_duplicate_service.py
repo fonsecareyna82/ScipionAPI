@@ -536,6 +536,11 @@ class RuntimeProtocolDuplicateService:
             if key in self.runtimeParamKeysToDrop:
                 params.pop(key, None)
 
+        if "_queueParams" in params:
+            queueName, queueParams = sourceProtocol.getQueueParams()
+            params["_queueName"] = str(queueName or "")
+            params["_queueParams"] = copy.deepcopy(queueParams) if isinstance(queueParams, dict) else {}
+
         self._setScipionCopyRunName(params=params, sourceProtocol=sourceProtocol,
                                     existingRunNames=existingRunNames or [])
 

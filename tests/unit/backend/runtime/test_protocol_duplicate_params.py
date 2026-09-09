@@ -539,3 +539,31 @@ def test_RestorePointerInputsUsesStrictParentScipionIdentity(
     ]
 
 
+def test_BuildDuplicatedProtocolParamsNormalizesNativeQueueParams():
+    class QueuedSourceProtocol(FakeSourceProtocol):
+        def getQueueParams(self):
+            return "gpu", {
+                "JOB_TIME": "24",
+                "JOB_GPU": "2",
+            }
+
+    result = RuntimeProtocolDuplicateService().buildDuplicatedProtocolParams(
+        sourceProtocol=QueuedSourceProtocol("Queued protocol"),
+        sourceParams={
+            "runName": "Queued protocol",
+            "_useQueue": True,
+            "_queueParams": '["gpu", {"JOB_TIME": "24", "JOB_GPU": "2"}]',
+        },
+    )
+
+    assert result["_useQueue"] is True
+    assert result["_queueName"] == "gpu"
+    assert result["_queueParams"] == {
+        "JOB_TIME": "24",
+        "JOB_GPU": "2",
+    }
+
+
+
+
+
