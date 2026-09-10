@@ -4004,6 +4004,19 @@ class ProjectService:
 
             return refs
 
+        def getTemplateContent(template: Any) -> Any:
+            content = getValue(template, "content")
+
+            if content is not None:
+                return content
+
+            getContent = getattr(template, "getContent", None)
+
+            if callable(getContent):
+                return getContent()
+
+            return None
+
         def buildWorkflowPreviewGraph(protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
             nodeIds: TypingSet[str] = set()
             nodes: List[Dict[str, Any]] = []
@@ -4105,6 +4118,7 @@ class ProjectService:
 
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
+            tempList.addWHTemplates(tempId)
 
         templates = tempList.sortListByPluginName().templates
 
@@ -4119,7 +4133,7 @@ class ProjectService:
                 source = getValue(template, "source")
                 name = getValue(template, "name")
                 description = getValue(template, "description")
-                rawContent = getValue(template, "content")
+                rawContent = getTemplateContent(template)
                 params = normalizeParams(getValue(template, "params"))
                 projectName = getValue(template, "projectName")
                 templatePath = getValue(template, "templatePath")
