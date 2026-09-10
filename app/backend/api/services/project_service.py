@@ -4118,7 +4118,7 @@ class ProjectService:
 
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
-            tempList.addWHTemplates(tempId)
+            # tempList.addWHTemplates(tempId)
 
         templates = tempList.sortListByPluginName().templates
 
