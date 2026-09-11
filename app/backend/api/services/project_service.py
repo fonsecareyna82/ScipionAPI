@@ -4118,7 +4118,7 @@ class ProjectService:
 
         if not (tempId is not None and len(tempList.templates) == 1):
             tempList.addPluginTemplates(tempId)
-            # tempList.addWHTemplates(tempId)
+            tempList.addWHTemplates(tempId)
 
         templates = tempList.sortListByPluginName().templates
 
@@ -4143,15 +4143,19 @@ class ProjectService:
                 previewGraph = buildWorkflowPreviewGraph(protocols)
 
                 requiredPluginNames = []
-                missingPluginNames = []
+                templateText = None
 
                 if isinstance(rawContent, str):
                     requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
 
-                if not requiredPluginNames and templatePath:
+                if not requiredPluginNames:
                     try:
-                        templateText = Path(str(templatePath)).expanduser().read_text(encoding="utf-8")
-                        requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
+                        if templatePath is not None:
+                            templateText = Path(str(templatePath)).expanduser().read_text(encoding="utf-8")
+                        elif source == 'WH':
+                            templateText = description
+                        if templateText is not None:
+                            requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
                     except Exception:
                         requiredPluginNames = []
 
