@@ -3111,6 +3111,48 @@ def renderCoords3dTomogramSlice(
     resp.headers["Vary"] = "Authorization"
     return resp
 
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}/gallery",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def renderCoords3dTomogramGallery(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tomogramId: str,
+    payload: Dict[str, Any] = Body(...),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    result = service.renderCoords3dTomogramGalleryService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tomogramId=tomogramId,
+        payload=payload,
+        mapper=mapper,
+    )
+
+    response = JSONResponse(result)
+    userId = currentUser.get("id", "") if isinstance(currentUser, dict) else getattr(currentUser, "id", "")
+
+    response.headers["X-Debug-Auth"] = "ok"
+    response.headers["X-Debug-UserId"] = str(userId)
+    response.headers["Vary"] = "Authorization"
+
+    return response
+
+
 class Coords3dPointIn(BaseModel):
     x: float
     y: float

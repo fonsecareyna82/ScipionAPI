@@ -13535,6 +13535,266 @@ class ProjectService:
 
         return (255.0 * arr).astype(np.uint8)
 
+    def _resolveCoords3dTomogramVolumePath(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            mapper=None,
+    ) -> str:
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is not None:
+            tomogramInfo = pgReader.getTomogramFile(tomogramId)
+
+            if tomogramInfo is not None:
+                volumePath = tomogramInfo.get("fileName")
+
+                if volumePath and os.path.exists(volumePath):
+                    return str(volumePath)
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D tomogram gallery",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        _, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        tomogram = None
+
+        if self.tomoList:
+            tomogram = self.tomoList.get(tomogramId)
+            if tomogram is None:
+                tomogram = self.tomoList.get(str(tomogramId))
+
+        if tomogram is None:
+            try:
+                tomogram = setOfCoordinates3D._getTomogram(tomogramId)
+            except Exception:
+                tomogram = None
+
+        if tomogram is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tomogram '{tomogramId}' not found in SetOfCoordinates3D",
+            )
+
+        getFileName = getattr(tomogram, "getFileName", None)
+
+        if not callable(getFileName):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tomogram object has no getFileName()",
+            )
+
+        volumePath = getFileName()
+
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tomogram file not found on disk",
+            )
+
+        return str(volumePath)
+
+    def _renderCoords3dGalleryTile(
+            self,
+            volume: np.ndarray,
+            point: Dict[str, Any],
+            boxSize: int,
+            outputSize: int,
+            fmt: str,
+            quality: int,
+    ) -> str:
+        from PIL import Image as PILImage
+
+        zdim, ydim, xdim = volume.shape
+
+        centerX = max(0, min(int(round(float(point["x"]))), xdim - 1))
+        centerY = max(0, min(int(round(float(point["y"]))), ydim - 1))
+        centerZ = max(0, min(int(round(float(point["z"]))), zdim - 1))
+
+        x0 = centerX - boxSize // 2
+        y0 = centerY - boxSize // 2
+        x1 = x0 + boxSize
+        y1 = y0 + boxSize
+
+        sourceX0 = max(0, x0)
+        sourceY0 = max(0, y0)
+        sourceX1 = min(xdim, x1)
+        sourceY1 = min(ydim, y1)
+
+        source = np.asarray(
+            volume[centerZ, sourceY0:sourceY1, sourceX0:sourceX1],
+            dtype=np.float32,
+        )
+
+        finiteSource = source[np.isfinite(source)]
+        fillValue = float(np.median(finiteSource)) if finiteSource.size else 0.0
+
+        crop = np.full((boxSize, boxSize), fillValue, dtype=np.float32)
+
+        targetX0 = sourceX0 - x0
+        targetY0 = sourceY0 - y0
+        targetX1 = targetX0 + source.shape[1]
+        targetY1 = targetY0 + source.shape[0]
+
+        crop[targetY0:targetY1, targetX0:targetX1] = source
+        crop = np.where(np.isfinite(crop), crop, fillValue)
+
+        finiteCrop = crop[np.isfinite(crop)]
+
+        if finiteCrop.size:
+            windowMin, windowMax = np.percentile(finiteCrop, [1.0, 99.0])
+        else:
+            windowMin, windowMax = 0.0, 1.0
+
+        gray = self._normalize2dSlice(
+            crop,
+            mode="minmax",
+            windowMin=float(windowMin),
+            windowMax=float(windowMax),
+        )
+
+        image = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+        image = image.resize(
+            (outputSize, outputSize),
+            resample=PILImage.Resampling.BILINEAR,
+        )
+
+        if fmt == "png":
+            pilFormat = "PNG"
+            mediaType = "image/png"
+            saveKw = {}
+        elif fmt in ("jpg", "jpeg"):
+            pilFormat = "JPEG"
+            mediaType = "image/jpeg"
+            saveKw = {"quality": quality}
+        else:
+            pilFormat = "WEBP"
+            mediaType = "image/webp"
+            saveKw = {"quality": quality}
+
+        buffer = io.BytesIO()
+        image.save(buffer, format=pilFormat, **saveKw)
+
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:{mediaType};base64,{encoded}"
+
+    def renderCoords3dTomogramGalleryService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            payload: Dict[str, Any],
+            mapper=None,
+    ) -> Dict[str, Any]:
+        payload = payload or {}
+        points = payload.get("points") or []
+
+        if not isinstance(points, list):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="points must be a list",
+            )
+
+        if len(points) > 64:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A maximum of 64 gallery points is allowed per request",
+            )
+
+        boxSize = max(16, min(int(payload.get("boxSize") or 64), 256))
+        outputSize = max(48, min(int(payload.get("size") or 74), 128))
+        quality = max(40, min(int(payload.get("quality") or 68), 90))
+        fmt = str(payload.get("format") or "webp").lower()
+
+        if fmt not in ("png", "webp", "jpg", "jpeg"):
+            fmt = "webp"
+
+        volumePath = self._resolveCoords3dTomogramVolumePath(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tomogramId=tomogramId,
+            mapper=mapper,
+        )
+
+        try:
+            volume, _ = readVolumeArray3d(volumePath)
+            volume = np.asarray(volume)
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to read tomogram for gallery: {error}",
+            )
+
+        if volume.ndim != 3:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unsupported tomogram shape {volume.shape}",
+            )
+
+        items = []
+        errors = []
+
+        for index, point in enumerate(points):
+            pointId = str(point.get("id", index)) if isinstance(point, dict) else str(index)
+
+            try:
+                if not isinstance(point, dict):
+                    raise ValueError("Point must be an object")
+
+                x = float(point["x"])
+                y = float(point["y"])
+                z = float(point["z"])
+
+                if not all(np.isfinite(value) for value in (x, y, z)):
+                    raise ValueError("Point coordinates must be finite")
+
+                dataUrl = self._renderCoords3dGalleryTile(
+                    volume=volume,
+                    point={"x": x, "y": y, "z": z},
+                    boxSize=boxSize,
+                    outputSize=outputSize,
+                    fmt=fmt,
+                    quality=quality,
+                )
+
+                items.append({
+                    "id": pointId,
+                    "dataUrl": dataUrl,
+                })
+            except Exception as error:
+                errors.append({
+                    "id": pointId,
+                    "detail": str(error),
+                })
+
+        return {
+            "items": items,
+            "errors": errors,
+            "boxSize": boxSize,
+            "size": outputSize,
+            "format": fmt,
+        }
+
     def renderCoords3dTomogramSliceService(
             self,
             projectId: int,
