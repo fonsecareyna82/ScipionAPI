@@ -2344,7 +2344,10 @@ class OutputsPreview(FileHandlers):
 
     def getVolumeHistogram(self, volumePath, bins: int = 128):
         """
-        Return a simple intensity histogram for the selected volume.
+        Return a robust intensity histogram for the selected volume.
+
+        Extreme tails are folded into the first/last bins so isolated
+        outliers do not destroy histogram resolution and total counts remain exact.
 
         Output:
         {
@@ -2363,7 +2366,21 @@ class OutputsPreview(FileHandlers):
         if arr.size == 0:
             return {"binEdges": [], "counts": []}
 
-        counts, binEdges = np.histogram(arr, bins=bins)
+        binCount = max(1, int(bins or 128))
+        low = float(np.quantile(arr, 0.005))
+        high = float(np.quantile(arr, 0.995))
+
+        if np.isfinite(low) and np.isfinite(high) and high > low:
+            counts, binEdges = np.histogram(
+                arr,
+                bins=binCount,
+                range=(low, high),
+            )
+
+            counts[0] += int(np.count_nonzero(arr < low))
+            counts[-1] += int(np.count_nonzero(arr > high))
+        else:
+            counts, binEdges = np.histogram(arr, bins=binCount)
 
         return {
             "binEdges": binEdges.tolist(),

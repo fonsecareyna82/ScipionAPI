@@ -26,6 +26,7 @@
 import importlib
 import json
 import zipfile
+import numpy as np
 import pytest
 
 
@@ -100,6 +101,37 @@ def preview(outputsPreviewModule, tmp_path):
         protocol=protocol,
         output=output,
     )
+
+
+def test_GetVolumeHistogramUsesRobustRangeAndPreservesCounts(
+    preview,
+    outputsPreviewModule,
+    monkeypatch,
+):
+    values = np.concatenate(
+        [
+            np.linspace(-1.0, 1.0, 10000, dtype=np.float32),
+            np.asarray([-1000.0, 1000.0], dtype=np.float32),
+        ]
+    )
+
+    class FakeImageStack:
+        def getImages(self):
+            return values
+
+    monkeypatch.setattr(
+        outputsPreviewModule.ImageReadersRegistry,
+        "open",
+        lambda _path: FakeImageStack(),
+    )
+
+    result = preview.getVolumeHistogram("fake-volume.mrc", bins=32)
+
+    assert len(result["binEdges"]) == 33
+    assert len(result["counts"]) == 32
+    assert sum(result["counts"]) == values.size
+    assert result["binEdges"][0] > -1.1
+    assert result["binEdges"][-1] < 1.1
 
 
 def test_OutputSignatureUsesObjId(outputsPreviewModule):
