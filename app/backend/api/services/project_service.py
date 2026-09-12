@@ -13612,6 +13612,53 @@ class ProjectService:
 
         return str(volumePath)
 
+    def _extractCoords3dGalleryCrop(
+            self,
+            volume: np.ndarray,
+            point: Dict[str, Any],
+            boxSize: int,
+            view: str,
+    ) -> np.ndarray:
+        zdim, ydim, xdim = volume.shape
+        centerX = max(0, min(int(round(float(point["x"]))), xdim - 1))
+        centerY = max(0, min(int(round(float(point["y"]))), ydim - 1))
+        centerZ = max(0, min(int(round(float(point["z"]))), zdim - 1))
+
+        if view == "xz":
+            plane = volume[:, centerY, :]
+            centerRow, centerColumn = centerZ, centerX
+        elif view == "yz":
+            plane = volume[:, :, centerX]
+            centerRow, centerColumn = centerZ, centerY
+        else:
+            plane = volume[centerZ, :, :]
+            centerRow, centerColumn = centerY, centerX
+
+        row0 = centerRow - boxSize // 2
+        column0 = centerColumn - boxSize // 2
+        row1 = row0 + boxSize
+        column1 = column0 + boxSize
+        sourceRow0 = max(0, row0)
+        sourceColumn0 = max(0, column0)
+        sourceRow1 = min(plane.shape[0], row1)
+        sourceColumn1 = min(plane.shape[1], column1)
+
+        source = np.asarray(
+            plane[sourceRow0:sourceRow1, sourceColumn0:sourceColumn1],
+            dtype=np.float32,
+        )
+
+        finiteSource = source[np.isfinite(source)]
+        fillValue = float(np.median(finiteSource)) if finiteSource.size else 0.0
+        crop = np.full((boxSize, boxSize), fillValue, dtype=np.float32)
+        targetRow0 = sourceRow0 - row0
+        targetColumn0 = sourceColumn0 - column0
+        targetRow1 = targetRow0 + source.shape[0]
+        targetColumn1 = targetColumn0 + source.shape[1]
+
+        crop[targetRow0:targetRow1, targetColumn0:targetColumn1] = source
+        return np.where(np.isfinite(crop), crop, fillValue)
+
     def _renderCoords3dGalleryTile(
             self,
             volume: np.ndarray,
@@ -13620,62 +13667,40 @@ class ProjectService:
             outputSize: int,
             fmt: str,
             quality: int,
+            view: str = "xy",
     ) -> str:
         from PIL import Image as PILImage
 
-        zdim, ydim, xdim = volume.shape
+        requestedView = str(view or "xy").lower()
+        if requestedView not in ("xy", "xz", "yz", "triple"):
+            requestedView = "xy"
 
-        centerX = max(0, min(int(round(float(point["x"]))), xdim - 1))
-        centerY = max(0, min(int(round(float(point["y"]))), ydim - 1))
-        centerZ = max(0, min(int(round(float(point["z"]))), zdim - 1))
+        def renderPlane(planeView: str, size: int):
+            crop = self._extractCoords3dGalleryCrop(volume, point, boxSize, planeView)
+            finiteCrop = crop[np.isfinite(crop)]
+            windowMin, windowMax = np.percentile(finiteCrop, [1.0, 99.0]) if finiteCrop.size else (0.0, 1.0)
+            gray = self._normalize2dSlice(
+                crop,
+                mode="minmax",
+                windowMin=float(windowMin),
+                windowMax=float(windowMax),
+            )
+            image = PILImage.fromarray(gray.astype(np.uint8), mode="L")
+            return image.resize((size, size), resample=PILImage.Resampling.BILINEAR)
 
-        x0 = centerX - boxSize // 2
-        y0 = centerY - boxSize // 2
-        x1 = x0 + boxSize
-        y1 = y0 + boxSize
+        if requestedView == "triple":
+            cellSize = max(1, outputSize // 2)
+            image = PILImage.new("L", (outputSize, outputSize), color=0)
+            placements = (
+                ("xy", 0, 0),
+                ("xz", outputSize - cellSize, 0),
+                ("yz", 0, outputSize - cellSize),
+            )
 
-        sourceX0 = max(0, x0)
-        sourceY0 = max(0, y0)
-        sourceX1 = min(xdim, x1)
-        sourceY1 = min(ydim, y1)
-
-        source = np.asarray(
-            volume[centerZ, sourceY0:sourceY1, sourceX0:sourceX1],
-            dtype=np.float32,
-        )
-
-        finiteSource = source[np.isfinite(source)]
-        fillValue = float(np.median(finiteSource)) if finiteSource.size else 0.0
-
-        crop = np.full((boxSize, boxSize), fillValue, dtype=np.float32)
-
-        targetX0 = sourceX0 - x0
-        targetY0 = sourceY0 - y0
-        targetX1 = targetX0 + source.shape[1]
-        targetY1 = targetY0 + source.shape[0]
-
-        crop[targetY0:targetY1, targetX0:targetX1] = source
-        crop = np.where(np.isfinite(crop), crop, fillValue)
-
-        finiteCrop = crop[np.isfinite(crop)]
-
-        if finiteCrop.size:
-            windowMin, windowMax = np.percentile(finiteCrop, [1.0, 99.0])
+            for planeView, left, top in placements:
+                image.paste(renderPlane(planeView, cellSize), (left, top))
         else:
-            windowMin, windowMax = 0.0, 1.0
-
-        gray = self._normalize2dSlice(
-            crop,
-            mode="minmax",
-            windowMin=float(windowMin),
-            windowMax=float(windowMax),
-        )
-
-        image = PILImage.fromarray(gray.astype(np.uint8), mode="L")
-        image = image.resize(
-            (outputSize, outputSize),
-            resample=PILImage.Resampling.BILINEAR,
-        )
+            image = renderPlane(requestedView, outputSize)
 
         if fmt == "png":
             pilFormat = "PNG"
@@ -13724,6 +13749,13 @@ class ProjectService:
         outputSize = max(48, min(int(payload.get("size") or 74), 128))
         quality = max(40, min(int(payload.get("quality") or 68), 90))
         fmt = str(payload.get("format") or "webp").lower()
+        view = str(payload.get("view") or "xy").strip().lower()
+
+        if view not in ("xy", "xz", "yz", "triple"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="view must be one of: xy, xz, yz, triple",
+            )
 
         if fmt not in ("png", "webp", "jpg", "jpeg"):
             fmt = "webp"
@@ -13775,6 +13807,7 @@ class ProjectService:
                     outputSize=outputSize,
                     fmt=fmt,
                     quality=quality,
+                    view=view,
                 )
 
                 items.append({
@@ -13793,6 +13826,7 @@ class ProjectService:
             "boxSize": boxSize,
             "size": outputSize,
             "format": fmt,
+            "view": view,
         }
 
     def renderCoords3dTomogramSliceService(
@@ -17240,5 +17274,3 @@ class ProjectService:
             currentUser=currentUser,
             payload=payload,
         )
-
-

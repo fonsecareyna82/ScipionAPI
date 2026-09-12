@@ -901,3 +901,98 @@ def test_CreateCoords3dOutputFromPointsServiceCopiesUntouchedTomograms(
     assert copiedCoordinate.groupId == 7
 
 
+@pytest.mark.parametrize(
+    "view, expected",
+    [
+        ("xy", lambda volume: volume[2, 2:5, 3:6]),
+        ("xz", lambda volume: volume[1:4, 3, 3:6]),
+        ("yz", lambda volume: volume[1:4, 2:5, 4]),
+    ],
+)
+def test_ExtractCoords3dGalleryCropSupportsOrthogonalViews(service, view, expected):
+    volume = np.arange(5 * 6 * 7, dtype=np.float32).reshape((5, 6, 7))
+
+    crop = service._extractCoords3dGalleryCrop(
+        volume=volume,
+        point={"x": 4, "y": 3, "z": 2},
+        boxSize=3,
+        view=view,
+    )
+
+    np.testing.assert_array_equal(crop, expected(volume))
+
+
+@pytest.mark.parametrize("view", ["xy", "xz", "yz", "triple"])
+def test_RenderCoords3dGalleryTileSupportsEveryView(service, view):
+    volume = np.arange(5 * 6 * 7, dtype=np.float32).reshape((5, 6, 7))
+
+    dataUrl = service._renderCoords3dGalleryTile(
+        volume=volume,
+        point={"x": 4, "y": 3, "z": 2},
+        boxSize=3,
+        outputSize=74,
+        fmt="webp",
+        quality=68,
+        view=view,
+    )
+
+    assert dataUrl.startswith("data:image/webp;base64,")
+
+
+def test_RenderCoords3dTomogramGalleryServiceForwardsRequestedView(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    renderedViews = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolveCoords3dTomogramVolumePath",
+        lambda **kwargs: "/tmp/tomogram.mrc",
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeArray3d",
+        lambda _path: (np.zeros((5, 6, 7), dtype=np.float32), {}),
+    )
+
+    def renderTile(**kwargs):
+        renderedViews.append(kwargs["view"])
+        return "data:image/webp;base64,preview"
+
+    monkeypatch.setattr(service, "_renderCoords3dGalleryTile", renderTile)
+
+    result = service.renderCoords3dTomogramGalleryService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCoords3d",
+        tomogramId="TS_001",
+        payload={
+            "points": [{"id": "p1", "x": 4, "y": 3, "z": 2}],
+            "boxSize": 64,
+            "size": 74,
+            "format": "webp",
+            "quality": 68,
+            "view": "triple",
+        },
+    )
+
+    assert renderedViews == ["triple"]
+    assert result["view"] == "triple"
+    assert result["items"] == [{"id": "p1", "dataUrl": "data:image/webp;base64,preview"}]
+
+
+def test_RenderCoords3dTomogramGalleryServiceRejectsInvalidView(service):
+    with pytest.raises(HTTPException) as exc:
+        service.renderCoords3dTomogramGalleryService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputCoords3d",
+            tomogramId="TS_001",
+            payload={"points": [], "view": "diagonal"},
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "view must be one of: xy, xz, yz, triple"
+
