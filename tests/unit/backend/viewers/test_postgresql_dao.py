@@ -472,3 +472,56 @@ def test_PostgresqlDaoDoesNotUseEvalForMatrixStrings(postgresqlDaoModule):
 
     assert isinstance(matrix, np.ndarray)
     assert matrix.size == 0
+
+@pytest.mark.parametrize("logical", [False, True])
+@pytest.mark.parametrize("orderBy,asc", [("score", True), ("score", False), ("id", False), ("enabled", True)])
+def test_ScalarSortingReadsOnlyRequestedPage(postgresqlDaoModule, monkeypatch, logical, orderBy, asc):
+    if logical:
+        dao, mapper = _buildLogicalDao(postgresqlDaoModule, monkeypatch)
+    else:
+        mapper = FakeSetMapper(_makeStoredSet())
+        dao = _buildDao(postgresqlDaoModule, monkeypatch, mapper)
+    dao.getTables()
+    calls = []
+    def fetchAll(sql, params):
+        calls.append((sql, params))
+        return [{"scipionItemId": 987, "enabled": True, "values": {"score": "2.5"}}]
+    monkeypatch.setattr(dao.db, "fetchAll", fetchAll, raising=False)
+    result = dao._getRows("objects", 120, 60, orderBy, asc)
+    assert result[0]["id"] == 987
+    assert result[0]["score"] == 2.5
+    sql, params = calls[0]
+    assert "LIMIT %s OFFSET %s" in sql
+    assert "NULLS LAST" in sql
+    assert params[-2:] == (60, 120)
+    assert '"tableId" = %s' in sql if logical else '"setId" = %s' in sql
+    assert all(call["limit"] == 0 for call in mapper.getStoredSetCalls)
+    assert not mapper.getStoredSetTableItemsCalls
+
+
+def test_SortPropertyNamesAreBoundParameters(postgresqlDaoModule, monkeypatch):
+    dao, _ = _buildLogicalDao(postgresqlDaoModule, monkeypatch)
+    dao.getTables()
+    label = "score'); DROP TABLE users; --"
+    dao._tableColumns["objects"] = [{"labelProperty": label, "className": "Float"}]
+    calls = []
+    monkeypatch.setattr(dao.db, "fetchAll", lambda sql, params: calls.append((sql, params)) or [], raising=False)
+    assert dao._getRows("objects", 0, 10, label, True) == []
+    sql, params = calls[0]
+    assert label not in sql
+    assert params[0] == label
+
+
+@pytest.mark.parametrize("tableName,scopeId", [("objects", 1001), ("Class001_Objects", 1002)])
+def test_ImageLookupUsesSparseIdWithinItsLogicalTable(postgresqlDaoModule, monkeypatch, tableName, scopeId):
+    dao, mapper = _buildLogicalDao(postgresqlDaoModule, monkeypatch)
+    dao.getTables()
+    calls = []
+    def fetchOne(sql, params):
+        calls.append((sql, params))
+        return {"scipionItemId": 901, "values": {}}
+    monkeypatch.setattr(dao.db, "fetchOne", fetchOne)
+    assert dao.getTableRowById(tableName, 901)["id"] == 901
+    assert calls[0][1] == (scopeId, 901)
+    assert '"scipionItemId" = %s' in calls[0][0]
+    assert not mapper.getStoredSetTableItemsCalls

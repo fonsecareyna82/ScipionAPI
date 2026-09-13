@@ -15705,6 +15705,8 @@ class ProjectService:
             fmt: str,
             rowIndex: Optional[int] = None,
             mapper=None,
+            sortBy: str = "id",
+            asc: bool = True,
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
@@ -15727,6 +15729,8 @@ class ProjectService:
             mapper=mapper,
         )
         columns = list(table.getColumns())
+        table.setSortingColumn(sortBy)
+        table.setSortingAsc(asc)
 
         pathResolver = None
         if mapper is not None and getattr(mapper, "db", None) is not None:
@@ -15787,8 +15791,28 @@ class ProjectService:
                 )
             idx0 = rowIdInt - 1
 
-        rows = objMgr.getRows(tableName, idx0, 1) or []
-        if not rows:
+        lookupById = getattr(getattr(objMgr, "_dao", None), "getTableRowById", None)
+        rowValues = None
+        if rowId is not None and callable(lookupById) and not self._isPropertiesMetadataTable(table):
+            try:
+                logicalId = int(rowId)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="rowId must be an integer")
+            if logicalId < 1:
+                raise HTTPException(status_code=400, detail="rowId must be >= 1")
+            persistedRow = lookupById(tableName, logicalId)
+            if persistedRow is not None:
+                rowValues = []
+                for column in columns:
+                    if column.isSorteable():
+                        rowValues.append(persistedRow.get(column.getName()))
+                    else:
+                        column.calculate(persistedRow, rowValues)
+        else:
+            rows = objMgr.getRows(tableName, idx0, 1) or []
+            if rows:
+                rowValues = rows[0].getValues()
+        if rowValues is None:
             logger.warning(
                 "Row index %s not found in table '%s' (projectId=%s, protocolId=%s)",
                 idx0,
@@ -15806,8 +15830,6 @@ class ProjectService:
                 rowIndex=rowIndex,
             )
 
-        row = rows[0]
-        rowValues = row.getValues()
         if colIndex >= len(rowValues):
             logger.warning(
                 "Column index %s out of range for rowIndex=%s in table '%s'",

@@ -770,6 +770,64 @@ class PostgresqlDAO(IDAO):
             self._columns = self._normalizeColumns(self._storedSet.get("columns") or [])
         return self._storedSet
 
+    def _getItemsSource(self, tableName: str):
+        """Resolve a scoped persisted table; SQL identifiers never come from the request."""
+        if tableName == PROPERTIES_TABLE:
+            return None
+        if self._useLogicalTables:
+            table = self._getLogicalTable(tableName)
+            return ("scipion_set_table_items", '"tableId"', int(table["id"])) if table else None
+        if tableName != OBJECT_TABLE:
+            return None
+        return "scipion_set_items", '"setId"', int(self._getStoredSetHeader()["id"])
+
+    def getTableRowById(self, tableName: str, rowId: int):
+        """Read a logical item ID directly, including sparse IDs and nested tables."""
+        source = self._getItemsSource(tableName)
+        if source is None:
+            return None
+        sqlTable, scopeColumn, scopeId = source
+        item = self.db.fetchOne(
+            f'SELECT * FROM {sqlTable} WHERE {scopeColumn} = %s AND "scipionItemId" = %s',
+            (scopeId, int(rowId)),
+        )
+        return self._itemToRow(item, self._getColumnsForTable(tableName)) if item else None
+
+    def _getSortedRowsPage(self, tableName: str, start: int, limit: Optional[int], orderBy: str, orderAsc: bool):
+        """Sort scalar columns in PostgreSQL and transfer only the requested window."""
+        source = self._getItemsSource(tableName)
+        if source is None:
+            return None
+        sqlTable, scopeColumn, scopeId = source
+        columns = self._getColumnsForTable(tableName)
+        parameters = [scopeId]
+        valueSelect = ""
+        if orderBy in ("id", "_objId", "SCIPION_OBJECT_ID"):
+            expression = '"scipionItemId"'
+        elif orderBy == "enabled":
+            expression = "enabled"
+        else:
+            column = next((column for column in columns if column.get("labelProperty") == orderBy), None)
+            kind = self._getColumnClassName(column).lower()
+            if kind not in ("integer", "float", "boolean", "string"):
+                return None
+            # Bind JSON property names, including spaces/dots/quotes, as values.
+            valueSelect = ', "values" ->> %s AS sort_value'
+            parameters.insert(0, orderBy)
+            if kind in ("integer", "float"):
+                expression = "CASE WHEN sort_value ~ '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$' THEN sort_value::numeric END"
+            elif kind == "boolean":
+                expression = "CASE WHEN lower(sort_value) IN ('true', '1', 'yes', 'on') THEN 1 WHEN lower(sort_value) IN ('false', '0', 'no', 'off') THEN 0 END"
+            else:
+                expression = 'sort_value COLLATE "C"'
+        direction = "ASC" if orderAsc else "DESC"
+        sql = f'''SELECT * FROM (SELECT *{valueSelect} FROM {sqlTable} WHERE {scopeColumn} = %s) AS metadata_items
+                  ORDER BY {expression} {direction} NULLS LAST, "scipionItemId" ASC
+                  LIMIT %s OFFSET %s'''
+        parameters.extend([limit, max(0, int(start))])
+        items = self.db.fetchAll(sql, tuple(parameters))
+        return [self._itemToRow(item, columns) for item in items]
+
     def _getRows(
             self,
             tableName: str,
@@ -791,6 +849,11 @@ class PostgresqlDAO(IDAO):
                 return rows[start:]
 
             return rows[start:start + limit]
+
+        if not (orderAsc and orderBy in ("id", "_objId", "SCIPION_OBJECT_ID")):
+            page = self._getSortedRowsPage(tableName, start, limit, orderBy, orderAsc)
+            if page is not None:
+                return page
 
         if self._useLogicalTables:
             logicalTable = self._getLogicalTable(tableName)

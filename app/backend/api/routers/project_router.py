@@ -3666,6 +3666,8 @@ def renderMetadataImageCell(
             "implementation-dependent."
         ),
     ),
+    sortBy: str = Query("id", description="Sort column for legacy positional image reads"),
+    asc: bool = Query(True, description="Sort direction for positional image reads"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3689,6 +3691,8 @@ def renderMetadataImageCell(
         applyTransform=applyTransform,
         inline=inline,
         fmt=fmt,
+        sortBy=sortBy,
+        asc=asc,
         mapper=mapper,
     )
     resp.headers["X-Debug-Auth"] = "ok"

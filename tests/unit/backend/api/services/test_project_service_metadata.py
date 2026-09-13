@@ -2061,3 +2061,29 @@ def test_PostgresqlMovieOutputPreviewFastPathSkipsOtherOutputTypes(
     assert result is None
 
 
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_MetadataThumbnailUsesLogicalIdInsteadOfSortedPosition(service, monkeypatch, found):
+    pixels = np.arange(64, dtype=np.uint8).reshape(8, 8)
+    class CalculatedImageColumn(FakeColumn):
+        def calculate(self, row, values):
+            values.append(row["preview"])
+    column = CalculatedImageColumn("preview", "Preview", ImageRenderer(), sortable=False)
+    table = FakeTable("objects", "Particles", [column])
+    objMgr = FakeObjectManager({"objects": table}, {}, fileName="postgresql://project/1/protocol/10/output/particles")
+    lookups = []
+    def getTableRowById(tableName, rowId):
+        lookups.append((tableName, rowId))
+        return {"id": rowId, "preview": pixels} if found else None
+    monkeypatch.setattr(objMgr._dao, "getTableRowById", getTableRowById, raising=False)
+    def rejectPositionalRead(*args):
+        pytest.fail("A logical ID must not fall back to an unrelated sorted position")
+    monkeypatch.setattr(objMgr, "getRows", rejectPositionalRead)
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    result = service.renderMetadataImageCellService(projectId=1, protocolId=10, outputName="particles", tableName="objects", rowId=901, rowIndex=0, columnName="preview", size=32, applyTransform=False, inline=True, fmt="png", sortBy="score", asc=False)
+    assert lookups == [("objects", 901)]
+    assert result.status_code == 200
+    assert (result.headers.get("x-image-placeholder") == "1") is (not found)
+    assert table.sortBy == "score"
+    assert table.sortAsc is False
