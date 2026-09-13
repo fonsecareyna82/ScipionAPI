@@ -495,6 +495,8 @@ def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProj
         "applyTransform": True,
         "inline": False,
         "fmt": "jpeg",
+        "sortBy": "id",
+        "asc": True,
         "mapper": call["mapper"],
     }
 

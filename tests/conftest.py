@@ -932,6 +932,8 @@ class FakeProjectService:
             applyTransform,
             inline,
             fmt,
+            sortBy,
+            asc,
             mapper,
     ):
         self.lastRenderMetadataImageCellCall = {
@@ -946,6 +948,8 @@ class FakeProjectService:
             "applyTransform": applyTransform,
             "inline": inline,
             "fmt": fmt,
+            "sortBy": sortBy,
+            "asc": asc,
             "mapper": mapper,
         }
         return self.renderMetadataImageCellResponse
