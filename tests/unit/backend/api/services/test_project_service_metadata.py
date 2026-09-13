@@ -2087,3 +2087,86 @@ def test_MetadataThumbnailUsesLogicalIdInsteadOfSortedPosition(service, monkeypa
     assert (result.headers.get("x-image-placeholder") == "1") is (not found)
     assert table.sortBy == "score"
     assert table.sortAsc is False
+
+
+
+def test_MetadataRowPositionUsesPostgresqlDao(
+        service,
+        monkeypatch,
+):
+    table = FakeTable(
+        "objects",
+        "Particles",
+        [],
+    )
+
+    objMgr = FakeObjectManager(
+        {
+            "objects": table,
+        },
+        {},
+        fileName=(
+            "postgresql://project/1/"
+            "protocol/10/output/particles"
+        ),
+    )
+
+    calls = []
+
+    def getTableRowPosition(
+            tableName,
+            rowId,
+            orderBy,
+            orderAsc,
+    ):
+        calls.append(
+            (
+                tableName,
+                rowId,
+                orderBy,
+                orderAsc,
+            )
+        )
+
+        return 487263
+
+    monkeypatch.setattr(
+        objMgr._dao,
+        "getTableRowPosition",
+        getTableRowPosition,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getMetadataObjectManagerForOutput",
+        lambda **_kwargs: objMgr,
+    )
+
+    result = service.getMetadataRowPositionService(
+        projectId=1,
+        protocolId=10,
+        outputName="particles",
+        tableName="objects",
+        rowId=901,
+        sortBy="score",
+        asc=False,
+        mapper=object(),
+    )
+
+    assert result == {
+        "rowId": 901,
+        "index": 487263,
+    }
+
+    assert calls == [
+        (
+            "objects",
+            901,
+            "score",
+            False,
+        )
+    ]
+
+
+

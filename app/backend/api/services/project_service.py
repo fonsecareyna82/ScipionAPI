@@ -15691,6 +15691,75 @@ class ProjectService:
         except Exception:
             return False
 
+    def getMetadataRowPositionService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            rowId: int,
+            sortBy: str = "id",
+            asc: bool = True,
+            mapper=None,
+    ):
+        try:
+            logicalId = int(rowId)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="rowId must be an integer",
+            )
+
+        if logicalId < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="rowId must be >= 1",
+            )
+
+        with _metadataLock:
+            objMgr = self._getMetadataObjectManagerForOutput(
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                mapper=mapper,
+            )
+
+            lookupPosition = getattr(
+                getattr(objMgr, "_dao", None),
+                "getTableRowPosition",
+                None,
+            )
+
+            if not callable(lookupPosition):
+                raise HTTPException(
+                    status_code=501,
+                    detail=(
+                        "Metadata row position lookup is not supported "
+                        "by this metadata source"
+                    ),
+                )
+
+            position = lookupPosition(
+                tableName,
+                logicalId,
+                sortBy or "id",
+                bool(asc),
+            )
+
+        if position is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Metadata row id {logicalId} was not found "
+                    f"in table '{tableName}'"
+                ),
+            )
+
+        return {
+            "rowId": logicalId,
+            "index": int(position),
+        }
+
     def renderMetadataImageCellService(
             self,
             projectId: int,

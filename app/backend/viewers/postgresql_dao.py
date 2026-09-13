@@ -793,6 +793,105 @@ class PostgresqlDAO(IDAO):
         )
         return self._itemToRow(item, self._getColumnsForTable(tableName)) if item else None
 
+    def getTableRowPosition(
+            self,
+            tableName: str,
+            rowId: int,
+            orderBy: str,
+            orderAsc: bool,
+    ):
+        """Return the zero-based position of an item in the requested table order."""
+        source = self._getItemsSource(tableName)
+        if source is None:
+            return None
+
+        sqlTable, scopeColumn, scopeId = source
+        columns = self._getColumnsForTable(tableName)
+
+        parameters = [scopeId]
+        valueSelect = ""
+
+        if orderBy in ("id", "_objId", "SCIPION_OBJECT_ID"):
+            expression = '"scipionItemId"'
+
+        elif orderBy == "enabled":
+            expression = "enabled"
+
+        else:
+            column = next(
+                (
+                    column
+                    for column in columns
+                    if column.get("labelProperty") == orderBy
+                ),
+                None,
+            )
+
+            if column is None:
+                return None
+
+            kind = self._getColumnClassName(column).lower()
+
+            if kind not in ("integer", "float", "boolean", "string"):
+                return None
+
+            valueSelect = ', "values" ->> %s AS sort_value'
+            parameters.insert(0, orderBy)
+
+            if kind in ("integer", "float"):
+                expression = (
+                    "CASE WHEN sort_value ~ "
+                    "'^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)"
+                    "([eE][+-]?[0-9]+)?$' "
+                    "THEN sort_value::numeric END"
+                )
+
+            elif kind == "boolean":
+                expression = (
+                    "CASE "
+                    "WHEN lower(sort_value) IN ('true', '1', 'yes', 'on') THEN 1 "
+                    "WHEN lower(sort_value) IN ('false', '0', 'no', 'off') THEN 0 "
+                    "END"
+                )
+
+            else:
+                expression = 'sort_value COLLATE "C"'
+
+        direction = "ASC" if orderAsc else "DESC"
+
+        sql = f'''
+            WITH metadata_items AS (
+                SELECT *{valueSelect}
+                FROM {sqlTable}
+                WHERE {scopeColumn} = %s
+            ),
+            ranked AS (
+                SELECT
+                    "scipionItemId",
+                    ROW_NUMBER() OVER (
+                        ORDER BY
+                            {expression} {direction} NULLS LAST,
+                            "scipionItemId" ASC
+                    ) - 1 AS row_index
+                FROM metadata_items
+            )
+            SELECT row_index
+            FROM ranked
+            WHERE "scipionItemId" = %s
+        '''
+
+        parameters.append(int(rowId))
+
+        row = self.db.fetchOne(
+            sql,
+            tuple(parameters),
+        )
+
+        if row is None:
+            return None
+
+        return int(row["row_index"])
+
     def _getSortedRowsPage(self, tableName: str, start: int, limit: Optional[int], orderBy: str, orderAsc: bool):
         """Sort scalar columns in PostgreSQL and transfer only the requested window."""
         source = self._getItemsSource(tableName)

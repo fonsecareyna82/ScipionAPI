@@ -525,3 +525,89 @@ def test_ImageLookupUsesSparseIdWithinItsLogicalTable(postgresqlDaoModule, monke
     assert calls[0][1] == (scopeId, 901)
     assert '"scipionItemId" = %s' in calls[0][0]
     assert not mapper.getStoredSetTableItemsCalls
+
+
+@pytest.mark.parametrize(
+    "orderBy,asc",
+    [
+        ("score", True),
+        ("score", False),
+        ("id", False),
+        ("enabled", True),
+    ],
+)
+def test_RowPositionUsesRequestedMetadataOrder(
+        postgresqlDaoModule,
+        monkeypatch,
+        orderBy,
+        asc,
+):
+    dao, _ = _buildLogicalDao(
+        postgresqlDaoModule,
+        monkeypatch,
+    )
+
+    dao.getTables()
+
+    calls = []
+
+    def fetchOne(sql, params):
+        calls.append((sql, params))
+        return {
+            "row_index": 37,
+        }
+
+    monkeypatch.setattr(
+        dao.db,
+        "fetchOne",
+        fetchOne,
+    )
+
+    result = dao.getTableRowPosition(
+        "objects",
+        901,
+        orderBy,
+        asc,
+    )
+
+    assert result == 37
+    assert len(calls) == 1
+
+    sql, params = calls[0]
+
+    assert "ROW_NUMBER() OVER" in sql
+    assert '"scipionItemId" = %s' in sql
+    assert "NULLS LAST" in sql
+    assert params[-1] == 901
+
+    if orderBy == "score":
+        assert params[0] == "score"
+
+
+def test_RowPositionReturnsNoneWhenItemDoesNotExist(
+        postgresqlDaoModule,
+        monkeypatch,
+):
+    dao, _ = _buildLogicalDao(
+        postgresqlDaoModule,
+        monkeypatch,
+    )
+
+    dao.getTables()
+
+    monkeypatch.setattr(
+        dao.db,
+        "fetchOne",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = dao.getTableRowPosition(
+        "objects",
+        901,
+        "id",
+        True,
+    )
+
+    assert result is None
+
+

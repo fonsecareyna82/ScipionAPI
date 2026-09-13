@@ -3618,6 +3618,33 @@ def exportMetadataTable(
 
 
 @router.get(
+    "/projects/{projectId}/protocols/{protocolId}/outputs/"
+    "{outputName}/metadata/tables/{tableName}/row-position"
+)
+def getMetadataRowPosition(
+        projectId: int,
+        protocolId: int,
+        outputName: str,
+        tableName: str,
+        rowId: int = Query(..., ge=1),
+        sortBy: str = Query("id"),
+        asc: bool = Query(True),
+        currentUser=Depends(getCurrentUser),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: ProjectService = Depends(getProjectService),
+):
+    return service.getMetadataRowPositionService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        rowId=rowId,
+        sortBy=sortBy,
+        asc=asc,
+        mapper=mapper,
+    )
+
+@router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image",
     response_model=None,
 )
