@@ -3617,8 +3617,7 @@ def exportMetadataTable(
     return resp
 
 
-@router.get(
-    "/projects/{projectId}/protocols/{protocolId}/outputs/"
+@router.get("/{projectId}/protocols/{protocolId}/outputs/"
     "{outputName}/metadata/tables/{tableName}/row-position"
 )
 def getMetadataRowPosition(
@@ -3633,6 +3632,18 @@ def getMetadataRowPosition(
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: ProjectService = Depends(getProjectService),
 ):
+    project = service.getProjectDbRow(
+        mapper,
+        projectId,
+        currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found",
+        )
+
     return service.getMetadataRowPositionService(
         projectId=projectId,
         protocolId=protocolId,
@@ -3643,6 +3654,7 @@ def getMetadataRowPosition(
         asc=asc,
         mapper=mapper,
     )
+
 
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image",
