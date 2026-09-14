@@ -115,6 +115,166 @@ def test_ListProjectWorkflowsWrapsUnexpectedErrorAs500(projectClient, fakeProjec
     assert response.json()["detail"] == "Failed to load workflows: workflow exploded"
 
 
+def test_InspectWorkflowFileReturnsInspection(
+        projectClient,
+        fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/workflows/inspect-file",
+        json={
+            "path": "workflow.json",
+        },
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "path": "workflow.json",
+        "fileName": "workflow.json",
+        "scipionWebWrapped": True,
+        "protocolsCount": 2,
+        "requiredPluginNames": ["xmipp3"],
+        "missingPluginNames": [],
+        "canLoad": True,
+        "disabledReason": "",
+    }
+
+    assert fakeProjectService.lastInspectWorkflowFileCall == {
+        "workflowPath": "workflow.json",
+        "includeWorkflow": False,
+    }
+
+
+def test_InspectWorkflowFilePropagatesValidationError(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.inspectWorkflowFileError = HTTPException(
+        status_code=422,
+        detail="Invalid workflow JSON",
+    )
+
+    response = projectClient.post(
+        "/projects/workflows/inspect-file",
+        json={
+            "path": "broken.json",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Invalid workflow JSON"
+
+
+def test_ImportWorkflowFileReturns404WhenProjectMissing(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.postgresqlRuntimeMutationResult = None
+
+    response = projectClient.post(
+        "/projects/42/workflows/import-file",
+        json={
+            "path": "workflow.json",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Project not found"
+
+    assert fakeProjectService.lastInspectWorkflowFileCall is None
+    assert fakeProjectService.lastImportWorkflowProtocolsCall is None
+
+
+def test_ImportWorkflowFileRejectsWorkflowWithMissingPlugins(
+        projectClient,
+        fakeProjectService,
+):
+    fakeProjectService.inspectWorkflowFileResult.update({
+        "missingPluginNames": ["relion"],
+        "canLoad": False,
+        "disabledReason": "Missing required plugins: relion",
+    })
+
+    response = projectClient.post(
+        "/projects/1/workflows/import-file",
+        json={
+            "path": "workflow.json",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Missing required plugins: relion"
+
+    assert fakeProjectService.lastInspectWorkflowFileCall == {
+        "workflowPath": "workflow.json",
+        "includeWorkflow": True,
+    }
+
+    assert fakeProjectService.lastImportWorkflowProtocolsCall is None
+
+
+def test_ImportWorkflowFileImportsValidatedWorkflow(
+        projectClient,
+        fakeProjectService,
+):
+    response = projectClient.post(
+        "/projects/1/workflows/import-file",
+        json={
+            "path": "workflow.json",
+        },
+    )
+
+    assert response.status_code == 200
+
+    assert response.json() == {
+        "status": 0,
+        "errors": [],
+        "created": [
+            {
+                "sourceId": "1",
+                "newId": "101",
+            },
+            {
+                "sourceId": "2",
+                "newId": "102",
+            },
+        ],
+        "protocolsCount": 2,
+        "dependenciesCount": 1,
+        "fileName": "workflow.json",
+        "requiredPluginNames": ["xmipp3"],
+    }
+
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall is not None
+    assert fakeProjectService.lastLoadPostgresqlRuntimeProjectForMutationCall["projectId"] == 1
+
+    assert fakeProjectService.lastInspectWorkflowFileCall == {
+        "workflowPath": "workflow.json",
+        "includeWorkflow": True,
+    }
+
+    assert fakeProjectService.lastImportWorkflowProtocolsCall["projectId"] == 1
+    assert fakeProjectService.lastImportWorkflowProtocolsCall["mode"] == "append"
+
+    assert fakeProjectService.lastImportWorkflowProtocolsCall["workflow"] == [
+        {
+            "object.id": "1",
+            "object.className": "ProtImportMovies",
+        },
+        {
+            "object.id": "2",
+            "object.className": "ProtMotionCorr",
+            "inputMovies": "1.outputMovies",
+        },
+    ]
+
+    assert fakeProjectService.lastImportWorkflowProtocolsCall["currentUser"] == {
+        "id": 1,
+        "email": "user@example.com",
+        "role": "user",
+    }
+
+
 def test_GetProjectReturns404WhenProjectDoesNotExist(projectClient, fakeProjectService):
     fakeProjectService.projectByIdResult = None
 

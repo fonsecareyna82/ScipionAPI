@@ -7524,6 +7524,129 @@ class ProjectService:
         raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
         return Path(raw).expanduser().resolve()
 
+    def inspectWorkflowFile(
+            self,
+            workflowPath: str,
+            includeWorkflow: bool = False,
+    ) -> Dict[str, Any]:
+        rootPath = self._getGlobalFsBrowserRoot()
+
+        rawPath = str(workflowPath or "").strip()
+        if not rawPath:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Workflow file path is required.",
+            )
+
+        requestedPath = Path(rawPath).expanduser()
+        filePath = (
+            requestedPath.resolve()
+            if requestedPath.is_absolute()
+            else (rootPath / requestedPath).resolve()
+        )
+
+        try:
+            filePath.relative_to(rootPath)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Workflow file is outside the allowed browser root.",
+            )
+
+        if filePath.suffix.lower() != ".json":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Workflow file must be a .json file.",
+            )
+
+        if not filePath.exists() or not filePath.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow file not found.",
+            )
+
+        try:
+            rawText = filePath.read_text(encoding="utf-8")
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not read workflow file: {error}",
+            )
+
+        requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawText)
+
+        try:
+            jsonText = self._extractWorkflowJsonText(rawText)
+            payload = json.loads(jsonText)
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid workflow JSON: {error}",
+            )
+
+        wrapped = self._isScipionWebWorkflowExportPayload(payload)
+
+        if wrapped:
+            wrappedRequiredPluginNames = self._getRequiredPluginNamesFromWorkflowPayload(payload)
+
+            requiredPluginNames = list(
+                dict.fromkeys(
+                    requiredPluginNames + wrappedRequiredPluginNames
+                )
+            )
+
+            workflow = payload.get("content")
+        else:
+            workflow = payload
+
+        if not isinstance(workflow, (list, dict)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Workflow JSON must contain a workflow object or list of protocols.",
+            )
+
+        if isinstance(workflow, list):
+            if not workflow:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow does not contain any protocols.",
+                )
+
+            if any(not isinstance(protocol, dict) for protocol in workflow):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Workflow contains invalid protocol entries.",
+                )
+
+            protocolsCount = len(workflow)
+        else:
+            protocolsCount = None
+
+        missingPluginNames = self._getMissingWorkflowPluginNames(
+            requiredPluginNames
+        )
+
+        result = {
+            "path": rawPath,
+            "fileName": filePath.name,
+            "scipionWebWrapped": wrapped,
+            "protocolsCount": protocolsCount,
+            "requiredPluginNames": requiredPluginNames,
+            "missingPluginNames": missingPluginNames,
+            "canLoad": len(missingPluginNames) == 0,
+            "disabledReason": (
+                "Missing required plugins: %s"
+                % ", ".join(missingPluginNames)
+                if missingPluginNames
+                else ""
+            ),
+        }
+
+        if includeWorkflow:
+            result["workflow"] = workflow
+
+        return result
+
     def _extractWorkflowJsonText(self, text: str) -> str:
         # extractWorkflowJsonText
         raw = str(text or "").strip()

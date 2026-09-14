@@ -393,6 +393,49 @@ class FakeProjectService:
         self.listProjectsResult = [makeProjectOut()]
         self.lastListProjectsCall = None
 
+        self.inspectWorkflowFileResult = {
+            "path": "workflow.json",
+            "fileName": "workflow.json",
+            "scipionWebWrapped": True,
+            "protocolsCount": 2,
+            "requiredPluginNames": ["xmipp3"],
+            "missingPluginNames": [],
+            "canLoad": True,
+            "disabledReason": "",
+            "workflow": [
+                {
+                    "object.id": "1",
+                    "object.className": "ProtImportMovies",
+                },
+                {
+                    "object.id": "2",
+                    "object.className": "ProtMotionCorr",
+                    "inputMovies": "1.outputMovies",
+                },
+            ],
+        }
+        self.inspectWorkflowFileError = None
+        self.lastInspectWorkflowFileCall = None
+
+        self.importWorkflowProtocolsResult = {
+            "status": 0,
+            "errors": [],
+            "created": [
+                {
+                    "sourceId": "1",
+                    "newId": "101",
+                },
+                {
+                    "sourceId": "2",
+                    "newId": "102",
+                },
+            ],
+            "protocolsCount": 2,
+            "dependenciesCount": 1,
+        }
+        self.importWorkflowProtocolsError = None
+        self.lastImportWorkflowProtocolsCall = None
+
         self.createProjectResult = makeProjectOut(projectId=2, name="Created Project")
         self.lastCreateProjectCall = None
 
@@ -757,6 +800,48 @@ class FakeProjectService:
         if self.listProjectWorkflowsError is not None:
             raise self.listProjectWorkflowsError
         return self.listProjectWorkflowsResult
+
+    def inspectWorkflowFile(
+            self,
+            workflowPath,
+            includeWorkflow=False,
+    ):
+        self.lastInspectWorkflowFileCall = {
+            "workflowPath": workflowPath,
+            "includeWorkflow": includeWorkflow,
+        }
+
+        if self.inspectWorkflowFileError is not None:
+            raise self.inspectWorkflowFileError
+
+        result = dict(self.inspectWorkflowFileResult)
+
+        if not includeWorkflow:
+            result.pop("workflow", None)
+
+        return result
+
+    def importWorkflowProtocolsService(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+            payload,
+    ):
+        self.lastImportWorkflowProtocolsCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+            "workflow": payload.workflow,
+            "mode": payload.mode,
+            "sourceProjectId": payload.sourceProjectId,
+            "sourceProjectName": payload.sourceProjectName,
+        }
+
+        if self.importWorkflowProtocolsError is not None:
+            raise self.importWorkflowProtocolsError
+
+        return dict(self.importWorkflowProtocolsResult)
 
     def getProjectById(
             self,

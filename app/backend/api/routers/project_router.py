@@ -76,6 +76,10 @@ def _appendProtocolSyncCounts(response: Dict[str, Any], result: Any) -> Dict[str
 # ======================================================================
 
 
+class WorkflowFileRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
 @router.get(
     "/workflows",
     response_model=Any,
@@ -97,6 +101,34 @@ def listProjectWorkflows(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load workflows: {e}",
+        )
+
+
+@router.post(
+    "/workflows/inspect-file",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def inspectWorkflowFile(
+    payload: WorkflowFileRequest,
+    currentUser=Depends(getCurrentUser),
+    service: ProjectService = Depends(getProjectService),
+):
+    try:
+        return service.inspectWorkflowFile(
+            workflowPath=payload.path,
+            includeWorkflow=False,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception(
+            "Error inspecting workflow file %s",
+            payload.path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to inspect workflow file: {error}",
         )
 
 
@@ -139,6 +171,60 @@ def applyWorkflowToProject(
             status_code=500,
             detail=f"Failed to apply workflow to project {projectId}: {e}",
         )
+
+
+@router.post(
+    "/{projectId}/workflows/import-file",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def importWorkflowFile(
+    projectId: int,
+    payload: WorkflowFileRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    inspection = service.inspectWorkflowFile(
+        workflowPath=payload.path,
+        includeWorkflow=True,
+    )
+
+    if not inspection.get("canLoad"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=inspection.get("disabledReason") or "Workflow cannot be loaded.",
+        )
+
+    importPayload = WorkflowImportRequest(
+        workflow=inspection["workflow"],
+        mode="append",
+    )
+
+    result = service.importWorkflowProtocolsService(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        payload=importPayload,
+    )
+
+    if isinstance(result, dict):
+        result["fileName"] = inspection.get("fileName")
+        result["requiredPluginNames"] = inspection.get("requiredPluginNames") or []
+
+    return result
 
 
 # ======================================================================
