@@ -25,7 +25,7 @@
 # ******************************************************************************
 
 TEXT_FILE_EXTENSIONS = {".txt", ".log", ".json", ".yaml", ".yml", ".md", ".csv", ".tsv",
-                        ".xml", ".star", ".coords", ".cbox", ".mdoc", ".tomostar",
+                        ".xml", ".star", ".coords", ".cbox", ".mdoc", ".tomostar", ".template",
                         ".settings", ".com", ".tlt", ".xf", ".xtilt", ".stderr", ".stdout",
                         ".out", ".err", ".script", ".text", ".markdown", ".rst", ".html",
                         ".tex", ".toml", ".ini", ".cfg", ".conf", ".config", ".env",

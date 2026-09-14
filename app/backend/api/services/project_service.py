@@ -7553,10 +7553,12 @@ class ProjectService:
                 detail="Workflow file is outside the allowed browser root.",
             )
 
-        if filePath.suffix.lower() != ".json":
+        allowedExtensions = {".json", ".template"}
+
+        if filePath.suffix.lower() not in allowedExtensions:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Workflow file must be a .json file.",
+                detail="Workflow file must be a .json or .template file.",
             )
 
         if not filePath.exists() or not filePath.is_file():

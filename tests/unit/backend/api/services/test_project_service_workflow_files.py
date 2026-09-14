@@ -218,7 +218,7 @@ def test_InspectWorkflowFileRejectsInvalidJson(
     assert "Invalid workflow JSON" in str(error.value.detail)
 
 
-def test_InspectWorkflowFileRejectsNonJsonFiles(
+def test_InspectWorkflowFileRejectsUnsupportedFiles(
         workflowFileService,
 ):
     service, browserRoot = workflowFileService
@@ -235,7 +235,7 @@ def test_InspectWorkflowFileRejectsNonJsonFiles(
         )
 
     assert error.value.status_code == 422
-    assert error.value.detail == "Workflow file must be a .json file."
+    assert error.value.detail == "Workflow file must be a .json or .template file."
 
 
 def test_InspectWorkflowFileRejectsPathOutsideBrowserRoot(
@@ -284,3 +284,50 @@ def test_InspectWorkflowFileRejectsEmptyWorkflow(
 
     assert error.value.status_code == 422
     assert error.value.detail == "Workflow does not contain any protocols."
+
+
+def test_InspectWorkflowFileAcceptsTemplateWorkflow(
+        workflowFileService,
+        monkeypatch,
+):
+    service, browserRoot = workflowFileService
+
+    workflowFile = browserRoot / "workflow.template"
+
+    payload = writeWrappedWorkflow(
+        workflowFile,
+        requiredPlugins=["xmipp3"],
+        content=[
+            {
+                "object.id": "1",
+                "object.className": "ProtImportMovies",
+            },
+            {
+                "object.id": "2",
+                "object.className": "ProtMotionCorr",
+                "inputMovies": "1.outputMovies",
+            },
+        ],
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getMissingWorkflowPluginNames",
+        lambda requiredPluginNames: [],
+    )
+
+    result = service.inspectWorkflowFile(
+        workflowPath="workflow.template",
+        includeWorkflow=True,
+    )
+
+    assert result["path"] == "workflow.template"
+    assert result["fileName"] == "workflow.template"
+    assert result["protocolsCount"] == 2
+    assert result["requiredPluginNames"] == ["xmipp3"]
+    assert result["missingPluginNames"] == []
+    assert result["canLoad"] is True
+    assert result["workflow"] == payload["content"]
+
+
+
