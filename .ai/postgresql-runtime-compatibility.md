@@ -240,8 +240,16 @@ Required regression coverage must preserve both directions of this contract:
 
 ## Per-user protocol runtime concurrency
 
-`maxConcurrentRunsPerUser` limits protocols that are actually in the
-`running` state for a user.
+`maxConcurrentRunsPerUser` limits concurrent execution slots for a user.
+
+Protocols launched as part of the same workflow execution share one
+`executionId` and therefore consume one execution slot while any member of
+that execution is running.
+
+Individually launched protocols use different `executionId` values and each
+consume one execution slot.
+
+Legacy running protocols without an `executionId` are counted independently.
 
 Protocols in `scheduled` or `launched` state do not consume a user execution
 slot.
@@ -253,10 +261,13 @@ PostgreSQL runtime worker waits until an execution slot becomes available.
 The execution slot must be acquired atomically per user:
 
 1. acquire the PostgreSQL per-user execution advisory lock;
-2. count the user's protocols whose authoritative status is `running`;
-3. if the count is below `maxConcurrentRunsPerUser`, persist the current
-   protocol as `running` before releasing the lock;
-4. otherwise release the lock, wait, and retry.
+2. determine whether the current `executionId` already has a running protocol;
+3. count distinct running execution slots for the user;
+4. if the current execution already owns a slot, allow the protocol to run
+   without consuming another slot;
+5. otherwise, if the slot count is below `maxConcurrentRunsPerUser`, persist
+   the current protocol as `running` before releasing the lock;
+6. otherwise, wait until an execution slot becomes available.
 
 The per-user limit applies across projects.
 

@@ -36,6 +36,7 @@ class FakeDb:
         self.fetchOneCalls = []
         self.executeCalls = []
         self.runningCount = 0
+        self.executionRunning = False
 
     def fetchOne(
             self,
@@ -53,6 +54,9 @@ class FakeDb:
 
         return {
             "count": self.runningCount,
+            "executionRunning": (
+                self.executionRunning
+            ),
         }
 
     def execute(
@@ -84,30 +88,73 @@ def buildMapper():
     return mapper
 
 
-def test_CountRunningProtocolsForUser():
+def test_GetRunningExecutionSlotUsageForUser():
     mapper = buildMapper()
-    mapper.db.runningCount = 2
 
-    count = mapper.countRunningProtocolsForUser(
-        7
+    mapper.db.runningCount = 2
+    mapper.db.executionRunning = True
+
+    usage = (
+        mapper
+        .getRunningExecutionSlotUsageForUser(
+            7,
+            "workflow-123",
+        )
     )
 
-    assert count == 2
+    assert usage == {
+        "count": 2,
+        "executionRunning": True,
+    }
 
     assert len(
         mapper.db.fetchOneCalls
     ) == 1
 
-    call = mapper.db.fetchOneCalls[0]
+    call = (
+        mapper.db
+        .fetchOneCalls[0]
+    )
 
     assert "'running'" in call["query"]
-    assert "'scheduled'" not in call["query"]
-    assert "'launched'" not in call["query"]
-    assert "'executionId'" not in call["query"]
-    assert "'_scipionWebRuntime'" in call["query"]
-    assert "'launchedByUserId'" in call["query"]
+
+    assert (
+        "'scheduled'"
+        not in call["query"]
+    )
+
+    assert (
+        "'launched'"
+        not in call["query"]
+    )
+
+    assert (
+        "'executionId'"
+        in call["query"]
+    )
+
+    assert (
+        "'launchedByUserId'"
+        in call["query"]
+    )
+
+    assert (
+        "DISTINCT"
+        in call["query"]
+    )
+
+    assert (
+        "BOOL_OR"
+        in call["query"]
+    )
+
+    assert (
+        "id::text"
+        in call["query"]
+    )
 
     assert call["params"] == (
+        "workflow-123",
         "7",
     )
 

@@ -2002,9 +2002,15 @@ def test_CompatibilitySqliteCleanupFailureIsBestEffort(
 def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
         monkeypatch,
 ):
-    runningCounts = iter([
-        2,
-        1,
+    slotUsages = iter([
+        {
+            "count": 2,
+            "executionRunning": False,
+        },
+        {
+            "count": 1,
+            "executionRunning": False,
+        },
     ])
 
     lockEvents = []
@@ -2021,8 +2027,9 @@ def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
                 "status": "launched",
                 "params": {
                     "_scipionWebRuntime": {
-                        "launchedByUserId": 7,
-                    },
+                    "launchedByUserId": 7,
+                    "executionId": "execution-123",
+},
                 },
             }
 
@@ -2042,13 +2049,20 @@ def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
                     ("exit", userId)
                 )
 
-        def countRunningProtocolsForUser(
+        def getRunningExecutionSlotUsageForUser(
                 self,
                 userId,
+                executionId,
         ):
             assert userId == 7
+
+            assert (
+                    executionId
+                    == "execution-123"
+            )
+
             return next(
-                runningCounts
+                slotUsages
             )
 
     class ProtocolStub:
@@ -2133,6 +2147,130 @@ def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
     )
 
 
+def test_WaitForUserExecutionSlotReusesRunningWorkflowExecutionSlot(
+        monkeypatch,
+):
+    storedStatuses = []
+    slotUsageCalls = []
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            return {
+                "status": "launched",
+                "params": {
+                    "_scipionWebRuntime": {
+                        "launchedByUserId": 7,
+                        "executionId": (
+                            "workflow-execution-123"
+                        ),
+                    },
+                },
+            }
+
+        @contextmanager
+        def protocolExecutionUserLock(
+                self,
+                userId,
+        ):
+            assert userId == 7
+            yield
+
+        def getRunningExecutionSlotUsageForUser(
+                self,
+                userId,
+                executionId,
+        ):
+            slotUsageCalls.append({
+                "userId": userId,
+                "executionId": executionId,
+            })
+
+            return {
+                "count": 4,
+                "executionRunning": True,
+            }
+
+    class ProtocolStub:
+        def __init__(self):
+            self.status = "launched"
+
+        def getStatus(self):
+            return self.status
+
+        def setStatus(
+                self,
+                status,
+        ):
+            self.status = status
+
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(
+                self,
+                mapper,
+                currentUser,
+        ):
+            return {
+                "maxConcurrentRunsPerUser": 4,
+            }
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+
+    worker.storeProtocol = lambda: (
+        storedStatuses.append(
+            worker.protocol.getStatus()
+        )
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        SettingsServiceStub,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.time,
+        "sleep",
+        lambda seconds: pytest.fail(
+            "A protocol belonging to an already "
+            "running workflow execution must not "
+            "wait for another slot."
+        ),
+    )
+
+    assert (
+        worker.waitForUserExecutionSlot()
+        is True
+    )
+
+    assert slotUsageCalls == [
+        {
+            "userId": 7,
+            "executionId": (
+                "workflow-execution-123"
+            ),
+        },
+    ]
+
+    assert storedStatuses == [
+        "running",
+    ]
+
+    assert (
+        worker.protocol.getStatus()
+        == "running"
+    )
+
+
 def test_WaitForUserExecutionSlotDoesNotLimitProtocolWithoutExecutionUser(
         monkeypatch,
 ):
@@ -2147,9 +2285,10 @@ def test_WaitForUserExecutionSlotDoesNotLimitProtocolWithoutExecutionUser(
                 "params": {},
             }
 
-        def countRunningProtocolsForUser(
+        def getRunningExecutionSlotUsageForUser(
                 self,
                 userId,
+                executionId,
         ):
             raise AssertionError(
                 "Protocol without execution user "
@@ -2229,9 +2368,10 @@ def test_WaitForUserExecutionSlotStopsWaitingAfterProtocolBecomesTerminal(
             executionLock
         )
 
-        def countRunningProtocolsForUser(
+        def getRunningExecutionSlotUsageForUser(
                 self,
                 userId,
+                executionId,
         ):
             raise AssertionError(
                 "Terminal protocol must not "

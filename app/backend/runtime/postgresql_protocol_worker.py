@@ -3185,16 +3185,16 @@ class RuntimePostgresqlProtocolWorker:
             )
         )
 
-    def getProtocolExecutionUserId(
+    def getProtocolExecutionContext(
             self,
-    ):
+    ) -> Dict[str, Any]:
         row = (
-            self.mapper
-            .getProjectProtocolByProtocolId(
-                projectId=self.projectId,
-                protocolId=self.protocolId,
-            )
-            or {}
+                self.mapper
+                .getProjectProtocolByProtocolId(
+                    projectId=self.projectId,
+                    protocolId=self.protocolId,
+                )
+                or {}
         )
 
         statusService = (
@@ -3213,20 +3213,40 @@ class RuntimePostgresqlProtocolWorker:
                 runtimeMetadata,
                 dict,
         ):
-            return None
+            return {
+                "userId": None,
+                "executionId": None,
+            }
 
-        userId = runtimeMetadata.get(
+        rawUserId = runtimeMetadata.get(
             "launchedByUserId"
         )
 
         try:
-            return int(userId)
+            userId = int(
+                rawUserId
+            )
 
         except (
                 TypeError,
                 ValueError,
         ):
-            return None
+            userId = None
+
+        executionId = str(
+            runtimeMetadata.get(
+                "executionId"
+            )
+            or ""
+        ).strip()
+
+        return {
+            "userId": userId,
+            "executionId": (
+                    executionId
+                    or None
+            ),
+        }
 
     def getMaxConcurrentRunsPerUser(
             self,
@@ -3264,9 +3284,17 @@ class RuntimePostgresqlProtocolWorker:
     def waitForUserExecutionSlot(
             self,
     ) -> bool:
-        userId = (
-            self.getProtocolExecutionUserId()
+        executionContext = (
+            self.getProtocolExecutionContext()
         )
+
+        userId = executionContext[
+            "userId"
+        ]
+
+        executionId = executionContext[
+            "executionId"
+        ]
 
         if userId is None:
             return True
@@ -3347,15 +3375,30 @@ class RuntimePostgresqlProtocolWorker:
                     self.getMaxConcurrentRunsPerUser()
                 )
 
-                runningProtocols = (
+                slotUsage = (
                     self.mapper
-                    .countRunningProtocolsForUser(
-                        userId
+                    .getRunningExecutionSlotUsageForUser(
+                        userId,
+                        executionId,
+                    )
+                )
+
+                runningExecutions = int(
+                    slotUsage.get(
+                        "count"
+                    )
+                    or 0
+                )
+
+                executionAlreadyRunning = bool(
+                    slotUsage.get(
+                        "executionRunning"
                     )
                 )
 
                 if (
-                        runningProtocols
+                        executionAlreadyRunning
+                        or runningExecutions
                         < maxConcurrentRuns
                 ):
                     self.protocol.setStatus(
@@ -3364,13 +3407,23 @@ class RuntimePostgresqlProtocolWorker:
 
                     self.storeProtocol()
 
+                    effectiveRunningExecutions = (
+                        runningExecutions
+                        if executionAlreadyRunning
+                        else runningExecutions + 1
+                    )
+
                     logger.info(
                         "Acquired protocol execution slot. "
-                        "userId=%s running=%s limit=%s "
+                        "userId=%s executionId=%s "
+                        "runningExecutions=%s limit=%s "
+                        "reusedExecutionSlot=%s "
                         "projectId=%s protocolId=%s",
                         userId,
-                        runningProtocols + 1,
+                        executionId,
+                        effectiveRunningExecutions,
                         maxConcurrentRuns,
+                        executionAlreadyRunning,
                         self.projectId,
                         self.protocolId,
                     )
@@ -3389,10 +3442,12 @@ class RuntimePostgresqlProtocolWorker:
             ):
                 logger.info(
                     "Waiting for protocol execution slot. "
-                    "userId=%s running=%s limit=%s "
+                    "userId=%s executionId=%s "
+                    "runningExecutions=%s limit=%s "
                     "projectId=%s protocolId=%s",
                     userId,
-                    runningProtocols,
+                    executionId,
+                    runningExecutions,
                     maxConcurrentRuns,
                     self.projectId,
                     self.protocolId,

@@ -2506,15 +2506,47 @@ class PostgresqlFlatMapper(Mapper):
             ),
         )
 
-    def countRunningProtocolsForUser(
+    def getRunningExecutionSlotUsageForUser(
             self,
             userId: int,
-    ) -> int:
+            executionId=None,
+    ) -> Dict[str, Any]:
+        executionId = str(
+            executionId
+            or ""
+        ).strip()
+
         row = self.db.fetchOne(
             """
-            SELECT COUNT(*)::integer AS count
+            SELECT
+                COUNT(
+                    DISTINCT COALESCE(
+                        NULLIF(
+                            params::jsonb
+                                -> '_scipionWebRuntime'
+                                ->> 'executionId',
+                            ''
+                        ),
+                        'protocol:' || id::text
+                    )
+                )::integer AS count,
+                COALESCE(
+                    BOOL_OR(
+                        (
+                            params::jsonb
+                                -> '_scipionWebRuntime'
+                                ->> 'executionId'
+                        ) = NULLIF(%s, '')
+                    ),
+                    FALSE
+                ) AS "executionRunning"
               FROM protocols
-             WHERE LOWER(COALESCE(status, '')) = 'running'
+             WHERE LOWER(
+                 COALESCE(
+                     status,
+                     ''
+                 )
+             ) = 'running'
                AND (
                    params::jsonb
                        -> '_scipionWebRuntime'
@@ -2522,17 +2554,30 @@ class PostgresqlFlatMapper(Mapper):
                ) = %s
             """,
             (
-                str(int(userId)),
+                executionId,
+                str(
+                    int(userId)
+                ),
             ),
         )
 
         if not row:
-            return 0
+            return {
+                "count": 0,
+                "executionRunning": False,
+            }
 
-        return int(
-            row.get("count")
-            or 0
-        )
+        return {
+            "count": int(
+                row.get("count")
+                or 0
+            ),
+            "executionRunning": bool(
+                row.get(
+                    "executionRunning"
+                )
+            ),
+        }
 
     @contextmanager
     def protocolExecutionUserLock(
