@@ -208,6 +208,150 @@ def test_RefreshScipionDomainRemovesPluginsMissingFromCleanProcess(monkeypatch):
     }
 
 
+def test_RefreshScipionDomainRegistersPluginsFoundOnlyInCleanProcess(
+        monkeypatch,
+):
+    existingPlugin = object()
+    newPlugin = object()
+    existingProtocol = object()
+    newProtocol = object()
+    registerCalls = []
+
+    class MissingPluginDomainStub:
+        _plugins = {}
+        _protocols = {}
+        _objects = {}
+        _viewers = {}
+        _wizards = {}
+        _pluginsLoaded = True
+        _preferred_viewers = None
+        _Domain__mapperDict = None
+
+        @classmethod
+        def getPlugins(cls):
+            if not cls._plugins:
+                cls._plugins = {
+                    "existingPlugin": existingPlugin,
+                }
+
+            cls._pluginsLoaded = True
+
+            return dict(
+                cls._plugins
+            )
+
+        @classmethod
+        def registerPlugin(
+                cls,
+                pluginName,
+        ):
+            registerCalls.append(
+                pluginName
+            )
+
+            if pluginName == "newPlugin":
+                cls._plugins[
+                    pluginName
+                ] = newPlugin
+
+        @classmethod
+        def getProtocols(cls):
+            protocols = {}
+
+            if "existingPlugin" in cls._plugins:
+                protocols[
+                    "ExistingProtocol"
+                ] = existingProtocol
+
+            if "newPlugin" in cls._plugins:
+                protocols[
+                    "NewProtocol"
+                ] = newProtocol
+
+            cls._protocols = protocols
+
+            return dict(
+                cls._protocols
+            )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastDomainRevision",
+        3,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastEnvironmentRevision",
+        8,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getPluginsRevision",
+        lambda: 4,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getEnvironmentRevision",
+        lambda: 8,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.importlib,
+        "invalidate_caches",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "setDomain",
+        lambda value: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "getDomain",
+        lambda: MissingPluginDomainStub,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_getCleanScipionPluginNames",
+        lambda: {
+            "existingPlugin",
+            "newPlugin",
+        },
+    )
+
+    refreshed = (
+        domainRefreshModule
+        .refreshScipionDomain()
+    )
+
+    assert refreshed is True
+
+    assert registerCalls == [
+        "newPlugin",
+    ]
+
+    assert set(
+        MissingPluginDomainStub._plugins
+    ) == {
+        "existingPlugin",
+        "newPlugin",
+    }
+
+    assert (
+        MissingPluginDomainStub
+        ._protocols
+    ) == {
+        "ExistingProtocol": existingProtocol,
+        "NewProtocol": newProtocol,
+    }
+
+
 def test_GetScipionProtocolsSnapshotWaitsForConcurrentRefresh(monkeypatch):
     resetStarted = threading.Event()
     allowRefresh = threading.Event()

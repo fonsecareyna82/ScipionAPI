@@ -138,6 +138,26 @@ def _refreshScipionDomainLocked(
         _getCleanScipionPluginNames()
     )
 
+    missingPluginNames = sorted(
+        cleanPluginNames
+        - set(currentPlugins)
+    )
+
+    if missingPluginNames:
+        logger.info(
+            "Registering new Scipion plugins in runtime domain: %s",
+            missingPluginNames,
+        )
+
+        for pluginName in missingPluginNames:
+            domain.registerPlugin(
+                pluginName
+            )
+
+        currentPlugins = (
+            domain.getPlugins()
+        )
+
     stalePluginNames = sorted(
         set(currentPlugins)
         - cleanPluginNames
