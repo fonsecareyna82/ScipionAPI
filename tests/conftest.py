@@ -752,6 +752,14 @@ class FakeProjectService:
         )
         self.lastRenderVolumeSliceCall = None
 
+        self.volumeSlicesBatchResult = {
+            "volumeId": "1",
+            "fmt": "webp",
+            "items": [],
+            "errors": [],
+        }
+        self.lastRenderVolumeSlicesBatchCall = None
+
         self.volumeData3dResult = {
             "dims": [2, 2, 2],
             "values": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
@@ -1004,7 +1012,7 @@ class FakeProjectService:
         }
         return self.metadataTableWindowResult
 
-    def renderMetadataImageCellService(
+    def renderMetadataImageCellCachedService(
             self,
             projectId,
             protocolId,
@@ -1020,6 +1028,7 @@ class FakeProjectService:
             sortBy,
             asc,
             mapper,
+            ifNoneMatch=None,
     ):
         self.lastRenderMetadataImageCellCall = {
             "projectId": projectId,
@@ -1036,6 +1045,7 @@ class FakeProjectService:
             "sortBy": sortBy,
             "asc": asc,
             "mapper": mapper,
+            "ifNoneMatch": ifNoneMatch,
         }
         return self.renderMetadataImageCellResponse
 
@@ -1806,6 +1816,45 @@ class FakeProjectService:
             "mapper": mapper,
         }
         return self.volumeSurfaceMeshResult
+
+    def renderVolumeSlicesBatchService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            volumeId,
+            items,
+            colormap=None,
+            normalize="minmax",
+            windowMin=None,
+            windowMax=None,
+            scale=1.0,
+            fmt="webp",
+            thumb=None,
+            fast=True,
+            quality=75,
+            inline=True,
+            mapper=None,
+    ):
+        self.lastRenderVolumeSlicesBatchCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "volumeId": volumeId,
+            "items": items,
+            "colormap": colormap,
+            "normalize": normalize,
+            "windowMin": windowMin,
+            "windowMax": windowMax,
+            "scale": scale,
+            "fmt": fmt,
+            "thumb": thumb,
+            "fast": fast,
+            "quality": quality,
+            "inline": inline,
+            "mapper": mapper,
+        }
+        return self.volumeSlicesBatchResult
 
     def renderTiltSeriesImageService(
             self,
