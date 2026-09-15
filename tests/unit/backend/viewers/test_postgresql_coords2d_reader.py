@@ -473,6 +473,101 @@ def test_PostgresqlCoords2dReaderGetStoredSetMetaReusesFullFetchIfAlreadyLoaded(
     assert reader._getStoredSetMeta() is fullStoredSet
 
 
+def test_PostgresqlCoords2dReaderListCoordinatesUsesSqlFastPathWhenSetIdKnown():
+    mapperCalls = []
+
+    class SetMapperStub:
+        def getStoredSetItemsByValueField(self, setId, fieldKey, fieldValue):
+            mapperCalls.append({
+                "setId": setId,
+                "fieldKey": fieldKey,
+                "fieldValue": fieldValue,
+            })
+
+            return [
+                {
+                    "scipionItemId": 1,
+                    "values": {"_micId": 10, "_x": 11.5, "_y": 22.5},
+                },
+            ]
+
+        def getStoredSet(self, *args, **kwargs):
+            raise AssertionError(
+                "listCoordinatesForMicrograph must not fall back to a full "
+                "Set fetch when the SQL fast path already found matches"
+            )
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="outputCoordinates")
+    reader.setMapper = SetMapperStub()
+    reader._storedSet = {
+        "id": 33,
+        "setClassName": "SetOfCoordinates",
+        "itemClassName": "Coordinate",
+        "properties": {},
+        "setProperties": [],
+        "items": [],
+    }
+
+    payload = reader.listCoordinatesForMicrograph("10")
+
+    assert payload == {
+        "coordinates": [
+            {"id": 1, "micId": "10", "x": 11.5, "y": 22.5, "score": None, "classLabel": None}
+        ]
+    }
+
+    assert mapperCalls == [
+        {"setId": 33, "fieldKey": "_micId", "fieldValue": "10"},
+    ]
+
+
+def test_PostgresqlCoords2dReaderListCoordinatesFallsBackToFullScanWhenFastPathEmpty():
+    fastPathCalls = []
+    getStoredSetLimits = []
+
+    # Non-canonical micrograph field name -- the SQL fast path (which
+    # only matches the canonical "_micId") can't see this, only the
+    # Python fallback (_extractMicId's broader key matching) can.
+    fullItems = [
+        {
+            "scipionItemId": 5,
+            "values": {"micrographObjId": 10, "_x": 1.0, "_y": 2.0},
+        },
+    ]
+
+    class SetMapperStub:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            getStoredSetLimits.append(limit)
+            return {
+                "id": 33,
+                "setClassName": "SetOfCoordinates",
+                "itemClassName": "Coordinate",
+                "properties": {},
+                "setProperties": [],
+                "items": [] if limit == 0 else fullItems,
+            }
+
+        def getStoredSetItemsByValueField(self, setId, fieldKey, fieldValue):
+            fastPathCalls.append(fieldValue)
+            return []
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="outputCoordinates")
+    reader.setMapper = SetMapperStub()
+
+    payload = reader.listCoordinatesForMicrograph("10")
+
+    assert payload == {
+        "coordinates": [
+            {"id": 5, "micId": "10", "x": 1.0, "y": 2.0, "score": None, "classLabel": None}
+        ]
+    }
+
+    assert fastPathCalls == ["10"]
+    # First call is _getStoredSetMeta()'s lightweight limit=0 fetch, the
+    # second is the fallback's full (unlimited) fetch.
+    assert getStoredSetLimits == [0, None]
+
+
 def test_PostgresqlCoords2dReaderResolvesMicrographThroughInputGraph():
     mapperCalls = []
 

@@ -27,8 +27,9 @@ from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 
 
 class DatabaseStub:
-    def __init__(self, row=None):
+    def __init__(self, row=None, rows=None):
         self.row = row
+        self.rows = rows if rows is not None else []
         self.calls = []
 
     def fetchOne(self, query, params=None):
@@ -38,6 +39,14 @@ class DatabaseStub:
         })
 
         return self.row
+
+    def fetchAll(self, query, params=None):
+        self.calls.append({
+            "query": " ".join(str(query).split()),
+            "params": params,
+        })
+
+        return self.rows
 
 
 def test_GetStoredSetItemByRuntimeObjectId():
@@ -168,5 +177,33 @@ def test_GetStoredMicrographItemFromProtocolInputGraph():
     assert 'item."scipionItemId" = %s' in query
     assert "LIKE '%%micrograph%%'" in query
     assert "input_graph.depth ASC" in query
+
+
+def test_GetStoredSetItemsByValueFieldFiltersInSql():
+    expectedRows = [
+        {
+            "id": 501,
+            "setId": 33,
+            "scipionItemId": 101,
+            "values": {"_micId": 10, "_x": 11.5, "_y": 22.5},
+        },
+    ]
+
+    database = DatabaseStub(rows=expectedRows)
+    mapper = ScipionSetPostgresqlMapper(db=database)
+
+    result = mapper.getStoredSetItemsByValueField(setId=33, fieldKey="_micId", fieldValue="10")
+
+    assert result == expectedRows
+    assert len(database.calls) == 1
+
+    call = database.calls[0]
+    query = call["query"]
+
+    assert call["params"] == (33, "_micId", "10")
+    assert 'FROM scipion_set_items' in query
+    assert 'WHERE "setId" = %s' in query
+    assert '("values" ->> %s) = %s' in query
+    assert 'ORDER BY "scipionItemId" ASC' in query
 
 

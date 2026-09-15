@@ -2154,6 +2154,36 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (setId, limit, offset),
         )
 
+    def getStoredSetItemsByValueField(
+            self,
+            setId: int,
+            fieldKey: str,
+            fieldValue: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return items in `setId` whose "values" JSONB field `fieldKey`
+        equals `fieldValue` (compared as text), e.g. filtering a
+        coordinates Set down to one micrograph by its canonical "_micId"
+        field without loading every item in the Set.
+
+        This is an exact-key, exact-text-match filter only -- it does not
+        replicate any fuzzy/suffix/nested key matching. Callers relying on
+        that broader matching (see PostgresqlCoords2dReader._extractMicId)
+        must treat an empty result here as "try the fallback path", not
+        as "no matching items exist".
+        """
+        return self.db.fetchAll(
+            """
+            SELECT id, "setId", "scipionItemId", enabled, label, comment,
+                   creation, "values", "createdAt", "updatedAt"
+              FROM scipion_set_items
+             WHERE "setId" = %s
+               AND ("values" ->> %s) = %s
+             ORDER BY "scipionItemId" ASC
+            """,
+            (setId, fieldKey, fieldValue),
+        )
+
     def _getDeclaredItemClassName(
             self,
             scipionSet: Any,

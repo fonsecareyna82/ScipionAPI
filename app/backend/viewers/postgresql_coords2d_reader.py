@@ -99,24 +99,22 @@ class PostgresqlCoords2dReader:
     def listCoordinatesForMicrograph(self, micId: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        storedSet = self._getStoredSet()
-        if storedSet is None:
+        storedSetMeta = self._getStoredSetMeta()
+        if storedSetMeta is None:
             self.lastSkipReason = "stored_set_not_found"
             return None
 
-        if not self._isCoords2dStoredSet(storedSet):
+        if not self._isCoords2dStoredSet(storedSetMeta):
             self.lastSkipReason = "stored_set_is_not_coordinates2d"
             return None
 
         targetMicId = str(micId)
+        items = self._getItemsForMicrograph(storedSetMeta, targetMicId)
+
         coordinates: List[Dict[str, Any]] = []
 
-        for index, item in enumerate(storedSet.get("items") or []):
+        for index, item in enumerate(items):
             values = item.get("values") or {}
-            itemMicId = self._extractMicId(item, values)
-
-            if str(itemMicId) != targetMicId:
-                continue
 
             point = self._buildCoordinatePoint(
                 item=item,
@@ -312,6 +310,45 @@ class PostgresqlCoords2dReader:
                 outputName=self.outputName,
             )
         return self._storedSet
+
+    def _getItemsForMicrograph(self, storedSetMeta: Dict[str, Any], targetMicId: str) -> List[Dict[str, Any]]:
+        """
+        Return the items belonging to one micrograph, preferring a SQL-side
+        filter on the canonical "_micId" field (see
+        ScipionSetPostgresqlMapper.getStoredSetItemsByValueField) so a
+        micrograph switch doesn't have to load and scan every coordinate in
+        the whole Set.
+
+        Falls back to fetching the full Set and filtering in Python via
+        _extractMicId's broader key matching (legacy/non-canonical field
+        names) whenever the fast path finds nothing -- this only changes
+        *how* the data is fetched, never what counts as a match, so it
+        can't silently drop coordinates the old code would have found.
+        """
+        setId = self._toOptionalInt(storedSetMeta.get("id"))
+
+        if setId is not None:
+            try:
+                fastItems = self.setMapper.getStoredSetItemsByValueField(
+                    setId=setId,
+                    fieldKey="_micId",
+                    fieldValue=targetMicId,
+                )
+            except Exception:
+                fastItems = None
+
+            if fastItems:
+                return fastItems
+
+        storedSet = self._getStoredSet()
+        if storedSet is None:
+            return []
+
+        return [
+            item
+            for item in (storedSet.get("items") or [])
+            if str(self._extractMicId(item, item.get("values") or {})) == targetMicId
+        ]
 
     def _getStoredSetMeta(self) -> Optional[Dict[str, Any]]:
         """
