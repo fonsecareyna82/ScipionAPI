@@ -1727,6 +1727,7 @@ class FakeProjectService:
             mapper=None,
             windowMin=None,
             windowMax=None,
+            ifNoneMatch=None,
     ):
         self.lastRenderVolumeSliceCall = {
             "projectId": projectId,
@@ -1759,6 +1760,7 @@ class FakeProjectService:
             method="binning",
             mapper=None,
             binary=False,
+            ifNoneMatch=None,
     ):
         self.lastGetVolumeData3dCall = {
             "projectId": projectId,
@@ -1786,6 +1788,7 @@ class FakeProjectService:
             mapper=None,
             minComponentTriangles=0,
             smoothingIterations=0,
+            ifNoneMatch=None,
     ):
         self.lastGetVolumeSurfaceMeshCall = {
             "projectId": projectId,
