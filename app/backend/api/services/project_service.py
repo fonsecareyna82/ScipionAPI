@@ -11580,6 +11580,120 @@ class ProjectService:
             quality=quality,
         )
 
+    def renderVolumeSlicesBatchService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            volumeId: Union[int, str],
+            items: Sequence[Tuple[str, int]],
+            colormap: Optional[str] = None,
+            normalize: Optional[str] = "minmax",
+            windowMin: Optional[float] = None,
+            windowMax: Optional[float] = None,
+            scale: float = 1.0,
+            fmt: str = "webp",
+            thumb: Optional[int] = None,
+            fast: bool = True,
+            quality: int = 75,
+            inline: bool = True,
+            mapper=None,
+    ) -> Dict[str, Any]:
+        # renderVolumeSlicesBatchService -- reuses renderVolumeSliceService
+        # (and its existing per-slice cache) for each item, so this only
+        # collapses the HTTP round-trips; it adds no caching of its own.
+        cleanItems: List[Tuple[str, int]] = []
+        seenItems: TypingSet[Tuple[str, int]] = set()
+
+        for rawAxis, rawIndex in items or []:
+            axis = str(rawAxis or "z").lower()
+            if axis not in ("x", "y", "z"):
+                continue
+
+            try:
+                index = int(rawIndex)
+            except (TypeError, ValueError):
+                continue
+
+            if index < 0:
+                continue
+
+            key = (axis, index)
+            if key in seenItems:
+                continue
+
+            cleanItems.append(key)
+            seenItems.add(key)
+
+            if len(cleanItems) >= 48:
+                break
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for axis, index in cleanItems:
+            try:
+                response = self.renderVolumeSliceService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    volumeId=volumeId,
+                    sliceIndex=index,
+                    axis=axis,
+                    colormap=colormap,
+                    normalize=normalize,
+                    windowMin=windowMin,
+                    windowMax=windowMax,
+                    scale=scale,
+                    inline=inline,
+                    fmt=fmt,
+                    thumb=thumb,
+                    fast=fast,
+                    quality=quality,
+                    mapper=mapper,
+                )
+
+                body = getattr(response, "body", None) or b""
+                mediaType = (
+                        getattr(response, "media_type", None)
+                        or response.headers.get("content-type")
+                        or "image/webp"
+                )
+
+                dataUrl = "data:%s;base64,%s" % (
+                    mediaType,
+                    base64.b64encode(body).decode("ascii"),
+                )
+
+                results.append({
+                    "axis": axis,
+                    "index": index,
+                    "contentType": mediaType,
+                    "dataUrl": dataUrl,
+                    "width": response.headers.get("X-Preview-Width"),
+                    "height": response.headers.get("X-Preview-Height"),
+                })
+
+            except HTTPException as exc:
+                errors.append({
+                    "axis": axis,
+                    "index": index,
+                    "error": str(exc.detail),
+                })
+            except Exception as exc:
+                errors.append({
+                    "axis": axis,
+                    "index": index,
+                    "error": str(exc),
+                })
+
+        return {
+            "volumeId": str(volumeId),
+            "fmt": str(fmt or "webp").lower(),
+            "items": results,
+            "errors": errors,
+        }
+
     def _normalizeVolumeData3dArray(
             self,
             volume: np.ndarray,

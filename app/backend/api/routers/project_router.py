@@ -2330,6 +2330,75 @@ def renderVolumeSlice(
     return resp
 
 
+class VolumeSliceBatchItem(BaseModel):
+    axis: str = Field("z", pattern="^(x|y|z)$")
+    index: int = Field(0, ge=0)
+
+
+class VolumeSliceBatchRenderRequest(BaseModel):
+    items: List[VolumeSliceBatchItem] = Field(default_factory=list)
+    cmap: Optional[str] = None
+    normalize: Optional[str] = "minmax"
+    windowMin: Optional[float] = None
+    windowMax: Optional[float] = None
+    scale: float = 1.0
+    fmt: str = "webp"
+    thumb: Optional[int] = None
+    fast: bool = True
+    quality: int = Field(75, ge=1, le=100)
+    inline: bool = True
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/slice/batch",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def renderVolumeSlicesBatch(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    volumeId: Union[int, str],
+    payload: VolumeSliceBatchRenderRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Render several volume slices (possibly across different axes) in one
+    request. Intended for triple-view loading and neighbor-slice
+    prefetching in the web viewer.
+    """
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    result = service.renderVolumeSlicesBatchService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        volumeId=volumeId,
+        items=[(item.axis, item.index) for item in payload.items],
+        colormap=payload.cmap,
+        normalize=payload.normalize,
+        windowMin=payload.windowMin,
+        windowMax=payload.windowMax,
+        scale=payload.scale,
+        fmt=payload.fmt,
+        thumb=payload.thumb,
+        fast=payload.fast,
+        quality=payload.quality,
+        inline=payload.inline,
+        mapper=mapper,
+    )
+
+    resp = JSONResponse(result)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/volumes/{volumeId}/data3d",
     summary="Get downsampled 3D volume data for Plotly preview",

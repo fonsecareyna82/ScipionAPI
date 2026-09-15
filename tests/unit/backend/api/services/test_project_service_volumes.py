@@ -798,3 +798,143 @@ def test_DownsampleVolumePreviewUsesBinningWhenNeeded(service):
     result = service._downsampleVolumePreview(volume, maxDim=2, method="binning")
 
     assert result.shape == (2, 2, 2)
+
+
+def _fakeSliceResponse(axis, index):
+    from fastapi.responses import Response
+
+    return Response(
+        content=b"fake-bytes-%s-%d" % (axis.encode(), index),
+        media_type="image/webp",
+        headers={
+            "X-Preview-Width": "64",
+            "X-Preview-Height": "64",
+        },
+    )
+
+
+def test_RenderVolumeSlicesBatchServiceRendersEachItemInOrder(service, monkeypatch):
+    calls = []
+
+    def fakeRenderVolumeSliceService(self, **kwargs):
+        calls.append(kwargs)
+        return _fakeSliceResponse(kwargs["axis"], kwargs["sliceIndex"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderVolumeSliceService",
+        fakeRenderVolumeSliceService,
+    )
+
+    result = service.renderVolumeSlicesBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=4,
+        items=[("z", 5), ("y", 6), ("x", 7)],
+        colormap="viridis",
+        fmt="webp",
+    )
+
+    assert [c["axis"] for c in calls] == ["z", "y", "x"]
+    assert [c["sliceIndex"] for c in calls] == [5, 6, 7]
+    assert all(c["colormap"] == "viridis" for c in calls)
+
+    assert result["volumeId"] == "4"
+    assert result["errors"] == []
+    assert [item["axis"] for item in result["items"]] == ["z", "y", "x"]
+    assert [item["index"] for item in result["items"]] == [5, 6, 7]
+    for item in result["items"]:
+        assert item["contentType"] == "image/webp"
+        assert item["dataUrl"].startswith("data:image/webp;base64,")
+        assert item["width"] == "64"
+        assert item["height"] == "64"
+
+
+def test_RenderVolumeSlicesBatchServiceCollectsPerItemErrorsWithoutFailingOthers(
+    service, monkeypatch,
+):
+    def fakeRenderVolumeSliceService(self, **kwargs):
+        if kwargs["sliceIndex"] == 6:
+            raise HTTPException(status_code=404, detail="Slice out of range")
+        return _fakeSliceResponse(kwargs["axis"], kwargs["sliceIndex"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderVolumeSliceService",
+        fakeRenderVolumeSliceService,
+    )
+
+    result = service.renderVolumeSlicesBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=4,
+        items=[("z", 5), ("z", 6), ("z", 7)],
+    )
+
+    assert [item["index"] for item in result["items"]] == [5, 7]
+    assert result["errors"] == [
+        {"axis": "z", "index": 6, "error": "Slice out of range"},
+    ]
+
+
+def test_RenderVolumeSlicesBatchServiceDedupsAndCapsItems(service, monkeypatch):
+    calls = []
+
+    def fakeRenderVolumeSliceService(self, **kwargs):
+        calls.append((kwargs["axis"], kwargs["sliceIndex"]))
+        return _fakeSliceResponse(kwargs["axis"], kwargs["sliceIndex"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderVolumeSliceService",
+        fakeRenderVolumeSliceService,
+    )
+
+    duplicated = [("z", 1), ("z", 1), ("y", 2)]
+    overCap = [("z", i) for i in range(100)]
+
+    service.renderVolumeSlicesBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=4,
+        items=duplicated,
+    )
+    assert calls == [("z", 1), ("y", 2)]
+
+    calls.clear()
+    service.renderVolumeSlicesBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=4,
+        items=overCap,
+    )
+    assert len(calls) == 48
+
+
+def test_RenderVolumeSlicesBatchServiceIgnoresMalformedItems(service, monkeypatch):
+    calls = []
+
+    def fakeRenderVolumeSliceService(self, **kwargs):
+        calls.append((kwargs["axis"], kwargs["sliceIndex"]))
+        return _fakeSliceResponse(kwargs["axis"], kwargs["sliceIndex"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderVolumeSliceService",
+        fakeRenderVolumeSliceService,
+    )
+
+    result = service.renderVolumeSlicesBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=4,
+        items=[("w", 1), ("z", -1), ("z", "not-an-int"), ("z", 2)],
+    )
+
+    assert calls == [("z", 2)]
+    assert [item["index"] for item in result["items"]] == [2]
