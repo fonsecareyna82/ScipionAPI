@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 
+import hashlib
 import io
 import logging
 import os
@@ -830,6 +831,32 @@ class Coords2dService:
         }
 
     @staticmethod
+    def _buildMicrographImageEtag(
+        imagePath: str,
+        imageIndex: Optional[int],
+        size: int,
+        fmt: str,
+    ) -> str:
+        statResult = os.stat(imagePath)
+        payload = "%s:%s:%s:%s:%s:%s" % (
+            imagePath,
+            int(statResult.st_mtime_ns),
+            int(statResult.st_size),
+            "" if imageIndex is None else imageIndex,
+            size,
+            fmt,
+        )
+        digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+        return '"%s"' % digest
+
+    @staticmethod
+    def _matchesEtag(ifNoneMatch: Optional[str], etag: str) -> bool:
+        if not ifNoneMatch:
+            return False
+        tokens = [token.strip() for token in ifNoneMatch.split(",") if token.strip()]
+        return etag in tokens
+
+    @staticmethod
     def _normalizeImageFormat(fmt: str) -> Tuple[str, str]:
         value = (fmt or "png").strip().lower()
         if value in {"jpg", "jpeg"}:
@@ -896,6 +923,7 @@ class Coords2dService:
         micId: str,
         size: int = 2200,
         fmt: str = "png",
+        ifNoneMatch: Optional[str] = None,
     ) -> Response:
         pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
             mapper=mapper,
@@ -938,6 +966,27 @@ class Coords2dService:
                 detail=f"Micrograph image file not found: {storedImagePath}",
             )
 
+        # Compute the ETag from the raw file's stat + render params before
+        # doing any decoding -- a revalidation hit (matching If-None-Match)
+        # must skip the actual read/decode/contrast/resize/encode work
+        # below entirely, not just skip sending the bytes.
+        etag = self._buildMicrographImageEtag(
+            imagePath=imagePath,
+            imageIndex=imageIndex,
+            size=size,
+            fmt=fmt,
+        )
+        cacheControl = "private, max-age=300, stale-while-revalidate=3600"
+
+        if self._matchesEtag(ifNoneMatch, etag):
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": cacheControl,
+                },
+            )
+
         try:
             image = self._readMicrographImage(imagePath, imageIndex)
             originalWidth, originalHeight = image.size
@@ -978,7 +1027,8 @@ class Coords2dService:
             "X-Preview-Source-Index": "" if imageIndex is None else str(imageIndex),
             "X-Preview-Source-File": os.path.basename(imagePath),
             "X-Preview-Format": imageFormat,
-            "Cache-Control": "no-store",
+            "ETag": etag,
+            "Cache-Control": cacheControl,
         }
 
         return Response(

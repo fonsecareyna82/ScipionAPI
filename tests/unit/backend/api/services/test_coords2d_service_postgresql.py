@@ -23,8 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from fastapi import HTTPException
+from fastapi import HTTPException, status
+from PIL import Image
 import pytest
+from types import SimpleNamespace
 
 from app.backend.api.services.coords2d_service import Coords2dService
 
@@ -40,9 +42,10 @@ def service(monkeypatch):
 
 
 class FakeReader:
-    def __init__(self, micrographs=None, coordinates=None):
+    def __init__(self, micrographs=None, coordinates=None, micrographImageInfo=None):
         self.micrographs = micrographs
         self.coordinates = coordinates
+        self.micrographImageInfo = micrographImageInfo
         self.lastSkipReason = None
 
     def listMicrographs(self):
@@ -50,6 +53,9 @@ class FakeReader:
 
     def listCoordinatesForMicrograph(self, micId):
         return self.coordinates
+
+    def getMicrographImageInfo(self, micId):
+        return self.micrographImageInfo
 
 
 def test_Coords2dServiceListMicrographsUsesPostgresqlReader(service, monkeypatch):
@@ -121,3 +127,120 @@ def test_Coords2dServiceRaisesWhenPostgresqlReaderMissing(service, monkeypatch):
 
     assert exc.value.status_code == 404
     assert "Coordinates2D output is not available in PostgreSQL metadata" in str(exc.value.detail)
+
+
+class FakePathResolver:
+    def __init__(self, resolvedPath):
+        self._resolvedPath = resolvedPath
+
+    def resolveExistingPath(self, storedImagePath):
+        return self._resolvedPath
+
+
+class FakeImageStack:
+    def __init__(self, image):
+        self._image = image
+
+    def getImage(self, index=None, pilImage=True):
+        return self._image
+
+
+def _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls):
+    micrographFile = tmp_path / "micrograph_10.mrc"
+    micrographFile.write_bytes(b"fake-mrc-bytes")
+
+    reader = FakeReader(
+        micrographImageInfo={
+            "id": "10",
+            "fileName": "Runs/000001_Import/extra/micrograph_10.mrc",
+            "locationIndex": None,
+            "label": "micrograph_10",
+        }
+    )
+
+    monkeypatch.setattr(service, "_getPostgresqlCoords2dReaderIfAvailable", lambda **kwargs: reader)
+
+    monkeypatch.setattr(
+        "app.backend.api.services.coords2d_service.PostgresqlProjectPathResolver",
+        lambda db, projectId: FakePathResolver(str(micrographFile)),
+    )
+
+    def fakeOpen(path):
+        openCalls.append(path)
+        return FakeImageStack(Image.new("L", (20, 16)))
+
+    monkeypatch.setattr(
+        "app.backend.api.services.coords2d_service.ImageReadersRegistry.open",
+        fakeOpen,
+    )
+
+    return reader, str(micrographFile)
+
+
+def test_Coords2dServiceRenderMicrographImageSetsEtagInsteadOfNoStore(service, monkeypatch, tmp_path):
+    openCalls = []
+    _reader, micrographPath = _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
+
+    response = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.headers["ETag"]
+    assert response.headers["Cache-Control"] != "no-store"
+    assert "no-store" not in response.headers["Cache-Control"]
+    assert openCalls == [micrographPath]
+
+
+def test_Coords2dServiceRenderMicrographImageShortCircuitsOn304(service, monkeypatch, tmp_path):
+    openCalls = []
+    _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
+
+    firstResponse = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+    )
+    etag = firstResponse.headers["ETag"]
+    assert len(openCalls) == 1
+
+    secondResponse = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+        ifNoneMatch=etag,
+    )
+
+    assert secondResponse.status_code == status.HTTP_304_NOT_MODIFIED
+    assert secondResponse.headers["ETag"] == etag
+    # The whole point: a revalidation hit must not re-decode the image.
+    assert len(openCalls) == 1
+
+
+def test_Coords2dServiceRenderMicrographImageMismatchedEtagStillRenders(service, monkeypatch, tmp_path):
+    openCalls = []
+    _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
+
+    response = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+        ifNoneMatch='"stale-etag-from-a-different-render"',
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(openCalls) == 1

@@ -28,7 +28,7 @@ import logging
 from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services.coords2d_service import Coords2dService
@@ -120,6 +120,7 @@ def getCoords2dMicrographImage(
     micId: str,
     size: int = Query(2200, ge=64, le=4096),
     format: str = Query("png", pattern="^(png|webp|jpeg|jpg)$"),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: Coords2dService = Depends(getCoords2dService),
@@ -133,6 +134,7 @@ def getCoords2dMicrographImage(
         micId=micId,
         size=size,
         fmt=format,
+        ifNoneMatch=ifNoneMatch,
     )
 
 
@@ -148,6 +150,7 @@ def getCoords2dMicrographThumbnail(
     micId: str,
     size: int = Query(180, ge=32, le=512),
     format: str = Query("png", pattern="^(png|webp|jpeg|jpg)$"),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: Coords2dService = Depends(getCoords2dService),
@@ -161,6 +164,7 @@ def getCoords2dMicrographThumbnail(
         micId=micId,
         size=size,
         fmt=format,
+        ifNoneMatch=ifNoneMatch,
     )
 
 @router.post(
