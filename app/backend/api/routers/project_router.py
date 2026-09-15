@@ -3237,6 +3237,7 @@ def renderCoords3dTomogramSlice(
         75,
         description="JPEG/WEBP quality (1–100) when applicable",
     ),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3263,7 +3264,8 @@ def renderCoords3dTomogramSlice(
         thumb=thumb,
         fast=fast,
         quality=quality,
-        mapper=mapper
+        mapper=mapper,
+        ifNoneMatch=ifNoneMatch,
     )
 
     resp.headers["X-Debug-Auth"] = "ok"

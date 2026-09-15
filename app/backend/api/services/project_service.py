@@ -14354,6 +14354,7 @@ class ProjectService:
             fast: bool = True,
             quality: int = 75,
             mapper=None,
+            ifNoneMatch: Optional[str] = None,
     ) -> Response:
         """
         Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
@@ -14381,7 +14382,44 @@ class ProjectService:
             if tomogramInfo is not None:
                 volumePath = tomogramInfo.get("fileName")
                 if volumePath and os.path.exists(volumePath):
-                    return self._renderTomogramSliceFromPath(
+                    # Shares _VOLUME_SLICE_CACHE / _buildVolumeSliceCacheKey
+                    # with renderVolumeSliceService -- both ultimately call
+                    # _renderTomogramSliceFromPath with the same parameter
+                    # shape, so one cache/ETag scheme serves both callers.
+                    cacheKey = self._buildVolumeSliceCacheKey(
+                        volumePath=str(volumePath),
+                        tomogramId=tomogramId,
+                        sliceIndex=sliceIndex,
+                        axis=axis,
+                        colormap=colormap,
+                        normalize=normalize or "minmax",
+                        windowMin=None,
+                        windowMax=None,
+                        scale=scale,
+                        fmt=fmt,
+                        thumb=thumb,
+                        fast=fast,
+                        quality=quality,
+                    )
+
+                    etag = self._etagFromCacheKey(cacheKey)
+                    if self._requestMatchesEtag(ifNoneMatch, etag):
+                        return Response(
+                            status_code=status.HTTP_304_NOT_MODIFIED,
+                            headers={
+                                "ETag": etag,
+                                "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                            },
+                        )
+
+                    cachedResponse = self._getCachedVolumeSliceResponse(cacheKey)
+                    if cachedResponse is not None:
+                        cachedResponse.headers["ETag"] = etag
+                        cachedResponse.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+                        self._exposeHeader(cachedResponse.headers, "ETag")
+                        return cachedResponse
+
+                    response = self._renderTomogramSliceFromPath(
                         volumePath=volumePath,
                         tomogramId=tomogramId,
                         sliceIndex=sliceIndex,
@@ -14395,6 +14433,8 @@ class ProjectService:
                         fast=fast,
                         quality=quality,
                     )
+
+                    return self._storeCachedVolumeSliceResponse(cacheKey, response)
 
             logger.info(
                 "Skipping PostgreSQL Coordinates3D tomogram slice reader. projectId=%s protocolId=%s outputName=%s tomogramId=%s reason=%s",
@@ -14449,7 +14489,40 @@ class ProjectService:
                 detail="Tomogram file not found on disk",
             )
 
-        return self._renderTomogramSliceFromPath(
+        cacheKey = self._buildVolumeSliceCacheKey(
+            volumePath=str(volumePath),
+            tomogramId=tomogramId,
+            sliceIndex=sliceIndex,
+            axis=axis,
+            colormap=colormap,
+            normalize=normalize or "minmax",
+            windowMin=None,
+            windowMax=None,
+            scale=scale,
+            fmt=fmt,
+            thumb=thumb,
+            fast=fast,
+            quality=quality,
+        )
+
+        etag = self._etagFromCacheKey(cacheKey)
+        if self._requestMatchesEtag(ifNoneMatch, etag):
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                },
+            )
+
+        cachedResponse = self._getCachedVolumeSliceResponse(cacheKey)
+        if cachedResponse is not None:
+            cachedResponse.headers["ETag"] = etag
+            cachedResponse.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+            self._exposeHeader(cachedResponse.headers, "ETag")
+            return cachedResponse
+
+        response = self._renderTomogramSliceFromPath(
             volumePath=volumePath,
             tomogramId=tomogramId,
             sliceIndex=sliceIndex,
@@ -14463,6 +14536,8 @@ class ProjectService:
             fast=fast,
             quality=quality,
         )
+
+        return self._storeCachedVolumeSliceResponse(cacheKey, response)
 
     def _renderTomogramSliceFromPath(
             self,

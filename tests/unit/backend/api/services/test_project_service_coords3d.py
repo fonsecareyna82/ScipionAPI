@@ -575,6 +575,72 @@ def test_RenderCoords3dTomogramSliceServiceReturnsImageResponse(projectServiceMo
     assert len(response.body) > 0
 
 
+def test_RenderCoords3dTomogramSliceServiceCachesAndSupportsIfNoneMatch(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    tomoPath = tmp_path / "tomo1.mrc"
+    tomoPath.write_text("placeholder", encoding="utf-8")
+
+    tomo = FakeTomogram(
+        tsId="TS_001",
+        label="Tomogram 1",
+        fileName=str(tomoPath),
+        samplingRate=2.5,
+        dims=[4, 4, 4],
+    )
+
+    output = FakeCoordinatesSet(tomograms=[tomo], coordsByTomogram={})
+    protocol = FakeProtocol("outputCoords3d", output)
+    service.currentProject = FakeCurrentProject(protocol)
+    service.tomoList = {"TS_001": tomo}
+
+    readCalls: list = []
+
+    def fakeReadVolumeSlice2d(volumePath, sliceIndex, axis, maxSide):
+        readCalls.append((volumePath, sliceIndex, axis))
+        return (
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
+            {},
+            {"dims": (4, 4, 4), "index": int(sliceIndex), "step": 1},
+        )
+
+    monkeypatch.setattr(projectServiceModule, "readVolumeSlice2d", fakeReadVolumeSlice2d)
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputCoords3d",
+        tomogramId="TS_001",
+        sliceIndex=1,
+        axis="z",
+        colormap=None,
+        normalize="minmax",
+        scale=1.0,
+        inline=True,
+        fmt="png",
+        thumb=None,
+        fast=False,
+        quality=75,
+    )
+
+    first = service.renderCoords3dTomogramSliceService(**callKwargs)
+    assert len(readCalls) == 1
+    assert first.headers["X-Preview-Cache"] == "miss"
+    etag = first.headers["ETag"]
+    assert etag
+
+    second = service.renderCoords3dTomogramSliceService(**callKwargs)
+    assert len(readCalls) == 1  # served from cache, not re-rendered
+    assert second.headers["X-Preview-Cache"] == "hit"
+    assert second.headers["ETag"] == etag
+    assert second.body == first.body
+
+    revalidated = service.renderCoords3dTomogramSliceService(**callKwargs, ifNoneMatch=etag)
+    assert revalidated.status_code == 304
+    assert revalidated.headers["ETag"] == etag
+    assert len(readCalls) == 1  # never touched the volume for a 304
+
+
 def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
     projectServiceModule,
     service,
