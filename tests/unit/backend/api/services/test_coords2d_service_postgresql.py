@@ -130,11 +130,15 @@ def test_Coords2dServiceRaisesWhenPostgresqlReaderMissing(service, monkeypatch):
 
 
 class FakePathResolver:
-    def __init__(self, resolvedPath):
+    def __init__(self, resolvedPath, projectPath=None):
         self._resolvedPath = resolvedPath
+        self._projectPath = projectPath
 
     def resolveExistingPath(self, storedImagePath):
         return self._resolvedPath
+
+    def getProjectPath(self):
+        return self._projectPath
 
 
 class FakeImageStack:
@@ -149,6 +153,9 @@ def _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls):
     micrographFile = tmp_path / "micrograph_10.mrc"
     micrographFile.write_bytes(b"fake-mrc-bytes")
 
+    projectPath = tmp_path / "project"
+    projectPath.mkdir()
+
     reader = FakeReader(
         micrographImageInfo={
             "id": "10",
@@ -162,7 +169,7 @@ def _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls):
 
     monkeypatch.setattr(
         "app.backend.api.services.coords2d_service.PostgresqlProjectPathResolver",
-        lambda db, projectId: FakePathResolver(str(micrographFile)),
+        lambda db, projectId: FakePathResolver(str(micrographFile), projectPath=projectPath),
     )
 
     def fakeOpen(path):
@@ -174,12 +181,12 @@ def _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls):
         fakeOpen,
     )
 
-    return reader, str(micrographFile)
+    return reader, str(micrographFile), projectPath
 
 
 def test_Coords2dServiceRenderMicrographImageSetsEtagInsteadOfNoStore(service, monkeypatch, tmp_path):
     openCalls = []
-    _reader, micrographPath = _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
+    _reader, micrographPath, _projectPath = _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
 
     response = service.renderMicrographImage(
         mapper=SimpleNamespace(db=object()),
@@ -243,4 +250,48 @@ def test_Coords2dServiceRenderMicrographImageMismatchedEtagStillRenders(service,
     )
 
     assert response.status_code == status.HTTP_200_OK
+    assert len(openCalls) == 1
+
+
+def test_Coords2dServiceRenderMicrographImageReusesOnDiskCacheAcrossRequests(service, monkeypatch, tmp_path):
+    # Simulates two independent requests that don't share an in-memory
+    # ETag (e.g. two different browsers, or the process having restarted
+    # between them) -- the on-disk cache, not the 304 shortcut, must be
+    # what avoids the second decode.
+    openCalls = []
+    _reader, _micrographPath, projectPath = _setUpRenderMicrographImageMocks(
+        monkeypatch, service, tmp_path, openCalls
+    )
+
+    firstResponse = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+    )
+
+    assert len(openCalls) == 1
+
+    cacheDir = projectPath / ".thumbnail_cache" / "coords2d"
+    cachedImages = list(cacheDir.glob("*.png"))
+    cachedMeta = list(cacheDir.glob("*.json"))
+    assert len(cachedImages) == 1
+    assert len(cachedMeta) == 1
+
+    secondResponse = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+    )
+
+    assert secondResponse.status_code == status.HTTP_200_OK
+    assert secondResponse.headers["ETag"] == firstResponse.headers["ETag"]
+    assert secondResponse.headers["X-Preview-Width"] == firstResponse.headers["X-Preview-Width"]
+    assert secondResponse.body == firstResponse.body
+    # The actual point of this test: still only one decode, ever.
     assert len(openCalls) == 1

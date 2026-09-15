@@ -26,8 +26,11 @@
 
 import hashlib
 import io
+import json
 import logging
 import os
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Response, status
@@ -41,6 +44,13 @@ from app.backend.runtime import RuntimeOutputProxyService
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
 logger = logging.getLogger(__name__)
+
+# Per-cache-key build locks, so two concurrent requests for the same
+# not-yet-cached micrograph render (e.g. two browser tabs) don't both pay
+# the full decode cost -- same pattern as ThumbnailService's
+# _thumbnailBuildLocks/_thumbnailBuildLocksGuard.
+_micrographImageBuildLocksGuard = threading.Lock()
+_micrographImageBuildLocks: Dict[str, threading.Lock] = {}
 
 
 class Coords2dService:
@@ -857,6 +867,84 @@ class Coords2dService:
         return etag in tokens
 
     @staticmethod
+    def _getMicrographImageBuildLock(cacheKey: str) -> threading.Lock:
+        with _micrographImageBuildLocksGuard:
+            lock = _micrographImageBuildLocks.get(cacheKey)
+            if lock is None:
+                lock = threading.Lock()
+                _micrographImageBuildLocks[cacheKey] = lock
+            return lock
+
+    @staticmethod
+    def _getMicrographImageCachePaths(projectPath: Optional[Path], etag: str, imageFormat: str) -> Optional[Tuple[Path, Path]]:
+        if projectPath is None:
+            return None
+
+        digest = etag.strip('"')
+        extension = imageFormat.lower()
+        cacheDir = Path(projectPath) / ".thumbnail_cache" / "coords2d"
+        imagePath = cacheDir / f"{digest}.{extension}"
+        metaPath = cacheDir / f"{digest}.json"
+        return imagePath, metaPath
+
+    @staticmethod
+    def _readCachedMicrographImage(imageCachePath: Path, metaCachePath: Path) -> Optional[Tuple[bytes, Dict[str, Any]]]:
+        try:
+            if not imageCachePath.is_file() or not metaCachePath.is_file():
+                return None
+            if imageCachePath.stat().st_size <= 0:
+                return None
+
+            meta = json.loads(metaCachePath.read_text(encoding="utf-8"))
+            content = imageCachePath.read_bytes()
+            return content, meta
+        except Exception:
+            logger.debug(
+                "Discarding invalid coords2d image cache entry. imageCachePath=%s",
+                imageCachePath,
+                exc_info=True,
+            )
+            for path in (imageCachePath, metaCachePath):
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return None
+
+    @staticmethod
+    def _writeCachedMicrographImage(
+        imageCachePath: Path,
+        metaCachePath: Path,
+        content: bytes,
+        meta: Dict[str, Any],
+    ) -> None:
+        try:
+            imageCachePath.parent.mkdir(parents=True, exist_ok=True)
+
+            for finalPath, payload, isBinary in (
+                (imageCachePath, content, True),
+                (metaCachePath, json.dumps(meta).encode("utf-8"), True),
+            ):
+                tmpPath = finalPath.with_name(f".{finalPath.name}.{os.getpid()}.tmp")
+                try:
+                    tmpPath.write_bytes(payload)
+                    os.replace(str(tmpPath), str(finalPath))
+                finally:
+                    try:
+                        if tmpPath.exists():
+                            tmpPath.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            # Caching is an optimization, not a correctness requirement --
+            # a failed write just means the next request re-renders too.
+            logger.debug(
+                "Could not write coords2d image cache entry. imageCachePath=%s",
+                imageCachePath,
+                exc_info=True,
+            )
+
+    @staticmethod
     def _normalizeImageFormat(fmt: str) -> Tuple[str, str]:
         value = (fmt or "png").strip().lower()
         if value in {"jpg", "jpeg"}:
@@ -955,16 +1043,19 @@ class Coords2dService:
                 detail=f"Micrograph '{micId}' does not have a file path",
             )
 
-        imagePath = PostgresqlProjectPathResolver(
+        pathResolver = PostgresqlProjectPathResolver(
             db=mapper.db,
             projectId=projectId,
-        ).resolveExistingPath(storedImagePath)
+        )
+        imagePath = pathResolver.resolveExistingPath(storedImagePath)
 
         if imagePath is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Micrograph image file not found: {storedImagePath}",
             )
+
+        imageFormat, mediaType = self._normalizeImageFormat(fmt)
 
         # Compute the ETag from the raw file's stat + render params before
         # doing any decoding -- a revalidation hit (matching If-None-Match)
@@ -987,52 +1078,100 @@ class Coords2dService:
                 },
             )
 
-        try:
-            image = self._readMicrographImage(imagePath, imageIndex)
-            originalWidth, originalHeight = image.size
-            image = self._prepareImage(image, size)
-        except Exception as e:
-            logger.exception("Failed to render coords2d micrograph image: %s", e)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to render micrograph image: {e}",
-            )
-
-        imageFormat, mediaType = self._normalizeImageFormat(fmt)
-        buffer = io.BytesIO()
-        saveOptions: Dict[str, Any] = {}
-
-        if imageFormat == "JPEG":
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            saveOptions["quality"] = 90
-        elif imageFormat == "WEBP":
-            saveOptions["quality"] = 85
-
-        image.save(buffer, format=imageFormat, **saveOptions)
-
-        scaleX = image.width / originalWidth if originalWidth else 1
-        scaleY = image.height / originalHeight if originalHeight else 1
-
-        headers = {
-            "X-Preview-Width": str(image.width),
-            "X-Preview-Height": str(image.height),
-            "X-Preview-Original-Width": str(originalWidth),
-            "X-Preview-Original-Height": str(originalHeight),
-            "X-Preview-Scale-X": f"{scaleX:.8f}",
-            "X-Preview-Scale-Y": f"{scaleY:.8f}",
-            "X-Preview-Origin": "top-left",
-            "X-Preview-Orientation": "scipion-top-left-no-flip",
-            "X-Preview-MicrographId": str(micId),
-            "X-Preview-Source-Index": "" if imageIndex is None else str(imageIndex),
-            "X-Preview-Source-File": os.path.basename(imagePath),
-            "X-Preview-Format": imageFormat,
-            "ETag": etag,
-            "Cache-Control": cacheControl,
-        }
-
-        return Response(
-            content=buffer.getvalue(),
-            media_type=mediaType,
-            headers=headers,
+        # A real, on-disk downsampled artifact keyed by the same ETag: a
+        # thumbnail request (or a second full-size request after the
+        # in-memory ETag cache above is long gone -- a new process, a
+        # different browser) still avoids re-reading/re-decoding the raw
+        # micrograph file, not just re-encoding it smaller.
+        cachePaths = self._getMicrographImageCachePaths(
+            projectPath=pathResolver.getProjectPath(),
+            etag=etag,
+            imageFormat=imageFormat,
         )
+
+        cacheLock = (
+            self._getMicrographImageBuildLock(str(cachePaths[0]))
+            if cachePaths is not None
+            else None
+        )
+
+        if cacheLock is not None:
+            cacheLock.acquire()
+
+        try:
+            if cachePaths is not None:
+                cached = self._readCachedMicrographImage(*cachePaths)
+
+                if cached is not None:
+                    content, cachedHeaders = cached
+                    headers = dict(cachedHeaders)
+                    headers["ETag"] = etag
+                    headers["Cache-Control"] = cacheControl
+
+                    return Response(
+                        content=content,
+                        media_type=mediaType,
+                        headers=headers,
+                    )
+
+            try:
+                image = self._readMicrographImage(imagePath, imageIndex)
+                originalWidth, originalHeight = image.size
+                image = self._prepareImage(image, size)
+            except Exception as e:
+                logger.exception("Failed to render coords2d micrograph image: %s", e)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to render micrograph image: {e}",
+                )
+
+            buffer = io.BytesIO()
+            saveOptions: Dict[str, Any] = {}
+
+            if imageFormat == "JPEG":
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                saveOptions["quality"] = 90
+            elif imageFormat == "WEBP":
+                saveOptions["quality"] = 85
+
+            image.save(buffer, format=imageFormat, **saveOptions)
+            content = buffer.getvalue()
+
+            scaleX = image.width / originalWidth if originalWidth else 1
+            scaleY = image.height / originalHeight if originalHeight else 1
+
+            headers = {
+                "X-Preview-Width": str(image.width),
+                "X-Preview-Height": str(image.height),
+                "X-Preview-Original-Width": str(originalWidth),
+                "X-Preview-Original-Height": str(originalHeight),
+                "X-Preview-Scale-X": f"{scaleX:.8f}",
+                "X-Preview-Scale-Y": f"{scaleY:.8f}",
+                "X-Preview-Origin": "top-left",
+                "X-Preview-Orientation": "scipion-top-left-no-flip",
+                "X-Preview-MicrographId": str(micId),
+                "X-Preview-Source-Index": "" if imageIndex is None else str(imageIndex),
+                "X-Preview-Source-File": os.path.basename(imagePath),
+                "X-Preview-Format": imageFormat,
+            }
+
+            if cachePaths is not None:
+                self._writeCachedMicrographImage(
+                    *cachePaths,
+                    content=content,
+                    meta=headers,
+                )
+
+            headers = dict(headers)
+            headers["ETag"] = etag
+            headers["Cache-Control"] = cacheControl
+
+            return Response(
+                content=content,
+                media_type=mediaType,
+                headers=headers,
+            )
+        finally:
+            if cacheLock is not None:
+                cacheLock.release()
