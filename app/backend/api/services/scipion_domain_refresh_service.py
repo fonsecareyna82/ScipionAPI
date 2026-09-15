@@ -25,14 +25,17 @@
 # ******************************************************************************
 import importlib
 import logging
+import os
 import threading
 from typing import Set
 
+from pyworkflow import VariablesRegistry
 from pyworkflow.config import Config
 
 from app.backend.api.services.plugins_revision import getPluginsRevision
 from app.backend.api.services.environment_revision import getEnvironmentRevision
 from app.backend.api.services.json_subprocess_runner import JsonSubprocessRunner
+from app.backend.api.services.environment import removeCustomEnvironmentVariables
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,89 @@ def _resetScipionDomainCaches(domain) -> None:
     domain._wizards = {}
     domain._preferred_viewers = None
     setattr(domain, "_Domain__mapperDict", None)
+
+
+def _removePluginEnvironmentVariables(
+        pluginNames: Set[str],
+) -> Set[str]:
+    cleanPluginNames = {
+        str(pluginName).strip()
+        for pluginName
+        in pluginNames
+        if str(pluginName).strip()
+    }
+
+    if not cleanPluginNames:
+        return set()
+
+    registry = (
+        VariablesRegistry.variables()
+    )
+
+    variableNames = {
+        str(variableName)
+        for variableName, variable
+        in list(
+            registry.items()
+        )
+        if (
+            str(
+                getattr(
+                    variable,
+                    "source",
+                    "",
+                )
+                or ""
+            ).strip()
+            in cleanPluginNames
+        )
+    }
+
+    if not variableNames:
+        return set()
+
+    for variableName in variableNames:
+        registry.pop(
+            variableName,
+            None,
+        )
+
+    scipionHome = str(
+        getattr(
+            Config,
+            "SCIPION_HOME",
+            "",
+        )
+        or os.environ.get(
+            "SCIPION_HOME",
+            "",
+        )
+        or ""
+    ).strip()
+
+    removedOverrides = (
+        removeCustomEnvironmentVariables(
+            scipionHome,
+            variableNames,
+        )
+    )
+
+    logger.info(
+        "Removed environment variables for "
+        "uninstalled Scipion plugins. "
+        "plugins=%s variables=%s overrides=%s",
+        sorted(
+            cleanPluginNames
+        ),
+        sorted(
+            variableNames
+        ),
+        sorted(
+            removedOverrides
+        ),
+    )
+
+    return variableNames
 
 
 def _getCleanScipionPluginNames() -> Set[str]:
@@ -126,6 +212,17 @@ def _refreshScipionDomainLocked(
     Config.setDomain("pwem")
     domain = Config.getDomain()
 
+    previousPluginNames = set(
+        (
+                getattr(
+                    domain,
+                    "_plugins",
+                    {},
+                )
+                or {}
+        ).keys()
+    )
+
     _resetScipionDomainCaches(
         domain
     )
@@ -159,7 +256,10 @@ def _refreshScipionDomainLocked(
         )
 
     stalePluginNames = sorted(
-        set(currentPlugins)
+        (
+                previousPluginNames
+                | set(currentPlugins)
+        )
         - cleanPluginNames
     )
 
@@ -167,6 +267,12 @@ def _refreshScipionDomainLocked(
         logger.warning(
             "Removing stale Scipion plugins from runtime domain: %s",
             stalePluginNames,
+        )
+
+        _removePluginEnvironmentVariables(
+            set(
+                stalePluginNames
+            )
         )
 
     domain._plugins = {

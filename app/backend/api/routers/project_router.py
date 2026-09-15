@@ -14,6 +14,7 @@ from fastapi import (
     Path as PathParam,
     Query,
     Request, Body,
+    Header,
 )
 from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse, FileResponse, Response
@@ -2294,6 +2295,7 @@ def renderVolumeSlice(
     thumb: Optional[int] = Query(None, ge=32, le=2048),
     fast: bool = Query(True),
     quality: int = Query(75, ge=1, le=100),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2323,6 +2325,7 @@ def renderVolumeSlice(
         fast=fast,
         quality=quality,
         mapper=mapper,
+        ifNoneMatch=ifNoneMatch,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2411,6 +2414,7 @@ def getVolumeData3d(
     maxDim: int = Query(160, ge=32, le=512, alias="maxDim"),
     binary: bool = Query(False),
     method: Literal["binning", "stride", "none"] = Query("binning"),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     service: ProjectService = Depends(getProjectService),
@@ -2428,6 +2432,7 @@ def getVolumeData3d(
         binary=binary,
         method=method,
         mapper=mapper,
+        ifNoneMatch=ifNoneMatch,
     )
 
 @router.get(
@@ -2457,6 +2462,7 @@ def getVolumeSurfaceMesh(
         le=12,
         alias="smoothingIterations",
     ),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -2478,7 +2484,8 @@ def getVolumeSurfaceMesh(
                                             minComponentTriangles=minComponentTriangles,
                                             smoothingIterations=smoothingIterations,
                                             currentUser=currentUser,
-                                            mapper=mapper,)
+                                            mapper=mapper,
+                                            ifNoneMatch=ifNoneMatch,)
 
     except HTTPException:
         raise

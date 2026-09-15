@@ -954,6 +954,8 @@ class SettingsService:
 
     def _warmupEnvironmentRegistry(self) -> None:
         # warmupEnvironmentRegistry
+        refreshScipionDomainIfNeeded()
+
         from scipion.__main__ import Vars
         from pyworkflow.project import Manager
 

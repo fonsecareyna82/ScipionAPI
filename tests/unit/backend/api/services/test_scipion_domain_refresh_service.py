@@ -578,3 +578,194 @@ def test_RefreshScipionDomainWhenEnvironmentRevisionChanges(
     )
 
 
+def test_RefreshScipionDomainRemovesVariablesOwnedByUninstalledPlugin(
+        monkeypatch,
+):
+    installedPlugin = object()
+    removedPlugin = object()
+
+    class VariableStub:
+        def __init__(
+                self,
+                name,
+                source,
+        ):
+            self.name = name
+            self.source = source
+
+    class VariablesRegistryStub:
+        _variables = {
+            "INSTALLED_HOME": VariableStub(
+                "INSTALLED_HOME",
+                "installedPlugin",
+            ),
+            "REMOVED_HOME": VariableStub(
+                "REMOVED_HOME",
+                "removedPlugin",
+            ),
+            "CUDA_LIB": VariableStub(
+                "CUDA_LIB",
+                "pwem",
+            ),
+        }
+
+        @classmethod
+        def variables(cls):
+            return cls._variables
+
+    class CleanupDomainStub:
+        _plugins = {
+            "installedPlugin": (
+                installedPlugin
+            ),
+            "removedPlugin": (
+                removedPlugin
+            ),
+        }
+
+        _protocols = {}
+        _objects = {}
+        _viewers = {}
+        _wizards = {}
+        _pluginsLoaded = True
+        _preferred_viewers = None
+        _Domain__mapperDict = None
+
+        @classmethod
+        def getPlugins(cls):
+            if not cls._plugins:
+                cls._plugins = {
+                    "installedPlugin": (
+                        installedPlugin
+                    ),
+                }
+
+            cls._pluginsLoaded = True
+
+            return dict(
+                cls._plugins
+            )
+
+        @classmethod
+        def getProtocols(cls):
+            cls._protocols = {
+                "InstalledProtocol": (
+                    object()
+                ),
+            }
+
+            return dict(
+                cls._protocols
+            )
+
+    cleanupCalls = []
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastDomainRevision",
+        3,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_lastEnvironmentRevision",
+        8,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getPluginsRevision",
+        lambda: 4,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "getEnvironmentRevision",
+        lambda: 8,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.importlib,
+        "invalidate_caches",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "setDomain",
+        lambda value: None,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "getDomain",
+        lambda: CleanupDomainStub,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule.Config,
+        "SCIPION_HOME",
+        "/tmp/scipion-home",
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "VariablesRegistry",
+        VariablesRegistryStub,
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "_getCleanScipionPluginNames",
+        lambda: {
+            "installedPlugin",
+        },
+    )
+
+    monkeypatch.setattr(
+        domainRefreshModule,
+        "removeCustomEnvironmentVariables",
+        lambda scipionHome, variableNames: (
+            cleanupCalls.append(
+                (
+                    scipionHome,
+                    set(variableNames),
+                )
+            )
+            or {
+                "REMOVED_HOME",
+            }
+        ),
+    )
+
+    refreshed = (
+        domainRefreshModule
+        .refreshScipionDomain()
+    )
+
+    assert refreshed is True
+
+    assert set(
+        VariablesRegistryStub
+        ._variables
+    ) == {
+        "INSTALLED_HOME",
+        "CUDA_LIB",
+    }
+
+    assert cleanupCalls == [
+        (
+            "/tmp/scipion-home",
+            {
+                "REMOVED_HOME",
+            },
+        ),
+    ]
+
+    assert set(
+        CleanupDomainStub._plugins
+    ) == {
+        "installedPlugin",
+    }
+
+

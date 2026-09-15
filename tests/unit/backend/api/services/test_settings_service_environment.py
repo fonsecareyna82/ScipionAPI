@@ -24,6 +24,8 @@
 # *
 # ******************************************************************************
 from types import SimpleNamespace
+import scipion.__main__ as scipionMain
+import pyworkflow.project as projectModule
 
 import app.backend.api.services.settings_service as settingsModule
 
@@ -300,3 +302,101 @@ def test_ResetEnvironmentVariableRemovesOverrideAndRestoresBase(
 
     assert row["value"] == "/configured/path"
     assert row["isOverride"] is False
+
+
+def test_WarmupEnvironmentRegistryRefreshesDomainBeforeReadingVariables(
+        monkeypatch,
+):
+    calls = []
+
+    class DomainStub:
+        @staticmethod
+        def getProtocols():
+            calls.append(
+                "protocols"
+            )
+
+            return {}
+
+    monkeypatch.setattr(
+        settingsModule,
+        "refreshScipionDomainIfNeeded",
+        lambda: (
+            calls.append(
+                "refresh"
+            )
+            or True
+        ),
+    )
+
+    monkeypatch.setattr(
+        scipionMain.Vars,
+        "init",
+        classmethod(
+            lambda cls: (
+                calls.append(
+                    "vars"
+                )
+                or {}
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        settingsModule.pyworkflow.Config,
+        "getVars",
+        classmethod(
+            lambda cls: (
+                calls.append(
+                    "config-vars"
+                )
+                or {}
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        settingsModule.pyworkflow.Config,
+        "setDomain",
+        classmethod(
+            lambda cls, value: (
+                calls.append(
+                    f"domain:{value}"
+                )
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        settingsModule.pyworkflow.Config,
+        "getDomain",
+        classmethod(
+            lambda cls: DomainStub
+        ),
+    )
+
+    monkeypatch.setattr(
+        projectModule,
+        "Manager",
+        lambda: calls.append(
+            "manager"
+        ),
+    )
+
+    service = (
+        settingsModule
+        .SettingsService()
+    )
+
+    service._warmupEnvironmentRegistry()
+
+    assert calls == [
+        "refresh",
+        "vars",
+        "config-vars",
+        "domain:pwem",
+        "protocols",
+        "manager",
+    ]
+
+

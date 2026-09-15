@@ -155,6 +155,7 @@ _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
 _VOLUME_SURFACE_CACHE_LOCK = threading.Lock()
 _VOLUME_SURFACE_CACHE = collections.OrderedDict()
 _VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
+_VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=3600"
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
 _VOLUME_SURFACE_MAX_TRIANGLES = 500_000
@@ -11431,6 +11432,8 @@ class ProjectService:
         response.headers["X-Preview-Cache-Entries"] = str(len(_VOLUME_SLICE_CACHE))
         response.headers["X-Preview-Volume-MTimeNs"] = str(cacheKey[1])
         response.headers["X-Preview-Volume-Size"] = str(cacheKey[2])
+        response.headers["ETag"] = self._etagFromCacheKey(cacheKey)
+        response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
 
         for headerName in (
                 "X-Preview-Cache",
@@ -11439,6 +11442,7 @@ class ProjectService:
                 "X-Preview-Cache-Entries",
                 "X-Preview-Volume-MTimeNs",
                 "X-Preview-Volume-Size",
+                "ETag",
         ):
             self._exposeHeader(response.headers, headerName)
 
@@ -11453,6 +11457,46 @@ class ProjectService:
             parts.append(headerName)
 
         headers[exposeKey] = ", ".join(parts)
+
+    @staticmethod
+    def _etagFromCacheKey(cacheKey) -> str:
+        digest = hashlib.sha1(repr(cacheKey).encode("utf-8")).hexdigest()
+        return '"%s"' % digest
+
+    @staticmethod
+    def _requestMatchesEtag(ifNoneMatch: Optional[str], etag: str) -> bool:
+        if not ifNoneMatch:
+            return False
+        tokens = [token.strip() for token in ifNoneMatch.split(",") if token.strip()]
+        return etag in tokens or "*" in tokens
+
+    def _buildVolumeData3dCacheKey(
+            self,
+            *,
+            volumePath: Optional[str],
+            tomogramId: Union[int, str],
+            maxDim,
+            method,
+    ):
+        mtimeNs = None
+        sizeBytes = None
+
+        if volumePath:
+            try:
+                stat = os.stat(volumePath)
+                mtimeNs = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+                sizeBytes = int(stat.st_size)
+            except Exception:
+                pass
+
+        return (
+            os.path.abspath(str(volumePath)) if volumePath else None,
+            mtimeNs,
+            sizeBytes,
+            str(tomogramId),
+            int(maxDim or 0),
+            str(method or ""),
+        )
 
     def _buildVolumeSurfaceCacheKey(
             self,
@@ -11502,7 +11546,10 @@ class ProjectService:
         headers.pop("content-length", None)
         headers.pop("Content-Length", None)
         headers["X-Preview-Cache"] = "hit"
+        headers["ETag"] = self._etagFromCacheKey(cacheKey)
+        headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
         self._exposeHeader(headers, "X-Preview-Cache")
+        self._exposeHeader(headers, "ETag")
 
         return Response(
             content=cached["body"],
@@ -11532,7 +11579,10 @@ class ProjectService:
                 _VOLUME_SURFACE_CACHE.popitem(last=False)
 
         response.headers["X-Preview-Cache"] = "miss"
+        response.headers["ETag"] = self._etagFromCacheKey(cacheKey)
+        response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
         self._exposeHeader(response.headers, "X-Preview-Cache")
+        self._exposeHeader(response.headers, "ETag")
 
         return response
 
@@ -11555,6 +11605,7 @@ class ProjectService:
             windowMin: Optional[float] = None,
             windowMax: Optional[float] = None,
             mapper=None,
+            ifNoneMatch: Optional[str] = None,
     ) -> Response:
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
@@ -11584,8 +11635,24 @@ class ProjectService:
                         quality=quality,
                     )
 
+                    # Same idea as the surface-mesh ETag: derived from file
+                    # stat + params, so a revalidation hit skips the
+                    # in-memory cache lookup and the render/decode work too.
+                    etag = self._etagFromCacheKey(cacheKey)
+                    if self._requestMatchesEtag(ifNoneMatch, etag):
+                        return Response(
+                            status_code=status.HTTP_304_NOT_MODIFIED,
+                            headers={
+                                "ETag": etag,
+                                "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                            },
+                        )
+
                     cachedResponse = self._getCachedVolumeSliceResponse(cacheKey)
                     if cachedResponse is not None:
+                        cachedResponse.headers["ETag"] = etag
+                        cachedResponse.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+                        self._exposeHeader(cachedResponse.headers, "ETag")
                         return cachedResponse
 
                     response = self._renderTomogramSliceFromPath(
@@ -11834,7 +11901,6 @@ class ProjectService:
         return Response(
             content=header + arr.tobytes(order="C"),
             media_type="application/octet-stream",
-            headers={"Cache-Control": "no-store"},
         )
 
     def getVolumeData3dService(
@@ -11847,6 +11913,7 @@ class ProjectService:
             method: str = "binning",
             mapper=None,
             binary: bool = False,
+            ifNoneMatch: Optional[str] = None,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
@@ -11856,6 +11923,31 @@ class ProjectService:
         )
 
         if pgReader is not None:
+            # ETag support (binary payload only -- this is the one that can
+            # be tens of MB; the JSON preview path is comparatively cheap
+            # and left as-is). Computed from file stat + params, before
+            # touching the volume array, so a revalidation hit skips the
+            # downsample work entirely, not just the transfer.
+            binaryEtag = None
+            if binary:
+                fileInfo = pgReader.getVolumeFile(volumeId)
+                volumePathForCache = fileInfo.get("fileName") if fileInfo else None
+                cacheKey = self._buildVolumeData3dCacheKey(
+                    volumePath=volumePathForCache,
+                    tomogramId=volumeId,
+                    maxDim=maxDim,
+                    method=method,
+                )
+                binaryEtag = self._etagFromCacheKey(cacheKey)
+                if self._requestMatchesEtag(ifNoneMatch, binaryEtag):
+                    return Response(
+                        status_code=status.HTTP_304_NOT_MODIFIED,
+                        headers={
+                            "ETag": binaryEtag,
+                            "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                        },
+                    )
+
             result = pgReader.getVolumeArray(volumeId)
             if result is not None:
                 volume, _props, _info = result
@@ -11866,11 +11958,14 @@ class ProjectService:
                     method=method,
                 )
 
-                return (
-                    self._buildVolumeData3dBinaryResponse(volumeSmall)
-                    if binary
-                    else self._buildVolumeData3dPayload(volumeSmall)
-                )
+                if binary:
+                    response = self._buildVolumeData3dBinaryResponse(volumeSmall)
+                    response.headers["ETag"] = binaryEtag
+                    response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+                    self._exposeHeader(response.headers, "ETag")
+                    return response
+
+                return self._buildVolumeData3dPayload(volumeSmall)
 
             logger.info(
                 "Skipping PostgreSQL volume data3d reader. projectId=%s protocolId=%s outputName=%s volumeId=%s reason=%s",
@@ -11899,6 +11994,24 @@ class ProjectService:
         )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
+        binaryEtag = None
+        if binary:
+            cacheKey = self._buildVolumeData3dCacheKey(
+                volumePath=volumePath,
+                tomogramId=volumeId,
+                maxDim=maxDim,
+                method=method,
+            )
+            binaryEtag = self._etagFromCacheKey(cacheKey)
+            if self._requestMatchesEtag(ifNoneMatch, binaryEtag):
+                return Response(
+                    status_code=status.HTTP_304_NOT_MODIFIED,
+                    headers={
+                        "ETag": binaryEtag,
+                        "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                    },
+                )
+
         try:
             vol, _props = readVolumeArray3d(volumePath)
         except HTTPException:
@@ -11914,11 +12027,14 @@ class ProjectService:
             method=method,
         )
 
-        return (
-            self._buildVolumeData3dBinaryResponse(volumeSmall)
-            if binary
-            else self._buildVolumeData3dPayload(volumeSmall)
-        )
+        if binary:
+            response = self._buildVolumeData3dBinaryResponse(volumeSmall)
+            response.headers["ETag"] = binaryEtag
+            response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+            self._exposeHeader(response.headers, "ETag")
+            return response
+
+        return self._buildVolumeData3dPayload(volumeSmall)
 
     def _getVolumePathFromOutput(self, output, volumeId: Union[int, str]) -> str:
         """Resolve a concrete volume path from an output (Volume / SetOfVolumes / VolumeMask)."""
@@ -12125,6 +12241,7 @@ class ProjectService:
             mapper=None,
             minComponentTriangles=0,
             smoothingIterations=0,
+            ifNoneMatch: Optional[str] = None,
     ):
         effectiveMaxTriangles = min(
             _VOLUME_SURFACE_MAX_TRIANGLES,
@@ -12162,6 +12279,19 @@ class ProjectService:
                 minComponentTriangles=effectiveMinComponentTriangles,
                 smoothingIterations=effectiveSmoothingIterations,
             )
+
+            # The ETag only depends on file stat + params, computed above
+            # without touching the volume array -- a revalidation hit skips
+            # even the in-memory cache lookup, let alone marching cubes.
+            etag = self._etagFromCacheKey(cacheKey)
+            if self._requestMatchesEtag(ifNoneMatch, etag):
+                return Response(
+                    status_code=status.HTTP_304_NOT_MODIFIED,
+                    headers={
+                        "ETag": etag,
+                        "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                    },
+                )
 
             cachedResponse = self._getCachedVolumeSurfaceResponse(cacheKey)
             if cachedResponse is not None:
@@ -12236,6 +12366,16 @@ class ProjectService:
             minComponentTriangles=effectiveMinComponentTriangles,
             smoothingIterations=effectiveSmoothingIterations,
         )
+
+        etag = self._etagFromCacheKey(cacheKey)
+        if self._requestMatchesEtag(ifNoneMatch, etag):
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                },
+            )
 
         cachedResponse = self._getCachedVolumeSurfaceResponse(cacheKey)
         if cachedResponse is not None:

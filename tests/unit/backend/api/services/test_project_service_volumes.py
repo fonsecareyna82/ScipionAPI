@@ -1056,3 +1056,165 @@ def test_GetVolumeSurfaceMeshCachesResultForPostgresqlPath(
     assert len(buildCalls) == 1
     assert second.headers["X-Preview-Cache"] == "hit"
     assert second.body == first.body
+
+
+def test_GetVolumeSurfaceMeshReturns304WhenIfNoneMatchMatches(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_text("placeholder", encoding="utf-8")
+
+    class FakePgVolumeReader:
+        lastSkipReason = None
+
+        def getVolumeFile(self, volumeId):
+            return {"fileName": str(volumePath), "path": str(volumePath)}
+
+        def getVolumeArray(self, volumeId):
+            volume = np.arange(64, dtype=np.float32).reshape((4, 4, 4))
+            return volume, {}, {}
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlVolumeReaderIfAvailable",
+        lambda **kwargs: FakePgVolumeReader(),
+    )
+
+    buildCalls: list = []
+    monkeypatch.setattr(
+        projectServiceModule,
+        "buildVolumeSurfaceMesh",
+        _fakeBuildVolumeSurfaceMesh(buildCalls),
+    )
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=0,
+        level=0.5,
+        maxDim=64,
+        method="binning",
+        maxTriangles=1000,
+        currentUser={"id": 1},
+        mapper=object(),
+    )
+
+    first = service.getVolumeSurfaceMesh(**callKwargs)
+    etag = first.headers["ETag"]
+    assert etag
+
+    revalidated = service.getVolumeSurfaceMesh(**callKwargs, ifNoneMatch=etag)
+
+    assert revalidated.status_code == 304
+    assert revalidated.headers["ETag"] == etag
+    assert len(buildCalls) == 1  # the 304 path never touched the mesh builder
+
+    # A stale/mismatched If-None-Match still gets a real (cached) response.
+    stillFresh = service.getVolumeSurfaceMesh(**callKwargs, ifNoneMatch='"not-the-etag"')
+    assert stillFresh.status_code == 200
+    assert stillFresh.headers["X-Preview-Cache"] == "hit"
+
+
+def test_RenderVolumeSliceServiceReturns304WhenIfNoneMatchMatches(service, monkeypatch, tmp_path):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_bytes(b"volume")
+
+    class FakePgVolumeReader:
+        lastSkipReason = None
+
+        def getVolumeFile(self, volumeId):
+            return {"fileName": str(volumePath), "path": str(volumePath)}
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlVolumeReaderIfAvailable",
+        lambda **kwargs: FakePgVolumeReader(),
+    )
+
+    renderCalls: list = []
+
+    def fakeRenderTomogramSliceFromPath(self=None, **kwargs):
+        renderCalls.append(kwargs)
+        from fastapi.responses import Response
+        return Response(content=b"fake-slice-bytes", media_type="image/webp")
+
+    monkeypatch.setattr(
+        type(service),
+        "_renderTomogramSliceFromPath",
+        fakeRenderTomogramSliceFromPath,
+    )
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=0,
+        sliceIndex=5,
+        axis="z",
+        colormap="gray",
+        normalize="minmax",
+        scale=1.0,
+        inline=True,
+        fmt="webp",
+    )
+
+    first = service.renderVolumeSliceService(**callKwargs)
+    assert len(renderCalls) == 1
+    etag = first.headers["ETag"]
+    assert etag
+
+    revalidated = service.renderVolumeSliceService(**callKwargs, ifNoneMatch=etag)
+    assert revalidated.status_code == 304
+    assert revalidated.headers["ETag"] == etag
+    assert len(renderCalls) == 1  # no re-render on a 304
+
+    # A cache hit (no If-None-Match) still carries the same ETag.
+    cached = service.renderVolumeSliceService(**callKwargs)
+    assert len(renderCalls) == 1
+    assert cached.headers["ETag"] == etag
+
+
+def test_GetVolumeData3dServiceBinaryReturns304WhenIfNoneMatchMatches(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_text("placeholder", encoding="utf-8")
+
+    volume = FakeVolumeOutput(str(volumePath))
+    protocol = FakeProtocol(outputVolumes=volume)
+    service.currentProject = FakeCurrentProject(protocol=protocol)
+
+    monkeypatch.setattr(projectServiceModule, "SetOfVolumes", FakeSetOfVolumes)
+
+    readCalls: list = []
+
+    def fakeReadVolumeArray3d(path):
+        readCalls.append(path)
+        return (
+            np.arange(64, dtype=np.float32).reshape((4, 4, 4)),
+            {"source": path},
+        )
+
+    monkeypatch.setattr(projectServiceModule, "readVolumeArray3d", fakeReadVolumeArray3d)
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=0,
+        maxDim=64,
+        method="binning",
+        binary=True,
+    )
+
+    first = service.getVolumeData3dService(**callKwargs)
+    assert len(readCalls) == 1
+    etag = first.headers["ETag"]
+    assert etag
+    assert first.headers["Cache-Control"] != "no-store"
+
+    revalidated = service.getVolumeData3dService(**callKwargs, ifNoneMatch=etag)
+    assert revalidated.status_code == 304
+    assert revalidated.headers["ETag"] == etag
+    assert len(readCalls) == 1  # the volume file is never re-read on a 304

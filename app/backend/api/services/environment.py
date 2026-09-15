@@ -25,20 +25,88 @@
 # ******************************************************************************
 import json
 import os
-from typing import Dict
+import tempfile
+from typing import Dict, Set
 
 
 _CUSTOM_ENVIRONMENT_FILE_NAME = "scipionweb_environment.json"
+
+def _getCustomEnvironmentPath(
+        scipionHome: str,
+) -> str:
+    return os.path.join(
+        scipionHome,
+        "config",
+        _CUSTOM_ENVIRONMENT_FILE_NAME,
+    )
+
+
+def _writeCustomEnvironment(
+        scipionHome: str,
+        values: Dict[str, str],
+) -> None:
+    path = _getCustomEnvironmentPath(
+        scipionHome
+    )
+
+    directory = os.path.dirname(
+        path
+    )
+
+    os.makedirs(
+        directory,
+        exist_ok=True,
+    )
+
+    fd, tempPath = tempfile.mkstemp(
+        prefix=".scipionweb_environment.",
+        suffix=".tmp",
+        dir=directory,
+        text=True,
+    )
+
+    try:
+        with os.fdopen(
+                fd,
+                "w",
+                encoding="utf-8",
+        ) as file:
+            json.dump(
+                values,
+                file,
+                indent=2,
+                sort_keys=True,
+            )
+
+            file.write("\n")
+            file.flush()
+            os.fsync(
+                file.fileno()
+            )
+
+        os.replace(
+            tempPath,
+            path,
+        )
+
+    finally:
+        if os.path.exists(
+                tempPath
+        ):
+            try:
+                os.remove(
+                    tempPath
+                )
+            except OSError:
+                pass
 
 
 def _loadCustomEnvironment(scipionHome: str) -> Dict[str, str]:
     if not scipionHome:
         return {}
 
-    path = os.path.join(
-        scipionHome,
-        "config",
-        _CUSTOM_ENVIRONMENT_FILE_NAME,
+    path = _getCustomEnvironmentPath(
+        scipionHome
     )
 
     if not os.path.isfile(path):
@@ -58,6 +126,58 @@ def _loadCustomEnvironment(scipionHome: str) -> Dict[str, str]:
         for name, value in raw.items()
         if str(name).strip()
     }
+
+
+def removeCustomEnvironmentVariables(
+        scipionHome: str,
+        variableNames: Set[str],
+) -> Set[str]:
+    if not scipionHome:
+        return set()
+
+    cleanNames = {
+        str(variableName).strip()
+        for variableName
+        in variableNames
+        if str(variableName).strip()
+    }
+
+    if not cleanNames:
+        return set()
+
+    customEnvironment = (
+        _loadCustomEnvironment(
+            scipionHome
+        )
+    )
+
+    removedNames = (
+        cleanNames
+        & set(
+            customEnvironment
+        )
+    )
+
+    if not removedNames:
+        return set()
+
+    for variableName in removedNames:
+        customEnvironment.pop(
+            variableName,
+            None,
+        )
+
+        os.environ.pop(
+            variableName,
+            None,
+        )
+
+    _writeCustomEnvironment(
+        scipionHome,
+        customEnvironment,
+    )
+
+    return removedNames
 
 
 def prepareEnvironment():
