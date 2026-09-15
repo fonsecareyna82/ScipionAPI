@@ -1046,6 +1046,181 @@ def test_install_plugin_reports_detailed_task_progress(
     )
 
 
+def test_install_plugin_rolls_back_new_plugin_when_binary_install_fails(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+
+    installedState = {
+        "installed": False,
+    }
+
+    class FailingBinaryPlugin(
+            DummyInstallPlugin
+    ):
+        def installPipModule(self):
+            self.installPipCalls += 1
+
+            installedState[
+                "installed"
+            ] = True
+
+            return True
+
+        def installBin(
+                self,
+                args,
+        ):
+            self.installBinCalls.append(
+                args
+            )
+
+            raise RuntimeError(
+                "binary installation failed"
+            )
+
+        def uninstallPip(self):
+            self.uninstallPipCalls += 1
+
+            installedState[
+                "installed"
+            ] = False
+
+    plugin = FailingBinaryPlugin()
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getFreshPipPackageVersion",
+        lambda pipName: (
+            "1.0.0"
+            if installedState["installed"]
+            else None
+        ),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda *args, **kwargs: None,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="binary installation failed",
+    ):
+        service.installPlugin(
+            "scipion-em-test",
+            skipBinaries=False,
+            refreshDomain=False,
+        )
+
+    assert plugin.installPipCalls == 1
+
+    assert plugin.installBinCalls == [
+        {
+            "args": [
+                "-j",
+                "3",
+            ]
+        }
+    ]
+
+    assert plugin.uninstallBinsCalls == 1
+    assert plugin.uninstallPipCalls == 1
+
+    assert installedState[
+        "installed"
+    ] is False
+
+
+def test_install_plugin_does_not_rollback_preexisting_plugin_when_binary_install_fails(
+        tmp_path,
+        monkeypatch,
+):
+    service = makeService(tmp_path)
+
+    installedState = {
+        "installed": True,
+    }
+
+    class FailingBinaryPlugin(
+            DummyInstallPlugin
+    ):
+        def installBin(
+                self,
+                args,
+        ):
+            self.installBinCalls.append(
+                args
+            )
+
+            raise RuntimeError(
+                "binary installation failed"
+            )
+
+    plugin = FailingBinaryPlugin()
+
+    monkeypatch.setattr(
+        service,
+        "_loadRawPlugins",
+        lambda forceRefresh=False: {
+            "scipion-em-test": plugin,
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_getFreshPipPackageVersion",
+        lambda pipName: (
+            "1.0.0"
+            if installedState["installed"]
+            else None
+        ),
+    )
+
+    monkeypatch.setattr(
+        service,
+        "clearCache",
+        lambda *args, **kwargs: None,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="binary installation failed",
+    ):
+        service.installPlugin(
+            "scipion-em-test",
+            skipBinaries=False,
+            refreshDomain=False,
+        )
+
+    assert plugin.installPipCalls == 1
+
+    assert plugin.installBinCalls == [
+        {
+            "args": [
+                "-j",
+                "3",
+            ]
+        }
+    ]
+
+    assert plugin.uninstallBinsCalls == 0
+    assert plugin.uninstallPipCalls == 0
+
+    assert installedState[
+        "installed"
+    ] is True
+
 
 def test_clear_cache_can_skip_domain_refresh(
         tmp_path,
