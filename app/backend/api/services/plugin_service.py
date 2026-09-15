@@ -773,6 +773,7 @@ class PluginService:
             refreshDomain: bool = True,
     ) -> Dict[str, Any]:
         plugin: Optional[Any] = None
+        pipWasInstalledBefore = False
         startedAt = monotonic()
 
         try:
@@ -800,6 +801,12 @@ class PluginService:
             )
 
             plugin = rawPlugins[resolvedKey]
+            pipWasInstalledBefore = (
+                    self._getFreshPipPackageVersion(
+                        pluginName
+                    )
+                    is not None
+            )
 
             if taskId:
                 writePluginTaskMessage(
@@ -950,51 +957,38 @@ class PluginService:
                     "Rolling back installation...",
                 )
 
-            if plugin is not None:
-                if not skipBinaries:
-                    try:
-                        plugin.uninstallBins()
-
-                        if taskId:
-                            writePluginTaskMessage(
-                                taskId,
-                                "Binary rollback completed.",
-                            )
-
-                    except Exception:
-                        logger.exception(
-                            "Error uninstalling binaries during install rollback."
-                        )
-
-                        if taskId:
-                            writePluginTaskMessage(
-                                taskId,
-                                "Binary rollback failed.",
-                            )
-
-                            appendPluginTaskLog(
-                                taskId,
-                                traceback.format_exc(),
-                            )
-
+            if (
+                    plugin is not None
+                    and not pipWasInstalledBefore
+            ):
                 try:
-                    plugin.uninstallPip()
-
                     if taskId:
                         writePluginTaskMessage(
                             taskId,
-                            "Pip rollback completed.",
+                            "Rolling back failed plugin installation.",
                         )
 
-                except Exception:
-                    logger.exception(
-                        "Error uninstalling pip module during install rollback."
+                    self.uninstallPlugin(
+                        pluginName=pluginName,
+                        taskId=taskId,
+                        refreshDomain=refreshDomain,
                     )
 
                     if taskId:
                         writePluginTaskMessage(
                             taskId,
-                            "Pip rollback failed.",
+                            "Plugin rollback completed successfully.",
+                        )
+
+                except Exception:
+                    logger.exception(
+                        "Error rolling back failed plugin installation."
+                    )
+
+                    if taskId:
+                        writePluginTaskMessage(
+                            taskId,
+                            "Plugin rollback failed.",
                         )
 
                         appendPluginTaskLog(
