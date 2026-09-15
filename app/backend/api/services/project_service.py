@@ -149,6 +149,12 @@ from app.backend.api.services.settings_service import SettingsService
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
+# Surface meshes are far larger per entry than slice previews (marching-cubes
+# output, up to _VOLUME_SURFACE_MAX_TRIANGLES triangles), so this cache is
+# kept much smaller than the slice one to bound memory use.
+_VOLUME_SURFACE_CACHE_LOCK = threading.Lock()
+_VOLUME_SURFACE_CACHE = collections.OrderedDict()
+_VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
 _VOLUME_SURFACE_MAX_TRIANGLES = 500_000
@@ -11448,6 +11454,88 @@ class ProjectService:
 
         headers[exposeKey] = ", ".join(parts)
 
+    def _buildVolumeSurfaceCacheKey(
+            self,
+            *,
+            volumePath: Optional[str],
+            tomogramId: Union[int, str],
+            level,
+            maxDim,
+            method,
+            maxTriangles: int,
+            minComponentTriangles: int,
+            smoothingIterations: int,
+    ):
+        mtimeNs = None
+        sizeBytes = None
+
+        if volumePath:
+            try:
+                stat = os.stat(volumePath)
+                mtimeNs = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+                sizeBytes = int(stat.st_size)
+            except Exception:
+                pass
+
+        return (
+            os.path.abspath(str(volumePath)) if volumePath else None,
+            mtimeNs,
+            sizeBytes,
+            str(tomogramId),
+            None if level is None else float(level),
+            int(maxDim or 0),
+            str(method or ""),
+            int(maxTriangles),
+            int(minComponentTriangles),
+            int(smoothingIterations),
+        )
+
+    def _getCachedVolumeSurfaceResponse(self, cacheKey) -> Optional[Response]:
+        with _VOLUME_SURFACE_CACHE_LOCK:
+            cached = _VOLUME_SURFACE_CACHE.get(cacheKey)
+            if cached is None:
+                return None
+
+            _VOLUME_SURFACE_CACHE.move_to_end(cacheKey)
+
+        headers = dict(cached.get("headers") or {})
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+        headers["X-Preview-Cache"] = "hit"
+        self._exposeHeader(headers, "X-Preview-Cache")
+
+        return Response(
+            content=cached["body"],
+            media_type=cached.get("mediaType") or "application/json",
+            headers=headers,
+        )
+
+    def _storeCachedVolumeSurfaceResponse(self, cacheKey, response: Response) -> Response:
+        body = getattr(response, "body", None)
+        if body is None:
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type")
+
+        with _VOLUME_SURFACE_CACHE_LOCK:
+            _VOLUME_SURFACE_CACHE[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _VOLUME_SURFACE_CACHE.move_to_end(cacheKey)
+
+            while len(_VOLUME_SURFACE_CACHE) > _VOLUME_SURFACE_CACHE_MAX_ITEMS:
+                _VOLUME_SURFACE_CACHE.popitem(last=False)
+
+        response.headers["X-Preview-Cache"] = "miss"
+        self._exposeHeader(response.headers, "X-Preview-Cache")
+
+        return response
+
     def renderVolumeSliceService(
             self,
             projectId: int,
@@ -12061,6 +12149,27 @@ class ProjectService:
         )
 
         if pgReader is not None:
+            fileInfo = pgReader.getVolumeFile(volumeId)
+            volumePathForCache = fileInfo.get("fileName") if fileInfo else None
+
+            cacheKey = self._buildVolumeSurfaceCacheKey(
+                volumePath=volumePathForCache,
+                tomogramId=volumeId,
+                level=level,
+                maxDim=maxDim,
+                method=method,
+                maxTriangles=effectiveMaxTriangles,
+                minComponentTriangles=effectiveMinComponentTriangles,
+                smoothingIterations=effectiveSmoothingIterations,
+            )
+
+            cachedResponse = self._getCachedVolumeSurfaceResponse(cacheKey)
+            if cachedResponse is not None:
+                cachedResponse.headers["X-Debug-Auth"] = "ok"
+                cachedResponse.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+                cachedResponse.headers["Vary"] = "Authorization"
+                return cachedResponse
+
             result = pgReader.getVolumeArray(volumeId)
             if result is not None:
                 volume, _props, _info = result
@@ -12084,6 +12193,7 @@ class ProjectService:
                 mesh["outputName"] = outputName
 
                 response = JSONResponse(mesh)
+                response = self._storeCachedVolumeSurfaceResponse(cacheKey, response)
                 response.headers["X-Debug-Auth"] = "ok"
                 response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
                 response.headers["Vary"] = "Authorization"
@@ -12116,6 +12226,24 @@ class ProjectService:
         )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
+        cacheKey = self._buildVolumeSurfaceCacheKey(
+            volumePath=volumePath,
+            tomogramId=volumeId,
+            level=level,
+            maxDim=maxDim,
+            method=method,
+            maxTriangles=effectiveMaxTriangles,
+            minComponentTriangles=effectiveMinComponentTriangles,
+            smoothingIterations=effectiveSmoothingIterations,
+        )
+
+        cachedResponse = self._getCachedVolumeSurfaceResponse(cacheKey)
+        if cachedResponse is not None:
+            cachedResponse.headers["X-Debug-Auth"] = "ok"
+            cachedResponse.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+            cachedResponse.headers["Vary"] = "Authorization"
+            return cachedResponse
+
         volume, _props = readVolumeArray3d(volumePath)
         volumeSmall = self._downsampleVolumeForSurface(
             volume,
@@ -12142,6 +12270,7 @@ class ProjectService:
         mesh["outputName"] = outputName
 
         response = JSONResponse(mesh)
+        response = self._storeCachedVolumeSurfaceResponse(cacheKey, response)
         response.headers["X-Debug-Auth"] = "ok"
         response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
         response.headers["Vary"] = "Authorization"

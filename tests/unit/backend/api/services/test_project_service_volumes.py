@@ -938,3 +938,121 @@ def test_RenderVolumeSlicesBatchServiceIgnoresMalformedItems(service, monkeypatc
 
     assert calls == [("z", 2)]
     assert [item["index"] for item in result["items"]] == [2]
+
+
+def _fakeBuildVolumeSurfaceMesh(callTracker):
+    def build(volumeSmall, level, maxTriangles, minComponentTriangles, smoothingIterations):
+        callTracker.append(1)
+        return {
+            "kind": "surfaceMesh",
+            "level": level,
+            "vertices": [0.0, 0.0, 0.0],
+            "faces": [0, 0, 0],
+        }
+
+    return build
+
+
+def test_GetVolumeSurfaceMeshCachesResultForLegacyPath(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_text("placeholder", encoding="utf-8")
+
+    volume = FakeVolumeOutput(str(volumePath))
+    protocol = FakeProtocol(outputVolumes=volume)
+    service.currentProject = FakeCurrentProject(protocol=protocol)
+
+    monkeypatch.setattr(projectServiceModule, "SetOfVolumes", FakeSetOfVolumes)
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeArray3d",
+        lambda path: (
+            np.arange(64, dtype=np.float32).reshape((4, 4, 4)),
+            {"source": path},
+        ),
+    )
+
+    buildCalls: list = []
+    monkeypatch.setattr(
+        projectServiceModule,
+        "buildVolumeSurfaceMesh",
+        _fakeBuildVolumeSurfaceMesh(buildCalls),
+    )
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=0,
+        level=0.5,
+        maxDim=64,
+        method="binning",
+        maxTriangles=1000,
+        currentUser={"id": 1},
+    )
+
+    first = service.getVolumeSurfaceMesh(**callKwargs)
+    assert len(buildCalls) == 1
+    assert first.headers["X-Preview-Cache"] == "miss"
+
+    second = service.getVolumeSurfaceMesh(**callKwargs)
+    assert len(buildCalls) == 1  # not recomputed
+    assert second.headers["X-Preview-Cache"] == "hit"
+    assert second.body == first.body
+
+    # A different level is a different cache entry -- must recompute.
+    service.getVolumeSurfaceMesh(**{**callKwargs, "level": 0.9})
+    assert len(buildCalls) == 2
+
+
+def test_GetVolumeSurfaceMeshCachesResultForPostgresqlPath(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_text("placeholder", encoding="utf-8")
+
+    class FakePgVolumeReader:
+        lastSkipReason = None
+
+        def getVolumeFile(self, volumeId):
+            return {"fileName": str(volumePath), "path": str(volumePath)}
+
+        def getVolumeArray(self, volumeId):
+            volume = np.arange(64, dtype=np.float32).reshape((4, 4, 4))
+            return volume, {}, {}
+
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlVolumeReaderIfAvailable",
+        lambda **kwargs: FakePgVolumeReader(),
+    )
+
+    buildCalls: list = []
+    monkeypatch.setattr(
+        projectServiceModule,
+        "buildVolumeSurfaceMesh",
+        _fakeBuildVolumeSurfaceMesh(buildCalls),
+    )
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputVolumes",
+        volumeId=0,
+        level=0.5,
+        maxDim=64,
+        method="binning",
+        maxTriangles=1000,
+        currentUser={"id": 1},
+        mapper=object(),
+    )
+
+    first = service.getVolumeSurfaceMesh(**callKwargs)
+    assert len(buildCalls) == 1
+    assert first.headers["X-Preview-Cache"] == "miss"
+
+    second = service.getVolumeSurfaceMesh(**callKwargs)
+    assert len(buildCalls) == 1
+    assert second.headers["X-Preview-Cache"] == "hit"
+    assert second.body == first.body
