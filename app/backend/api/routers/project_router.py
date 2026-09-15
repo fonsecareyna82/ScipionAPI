@@ -3906,6 +3906,68 @@ def renderMetadataImageCell(
     return resp
 
 
+class MetadataImageBatchItem(BaseModel):
+    rowId: Optional[Union[int, str]] = None
+    rowIndex: Optional[int] = Field(None, ge=0)
+    columnName: str
+
+
+class MetadataImageBatchRenderRequest(BaseModel):
+    items: List[MetadataImageBatchItem] = Field(default_factory=list)
+    size: int = Field(256, ge=16, le=2048)
+    applyTransform: bool = False
+    inline: bool = True
+    fmt: str = "png"
+    sortBy: str = "id"
+    asc: bool = True
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image/batch",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def renderMetadataImageCellsBatch(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    payload: MetadataImageBatchRenderRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """
+    Render several metadata image cells in one request. Intended for
+    populating a freshly-scrolled screenful of gallery thumbnails without
+    one HTTP round trip per cell.
+    """
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    result = service.renderMetadataImageCellsBatchService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        items=[(item.rowId, item.rowIndex, item.columnName) for item in payload.items],
+        size=payload.size,
+        applyTransform=payload.applyTransform,
+        inline=payload.inline,
+        fmt=payload.fmt,
+        sortBy=payload.sortBy,
+        asc=payload.asc,
+        mapper=mapper,
+    )
+
+    resp = JSONResponse(result)
+    resp.headers["X-Debug-Auth"] = "ok"
+    resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
+    resp.headers["Vary"] = "Authorization"
+    return resp
+
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/rows",
     response_model=Any,

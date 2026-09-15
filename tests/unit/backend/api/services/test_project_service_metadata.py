@@ -948,6 +948,148 @@ def test_RenderMetadataImageCellCachedServiceCachesAndSupportsIfNoneMatch(servic
     assert len(innerCalls) == 2
 
 
+def _fakeMetadataImageResponse(rowId, rowIndex, columnName):
+    from fastapi.responses import Response
+
+    label = rowId if rowId is not None else rowIndex
+    return Response(
+        content=b"fake-cell-%s-%s" % (str(label).encode(), columnName.encode()),
+        media_type="image/webp",
+    )
+
+
+def test_RenderMetadataImageCellsBatchServiceRendersEachItemInOrder(service, monkeypatch):
+    calls = []
+
+    def fakeRenderMetadataImageCellCachedService(self, **kwargs):
+        calls.append(kwargs)
+        return _fakeMetadataImageResponse(kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderMetadataImageCellCachedService",
+        fakeRenderMetadataImageCellCachedService,
+    )
+
+    result = service.renderMetadataImageCellsBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        items=[(1, None, "image"), (2, None, "image"), (None, 5, "mask")],
+        fmt="webp",
+    )
+
+    assert [c["rowId"] for c in calls] == [1, 2, None]
+    assert [c["rowIndex"] for c in calls] == [None, None, 5]
+    assert [c["columnName"] for c in calls] == ["image", "image", "mask"]
+
+    assert result["tableName"] == "objects"
+    assert result["errors"] == []
+    assert [item["rowId"] for item in result["items"]] == [1, 2, None]
+    assert [item["rowIndex"] for item in result["items"]] == [None, None, 5]
+    for item in result["items"]:
+        assert item["contentType"] == "image/webp"
+        assert item["dataUrl"].startswith("data:image/webp;base64,")
+
+
+def test_RenderMetadataImageCellsBatchServiceCollectsPerItemErrorsWithoutFailingOthers(
+    service, monkeypatch,
+):
+    from fastapi import HTTPException
+
+    def fakeRenderMetadataImageCellCachedService(self, **kwargs):
+        if kwargs["rowId"] == 2:
+            raise HTTPException(status_code=404, detail="Row not found")
+        return _fakeMetadataImageResponse(kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderMetadataImageCellCachedService",
+        fakeRenderMetadataImageCellCachedService,
+    )
+
+    result = service.renderMetadataImageCellsBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        items=[(1, None, "image"), (2, None, "image"), (3, None, "image")],
+    )
+
+    assert [item["rowId"] for item in result["items"]] == [1, 3]
+    assert result["errors"] == [
+        {"rowId": 2, "rowIndex": None, "columnName": "image", "error": "Row not found"},
+    ]
+
+
+def test_RenderMetadataImageCellsBatchServiceDedupsAndCapsItems(service, monkeypatch):
+    calls = []
+
+    def fakeRenderMetadataImageCellCachedService(self, **kwargs):
+        calls.append((kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"]))
+        return _fakeMetadataImageResponse(kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderMetadataImageCellCachedService",
+        fakeRenderMetadataImageCellCachedService,
+    )
+
+    duplicated = [(1, None, "image"), (1, None, "image"), (2, None, "image")]
+    overCap = [(None, i, "image") for i in range(100)]
+
+    service.renderMetadataImageCellsBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        items=duplicated,
+    )
+    assert calls == [(1, None, "image"), (2, None, "image")]
+
+    calls.clear()
+    service.renderMetadataImageCellsBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        items=overCap,
+    )
+    assert len(calls) == 64
+
+
+def test_RenderMetadataImageCellsBatchServiceIgnoresMalformedItems(service, monkeypatch):
+    calls = []
+
+    def fakeRenderMetadataImageCellCachedService(self, **kwargs):
+        calls.append((kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"]))
+        return _fakeMetadataImageResponse(kwargs["rowId"], kwargs["rowIndex"], kwargs["columnName"])
+
+    monkeypatch.setattr(
+        type(service),
+        "renderMetadataImageCellCachedService",
+        fakeRenderMetadataImageCellCachedService,
+    )
+
+    result = service.renderMetadataImageCellsBatchService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        items=[
+            (None, None, "image"),
+            (1, None, ""),
+            (None, -1, "image"),
+            (None, "not-an-int", "image"),
+            (3, None, "image"),
+        ],
+    )
+
+    assert calls == [(3, None, "image")]
+    assert result["errors"] == []
+
+
 def test_RenderMetadataImageCellServiceResolvesProtocolIdForRelativeImagePaths(
     service,
     monkeypatch,

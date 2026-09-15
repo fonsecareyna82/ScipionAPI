@@ -390,6 +390,14 @@ class FakeProjectService:
         )
         self.lastRenderMetadataImageCellCall = None
 
+        self.renderMetadataImageCellsBatchResult = {
+            "tableName": "particles",
+            "fmt": "png",
+            "items": [],
+            "errors": [],
+        }
+        self.lastRenderMetadataImageCellsBatchCall = None
+
         self.listProjectsResult = [makeProjectOut()]
         self.lastListProjectsCall = None
 
@@ -1048,6 +1056,37 @@ class FakeProjectService:
             "ifNoneMatch": ifNoneMatch,
         }
         return self.renderMetadataImageCellResponse
+
+    def renderMetadataImageCellsBatchService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tableName,
+            items,
+            size=256,
+            applyTransform=False,
+            inline=True,
+            fmt="png",
+            sortBy="id",
+            asc=True,
+            mapper=None,
+    ):
+        self.lastRenderMetadataImageCellsBatchCall = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "tableName": tableName,
+            "items": items,
+            "size": size,
+            "applyTransform": applyTransform,
+            "inline": inline,
+            "fmt": fmt,
+            "sortBy": sortBy,
+            "asc": asc,
+            "mapper": mapper,
+        }
+        return self.renderMetadataImageCellsBatchResult
 
     def runMetadataTableActionService(
             self,

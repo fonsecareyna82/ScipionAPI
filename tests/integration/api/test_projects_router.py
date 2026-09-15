@@ -662,6 +662,43 @@ def test_RenderMetadataImageCellDelegatesMapperToService(projectClient, fakeProj
     }
 
 
+def test_RenderMetadataImageCellsBatchDelegatesToService(projectClient, fakeProjectService):
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image/batch",
+        json={
+            "items": [
+                {"rowId": 7, "columnName": "stack"},
+                {"rowIndex": 3, "columnName": "mask"},
+            ],
+            "size": 128,
+            "applyTransform": True,
+            "inline": False,
+            "fmt": "jpeg",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeProjectService.renderMetadataImageCellsBatchResult
+    assert fakeProjectService.lastGetProjectDbRowCall is not None
+    assert fakeProjectService.lastGetProjectByIdCall is None
+
+    call = fakeProjectService.lastRenderMetadataImageCellsBatchCall
+    assert call == {
+        "projectId": 1,
+        "protocolId": 2,
+        "outputName": "out",
+        "tableName": "objects",
+        "items": [(7, None, "stack"), (None, 3, "mask")],
+        "size": 128,
+        "applyTransform": True,
+        "inline": False,
+        "fmt": "jpeg",
+        "sortBy": "id",
+        "asc": True,
+        "mapper": call["mapper"],
+    }
+
+
 def test_ListOutputVolumesUsesProjectDbRow(projectClient, fakeProjectService):
     response = projectClient.get(
         "/projects/1/protocols/2/outputs/out/volumes"

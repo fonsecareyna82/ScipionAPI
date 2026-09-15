@@ -16909,6 +16909,121 @@ class ProjectService:
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
+    def renderMetadataImageCellsBatchService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            items: Sequence[Tuple[Optional[Union[int, str]], Optional[int], str]],
+            size: int = 256,
+            applyTransform: bool = False,
+            inline: bool = True,
+            fmt: str = "png",
+            sortBy: str = "id",
+            asc: bool = True,
+            mapper=None,
+    ) -> Dict[str, Any]:
+        # renderMetadataImageCellsBatchService -- reuses
+        # renderMetadataImageCellCachedService (and its existing per-cell
+        # cache) for each item, same shape as renderVolumeSlicesBatchService;
+        # this only collapses the HTTP round-trips for a freshly-scrolled
+        # screenful of gallery thumbnails, it adds no caching of its own.
+        cleanItems: List[Tuple[Optional[Union[int, str]], Optional[int], str]] = []
+        seenItems: TypingSet[Tuple[Optional[Union[int, str]], Optional[int], str]] = set()
+
+        for rawRowId, rawRowIndex, rawColumnName in items or []:
+            columnName = str(rawColumnName or "").strip()
+            if not columnName:
+                continue
+
+            rowIndex = None
+            if rawRowIndex is not None:
+                try:
+                    rowIndex = int(rawRowIndex)
+                except (TypeError, ValueError):
+                    continue
+                if rowIndex < 0:
+                    continue
+
+            rowId = rawRowId if rawRowId is not None and rawRowId != "" else None
+            if rowIndex is None and rowId is None:
+                continue
+
+            key = (rowId, rowIndex, columnName)
+            if key in seenItems:
+                continue
+
+            cleanItems.append(key)
+            seenItems.add(key)
+
+            if len(cleanItems) >= 64:
+                break
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for rowId, rowIndex, columnName in cleanItems:
+            try:
+                response = self.renderMetadataImageCellCachedService(
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    outputName=outputName,
+                    tableName=tableName,
+                    rowId=rowId,
+                    columnName=columnName,
+                    size=size,
+                    applyTransform=applyTransform,
+                    inline=inline,
+                    fmt=fmt,
+                    rowIndex=rowIndex,
+                    mapper=mapper,
+                    sortBy=sortBy,
+                    asc=asc,
+                )
+
+                body = getattr(response, "body", None) or b""
+                mediaType = (
+                        getattr(response, "media_type", None)
+                        or response.headers.get("content-type")
+                        or "image/png"
+                )
+
+                dataUrl = "data:%s;base64,%s" % (
+                    mediaType,
+                    base64.b64encode(body).decode("ascii"),
+                )
+
+                results.append({
+                    "rowId": rowId,
+                    "rowIndex": rowIndex,
+                    "columnName": columnName,
+                    "contentType": mediaType,
+                    "dataUrl": dataUrl,
+                })
+
+            except HTTPException as exc:
+                errors.append({
+                    "rowId": rowId,
+                    "rowIndex": rowIndex,
+                    "columnName": columnName,
+                    "error": str(exc.detail),
+                })
+            except Exception as exc:
+                errors.append({
+                    "rowId": rowId,
+                    "rowIndex": rowIndex,
+                    "columnName": columnName,
+                    "error": str(exc),
+                })
+
+        return {
+            "tableName": tableName,
+            "fmt": str(fmt or "png").lower(),
+            "items": results,
+            "errors": errors,
+        }
+
     def getMetadataTableWindowService(
             self,
             projectId: int,
