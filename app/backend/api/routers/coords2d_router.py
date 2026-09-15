@@ -25,10 +25,10 @@
 # ******************************************************************************
 
 import logging
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Body, Depends, Header, Query, status
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services.coords2d_service import Coords2dService
@@ -165,6 +165,30 @@ def getCoords2dMicrographThumbnail(
         size=size,
         fmt=format,
         ifNoneMatch=ifNoneMatch,
+    )
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords2d/micrographs/thumbnails-batch",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getCoords2dMicrographsThumbnailBatch(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: Dict[str, Any] = Body(...),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: Coords2dService = Depends(getCoords2dService),
+):
+    return service.renderCoords2dMicrographsThumbnailBatch(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        protocolId=protocolId,
+        outputName=outputName,
+        payload=payload,
     )
 
 @router.post(

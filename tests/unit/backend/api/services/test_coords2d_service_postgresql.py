@@ -295,3 +295,157 @@ def test_Coords2dServiceRenderMicrographImageReusesOnDiskCacheAcrossRequests(ser
     assert secondResponse.body == firstResponse.body
     # The actual point of this test: still only one decode, ever.
     assert len(openCalls) == 1
+
+
+class FakeMultiMicrographReader:
+    def __init__(self, infoByMicId):
+        self.infoByMicId = infoByMicId
+        self.lastSkipReason = "micrograph_not_found"
+
+    def getMicrographImageInfo(self, micId):
+        return self.infoByMicId.get(str(micId))
+
+
+def _setUpBatchMocks(monkeypatch, service, tmp_path, openCalls, micIds):
+    projectPath = tmp_path / "project"
+    projectPath.mkdir()
+
+    infoByMicId = {}
+    for micId in micIds:
+        micrographFile = tmp_path / f"micrograph_{micId}.mrc"
+        micrographFile.write_bytes(f"fake-mrc-bytes-{micId}".encode("utf-8"))
+        infoByMicId[str(micId)] = {
+            "id": str(micId),
+            "fileName": f"Runs/000001_Import/extra/micrograph_{micId}.mrc",
+            "locationIndex": None,
+            "label": f"micrograph_{micId}",
+        }
+
+    reader = FakeMultiMicrographReader(infoByMicId)
+    monkeypatch.setattr(service, "_getPostgresqlCoords2dReaderIfAvailable", lambda **kwargs: reader)
+
+    def fakePathResolverFactory(db, projectId):
+        class _Resolver:
+            def resolveExistingPath(self, storedImagePath):
+                fileName = storedImagePath.rsplit("/", 1)[-1]
+                return str(tmp_path / fileName)
+
+            def getProjectPath(self):
+                return projectPath
+
+        return _Resolver()
+
+    monkeypatch.setattr(
+        "app.backend.api.services.coords2d_service.PostgresqlProjectPathResolver",
+        fakePathResolverFactory,
+    )
+
+    def fakeOpen(path):
+        openCalls.append(path)
+        return FakeImageStack(Image.new("L", (20, 16)))
+
+    monkeypatch.setattr(
+        "app.backend.api.services.coords2d_service.ImageReadersRegistry.open",
+        fakeOpen,
+    )
+
+    return projectPath
+
+
+def test_Coords2dServiceThumbnailBatchRendersAllRequestedMicrographs(service, monkeypatch, tmp_path):
+    openCalls = []
+    _setUpBatchMocks(monkeypatch, service, tmp_path, openCalls, micIds=["10", "20"])
+
+    result = service.renderCoords2dMicrographsThumbnailBatch(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        payload={"micIds": ["10", "20"], "size": 96, "format": "png"},
+    )
+
+    assert result["errors"] == []
+    assert [item["id"] for item in result["items"]] == ["10", "20"]
+    assert all(item["dataUrl"].startswith("data:image/png;base64,") for item in result["items"])
+    assert all(item["width"] and item["height"] for item in result["items"])
+    assert len(openCalls) == 2
+
+
+def test_Coords2dServiceThumbnailBatchReusesDiskCacheFromSingleImageEndpoint(service, monkeypatch, tmp_path):
+    openCalls = []
+    _setUpBatchMocks(monkeypatch, service, tmp_path, openCalls, micIds=["10"])
+
+    # Pre-warm the cache exactly like a prior single-image request would.
+    service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+        size=96,
+        fmt="png",
+    )
+    assert len(openCalls) == 1
+
+    result = service.renderCoords2dMicrographsThumbnailBatch(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        payload={"micIds": ["10"], "size": 96, "format": "png"},
+    )
+
+    assert result["errors"] == []
+    assert len(result["items"]) == 1
+    # The batch call must hit the same on-disk cache, not decode again.
+    assert len(openCalls) == 1
+
+
+def test_Coords2dServiceThumbnailBatchCollectsPerItemErrors(service, monkeypatch, tmp_path):
+    openCalls = []
+    _setUpBatchMocks(monkeypatch, service, tmp_path, openCalls, micIds=["10"])
+
+    result = service.renderCoords2dMicrographsThumbnailBatch(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        payload={"micIds": ["10", "does-not-exist"]},
+    )
+
+    assert [item["id"] for item in result["items"]] == ["10"]
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["id"] == "does-not-exist"
+    assert "not available" in result["errors"][0]["detail"]
+
+
+def test_Coords2dServiceThumbnailBatchRejectsNonListMicIds(service):
+    with pytest.raises(HTTPException) as exc:
+        service.renderCoords2dMicrographsThumbnailBatch(
+            mapper=SimpleNamespace(db=object()),
+            projectId=1,
+            currentUser={"id": 1},
+            protocolId=2,
+            outputName="coordinates",
+            payload={"micIds": "10"},
+        )
+
+    assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+def test_Coords2dServiceThumbnailBatchRejectsOversizedBatch(service):
+    with pytest.raises(HTTPException) as exc:
+        service.renderCoords2dMicrographsThumbnailBatch(
+            mapper=SimpleNamespace(db=object()),
+            projectId=1,
+            currentUser={"id": 1},
+            protocolId=2,
+            outputName="coordinates",
+            payload={"micIds": [str(i) for i in range(201)]},
+        )
+
+    assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 
+import base64
 import hashlib
 import io
 import json
@@ -1026,6 +1027,134 @@ class Coords2dService:
                 detail="Coordinates2D output is not available in PostgreSQL metadata",
             )
 
+        result = self._resolveMicrographImageContent(
+            pgReader=pgReader,
+            mapper=mapper,
+            projectId=projectId,
+            micId=micId,
+            size=size,
+            fmt=fmt,
+            ifNoneMatch=ifNoneMatch,
+        )
+
+        if result["notModified"]:
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers={
+                    "ETag": result["etag"],
+                    "Cache-Control": result["cacheControl"],
+                },
+            )
+
+        return Response(
+            content=result["content"],
+            media_type=result["mediaType"],
+            headers=result["headers"],
+        )
+
+    def renderCoords2dMicrographsThumbnailBatch(
+        self,
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        currentUser: Any,
+        protocolId: int,
+        outputName: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Render several micrograph thumbnails in one request, e.g. to
+        populate the micrograph switcher/list without issuing one HTTP
+        round trip per row. Each item still goes through the same
+        etag/disk-cache path as the single-image endpoint (see
+        _resolveMicrographImageContent) -- a micrograph already viewed
+        individually is served straight from the on-disk cache here too,
+        and one rendered through a batch call is cached for a later
+        single-image request.
+        """
+        payload = payload or {}
+        micIds = payload.get("micIds") or []
+
+        if not isinstance(micIds, list):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="micIds must be a list",
+            )
+
+        if len(micIds) > 200:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A maximum of 200 micrographs is allowed per batch request",
+            )
+
+        size = max(32, min(int(payload.get("size") or 180), 512))
+        fmt = str(payload.get("format") or "png").strip().lower()
+
+        if fmt not in ("png", "webp", "jpeg", "jpg"):
+            fmt = "png"
+
+        pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        if pgReader is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Coordinates2D output is not available in PostgreSQL metadata",
+            )
+
+        items: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        for micId in micIds:
+            micIdStr = str(micId)
+
+            try:
+                result = self._resolveMicrographImageContent(
+                    pgReader=pgReader,
+                    mapper=mapper,
+                    projectId=projectId,
+                    micId=micIdStr,
+                    size=size,
+                    fmt=fmt,
+                )
+
+                encoded = base64.b64encode(result["content"]).decode("ascii")
+
+                items.append({
+                    "id": micIdStr,
+                    "dataUrl": f"data:{result['mediaType']};base64,{encoded}",
+                    "width": int(result["headers"]["X-Preview-Width"]),
+                    "height": int(result["headers"]["X-Preview-Height"]),
+                })
+            except HTTPException as httpError:
+                errors.append({"id": micIdStr, "detail": str(httpError.detail)})
+            except Exception as error:
+                logger.exception(
+                    "Failed to render coords2d micrograph thumbnail in batch. micId=%s",
+                    micIdStr,
+                )
+                errors.append({"id": micIdStr, "detail": str(error)})
+
+        return {
+            "items": items,
+            "errors": errors,
+            "size": size,
+            "format": fmt,
+        }
+
+    def _resolveMicrographImageContent(
+        self,
+        pgReader: Any,
+        mapper: PostgresqlFlatMapper,
+        projectId: int,
+        micId: str,
+        size: int,
+        fmt: str,
+        ifNoneMatch: Optional[str] = None,
+    ) -> Dict[str, Any]:
         micrographInfo = pgReader.getMicrographImageInfo(micId)
 
         if micrographInfo is None:
@@ -1070,13 +1199,14 @@ class Coords2dService:
         cacheControl = "private, max-age=300, stale-while-revalidate=3600"
 
         if self._matchesEtag(ifNoneMatch, etag):
-            return Response(
-                status_code=status.HTTP_304_NOT_MODIFIED,
-                headers={
-                    "ETag": etag,
-                    "Cache-Control": cacheControl,
-                },
-            )
+            return {
+                "notModified": True,
+                "etag": etag,
+                "cacheControl": cacheControl,
+                "content": None,
+                "headers": None,
+                "mediaType": None,
+            }
 
         # A real, on-disk downsampled artifact keyed by the same ETag: a
         # thumbnail request (or a second full-size request after the
@@ -1108,11 +1238,14 @@ class Coords2dService:
                     headers["ETag"] = etag
                     headers["Cache-Control"] = cacheControl
 
-                    return Response(
-                        content=content,
-                        media_type=mediaType,
-                        headers=headers,
-                    )
+                    return {
+                        "notModified": False,
+                        "etag": etag,
+                        "cacheControl": cacheControl,
+                        "content": content,
+                        "headers": headers,
+                        "mediaType": mediaType,
+                    }
 
             try:
                 image = self._readMicrographImage(imagePath, imageIndex)
@@ -1167,11 +1300,14 @@ class Coords2dService:
             headers["ETag"] = etag
             headers["Cache-Control"] = cacheControl
 
-            return Response(
-                content=content,
-                media_type=mediaType,
-                headers=headers,
-            )
+            return {
+                "notModified": False,
+                "etag": etag,
+                "cacheControl": cacheControl,
+                "content": content,
+                "headers": headers,
+                "mediaType": mediaType,
+            }
         finally:
             if cacheLock is not None:
                 cacheLock.release()
