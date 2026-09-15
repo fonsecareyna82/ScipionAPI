@@ -1666,6 +1666,7 @@ class FakeProjectService:
             fast=True,
             quality=75,
             mapper=None,
+            ifNoneMatch=None,
     ):
         self.lastRenderCoords3dTomogramSliceCall = {
             "projectId": projectId,
