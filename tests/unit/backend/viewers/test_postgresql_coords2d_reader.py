@@ -405,6 +405,74 @@ def test_PostgresqlCoords2dReaderResolvesLegacyMicrographThroughSourceRelation()
     ]
 
 
+def test_PostgresqlCoords2dReaderHasOutputFetchesMetadataOnlyNoItems():
+    mapperCalls = []
+
+    class SetMapperStub:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            mapperCalls.append({
+                "projectId": projectId,
+                "protocolDbId": protocolDbId,
+                "outputName": outputName,
+                "limit": limit,
+                "offset": offset,
+            })
+
+            return {
+                "id": 33,
+                "setClassName": "SetOfCoordinates",
+                "itemClassName": "Coordinate",
+                "properties": {},
+                "setProperties": [],
+                "items": [],
+            }
+
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="outputCoordinates")
+    reader.setMapper = SetMapperStub()
+
+    assert reader.hasOutput() is True
+
+    # A second call (e.g. getMicrographImageInfo reusing the same reader,
+    # as the service layer does) must not trigger a second fetch.
+    assert reader._getStoredSetMeta() is not None
+
+    assert mapperCalls == [
+        {
+            "projectId": 7,
+            "protocolDbId": 2,
+            "outputName": "outputCoordinates",
+            "limit": 0,
+            "offset": 0,
+        },
+    ]
+
+
+def test_PostgresqlCoords2dReaderGetStoredSetMetaReusesFullFetchIfAlreadyLoaded():
+    reader = PostgresqlCoords2dReader(db=object(), projectId=7, protocolId=2, outputName="outputCoordinates")
+
+    fullStoredSet = {
+        "id": 33,
+        "setClassName": "SetOfCoordinates",
+        "itemClassName": "Coordinate",
+        "properties": {},
+        "setProperties": [],
+        "items": [{"scipionItemId": 1, "values": {}}],
+    }
+
+    reader._storedSet = fullStoredSet
+
+    class ForbiddenSetMapper:
+        def getStoredSet(self, *args, **kwargs):
+            raise AssertionError(
+                "_getStoredSetMeta() must reuse an already-fetched full "
+                "storedSet instead of doing a second lightweight fetch"
+            )
+
+    reader.setMapper = ForbiddenSetMapper()
+
+    assert reader._getStoredSetMeta() is fullStoredSet
+
+
 def test_PostgresqlCoords2dReaderResolvesMicrographThroughInputGraph():
     mapperCalls = []
 

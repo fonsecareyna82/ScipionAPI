@@ -37,10 +37,11 @@ class PostgresqlCoords2dReader:
         self.outputName = outputName
         self.setMapper = ScipionSetPostgresqlMapper(db)
         self._storedSet = None
+        self._storedSetMeta = None
         self.lastSkipReason = None
 
     def hasOutput(self) -> bool:
-        storedSet = self._getStoredSet()
+        storedSet = self._getStoredSetMeta()
         return storedSet is not None and self._isCoords2dStoredSet(storedSet)
 
     def listMicrographs(self) -> Optional[Dict[str, Any]]:
@@ -136,7 +137,11 @@ class PostgresqlCoords2dReader:
     def getMicrographImageInfo(self, micId: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        storedSet = self._getStoredSet()
+        # This method never reads storedSet["items"] (it resolves the
+        # micrograph row via a separate source-relation/input-graph query),
+        # so it deliberately uses the lightweight metadata-only fetch
+        # instead of _getStoredSet() -- see _getStoredSetMeta().
+        storedSet = self._getStoredSetMeta()
         if storedSet is None:
             self.lastSkipReason = "stored_set_not_found"
             return None
@@ -307,6 +312,33 @@ class PostgresqlCoords2dReader:
                 outputName=self.outputName,
             )
         return self._storedSet
+
+    def _getStoredSetMeta(self) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the stored set's id/class/properties without its items.
+
+        For callers that only need the set's identity or properties (e.g.
+        hasOutput()'s existence/class check, getMicrographImageInfo()'s
+        pointer-reference resolution) -- never its coordinate items --
+        this avoids paying to load and JSON-deserialize every coordinate
+        in the whole set just to discard them. Passing limit=0 to
+        getStoredSetItems() (via the mapper's getStoredSet) is a cheap
+        no-op query, not a full scan.
+        """
+        if self._storedSet is not None:
+            # A full fetch already happened on this reader instance
+            # (e.g. listMicrographs()/listCoordinatesForMicrograph() ran
+            # first) -- reuse it instead of doing a second, redundant
+            # lightweight fetch.
+            self._storedSetMeta = self._storedSet
+        elif self._storedSetMeta is None:
+            self._storedSetMeta = self.setMapper.getStoredSet(
+                projectId=self.projectId,
+                protocolDbId=self.protocolId,
+                outputName=self.outputName,
+                limit=0,
+            )
+        return self._storedSetMeta
 
     def _isCoords2dStoredSet(self, storedSet: Dict[str, Any]) -> bool:
         classText = ("%s %s" % (
