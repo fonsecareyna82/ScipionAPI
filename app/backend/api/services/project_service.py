@@ -156,6 +156,19 @@ _VOLUME_SURFACE_CACHE_LOCK = threading.Lock()
 _VOLUME_SURFACE_CACHE = collections.OrderedDict()
 _VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
 _VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=3600"
+
+# Metadata table image-cell renders: keyed purely by request params (no
+# cheap single "source file" to stat upfront -- the column renderer may
+# decode a numpy array, an in-memory PIL object, or a path it only
+# resolves partway through rendering). Same tradeoff already accepted by
+# the caches above: the underlying row/column data is assumed stable for
+# the lifetime of a viewing session (a completed protocol's outputs don't
+# change), so the cache is not invalidated on external data changes -- it
+# just bounds itself via LRU eviction.
+_METADATA_IMAGE_CACHE_LOCK = threading.Lock()
+_METADATA_IMAGE_CACHE = collections.OrderedDict()
+_METADATA_IMAGE_CACHE_MAX_ITEMS = 512
+
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
 _VOLUME_SURFACE_MAX_TRIANGLES = 500_000
@@ -16342,6 +16355,164 @@ class ProjectService:
             "rowId": logicalId,
             "index": int(position),
         }
+
+    @staticmethod
+    def _buildMetadataImageCacheKey(
+            *,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            rowId,
+            rowIndex,
+            columnName: str,
+            size: int,
+            applyTransform: bool,
+            fmt: str,
+            sortBy: str,
+            asc: bool,
+    ):
+        return (
+            int(projectId),
+            int(protocolId),
+            str(outputName),
+            str(tableName),
+            None if rowId is None else str(rowId),
+            None if rowIndex is None else int(rowIndex),
+            str(columnName),
+            int(size),
+            bool(applyTransform),
+            str(fmt or "png").lower(),
+            str(sortBy or "id"),
+            bool(asc),
+        )
+
+    def _getCachedMetadataImageResponse(self, cacheKey) -> Optional[Response]:
+        with _METADATA_IMAGE_CACHE_LOCK:
+            cached = _METADATA_IMAGE_CACHE.get(cacheKey)
+            if cached is None:
+                return None
+
+            _METADATA_IMAGE_CACHE.move_to_end(cacheKey)
+
+        headers = dict(cached.get("headers") or {})
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+        headers["X-Preview-Cache"] = "hit"
+        self._exposeHeader(headers, "X-Preview-Cache")
+
+        return Response(
+            content=cached["body"],
+            media_type=cached.get("mediaType") or "image/png",
+            headers=headers,
+        )
+
+    def _storeCachedMetadataImageResponse(self, cacheKey, response: Response) -> Response:
+        body = getattr(response, "body", None)
+        if body is None:
+            return response
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        headers.pop("Content-Length", None)
+        mediaType = getattr(response, "media_type", None) or headers.get("content-type")
+
+        with _METADATA_IMAGE_CACHE_LOCK:
+            _METADATA_IMAGE_CACHE[cacheKey] = {
+                "body": bytes(body),
+                "headers": headers,
+                "mediaType": mediaType,
+            }
+            _METADATA_IMAGE_CACHE.move_to_end(cacheKey)
+
+            while len(_METADATA_IMAGE_CACHE) > _METADATA_IMAGE_CACHE_MAX_ITEMS:
+                _METADATA_IMAGE_CACHE.popitem(last=False)
+
+        response.headers["X-Preview-Cache"] = "miss"
+        self._exposeHeader(response.headers, "X-Preview-Cache")
+
+        return response
+
+    def renderMetadataImageCellCachedService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            rowId,
+            columnName: str,
+            size: int,
+            applyTransform: bool,
+            inline: bool,
+            fmt: str,
+            rowIndex=None,
+            mapper=None,
+            sortBy: str = "id",
+            asc: bool = True,
+            ifNoneMatch: Optional[str] = None,
+    ) -> Response:
+        """
+        Thin ETag/cache wrapper around renderMetadataImageCellService --
+        that method's rendering logic (row lookup, column renderer dispatch,
+        numpy/PIL/path normalization) stays untouched; this only adds
+        response caching and 304 support around it, keyed on the request
+        params (see _METADATA_IMAGE_CACHE above for why there's no file
+        mtime in the key).
+        """
+        cacheKey = self._buildMetadataImageCacheKey(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tableName=tableName,
+            rowId=rowId,
+            rowIndex=rowIndex,
+            columnName=columnName,
+            size=size,
+            applyTransform=applyTransform,
+            fmt=fmt,
+            sortBy=sortBy,
+            asc=asc,
+        )
+
+        etag = self._etagFromCacheKey(cacheKey)
+        if self._requestMatchesEtag(ifNoneMatch, etag):
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL,
+                },
+            )
+
+        cachedResponse = self._getCachedMetadataImageResponse(cacheKey)
+        if cachedResponse is not None:
+            cachedResponse.headers["ETag"] = etag
+            cachedResponse.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+            self._exposeHeader(cachedResponse.headers, "ETag")
+            return cachedResponse
+
+        response = self.renderMetadataImageCellService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tableName=tableName,
+            rowId=rowId,
+            columnName=columnName,
+            size=size,
+            applyTransform=applyTransform,
+            inline=inline,
+            fmt=fmt,
+            rowIndex=rowIndex,
+            mapper=mapper,
+            sortBy=sortBy,
+            asc=asc,
+        )
+
+        response = self._storeCachedMetadataImageResponse(cacheKey, response)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
+        self._exposeHeader(response.headers, "ETag")
+        return response
 
     def renderMetadataImageCellService(
             self,

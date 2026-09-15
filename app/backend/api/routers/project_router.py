@@ -3871,6 +3871,7 @@ def renderMetadataImageCell(
     ),
     sortBy: str = Query("id", description="Sort column for legacy positional image reads"),
     asc: bool = Query(True, description="Sort direction for positional image reads"),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3882,7 +3883,7 @@ def renderMetadataImageCell(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    resp = service.renderMetadataImageCellService(
+    resp = service.renderMetadataImageCellCachedService(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
@@ -3897,6 +3898,7 @@ def renderMetadataImageCell(
         sortBy=sortBy,
         asc=asc,
         mapper=mapper,
+        ifNoneMatch=ifNoneMatch,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))

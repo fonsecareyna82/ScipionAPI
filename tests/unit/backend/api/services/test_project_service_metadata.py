@@ -886,6 +886,68 @@ def test_RenderMetadataImageCellServiceReturnsPlaceholderWhenRowMissing(service,
     assert response.media_type == "image/png"
 
 
+def test_RenderMetadataImageCellCachedServiceCachesAndSupportsIfNoneMatch(service, monkeypatch):
+    columns = [FakeColumn("image", "Image", ImageRenderer())]
+    table = FakeTable(name="objects", alias="Particles", columns=columns)
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": []},
+        rowCounts={"objects": 0},
+        fileName="postgresql://project/1/protocol/10/output/outputParticles",
+    )
+
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    innerCalls: list = []
+    realRenderMetadataImageCellService = service.renderMetadataImageCellService
+
+    def countingRenderMetadataImageCellService(**kwargs):
+        innerCalls.append(kwargs)
+        return realRenderMetadataImageCellService(**kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "renderMetadataImageCellService",
+        countingRenderMetadataImageCellService,
+    )
+
+    callKwargs = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputParticles",
+        tableName="objects",
+        rowId=1,
+        rowIndex=None,
+        columnName="image",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        mapper=object(),
+    )
+
+    first = service.renderMetadataImageCellCachedService(**callKwargs)
+    assert len(innerCalls) == 1
+    assert first.headers["X-Preview-Cache"] == "miss"
+    etag = first.headers["ETag"]
+    assert etag
+
+    second = service.renderMetadataImageCellCachedService(**callKwargs)
+    assert len(innerCalls) == 1  # served from cache, not re-rendered
+    assert second.headers["X-Preview-Cache"] == "hit"
+    assert second.headers["ETag"] == etag
+    assert second.body == first.body
+
+    revalidated = service.renderMetadataImageCellCachedService(**callKwargs, ifNoneMatch=etag)
+    assert revalidated.status_code == 304
+    assert revalidated.headers["ETag"] == etag
+    assert len(innerCalls) == 1  # never re-rendered for a 304
+
+    # A different rowId is a different cache entry -- must render again.
+    service.renderMetadataImageCellCachedService(**{**callKwargs, "rowId": 2})
+    assert len(innerCalls) == 2
+
+
 def test_RenderMetadataImageCellServiceResolvesProtocolIdForRelativeImagePaths(
     service,
     monkeypatch,
