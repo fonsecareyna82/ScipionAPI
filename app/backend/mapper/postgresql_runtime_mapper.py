@@ -5230,6 +5230,9 @@ class PostgresqlRuntimeMapper(Mapper):
             parent=protocol,
         )
 
+        if persistenceSet is not runtimeSet:
+            persistenceSet.write()
+
         report = (
             self.setMapper
             .finalizeRuntimeSetOutput(

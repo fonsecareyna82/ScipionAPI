@@ -400,6 +400,58 @@ def test_PopulatedNativeSetUsesFreshIdentityAfterSnapshotPreparation():
     )
 
 
+def test_FinalizePostgresqlOutputSetFlushesMetadataAliasBeforeFinalizing():
+    events = []
+
+    class ProtocolStub:
+        def getObjId(self):
+            return 17
+
+    class SetMapperStub:
+        def finalizeRuntimeSetOutput(self, **kwargs):
+            events.append("finalize")
+            return {
+                "setId": 501,
+                "rootTableId": 601,
+                "runtimeObjectId": 91,
+                "outputName": kwargs["outputName"],
+                "properties": {"itemsCount": 10},
+            }
+
+    class RuntimeSetFactoryStub:
+        def _cacheRuntimeSet(self, runtimeSet):
+            events.append("cache")
+
+    mapper = object.__new__(PostgresqlRuntimeMapper)
+    mapper.projectId = 31
+    mapper.setMapper = SetMapperStub()
+    mapper.runtimeSetFactory = RuntimeSetFactoryStub()
+    mapper._resolveProtocolDbIdFromObject = lambda protocol: 700
+
+    canonicalSet = SnapshotSet()
+    canonicalSet.setObjId(91)
+    canonicalSet._postgresqlRuntimeInfo = {"outputName": "__postgresql_runtime_output_test"}
+    canonicalSet._size.set(0)
+    canonicalSet._idCount = 0
+
+    runtimeAlias = SnapshotSet()
+    runtimeAlias.setObjId(91)
+    runtimeAlias._size.set(10)
+    runtimeAlias._idCount = 10
+    runtimeAlias.write = lambda properties=True: events.append("alias-write")
+
+    mapper.finalizePostgresqlOutputSet(
+        protocol=ProtocolStub(),
+        outputName="outputParticles",
+        runtimeSet=canonicalSet,
+        metadataSource=runtimeAlias,
+    )
+
+    assert events == ["alias-write", "finalize", "cache"]
+    assert canonicalSet.getSize() == 10
+    assert canonicalSet._idCount == 10
+
+
 def test_BindPostgresqlOutputSetAliasPreservesCanonicalStorage():
     class ProtocolStub:
         def getObjId(self):
