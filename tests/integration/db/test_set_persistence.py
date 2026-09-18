@@ -1539,4 +1539,158 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
         )
 
 
+def test_NestedSetParentUpdatePreservesBufferedChildren(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    writerMapper = PostgresqlFlatMapper(postgresqlIntegrationDb)
+    suffix = uuid4().hex
 
+    userId = None
+    projectId = None
+    readerDb = None
+    runtimeSet = None
+    nestedRuntimeSet = None
+
+    try:
+        userId = writerMapper.insertUser(
+            email="nested-parent-update-%s@example.com" % suffix,
+            hashedPassword="integration-test",
+            firstName="Nested",
+            lastName="Parent Update",
+            institution=None,
+            role="user",
+            isActive=True,
+            isVerified=True,
+            verificationCode="integration-test",
+        )
+
+        projectId = writerMapper.insertProject(
+            ownerId=userId,
+            name="PostgreSQL nested parent update %s" % suffix,
+            description="Nested Set buffered-child regression test.",
+            status="active",
+        )
+
+        protocolId = 2
+        protocolDbId = writerMapper.saveProtocol({
+            "info": {
+                "protocolId": protocolId,
+                "projectId": projectId,
+                "protocolClassName": "NestedParentUpdateProtocol",
+                "status": "running",
+            },
+            "values": {},
+            "parentIds": [],
+            "childIds": [],
+        })
+
+        outputName = "outputNestedItems"
+
+        nestedSet = SourceNestedSetStub([
+            _buildItem(itemId=1, score=0.25, code="CHILD_01"),
+            _buildItem(itemId=2, score=0.75, code="CHILD_02"),
+        ])
+        nestedSet.setObjId(7)
+        nestedSet._name.set("SERIES_07")
+
+        sourceSet = SourceParentOutputSetStub([nestedSet])
+        sourceSet.setObjId(1_000_004)
+
+        setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+        storeResult = setMapper.storeSet(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            scipionSet=sourceSet,
+        )
+        setId = int(storeResult["setId"])
+
+        readerDb = _openPostgresqlIntegrationDb(postgresqlMigratedEnv)
+        readerSetMapper = ScipionSetPostgresqlMapper(readerDb)
+        outputInfo = _loadRuntimeOutputInfo(
+            setMapper=readerSetMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+        )
+
+        runtimeSet = PostgresqlRuntimeSetFactory().build(
+            db=readerDb,
+            parent=ParentProtocolStub(protocolId),
+            outputName=outputName,
+            outputInfo=outputInfo,
+            classes={
+                "ParentOutputSetStub": ParentOutputSetStub,
+                "NestedSetStub": NestedSetStub,
+                "ItemStub": ItemStub,
+            },
+            cache=False,
+        )
+
+        runtimeSet.enablePostgresqlWrite()
+        nestedRuntimeSet = runtimeSet.getFirstItem()
+        nestedRuntimeSet.enableAppend()
+
+        bufferedChild = _buildItem(
+            itemId=3,
+            score=0.95,
+            code="CHILD_03",
+        )
+
+        nestedRuntimeSet.append(bufferedChild)
+
+        pendingItems = list(
+            getattr(
+                nestedRuntimeSet._getMapper(),
+                "_pendingAppendItems",
+                [],
+            )
+        )
+        assert len(pendingItems) == 1
+
+        runtimeSet.update(nestedRuntimeSet)
+
+        childTable = next(
+            table
+            for table in readerSetMapper.listStoredSetTables(setId)
+            if table["tableKind"] == "child"
+            and int(table["parentItemId"]) == 7
+        )
+
+        childRows = readerSetMapper.getStoredSetTableItems(
+            int(childTable["id"])
+        )
+
+        assert [row["scipionItemId"] for row in childRows] == [1, 2, 3]
+        assert childRows[2]["parentItemId"] == 7
+        assert childRows[2]["values"]["_score"] == 0.95
+        assert childRows[2]["values"]["_code"] == "CHILD_03"
+
+        reloadedNestedSet = runtimeSet.getFirstItem()
+        reloadedChildren = list(reloadedNestedSet.iterItems())
+
+        assert [child.getObjId() for child in reloadedChildren] == [1, 2, 3]
+        assert reloadedNestedSet.getSize() == 3
+
+    finally:
+        if nestedRuntimeSet is not None:
+            nestedRuntimeSet.close()
+
+        if runtimeSet is not None:
+            runtimeSet.close()
+
+        if readerDb is not None:
+            readerDb.close()
+
+        if projectId is not None and userId is not None:
+            writerMapper.deleteProject(
+                projectId=projectId,
+                ownerId=userId,
+            )
+
+        if userId is not None:
+            postgresqlIntegrationDb.execute(
+                "DELETE FROM users WHERE id = %s",
+                (userId,),
+            )

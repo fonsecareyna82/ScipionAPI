@@ -3489,5 +3489,73 @@ def test_RuntimeSetCreateCopyUsesNativeSetClass(tmp_path):
         PostgresqlRuntimeSetMixin,
     )
 
+def test_NestedSynchronizerFlushesWritableMapperBeforeResync(monkeypatch):
+    _, runtimeSet = buildNestedRuntimeSet()
+    nestedSet = runtimeSet.getFirstItem()
+    events = []
 
+    class BufferedNestedMapper:
+        def isWritable(self):
+            return True
 
+        def commit(self):
+            events.append("commit")
+
+        def close(self):
+            events.append("close")
+
+    nestedSet._mapper = BufferedNestedMapper()
+
+    def fakeEnsureRuntimeNestedSetTable(
+            self,
+            setId,
+            rootTableId,
+            parentSet,
+            parentItemId,
+            batchSize=1000,
+    ):
+        events.append("ensure")
+        return {
+            "setId": int(setId),
+            "rootTableId": int(rootTableId),
+            "tableId": 91,
+            "parentItemId": int(parentItemId),
+            "itemClassName": "ExampleChildItem",
+            "properties": {
+                "itemsCount": 2,
+                "maxItemId": 2,
+            },
+            "table": {
+                "id": 91,
+                "setId": int(setId),
+                "tableKind": "child",
+                "parentTableId": int(rootTableId),
+                "parentItemId": int(parentItemId),
+                "itemClassName": "ExampleChildItem",
+                "properties": {},
+            },
+        }
+
+    monkeypatch.setattr(
+        ScipionSetPostgresqlMapper,
+        "ensureRuntimeNestedSetTable",
+        fakeEnsureRuntimeNestedSetTable,
+    )
+
+    monkeypatch.setattr(
+        PostgresqlRuntimeSetFactory,
+        "_attachLogicalTableMapper",
+        lambda *args, **kwargs: None,
+    )
+
+    rootMapper = runtimeSet._getMapper()
+    rootMapper.nestedItemSynchronizer(
+        nestedSet,
+        nestedSet.getObjId(),
+    )
+
+    assert events == [
+        "commit",
+        "ensure",
+        "close",
+    ]

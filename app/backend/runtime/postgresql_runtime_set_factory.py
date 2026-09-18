@@ -1931,6 +1931,32 @@ class PostgresqlRuntimeSetFactory:
                 parentItemId
             )
 
+            currentMapper = getattr(
+                item,
+                "_mapper",
+                None,
+            )
+
+            if currentMapper is not None:
+                isWritable = getattr(
+                    currentMapper,
+                    "isWritable",
+                    None,
+                )
+
+                if (
+                        callable(isWritable)
+                        and isWritable()
+                ):
+                    commitMapper = getattr(
+                        currentMapper,
+                        "commit",
+                        None,
+                    )
+
+                    if callable(commitMapper):
+                        commitMapper()
+
             tableInfo = (
                 setMapper
                 .ensureRuntimeNestedSetTable(
