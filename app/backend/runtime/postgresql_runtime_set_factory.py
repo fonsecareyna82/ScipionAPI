@@ -25,6 +25,7 @@
 # ******************************************************************************
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
 
@@ -1300,18 +1301,24 @@ class PostgresqlRuntimeSetMixin:
                 "PostgreSQL runtime Set is read-only."
             )
 
+        writeStarted = time.perf_counter()
+        superStarted = time.perf_counter()
         result = super().write(
             properties=properties
         )
+        superSeconds = time.perf_counter() - superStarted
 
         mapper = self._getMapper()
+        countStarted = time.perf_counter()
         self._size.set(
             mapper.count()
         )
         self._idCount = (
             mapper.maxId()
         )
+        countSeconds = time.perf_counter() - countStarted
 
+        print("PERF_PGSET write_total=%.6f super_write=%.6f count_max=%.6f size=%d max_id=%s" % (time.perf_counter() - writeStarted, superSeconds, countSeconds, self._size.get(), self._idCount))
         return result
 
 
