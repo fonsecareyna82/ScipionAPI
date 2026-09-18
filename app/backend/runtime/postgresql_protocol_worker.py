@@ -1041,6 +1041,36 @@ class RuntimePostgresqlProtocolWorker:
                     exc_info=True,
                 )
 
+    def releaseCurrentThreadPostgresqlResources(self) -> None:
+        """
+        Release the current worker thread's PostgreSQL connection before
+        blocking. PostgresqlDb recreates it lazily on the next database access.
+        """
+        mapper = self.mapper
+        if mapper is None:
+            return
+
+        db = getattr(mapper, "db", None)
+        closeCurrentThreadResources = getattr(
+            db,
+            "closeCurrentThreadResources",
+            None,
+        )
+
+        if not callable(closeCurrentThreadResources):
+            return
+
+        try:
+            closeCurrentThreadResources()
+        except Exception:
+            logger.warning(
+                "Could not release PostgreSQL worker-thread resources. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+                exc_info=True,
+            )
+
     def cleanupCompatibilitySqliteSnapshots(self) -> Dict[str, Any]:
         try:
             report = PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
@@ -1276,7 +1306,7 @@ class RuntimePostgresqlProtocolWorker:
         try:
             # Subscribe before reading dependencies.
             # This avoids losing an event between the
-            # initial readiness check and LISTEN.
+            # initial readiness check and the Valkey subscription.
             listener.open()
 
             parentRows = (
@@ -1352,7 +1382,7 @@ class RuntimePostgresqlProtocolWorker:
             )
 
             logger.debug(
-                "Listening for PostgreSQL "
+                "Listening for Valkey "
                 "dependency events. "
                 "projectId=%s protocolId=%s "
                 "watchedProtocolIds=%s "
@@ -1373,7 +1403,7 @@ class RuntimePostgresqlProtocolWorker:
             listener.close()
 
             logger.warning(
-                "PostgreSQL runtime event "
+                "Valkey runtime event "
                 "listener is unavailable. "
                 "The scheduler will use its "
                 "periodic fallback. "
@@ -1410,7 +1440,7 @@ class RuntimePostgresqlProtocolWorker:
 
         except Exception:
             logger.warning(
-                "PostgreSQL dependency event "
+                "Valkey dependency event "
                 "wait failed. Falling back to "
                 "periodic checking. "
                 "projectId=%s protocolId=%s",
@@ -2204,6 +2234,8 @@ class RuntimePostgresqlProtocolWorker:
             if waitSeconds <= 0:
                 continue
 
+            self.releaseCurrentThreadPostgresqlResources()
+
             dependencyEvent = (
                 self.waitForDependencyChange(
                     waitSeconds
@@ -2212,7 +2244,7 @@ class RuntimePostgresqlProtocolWorker:
 
             if dependencyEvent is not None:
                 logger.debug(
-                    "Received PostgreSQL "
+                    "Received runtime "
                     "dependency event. "
                     "projectId=%s protocolId=%s "
                     "event=%s",
@@ -3454,6 +3486,8 @@ class RuntimePostgresqlProtocolWorker:
                 )
 
                 lastWaitLogAt = now
+
+            self.releaseCurrentThreadPostgresqlResources()
 
             time.sleep(
                 pollSeconds

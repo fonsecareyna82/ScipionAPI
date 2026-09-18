@@ -1398,6 +1398,49 @@ def test_WaitForDependencyChangeUsesEventListener():
     ]
 
 
+def test_WaitUntilReadyReleasesPostgresqlResourcesBeforeBlocking(monkeypatch):
+    events = []
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+
+    waitingState = {
+        "failedParents": [],
+        "pendingParents": [{
+            "protocolDbId": 20,
+            "protocolId": 2,
+            "status": "running",
+            "reason": "dependency_not_finished",
+        }],
+        "missingInputs": [],
+        "missingPrerequisites": [],
+        "inputRestoreErrors": [],
+        "validationErrors": [],
+    }
+    readyState = {
+        "failedParents": [],
+        "pendingParents": [],
+        "missingInputs": [],
+        "missingPrerequisites": [],
+        "inputRestoreErrors": [],
+        "validationErrors": [],
+    }
+    readinessStates = iter([waitingState, readyState])
+
+    worker.getSchedulingProtocolLabel = lambda: "Protocol"
+    worker.openDependencyEventListener = lambda: events.append("listener")
+    worker.getReadinessState = lambda: next(readinessStates)
+    worker.releaseCurrentThreadPostgresqlResources = lambda: events.append("release")
+    worker.waitForDependencyChange = lambda seconds: events.append(("wait", seconds))
+
+    monkeypatch.setenv("SCIPION_POSTGRESQL_EVENT_WAIT_SECONDS", "1")
+    worker.waitUntilReady()
+
+    assert events == [
+        "listener",
+        "release",
+        ("wait", 1.0),
+    ]
+
+
 def test_StreamingProtocolWaitsForScheduledParent():
     worker = buildWorker(
         streaming=True,
@@ -2145,6 +2188,74 @@ def test_WaitForUserExecutionSlotWaitsUntilRunningSlotIsAvailable(
         worker.protocol.getStatus()
         == "running"
     )
+
+
+def test_WaitForUserExecutionSlotReleasesPostgresqlResourcesWhileSleeping(monkeypatch):
+    slotUsages = iter([
+        {"count": 2, "executionRunning": False},
+        {"count": 1, "executionRunning": False},
+    ])
+    events = []
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return {
+                "status": "launched",
+                "params": {
+                    "_scipionWebRuntime": {
+                        "launchedByUserId": 7,
+                        "executionId": "execution-123",
+                    },
+                },
+            }
+
+        @contextmanager
+        def protocolExecutionUserLock(self, userId):
+            yield
+
+        def getRunningExecutionSlotUsageForUser(self, userId, executionId):
+            return next(slotUsages)
+
+    class ProtocolStub:
+        def __init__(self):
+            self.status = "launched"
+
+        def getStatus(self):
+            return self.status
+
+        def setStatus(self, status):
+            self.status = status
+
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(self, mapper, currentUser):
+            return {"maxConcurrentRunsPerUser": 2}
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+    worker.storeProtocol = lambda: None
+    worker.releaseCurrentThreadPostgresqlResources = lambda: events.append("release")
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "SettingsService",
+        SettingsServiceStub,
+    )
+    monkeypatch.setenv(
+        "SCIPION_POSTGRESQL_EXECUTION_SLOT_POLL_SECONDS",
+        "0.25",
+    )
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.time,
+        "sleep",
+        lambda seconds: events.append(("sleep", seconds)),
+    )
+
+    assert worker.waitForUserExecutionSlot() is True
+    assert events == [
+        "release",
+        ("sleep", 0.25),
+    ]
 
 
 def test_WaitForUserExecutionSlotReusesRunningWorkflowExecutionSlot(

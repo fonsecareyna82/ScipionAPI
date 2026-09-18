@@ -280,6 +280,12 @@ Dependency waiting happens before execution-slot acquisition. A protocol
 waiting for inputs or prerequisites therefore does not consume an execution
 slot.
 
+Workers blocked on dependency readiness or execution-slot availability must
+release their current PostgreSQL thread-local connection before sleeping or
+blocking. Dependency wake-up notifications use Valkey Pub/Sub, with periodic
+PostgreSQL readiness checks as the correctness fallback. Waiting workers must
+not retain dedicated PostgreSQL LISTEN connections.
+
 For protocols submitted to an external queue, queue submission and scheduler
 waiting do not consume a user execution slot. The actual PostgreSQL execute
 worker acquires the slot before protocol execution begins.

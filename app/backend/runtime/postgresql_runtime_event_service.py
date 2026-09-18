@@ -26,14 +26,11 @@
 import json
 import logging
 import os
-import select
+import time
 from typing import Any, Dict, Iterable, Optional
 
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extensions import (
-    ISOLATION_LEVEL_AUTOCOMMIT,
-)
+from redis import Redis
+
 
 
 logger = logging.getLogger(__name__)
@@ -70,7 +67,7 @@ def _toOptionalInt(
 
 class PostgresqlRuntimeEventPublisher:
     """
-    Publish non-critical PostgreSQL runtime events.
+    Publish non-critical runtime events through Valkey.
 
     Event delivery is only an optimization. A notification failure must
     never fail protocol persistence or execution because workers retain
@@ -92,192 +89,166 @@ class PostgresqlRuntimeEventPublisher:
             return False
 
         event = {
-            "eventType": str(
-                eventType
-            ),
-            "projectId": int(
-                projectId
-            ),
+            "eventType": str(eventType),
+            "projectId": int(projectId),
         }
 
-        normalizedProtocolId = (
-            _toOptionalInt(
-                protocolId
-            )
-        )
-
-        normalizedProtocolDbId = (
-            _toOptionalInt(
-                protocolDbId
-            )
-        )
+        normalizedProtocolId = _toOptionalInt(protocolId)
+        normalizedProtocolDbId = _toOptionalInt(protocolDbId)
 
         if normalizedProtocolId is not None:
-            event["protocolId"] = (
-                normalizedProtocolId
-            )
+            event["protocolId"] = normalizedProtocolId
 
         if normalizedProtocolDbId is not None:
-            event["protocolDbId"] = (
-                normalizedProtocolDbId
-            )
+            event["protocolDbId"] = normalizedProtocolDbId
 
         for key, value in eventData.items():
             if value is not None:
                 event[key] = value
 
-        channel = buildRuntimeEventChannel(
-            projectId
-        )
-
+        channel = buildRuntimeEventChannel(projectId)
         payload = json.dumps(
             event,
             ensure_ascii=False,
-            separators=(
-                ",",
-                ":",
-            ),
+            separators=(",", ":"),
             default=str,
         )
 
-        try:
-            db.execute(
-                """
-                SELECT pg_notify(
-                    %s,
-                    %s
-                )
-                """,
-                (
-                    channel,
-                    payload,
-                ),
-            )
+        brokerUrl = (
+            os.environ.get("BROKER_URL")
+            or "redis://localhost:6379/0"
+        ).strip()
+        client = None
 
+        try:
+            client = Redis.from_url(brokerUrl, decode_responses=True)
+            client.publish(channel, payload)
             return True
 
         except Exception:
             logger.warning(
-                "Could not publish PostgreSQL "
-                "runtime event. "
-                "projectId=%s eventType=%s "
-                "protocolId=%s "
-                "protocolDbId=%s",
+                "Could not publish Valkey runtime event. "
+                "projectId=%s eventType=%s protocolId=%s protocolDbId=%s",
                 projectId,
                 eventType,
                 protocolId,
                 protocolDbId,
                 exc_info=True,
             )
-
-            connection = getattr(
-                db,
-                "conn",
-                None,
-            )
-
-            if connection is not None:
-                try:
-                    connection.rollback()
-                except Exception:
-                    pass
-
             return False
+
+        finally:
+            if client is not None:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
 
 class PostgresqlRuntimeEventListener:
     """
-    Listen for dependency changes in one PostgreSQL project.
+    Listen for dependency changes in one PostgreSQL project through Valkey.
 
-    A dedicated autocommit connection is required because the worker's
-    normal mapper connection continues being used for runtime queries.
+    Waiting workers use Valkey Pub/Sub so they do not retain dedicated
+    PostgreSQL LISTEN connections while blocked.
     """
 
     def __init__(
             self,
             *,
             projectId: int,
-            databaseUrl: Optional[str] = None,
+            brokerUrl: Optional[str] = None,
     ):
-        self.projectId = int(
-            projectId
-        )
-
-        self.databaseUrl = (
-            databaseUrl
-            or os.environ.get(
-                "DATABASE_URL"
-            )
-        )
-
-        self.channel = (
-            buildRuntimeEventChannel(
-                self.projectId
-            )
-        )
-
-        self.connection = None
-        self.cursor = None
-
+        self.projectId = int(projectId)
+        self.brokerUrl = (
+            brokerUrl
+            or os.environ.get("BROKER_URL")
+            or "redis://localhost:6379/0"
+        ).strip()
+        self.channel = buildRuntimeEventChannel(self.projectId)
+        self.client = None
+        self.pubsub = None
         self.watchedProtocolIds = set()
         self.watchedProtocolDbIds = set()
 
-    def open(
-            self,
-    ) -> None:
-        if self.connection is not None:
+    def open(self) -> None:
+        if self.pubsub is not None:
             return
 
-        if not self.databaseUrl:
-            raise RuntimeError(
-                "DATABASE_URL is required "
-                "to listen for PostgreSQL "
-                "runtime events."
+        client = Redis.from_url(self.brokerUrl, decode_responses=True)
+        pubsub = client.pubsub(ignore_subscribe_messages=False)
+
+        try:
+            pubsub.subscribe(self.channel)
+            self._waitForSubscription(pubsub)
+        except Exception:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            raise
+
+        self.client = client
+        self.pubsub = pubsub
+
+    def _waitForSubscription(self, pubsub) -> None:
+        deadline = time.monotonic() + 5.0
+
+        while True:
+            remainingSeconds = max(0.0, deadline - time.monotonic())
+            message = pubsub.get_message(
+                ignore_subscribe_messages=False,
+                timeout=remainingSeconds,
             )
 
-        connection = psycopg2.connect(
-            self.databaseUrl
-        )
-
-        connection.set_isolation_level(
-            ISOLATION_LEVEL_AUTOCOMMIT
-        )
-
-        cursor = connection.cursor()
-
-        cursor.execute(
-            sql.SQL(
-                "LISTEN {}"
-            ).format(
-                sql.Identifier(
-                    self.channel
+            if message is None:
+                raise TimeoutError(
+                    "Timed out subscribing to Valkey runtime event channel %s."
+                    % self.channel
                 )
-            )
-        )
 
-        self.connection = connection
-        self.cursor = cursor
+            messageType = str(message.get("type") or "").strip().lower()
+            channel = message.get("channel")
+            if isinstance(channel, bytes):
+                channel = channel.decode("utf-8")
 
-    def close(
-            self,
-    ) -> None:
-        cursor = self.cursor
-        connection = self.connection
+            if messageType == "subscribe" and str(channel) == self.channel:
+                return
 
-        self.cursor = None
-        self.connection = None
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "Timed out subscribing to Valkey runtime event channel %s."
+                    % self.channel
+                )
 
-        if cursor is not None:
+    def close(self) -> None:
+        pubsub = self.pubsub
+        client = self.client
+        self.pubsub = None
+        self.client = None
+
+        if pubsub is not None:
             try:
-                cursor.close()
+                pubsub.close()
             except Exception:
                 pass
 
-        if connection is not None:
-            try:
-                connection.close()
-            except Exception:
-                pass
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def setWatchedProtocols(
             self,
@@ -287,150 +258,78 @@ class PostgresqlRuntimeEventListener:
     ) -> None:
         self.watchedProtocolIds = {
             protocolId
-            for protocolId in (
-                _toOptionalInt(value)
-                for value
-                in protocolIds or []
-            )
+            for protocolId in (_toOptionalInt(value) for value in protocolIds or [])
             if protocolId is not None
         }
-
         self.watchedProtocolDbIds = {
             protocolDbId
-            for protocolDbId in (
-                _toOptionalInt(value)
-                for value
-                in protocolDbIds or []
-            )
+            for protocolDbId in (_toOptionalInt(value) for value in protocolDbIds or [])
             if protocolDbId is not None
         }
 
-    def isRelevantEvent(
-            self,
-            event: Dict[str, Any],
-    ) -> bool:
+    def isRelevantEvent(self, event: Dict[str, Any]) -> bool:
         try:
-            eventProjectId = int(
-                event.get(
-                    "projectId"
-                )
-            )
-
-        except (
-                TypeError,
-                ValueError,
-        ):
+            eventProjectId = int(event.get("projectId"))
+        except (TypeError, ValueError):
             return False
 
         if eventProjectId != self.projectId:
             return False
 
-        if (
-                not self.watchedProtocolIds
-                and not self.watchedProtocolDbIds
-        ):
+        if not self.watchedProtocolIds and not self.watchedProtocolDbIds:
             return True
 
-        eventProtocolId = (
-            _toOptionalInt(
-                event.get(
-                    "protocolId"
-                )
-            )
-        )
-
-        eventProtocolDbId = (
-            _toOptionalInt(
-                event.get(
-                    "protocolDbId"
-                )
-            )
-        )
+        eventProtocolId = _toOptionalInt(event.get("protocolId"))
+        eventProtocolDbId = _toOptionalInt(event.get("protocolDbId"))
 
         return (
-            eventProtocolId
-            in self.watchedProtocolIds
-            or eventProtocolDbId
-            in self.watchedProtocolDbIds
+            eventProtocolId in self.watchedProtocolIds
+            or eventProtocolDbId in self.watchedProtocolDbIds
         )
 
-    def _popRelevantNotification(
-            self,
-    ) -> Optional[Dict[str, Any]]:
-        connection = self.connection
-
-        if connection is None:
+    def _decodeMessage(self, message) -> Optional[Dict[str, Any]]:
+        if not isinstance(message, dict):
             return None
 
-        while connection.notifies:
-            notification = (
-                connection.notifies.pop(0)
+        if message.get("type") not in {"message", "pmessage"}:
+            return None
+
+        payload = message.get("data")
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+
+        try:
+            event = json.loads(payload)
+        except Exception:
+            logger.debug(
+                "Ignoring malformed Valkey runtime notification: %s",
+                payload,
             )
+            return None
 
-            try:
-                event = json.loads(
-                    notification.payload
-                )
-
-            except Exception:
-                logger.debug(
-                    "Ignoring malformed PostgreSQL "
-                    "runtime notification: %s",
-                    notification.payload,
-                )
-
-                continue
-
-            if (
-                    isinstance(
-                        event,
-                        dict,
-                    )
-                    and self.isRelevantEvent(
-                        event
-                    )
-            ):
-                return event
+        if isinstance(event, dict) and self.isRelevantEvent(event):
+            return event
 
         return None
 
-    def wait(
-            self,
-            timeoutSeconds: float,
-    ) -> Optional[Dict[str, Any]]:
+    def wait(self, timeoutSeconds: float) -> Optional[Dict[str, Any]]:
         self.open()
+        timeoutSeconds = max(0.0, float(timeoutSeconds or 0))
+        deadline = time.monotonic() + timeoutSeconds
 
-        queuedEvent = (
-            self
-            ._popRelevantNotification()
-        )
+        while True:
+            remainingSeconds = max(0.0, deadline - time.monotonic())
+            message = self.pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=remainingSeconds,
+            )
 
-        if queuedEvent is not None:
-            return queuedEvent
+            if message is None:
+                return None
 
-        timeoutSeconds = max(
-            0.0,
-            float(
-                timeoutSeconds
-                or 0
-            ),
-        )
+            event = self._decodeMessage(message)
+            if event is not None:
+                return event
 
-        readable, _, _ = select.select(
-            [
-                self.connection,
-            ],
-            [],
-            [],
-            timeoutSeconds,
-        )
-
-        if not readable:
-            return None
-
-        self.connection.poll()
-
-        return (
-            self
-            ._popRelevantNotification()
-        )
+            if time.monotonic() >= deadline:
+                return None
