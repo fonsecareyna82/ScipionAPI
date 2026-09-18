@@ -50,6 +50,8 @@ class PostgresqlSetRuntimeMapper:
     LOGICAL_ITEMS_TABLE = "scipion_set_table_items"
     LOGICAL_COLUMNS_TABLE = "scipion_set_table_columns"
 
+    BULK_APPEND_SIZE = 1000
+
     STREAMING_CREATION_EXPRESSION = (
         "("
         "TIMESTAMP '2000-01-01 00:00:00' "
@@ -906,9 +908,16 @@ class PostgresqlSetRuntimeMapper:
         )
 
         with self.db.transaction():
-            for serialized in pendingItems:
-                self._upsertSerializedItem(
-                    serialized
+            for offset in range(
+                    0,
+                    len(pendingItems),
+                    self.BULK_APPEND_SIZE,
+            ):
+                self._bulkUpsertSerializedItems(
+                    pendingItems[
+                        offset:
+                        offset + self.BULK_APPEND_SIZE
+                    ]
                 )
 
             self._refreshSetCounters()
@@ -918,6 +927,73 @@ class PostgresqlSetRuntimeMapper:
         ]
 
         return True
+
+    def _bulkUpsertSerializedItems(
+            self,
+            serializedItems,
+    ) -> None:
+        if not serializedItems:
+            return
+
+        canonicalRows = []
+        logicalRows = []
+
+        for serialized in serializedItems:
+            itemId = int(serialized["scipionItemId"])
+            enabled = bool(serialized.get("enabled", True))
+            label = serialized.get("label")
+            comment = serialized.get("comment")
+            creation = serialized.get("creation")
+            jsonValues = json.dumps(serialized.get("values") or {}, default=str)
+
+            if self.setId is not None:
+                canonicalRows.append((int(self.setId), itemId, enabled, label, comment, creation, jsonValues))
+                logicalRows.append((int(self.rootTableId), itemId, None, enabled, label, comment, creation, jsonValues))
+            else:
+                logicalRows.append((int(self.tableId), itemId, int(self.parentItemId), enabled, label, comment, creation, jsonValues))
+
+        if canonicalRows:
+            self.db.executeValues(
+                """
+                INSERT INTO scipion_set_items (
+                    "setId", "scipionItemId", enabled, label, comment, creation, "values"
+                )
+                VALUES %s
+                ON CONFLICT ON CONSTRAINT ux_scipion_set_items_set_item
+                DO UPDATE SET
+                    enabled = EXCLUDED.enabled,
+                    label = EXCLUDED.label,
+                    comment = EXCLUDED.comment,
+                    creation = EXCLUDED.creation,
+                    "values" = EXCLUDED."values",
+                    "updatedAt" = NOW()
+                """,
+                canonicalRows,
+                template="(%s, %s, %s, %s, %s, %s, %s::jsonb)",
+                commit=False,
+            )
+
+        self.db.executeValues(
+            """
+            INSERT INTO scipion_set_table_items (
+                "tableId", "scipionItemId", "parentItemId", enabled,
+                label, comment, creation, "values"
+            )
+            VALUES %s
+            ON CONFLICT ON CONSTRAINT ux_scipion_set_table_items_table_item
+            DO UPDATE SET
+                "parentItemId" = EXCLUDED."parentItemId",
+                enabled = EXCLUDED.enabled,
+                label = EXCLUDED.label,
+                comment = EXCLUDED.comment,
+                creation = EXCLUDED.creation,
+                "values" = EXCLUDED."values",
+                "updatedAt" = NOW()
+            """,
+            logicalRows,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            commit=False,
+        )
 
     def insert(
             self,

@@ -145,6 +145,7 @@ class WritableFakeDb(FakeDb):
             nextItemId
         )
         self.executions = []
+        self.valueExecutions = []
         self.transactionCalls = 0
         self.conn = FakeConnection()
 
@@ -210,6 +211,22 @@ class WritableFakeDb(FakeDb):
                 str(query).split()
             ),
             "params": params,
+            "commit": commit,
+        })
+
+        return None
+
+    def executeValues(
+            self,
+            query,
+            values,
+            template=None,
+            commit=True,
+    ):
+        self.valueExecutions.append({
+            "query": " ".join(str(query).split()),
+            "values": list(values),
+            "template": template,
             "commit": commit,
         })
 
@@ -1326,11 +1343,7 @@ def test_QueuedAppendsFlushInSingleTransaction():
     assert mapper.queueAppendItem(firstItem) == 14
     assert mapper.queueAppendItem(secondItem) == 15
     assert db.transactionCalls == 0
-    assert not any(
-        "INSERT INTO scipion_set_items"
-        in call["query"]
-        for call in db.executions
-    )
+    assert db.valueExecutions == []
 
     firstItem.setObjId(140)
     secondItem.setObjId(150)
@@ -1338,26 +1351,15 @@ def test_QueuedAppendsFlushInSingleTransaction():
     mapper.commit()
 
     assert db.transactionCalls == 1
+    assert len(db.valueExecutions) == 2
 
-    canonicalIds = [
-        call["params"][1]
-        for call in db.executions
-        if "INSERT INTO scipion_set_items" in call["query"]
-    ]
-    logicalIds = [
-        call["params"][1]
-        for call in db.executions
-        if "INSERT INTO scipion_set_table_items" in call["query"]
-    ]
+    canonicalInsert = db.valueExecutions[0]
+    logicalInsert = db.valueExecutions[1]
 
-    assert canonicalIds == [
-        14,
-        15,
-    ]
-    assert logicalIds == [
-        14,
-        15,
-    ]
+    assert "INSERT INTO scipion_set_items" in canonicalInsert["query"]
+    assert "INSERT INTO scipion_set_table_items" in logicalInsert["query"]
+    assert [row[1] for row in canonicalInsert["values"]] == [14, 15]
+    assert [row[1] for row in logicalInsert["values"]] == [14, 15]
 
     assert sum(
         "UPDATE scipion_sets"
@@ -1369,6 +1371,34 @@ def test_QueuedAppendsFlushInSingleTransaction():
         in call["query"]
         for call in db.executions
     ) == 1
+    assert mapper._pendingAppendItems == []
+
+
+def test_QueuedAppendsUseBoundedBulkChunks():
+    db = WritableFakeDb(
+        nextItemId=1002
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    for itemId in range(1, 1002):
+        assert mapper.queueAppendItem(FakeWritableItem(itemId=itemId)) == itemId
+
+    mapper.commit()
+
+    assert db.transactionCalls == 1
+    assert [len(call["values"]) for call in db.valueExecutions] == [1000, 1000, 1, 1]
+    assert sum("UPDATE scipion_sets" in call["query"] for call in db.executions) == 1
+    assert sum("UPDATE scipion_set_tables" in call["query"] for call in db.executions) == 1
     assert mapper._pendingAppendItems == []
 
 
