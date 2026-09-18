@@ -310,6 +310,7 @@ class PostgresqlSetRuntimeMapper:
         self._columns = self._loadColumns()
         self._itemSchemaReady = bool(self._columns)
         self._dynamicFieldValueTypes = {}
+        self._pendingAppendItems = []
 
     def _refreshLogicalTableScope(
             self,
@@ -860,6 +861,64 @@ class PostgresqlSetRuntimeMapper:
             itemId
         )
 
+    def queueAppendItem(
+            self,
+            item,
+    ):
+        """Queue an already identified item for the next commit."""
+        self._requireWritable()
+
+        if self.nestedItemSynchronizer is not None:
+            return None
+
+        itemId = self._getItemId(
+            item
+        )
+
+        if itemId is None:
+            return None
+
+        serialized = self._serializeItem(
+            item
+        )
+
+        self._ensureItemSchema(
+            item=item,
+            serialized=serialized,
+        )
+
+        self._pendingAppendItems.append(
+            serialized
+        )
+
+        return int(
+            itemId
+        )
+
+    def _flushPendingAppends(
+            self,
+    ) -> bool:
+        if not self._pendingAppendItems:
+            return False
+
+        pendingItems = list(
+            self._pendingAppendItems
+        )
+
+        with self.db.transaction():
+            for serialized in pendingItems:
+                self._upsertSerializedItem(
+                    serialized
+                )
+
+            self._refreshSetCounters()
+
+        del self._pendingAppendItems[
+            :len(pendingItems)
+        ]
+
+        return True
+
     def insert(
             self,
             item,
@@ -1211,6 +1270,10 @@ class PostgresqlSetRuntimeMapper:
 
     def commit(self) -> None:
         self._requireWritable()
+
+        if self._flushPendingAppends():
+            return
+
         self.db.conn.commit()
 
     def close(self) -> None:
@@ -1464,6 +1527,28 @@ class PostgresqlSetRuntimeMapper:
             serialized=serialized,
         )
 
+        self._upsertSerializedItem(
+            serialized
+        )
+
+        if (
+                self.setId is not None
+                and self.nestedItemSynchronizer
+                is not None
+        ):
+            self.nestedItemSynchronizer(
+                item,
+                int(
+                    serialized[
+                        "scipionItemId"
+                    ]
+                ),
+            )
+
+    def _upsertSerializedItem(
+            self,
+            serialized,
+    ) -> None:
         itemId = int(
             serialized[
                 "scipionItemId"
@@ -1506,15 +1591,6 @@ class PostgresqlSetRuntimeMapper:
                 creation=creation,
                 jsonValues=jsonValues,
             )
-
-            if (
-                    self.nestedItemSynchronizer
-                    is not None
-            ):
-                self.nestedItemSynchronizer(
-                    item,
-                    int(itemId),
-                )
 
         else:
             self._upsertLogicalItem(

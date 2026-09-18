@@ -921,6 +921,68 @@ def test_RuntimeSetAppendPreservesNativeImageMetadataHooks():
     assert runtimeSet._hasOddEven.get() is True
 
 
+def test_RuntimeSetBufferedAppendAvoidsPerItemCount():
+    class FakeBufferedMapper:
+        def __init__(self):
+            self.queuedIds = []
+            self.countCalls = 0
+
+        def isWritable(self):
+            return True
+
+        def queueAppendItem(self, item):
+            self.queuedIds.append(
+                item.getObjId()
+            )
+            return item.getObjId()
+
+        def appendItem(self, item):
+            raise AssertionError(
+                "Buffered append should not use appendItem()."
+            )
+
+        def count(self):
+            self.countCalls += 1
+            return 999
+
+    runtimeClass = type(
+        "ExampleRuntimeBufferedAppendSet",
+        (
+            PostgresqlRuntimeSetMixin,
+            ExampleAppendSet,
+        ),
+        {
+            "__module__": __name__,
+        },
+    )
+
+    runtimeSet = runtimeClass()
+    mapper = FakeBufferedMapper()
+
+    runtimeSet._mapper = mapper
+    runtimeSet._postgresqlWritable = True
+    runtimeSet._postgresqlSupportsNativeWrite = True
+
+    item = ExampleAppendItem(
+        dim=(128, 96, 1),
+        samplingRate=2.5,
+    )
+    item.setObjId(
+        17
+    )
+
+    runtimeSet.append(
+        item
+    )
+
+    assert mapper.queuedIds == [
+        17,
+    ]
+    assert mapper.countCalls == 0
+    assert runtimeSet.getSize() == 1
+    assert runtimeSet._idCount == 17
+
+
 def test_RefreshRuntimePropertiesSkipsCallableAliases():
     _, runtimeSet = buildRuntimeSet()
 

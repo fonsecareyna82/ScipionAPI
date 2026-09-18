@@ -1300,6 +1300,78 @@ def test_WritableLogicalMapperRequiresParentItemId():
         )
 
 
+def test_QueuedAppendsFlushInSingleTransaction():
+    db = WritableFakeDb(
+        nextItemId=16
+    )
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=(
+            serializeWritableItem
+        ),
+        writable=True,
+    )
+
+    firstItem = FakeWritableItem(
+        itemId=14
+    )
+    secondItem = FakeWritableItem(
+        itemId=15
+    )
+
+    assert mapper.queueAppendItem(firstItem) == 14
+    assert mapper.queueAppendItem(secondItem) == 15
+    assert db.transactionCalls == 0
+    assert not any(
+        "INSERT INTO scipion_set_items"
+        in call["query"]
+        for call in db.executions
+    )
+
+    firstItem.setObjId(140)
+    secondItem.setObjId(150)
+
+    mapper.commit()
+
+    assert db.transactionCalls == 1
+
+    canonicalIds = [
+        call["params"][1]
+        for call in db.executions
+        if "INSERT INTO scipion_set_items" in call["query"]
+    ]
+    logicalIds = [
+        call["params"][1]
+        for call in db.executions
+        if "INSERT INTO scipion_set_table_items" in call["query"]
+    ]
+
+    assert canonicalIds == [
+        14,
+        15,
+    ]
+    assert logicalIds == [
+        14,
+        15,
+    ]
+
+    assert sum(
+        "UPDATE scipion_sets"
+        in call["query"]
+        for call in db.executions
+    ) == 1
+    assert sum(
+        "UPDATE scipion_set_tables"
+        in call["query"]
+        for call in db.executions
+    ) == 1
+    assert mapper._pendingAppendItems == []
+
+
 def test_AppendItemAllocatesIdAtomically():
     db = WritableFakeDb(
         nextItemId=8

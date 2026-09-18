@@ -938,11 +938,39 @@ class PostgresqlRuntimeSetMixin:
             item
         )
 
-        itemId = int(
-            appendItem(
-                item
-            )
+        queueAppendItem = getattr(
+            mapper,
+            "queueAppendItem",
+            None,
         )
+
+        queuedItemId = (
+            queueAppendItem(item)
+            if callable(queueAppendItem)
+            else None
+        )
+
+        if queuedItemId is None:
+            itemId = int(
+                appendItem(
+                    item
+                )
+            )
+
+            # Keep the concurrency-safe behavior for
+            # immediate appends.
+            self._size.set(
+                mapper.count()
+            )
+
+        else:
+            itemId = int(
+                queuedItemId
+            )
+
+            # Buffered appends are made durable together
+            # when write() commits the Set.
+            self._size.increment()
 
         self._updatePostgresqlAppendMetadata(
             item=item,
@@ -955,12 +983,6 @@ class PostgresqlRuntimeSetMixin:
                 or 0
             ),
             itemId,
-        )
-
-        # Do not increment optimistically. Another worker
-        # may have inserted items concurrently.
-        self._size.set(
-            mapper.count()
         )
 
     def clone(self, *args, **kwargs):
@@ -1278,9 +1300,19 @@ class PostgresqlRuntimeSetMixin:
                 "PostgreSQL runtime Set is read-only."
             )
 
-        return super().write(
+        result = super().write(
             properties=properties
         )
+
+        mapper = self._getMapper()
+        self._size.set(
+            mapper.count()
+        )
+        self._idCount = (
+            mapper.maxId()
+        )
+
+        return result
 
 
 class PostgresqlRuntimeSetFactory:
