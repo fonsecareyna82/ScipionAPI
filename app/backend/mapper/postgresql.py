@@ -3014,9 +3014,12 @@ class PostgresqlFlatMapper(Mapper):
                     EXCLUDED."argsText",
                 "resultFiles" =
                     EXCLUDED."resultFiles",
-                "initTime" = COALESCE(EXCLUDED."initTime", protocol_steps."initTime"),
-                "endTime" = COALESCE(EXCLUDED."endTime", protocol_steps."endTime"),
-                "elapsedSeconds" = GREATEST(COALESCE(protocol_steps."elapsedSeconds", 0.0), COALESCE(EXCLUDED."elapsedSeconds", 0.0)),
+                "initTime" = EXCLUDED."initTime",
+                "endTime" = EXCLUDED."endTime",
+                "elapsedSeconds" = COALESCE(
+                    EXCLUDED."elapsedSeconds",
+                    protocol_steps."elapsedSeconds"
+                ),
                 error = EXCLUDED.error,
                 interactive =
                     EXCLUDED.interactive,

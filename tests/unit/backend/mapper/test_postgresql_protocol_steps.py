@@ -405,3 +405,50 @@ def test_ReplaceProtocolStepsCanJoinExistingTransaction():
     assert "DELETE FROM protocol_steps" in mapper.db.executeCalls[1]["query"]
 
 
+def test_UpsertProtocolStepReplacesCurrentExecutionTiming():
+    mapper = object.__new__(
+        PostgresqlFlatMapper
+    )
+    mapper.db = FakeDb()
+
+    mapper.upsertProtocolStep(
+        projectId=7,
+        protocolDbId=101,
+        protocolId=31,
+        step={
+            "index": 1,
+            "name": "createOutputStep",
+            "status": "running",
+            "initTime": "2026-09-19 08:59:42.126566",
+            "endTime": None,
+            "elapsedSeconds": 0.25,
+        },
+    )
+
+    query = (
+        mapper.db
+        .executeCalls[0]["query"]
+    )
+
+    assert (
+        '"initTime" = EXCLUDED."initTime"'
+        in query
+    )
+
+    assert (
+        '"endTime" = EXCLUDED."endTime"'
+        in query
+    )
+
+    assert (
+        '"elapsedSeconds" = COALESCE('
+        in query
+    )
+
+    assert (
+        'GREATEST(COALESCE(protocol_steps."elapsedSeconds"'
+        not in query
+    )
+
+
+
