@@ -377,11 +377,12 @@ class PostgresqlSetRuntimeMapper:
 
     def selectAll(
             self,
+            iterate=True,
+            objectFilter=None,
             orderBy="id",
             direction="ASC",
-            where=None,
+            where="1",
             limit=None,
-            iterate=True,
             rowFilter=None,
     ):
         self._refreshReadSchema()
@@ -402,22 +403,42 @@ class PostgresqlSetRuntimeMapper:
         ]
 
         if whereSql:
-            query += "\n AND " + whereSql
+            query += "\\n AND " + whereSql
             params.extend(
                 whereParams
             )
 
         if orderSql:
-            query += "\n ORDER BY " + orderSql
+            query += "\\n ORDER BY " + orderSql
             params.extend(
                 orderParams
             )
 
         if limit is not None:
-            query += "\n LIMIT %s"
+            skipRows = None
+
+            if isinstance(
+                    limit,
+                    tuple,
+            ):
+                if len(limit) != 2:
+                    raise ValueError(
+                        "PostgreSQL Set limit tuple must be "
+                        "(limit, skipRows)."
+                    )
+
+                limit, skipRows = limit
+
+            query += "\\n LIMIT %s"
             params.append(
                 int(limit)
             )
+
+            if skipRows:
+                query += "\\n OFFSET %s"
+                params.append(
+                    int(skipRows)
+                )
 
         rows = self.db.fetchAll(
             query,
@@ -427,12 +448,14 @@ class PostgresqlSetRuntimeMapper:
         items = self._buildItems(
             rows,
             rowFilter=rowFilter,
+            objectFilter=objectFilter,
         )
 
         if iterate:
             return iter(items)
 
         return items
+
 
     def selectFirst(self):
         items = self.selectAll(
@@ -477,7 +500,7 @@ class PostgresqlSetRuntimeMapper:
 
     def selectBy(
             self,
-            iterate=True,
+            iterate=False,
             objectFilter=None,
             **conditions,
     ):
@@ -486,7 +509,7 @@ class PostgresqlSetRuntimeMapper:
         if not conditions:
             return self.selectAll(
                 iterate=iterate,
-                rowFilter=objectFilter,
+                objectFilter=objectFilter,
             )
 
         clauses = []
@@ -521,9 +544,9 @@ class PostgresqlSetRuntimeMapper:
         query = self._buildItemsSelectQuery()
 
         query += (
-            "\n AND "
+            "\\n AND "
             + " AND ".join(clauses)
-            + '\n ORDER BY "scipionItemId" ASC'
+            + '\\n ORDER BY "scipionItemId" ASC'
         )
 
         rows = self.db.fetchAll(
@@ -533,13 +556,14 @@ class PostgresqlSetRuntimeMapper:
 
         items = self._buildItems(
             rows,
-            rowFilter=objectFilter,
+            objectFilter=objectFilter,
         )
 
         if iterate:
             return iter(items)
 
         return items
+
 
     def exists(self, itemId):
         self._synchronizePendingAppends()
@@ -2748,17 +2772,24 @@ class PostgresqlSetRuntimeMapper:
             self,
             rows,
             rowFilter=None,
+            objectFilter=None,
     ):
         items = []
 
         for row in rows or []:
+            if (
+                    rowFilter is not None
+                    and not rowFilter(row)
+            ):
+                continue
+
             item = self.itemBuilder(
                 dict(row)
             )
 
             if (
-                    rowFilter is not None
-                    and not rowFilter(item)
+                    objectFilter is not None
+                    and not objectFilter(item)
             ):
                 continue
 
@@ -2767,6 +2798,17 @@ class PostgresqlSetRuntimeMapper:
             )
 
         return items
+
+
+    @staticmethod
+    def fmtDate(
+            date,
+    ):
+        normalizedDate = date.replace(
+            microsecond=0
+        )
+
+        return "'%s'" % normalizedDate
 
     def _buildWhere(
             self,
@@ -2786,76 +2828,103 @@ class PostgresqlSetRuntimeMapper:
         ):
             return "", []
 
-        clauses = []
         params: List[Any] = []
+        orClauses = []
 
-        parts = re.split(
-            r"\s+AND\s+",
+        orParts = re.split(
+            r"\s+OR\s+",
             whereText,
             flags=re.IGNORECASE,
         )
 
-        for part in parts:
-            match = self.WHERE_PART_PATTERN.match(
-                part
+        for orPart in orParts:
+            andClauses = []
+
+            andParts = re.split(
+                r"\s+AND\s+",
+                orPart,
+                flags=re.IGNORECASE,
             )
 
-            if match is None:
-                raise NotImplementedError(
-                    "Unsupported PostgreSQL set where expression: %s"
-                    % whereText
+            for part in andParts:
+                match = self.WHERE_PART_PATTERN.match(
+                    part
                 )
 
-            field = match.group(
-                "field"
-            )
+                if match is None:
+                    raise NotImplementedError(
+                        "Unsupported PostgreSQL set where expression: %s"
+                        % whereText
+                    )
 
-            operator = match.group(
-                "operator"
-            )
-
-            if operator == "==":
-                operator = "="
-            elif operator == "<>":
-                operator = "!="
-
-            value = self._parseWhereValue(
-                match.group("value")
-            )
-
-            if field == "creation" and operator == ">" and str(value).strip() == "0":
-                clauses.append('"scipionItemId" > 0')
-                continue
-
-            expression, expressionParams = (
-                self._fieldExpression(
-                    field
+                field = match.group(
+                    "field"
                 )
-            )
 
-            clauses.append(
-                "%s %s %%s"
-                % (
-                    expression,
-                    operator,
+                operator = match.group(
+                    "operator"
                 )
-            )
 
-            params.extend(
-                expressionParams
-            )
+                if operator == "==":
+                    operator = "="
+                elif operator == "<>":
+                    operator = "!="
 
-            params.append(
-                self._normalizeFieldValue(
-                    field,
-                    value,
+                value = self._parseWhereValue(
+                    match.group("value")
                 )
+
+                if (
+                        field == "creation"
+                        and operator == ">"
+                        and str(value).strip() == "0"
+                ):
+                    andClauses.append(
+                        '"scipionItemId" > 0'
+                    )
+                    continue
+
+                expression, expressionParams = (
+                    self._fieldExpression(
+                        field
+                    )
+                )
+
+                andClauses.append(
+                    "%s %s %%s"
+                    % (
+                        expression,
+                        operator,
+                    )
+                )
+
+                params.extend(
+                    expressionParams
+                )
+
+                params.append(
+                    self._normalizeFieldValue(
+                        field,
+                        value,
+                    )
+                )
+
+            groupSql = " AND ".join(
+                andClauses
+            )
+
+            if len(andClauses) > 1:
+                groupSql = "(%s)" % groupSql
+
+            orClauses.append(
+                groupSql
             )
 
         return (
-            " AND ".join(clauses),
+            " OR ".join(orClauses),
             params,
         )
+
 
     def _buildOrderBy(
             self,

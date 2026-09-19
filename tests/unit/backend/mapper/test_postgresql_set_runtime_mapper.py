@@ -2452,3 +2452,194 @@ def test_BufferedAppendsFlushBeforeImmediateAppendItem():
     assert events
     assert events[0] == "flush"
     assert mapper._pendingAppendItems == []
+
+
+def test_SelectByMatchesSqliteDefaultListContract():
+    db = FakeDb(rows=[
+        {
+            "scipionItemId": 7,
+            "values": {
+                "_score": 0.75,
+            },
+        },
+    ])
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    result = mapper.selectBy(
+        _score=0.75,
+    )
+
+    assert isinstance(
+        result,
+        list,
+    )
+    assert result[0]["scipionItemId"] == 7
+
+
+def test_SelectAllRowFilterReceivesRawRowBeforeHydration():
+    rowsSeen = []
+
+    def itemBuilder(row):
+        return {
+            "built": dict(row),
+        }
+
+    def rowFilter(row):
+        rowsSeen.append(row)
+        return row["keep"]
+
+    db = FakeDb(rows=[
+        {
+            "scipionItemId": 7,
+            "keep": True,
+            "values": {},
+        },
+        {
+            "scipionItemId": 8,
+            "keep": False,
+            "values": {},
+        },
+    ])
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=itemBuilder,
+    )
+
+    result = mapper.selectAll(
+        iterate=False,
+        rowFilter=rowFilter,
+    )
+
+    assert [
+        row["scipionItemId"]
+        for row in rowsSeen
+    ] == [7, 8]
+    assert len(result) == 1
+    assert result[0]["built"]["scipionItemId"] == 7
+
+
+def test_SelectAllSupportsObjectFilterContract():
+    objectsSeen = []
+
+    def itemBuilder(row):
+        return {
+            "itemId": row["scipionItemId"],
+        }
+
+    def objectFilter(item):
+        objectsSeen.append(item)
+        return item["itemId"] == 8
+
+    db = FakeDb(rows=[
+        {
+            "scipionItemId": 7,
+            "values": {},
+        },
+        {
+            "scipionItemId": 8,
+            "values": {},
+        },
+    ])
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=itemBuilder,
+    )
+
+    result = mapper.selectAll(
+        iterate=False,
+        objectFilter=objectFilter,
+    )
+
+    assert [
+        item["itemId"]
+        for item in objectsSeen
+    ] == [7, 8]
+    assert result == [
+        {
+            "itemId": 8,
+        },
+    ]
+
+
+def test_SelectAllSupportsSqliteLimitOffsetTuple():
+    db = FakeDb(rows=[])
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    mapper.selectAll(
+        limit=(25, 100),
+        iterate=False,
+    )
+
+    assert "LIMIT %s" in db.query
+    assert "OFFSET %s" in db.query
+    assert db.params == (
+        31,
+        25,
+        100,
+    )
+
+
+def test_FmtDateProducesCreationWhereValue():
+    from datetime import datetime
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    formatted = mapper.fmtDate(
+        datetime(
+            2026,
+            9,
+            19,
+            7,
+            21,
+            24,
+            987654,
+        )
+    )
+
+    whereSql, whereParams = mapper._buildWhere(
+        "creation >= %s" % formatted
+    )
+
+    assert "creation" not in whereSql.lower()
+    assert "%s" in whereSql
+    assert whereParams == [
+        "2026-09-19 07:21:24",
+    ]
+
+
+def test_WhereSupportsSqliteOrExpressions():
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeDb(),
+        setId=31,
+        itemBuilder=buildItem,
+    )
+
+    whereSql, whereParams = mapper._buildWhere(
+        "_score = 0.25 OR _score = 0.75"
+    )
+
+    assert " OR " in whereSql
+    assert whereParams == [
+        "_score",
+        0.25,
+        "_score",
+        0.75,
+    ]
