@@ -2291,4 +2291,164 @@ def test_FirstLogicalAppendSchemaSupportsImmediateFieldQuery():
     )
 
 
+def _buildBufferedContractAuditMapper(events):
+    class ContractAuditDb(WritableFakeDb):
+        def fetchOne(self, query, params=None):
+            events.append("read")
+            return super().fetchOne(query, params)
 
+        def fetchAll(self, query, params=None):
+            events.append("read")
+            return super().fetchAll(query, params)
+
+        def execute(self, query, params=None, commit=True):
+            events.append("write")
+            return super().execute(
+                query,
+                params=params,
+                commit=commit,
+            )
+
+        def executeValues(
+                self,
+                query,
+                values,
+                template=None,
+                commit=True,
+        ):
+            events.append("write")
+            return super().executeValues(
+                query,
+                values,
+                template=template,
+                commit=commit,
+            )
+
+    db = ContractAuditDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=serializeWritableItem,
+        writable=True,
+    )
+
+    item = FakeWritableItem(itemId=14)
+    assert mapper.queueAppendItem(item) == 14
+    assert len(mapper._pendingAppendItems) == 1
+
+    events.clear()
+
+    def flushPendingAppends():
+        events.append("flush")
+        mapper._pendingAppendItems.clear()
+        return True
+
+    mapper._flushPendingAppends = flushPendingAppends
+
+    return mapper, item
+
+
+@pytest.mark.parametrize(
+    "readOperation",
+    [
+        lambda mapper: mapper.selectById(14),
+        lambda mapper: mapper.selectBy(
+            iterate=False,
+            _score=0.75,
+        ),
+        lambda mapper: mapper.exists(14),
+        lambda mapper: mapper.count(),
+        lambda mapper: mapper.maxId(),
+        lambda mapper: mapper.unique("_score"),
+        lambda mapper: mapper.aggregate(
+            ["max"],
+            "_score",
+        ),
+        lambda mapper: mapper.getRevisionToken(),
+    ],
+    ids=[
+        "selectById",
+        "selectBy",
+        "exists",
+        "count",
+        "maxId",
+        "unique",
+        "aggregate",
+        "revisionToken",
+    ],
+)
+def test_BufferedAppendsAreVisibleToAllMapperReads(
+        readOperation,
+):
+    events = []
+    mapper, _ = _buildBufferedContractAuditMapper(
+        events
+    )
+
+    readOperation(mapper)
+
+    assert events
+    assert events[0] == "flush"
+    assert mapper._pendingAppendItems == []
+
+
+@pytest.mark.parametrize(
+    "mutationOperation",
+    [
+        lambda mapper, item: mapper.update(item),
+        lambda mapper, item: mapper.delete(item),
+        lambda mapper, item: mapper.clear(),
+    ],
+    ids=[
+        "update",
+        "delete",
+        "clear",
+    ],
+)
+def test_BufferedAppendsPreserveMutationOrdering(
+        mutationOperation,
+):
+    events = []
+    mapper, item = _buildBufferedContractAuditMapper(
+        events
+    )
+
+    mutationOperation(
+        mapper,
+        item,
+    )
+
+    assert events
+    assert events[0] == "flush"
+    assert mapper._pendingAppendItems == []
+
+
+def test_BufferedAppendsFlushBeforeImmediateInsert():
+    events = []
+    mapper, _ = _buildBufferedContractAuditMapper(
+        events
+    )
+    item = FakeWritableItem(itemId=15)
+
+    mapper.insert(item)
+
+    assert events
+    assert events[0] == "flush"
+    assert mapper._pendingAppendItems == []
+
+
+def test_BufferedAppendsFlushBeforeImmediateAppendItem():
+    events = []
+    mapper, _ = _buildBufferedContractAuditMapper(
+        events
+    )
+    item = FakeWritableItem(itemId=None)
+
+    mapper.appendItem(item)
+
+    assert events
+    assert events[0] == "flush"
+    assert mapper._pendingAppendItems == []

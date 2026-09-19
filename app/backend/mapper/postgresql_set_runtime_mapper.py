@@ -360,6 +360,17 @@ class PostgresqlSetRuntimeMapper:
 
         return True
 
+    def _synchronizePendingAppends(
+            self,
+    ) -> bool:
+        # Preserve Scipion Set operation ordering while keeping
+        # identified appends buffered for bulk persistence.
+        #
+        # Refresh the logical-table scope first so pending rows
+        # are never flushed into a replaced nested table.
+        self._refreshLogicalTableScope()
+        return self._flushPendingAppends()
+
     # ------------------------------------------------------------------
     # pyworkflow.object.Set read contract
     # ------------------------------------------------------------------
@@ -373,7 +384,6 @@ class PostgresqlSetRuntimeMapper:
             iterate=True,
             rowFilter=None,
     ):
-        self._flushPendingAppends()
         self._refreshReadSchema()
 
         whereSql, whereParams = self._buildWhere(
@@ -532,7 +542,7 @@ class PostgresqlSetRuntimeMapper:
         return items
 
     def exists(self, itemId):
-        self._refreshLogicalTableScope()
+        self._synchronizePendingAppends()
         query = """
             SELECT 1
               FROM {itemsTable}
@@ -555,7 +565,7 @@ class PostgresqlSetRuntimeMapper:
         return row is not None
 
     def count(self):
-        self._refreshLogicalTableScope()
+        self._synchronizePendingAppends()
         query = """
             SELECT COUNT(*) AS count
               FROM {itemsTable}
@@ -577,7 +587,7 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def maxId(self):
-        self._refreshLogicalTableScope()
+        self._synchronizePendingAppends()
         query = """
             SELECT MAX("scipionItemId") AS "maxItemId"
               FROM {itemsTable}
@@ -611,7 +621,7 @@ class PostgresqlSetRuntimeMapper:
         so changes inside Classes, TiltSeries, CTF series, etc.
         invalidate the compatibility snapshot.
         """
-        self._refreshLogicalTableScope()
+        self._synchronizePendingAppends()
 
         if self.setId is not None:
             row = self.db.fetchOne(
@@ -810,6 +820,7 @@ class PostgresqlSetRuntimeMapper:
         self._requireWritable()
 
         with self.db.transaction():
+            self._synchronizePendingAppends()
             self.db.fetchOne(
                 """
                 SELECT pg_advisory_xact_lock(
@@ -1026,6 +1037,7 @@ class PostgresqlSetRuntimeMapper:
             )
 
         with self.db.transaction():
+            self._synchronizePendingAppends()
             self._upsertItem(
                 item
             )
@@ -1044,6 +1056,7 @@ class PostgresqlSetRuntimeMapper:
             )
 
         with self.db.transaction():
+            self._synchronizePendingAppends()
             self._upsertItem(
                 item
             )
@@ -1066,6 +1079,7 @@ class PostgresqlSetRuntimeMapper:
             )
 
         with self.db.transaction():
+            self._synchronizePendingAppends()
             if self.setId is not None:
                 self.db.execute(
                     """
@@ -1128,6 +1142,7 @@ class PostgresqlSetRuntimeMapper:
         self._requireWritable()
 
         with self.db.transaction():
+            self._synchronizePendingAppends()
             if self.setId is not None:
                 self.db.execute(
                     """
@@ -2693,6 +2708,7 @@ class PostgresqlSetRuntimeMapper:
     def _refreshReadSchema(
             self,
     ) -> None:
+        self._synchronizePendingAppends()
         self._dynamicFieldValueTypes.clear()
 
         scopeChanged = (
