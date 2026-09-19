@@ -1485,6 +1485,12 @@ class ProtocolJobStoreStub:
             objects
         )
 
+    def _runSteps(
+            self,
+            doneSteps,
+    ):
+        return doneSteps
+
 
 def test_StepAdapterPersistsQueueJobIdsInsteadOfChildObject():
     protocol = (
@@ -1554,6 +1560,12 @@ def test_StepAdapterRedirectsNativeStepPersistenceToPostgresql():
 
         def loadSteps(self):
             raise AssertionError("Native loadSteps must not be used")
+
+        def _runSteps(
+                self,
+                doneSteps,
+        ):
+            return doneSteps
 
         def _storeSteps(self):
             raise AssertionError("Native _storeSteps must not be used")
@@ -1630,6 +1642,12 @@ def test_StepAdapterReleasesPostgresqlResourcesAfterStepThreadFinishes():
 
         def _store(self, *objects):
             pass
+
+        def _runSteps(
+                self,
+                doneSteps,
+        ):
+            return doneSteps
 
     class StepStub:
         def _run(self):
@@ -2913,13 +2931,44 @@ def test_SubmitToQueueForwardsEffectiveParamsToExecuteWorker(
 
 
 def test_ExecuteFinalizesManagedElapsedBeforeTerminalStore():
-    source = inspect.getsource(RuntimePostgresqlProtocolWorker.execute)
+    source = inspect.getsource(
+        RuntimePostgresqlProtocolWorker.execute
+    )
 
-    markIndex = source.index('self.markProtocolExecutionLaunched()')
-    captureIndex = source.index('.captureProtocolElapsedState(', markIndex)
-    waitIndex = source.index('self.waitForUserExecutionSlot()', captureIndex)
-    runIndex = source.index('self.protocol.run()', waitIndex)
-    finalizeIndex = source.index('.finalizeProtocolElapsedTime(', runIndex)
-    terminalStoreIndex = source.index('self.storeProtocol()', runIndex)
+    markIndex = source.index(
+        'self.markProtocolExecutionLaunched()'
+    )
 
-    assert markIndex < captureIndex < waitIndex < runIndex < finalizeIndex < terminalStoreIndex
+    waitIndex = source.index(
+        'self.waitForUserExecutionSlot()',
+        markIndex,
+    )
+
+    runIndex = source.index(
+        'self.protocol.run()',
+        waitIndex,
+    )
+
+    captureIndex = source.index(
+        '.captureProtocolElapsedState(',
+        runIndex,
+    )
+
+    finalizeIndex = source.index(
+        '.finalizeProtocolElapsedTime(',
+        captureIndex,
+    )
+
+    terminalStoreIndex = source.index(
+        'self.storeProtocol()',
+        runIndex,
+    )
+
+    assert (
+        markIndex
+        < waitIndex
+        < runIndex
+        < captureIndex
+        < finalizeIndex
+        < terminalStoreIndex
+    )
