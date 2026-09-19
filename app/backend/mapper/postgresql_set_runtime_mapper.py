@@ -403,13 +403,13 @@ class PostgresqlSetRuntimeMapper:
         ]
 
         if whereSql:
-            query += "\\n AND " + whereSql
+            query += "\n AND " + whereSql
             params.extend(
                 whereParams
             )
 
         if orderSql:
-            query += "\\n ORDER BY " + orderSql
+            query += "\n ORDER BY " + orderSql
             params.extend(
                 orderParams
             )
@@ -429,13 +429,13 @@ class PostgresqlSetRuntimeMapper:
 
                 limit, skipRows = limit
 
-            query += "\\n LIMIT %s"
+            query += "\n LIMIT %s"
             params.append(
                 int(limit)
             )
 
             if skipRows:
-                query += "\\n OFFSET %s"
+                query += "\n OFFSET %s"
                 params.append(
                     int(skipRows)
                 )
@@ -544,9 +544,9 @@ class PostgresqlSetRuntimeMapper:
         query = self._buildItemsSelectQuery()
 
         query += (
-            "\\n AND "
+            "\n AND "
             + " AND ".join(clauses)
-            + '\\n ORDER BY "scipionItemId" ASC'
+            + '\n ORDER BY "scipionItemId" ASC'
         )
 
         rows = self.db.fetchAll(

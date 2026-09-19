@@ -2912,4 +2912,14 @@ def test_SubmitToQueueForwardsEffectiveParamsToExecuteWorker(
     assert calls["submitDict"]["JOB_MEMORY"] == "64000"
 
 
+def test_ExecuteFinalizesManagedElapsedBeforeTerminalStore():
+    source = inspect.getsource(RuntimePostgresqlProtocolWorker.execute)
 
+    markIndex = source.index('self.markProtocolExecutionLaunched()')
+    captureIndex = source.index('.captureProtocolElapsedState(', markIndex)
+    waitIndex = source.index('self.waitForUserExecutionSlot()', captureIndex)
+    runIndex = source.index('self.protocol.run()', waitIndex)
+    finalizeIndex = source.index('.finalizeProtocolElapsedTime(', runIndex)
+    terminalStoreIndex = source.index('self.storeProtocol()', runIndex)
+
+    assert markIndex < captureIndex < waitIndex < runIndex < finalizeIndex < terminalStoreIndex

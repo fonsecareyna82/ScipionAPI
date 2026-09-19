@@ -559,6 +559,19 @@ class RuntimeProtocolStatusSyncService:
     def getEffectiveElapsedTimeSeconds(self, runtimeMetadata: Any, statusValue, nowEpochSeconds: Optional[float] = None, fallbackElapsedSeconds: Any = None) -> float:
         fallbackSeconds = max(0.0, float(self.toSeconds(fallbackElapsedSeconds) or 0.0))
 
+        elapsedSessionId = str(
+            runtimeMetadata.get(
+                self.ELAPSED_SESSION_ID_KEY
+            )
+            or ""
+        ).strip()
+
+        effectiveFallbackSeconds = (
+            0.0
+            if elapsedSessionId
+            else fallbackSeconds
+        )
+
         if not isinstance(runtimeMetadata, dict):
             return fallbackSeconds
 
@@ -566,20 +579,20 @@ class RuntimeProtocolStatusSyncService:
         statusText = str(statusValue or "").strip().lower()
 
         if statusText not in self.ELAPSED_ACTIVE_STATUS_TEXTS:
-            return max(elapsedSeconds, fallbackSeconds)
+            return max(elapsedSeconds, effectiveFallbackSeconds)
 
         previousUpdate = self.toSeconds(runtimeMetadata.get(self.ELAPSED_UPDATED_AT_KEY))
 
         if previousUpdate is None:
-            return max(elapsedSeconds, fallbackSeconds)
+            return max(elapsedSeconds, effectiveFallbackSeconds)
 
         nowEpochSeconds = float(nowEpochSeconds if nowEpochSeconds is not None else time.time())
 
         if nowEpochSeconds < float(previousUpdate):
-            return max(elapsedSeconds, fallbackSeconds)
+            return max(elapsedSeconds, effectiveFallbackSeconds)
 
         projectedElapsedSeconds = elapsedSeconds + nowEpochSeconds - float(previousUpdate)
-        return max(projectedElapsedSeconds, fallbackSeconds)
+        return max(projectedElapsedSeconds, effectiveFallbackSeconds)
 
     def getStoredElapsedTimeSeconds(
             self,

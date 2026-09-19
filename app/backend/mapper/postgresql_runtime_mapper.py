@@ -4050,12 +4050,109 @@ class PostgresqlRuntimeMapper(Mapper):
     # PostgreSQL persistence helpers
     # ---------------------------------------------------------------------
 
+    def _preserveManagedElapsedMetadata(
+            self,
+            protocolId: int,
+            context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        # Generic Protocol._store() calls must not overwrite ScipionWeb-managed
+        # elapsed timing with Scipion's native getElapsedTime().
+        statusService = RuntimeProtocolStatusSyncService()
+
+        runtimeMetadataKey = (
+            statusService.RUNTIME_METADATA_KEY
+        )
+
+        values = context.get("values")
+
+        if not isinstance(values, dict):
+            return context
+
+        incomingRuntimeMetadata = values.get(
+            runtimeMetadataKey
+        )
+
+        if not isinstance(
+                incomingRuntimeMetadata,
+                dict,
+        ):
+            return context
+
+        getProtocolRow = getattr(
+            self.flatMapper,
+            "getProjectProtocolByProtocolId",
+            None,
+        )
+
+        if not callable(getProtocolRow):
+            return context
+
+        row = getProtocolRow(
+            projectId=self.projectId,
+            protocolId=protocolId,
+        )
+
+        row = (
+            self.flatMapper
+            .getProjectProtocolByProtocolId(
+                projectId=self.projectId,
+                protocolId=protocolId,
+            )
+        )
+
+        if not row:
+            return context
+
+        statusService = RuntimeProtocolStatusSyncService()
+        storedParams = statusService.normalizeParams(row.get('params'))
+        runtimeMetadataKey = statusService.RUNTIME_METADATA_KEY
+        storedRuntimeMetadata = storedParams.get(runtimeMetadataKey) or {}
+
+        if not isinstance(storedRuntimeMetadata, dict):
+            return context
+
+        elapsedSessionId = str(
+            storedRuntimeMetadata.get(statusService.ELAPSED_SESSION_ID_KEY) or ''
+        ).strip()
+
+        if not elapsedSessionId:
+            return context
+
+        values = context.setdefault('values', {})
+        incomingRuntimeMetadata = values.get(runtimeMetadataKey) or {}
+
+        if not isinstance(incomingRuntimeMetadata, dict):
+            incomingRuntimeMetadata = {}
+
+        incomingRuntimeMetadata = dict(incomingRuntimeMetadata)
+
+        managedKeys = (
+            'elapsedTimeSeconds',
+            statusService.ELAPSED_UPDATED_AT_KEY,
+            statusService.ELAPSED_SESSION_ID_KEY,
+        )
+
+        for key in managedKeys:
+            if key in storedRuntimeMetadata:
+                incomingRuntimeMetadata[key] = storedRuntimeMetadata[key]
+            else:
+                incomingRuntimeMetadata.pop(key, None)
+
+        values[runtimeMetadataKey] = incomingRuntimeMetadata
+        return context
+
     def _storeProtocol(self, protocol: Protocol):
         protocolId = self._ensureObjId(protocol)
         if protocolId is None:
             raise ValueError("Cannot store protocol without object id.")
 
         context = self._buildProtocolContext(protocol)
+
+        context = self._preserveManagedElapsedMetadata(
+            protocolId=protocolId,
+            context=context,
+        )
+
         steps = self._buildProtocolSteps(protocol)
 
         with self.db.transaction():

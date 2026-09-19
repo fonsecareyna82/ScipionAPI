@@ -341,7 +341,43 @@ def test_StoredNativeQueueParamsAreHydrated():
     )
 
 
+def test_ManagedElapsedMetadataSurvivesGenericRuntimeStore():
+    statusService = RuntimeProtocolStatusSyncService()
 
+    class FlatMapperStub:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert projectId == 4
+            assert protocolId == 48
+            return {
+                'params': {
+                    statusService.RUNTIME_METADATA_KEY: {
+                        'elapsedTimeSeconds': 17.25,
+                        statusService.ELAPSED_UPDATED_AT_KEY: 1000.0,
+                        statusService.ELAPSED_SESSION_ID_KEY: 'session-1',
+                        'pid': 1234,
+                    },
+                },
+            }
 
+    mapper = object.__new__(PostgresqlRuntimeMapper)
+    mapper.projectId = 4
+    mapper.flatMapper = FlatMapperStub()
 
+    context = {
+        'values': {
+            statusService.RUNTIME_METADATA_KEY: {
+                'elapsedTimeSeconds': 10.89,
+                'pid': 4321,
+                'jobIds': ['77'],
+            },
+        },
+    }
 
+    result = mapper._preserveManagedElapsedMetadata(protocolId=48, context=context)
+    metadata = result['values'][statusService.RUNTIME_METADATA_KEY]
+
+    assert metadata['elapsedTimeSeconds'] == 17.25
+    assert metadata[statusService.ELAPSED_UPDATED_AT_KEY] == 1000.0
+    assert metadata[statusService.ELAPSED_SESSION_ID_KEY] == 'session-1'
+    assert metadata['pid'] == 4321
+    assert metadata['jobIds'] == ['77']

@@ -3795,6 +3795,13 @@ class RuntimePostgresqlProtocolWorker:
 
         self.markProtocolExecutionLaunched()
 
+        elapsedStatusService = RuntimeProtocolStatusSyncService()
+        elapsedSnapshot = elapsedStatusService.captureProtocolElapsedState(
+            mapper=self.mapper,
+            projectId=self.projectId,
+            protocolId=self.protocolId,
+        )
+
         if not self.waitForUserExecutionSlot():
             return 0
 
@@ -3817,10 +3824,26 @@ class RuntimePostgresqlProtocolWorker:
         try:
             self.protocol.run()
 
-            self.storeProtocol()
-
         finally:
+            try:
+                elapsedStatusService.finalizeProtocolElapsedTime(
+                    mapper=self.mapper,
+                    projectId=self.projectId,
+                    protocolId=self.protocolId,
+                    elapsedSnapshot=elapsedSnapshot,
+                    stoppedAtEpochSeconds=time.time(),
+                )
+            except Exception:
+                logger.exception(
+                    'Could not finalize PostgreSQL protocol elapsed time. '
+                    'projectId=%s protocolId=%s',
+                    self.projectId,
+                    self.protocolId,
+                )
+
             outputSetAdapter.uninstall()
+
+        self.storeProtocol()
 
         protocolStatus = str(
             self.protocol.getStatus()
