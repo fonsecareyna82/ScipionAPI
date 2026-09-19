@@ -278,6 +278,10 @@ class RuntimePostgresqlStepAdapter:
             self.protocol._store
         )
 
+        originalRunSteps = (
+            self.protocol._runSteps
+        )
+
         def loadSteps(protocolSelf):
             return (
                 adapter
@@ -286,6 +290,24 @@ class RuntimePostgresqlStepAdapter:
 
         def storeSteps(protocolSelf):
             adapter.replaceSteps()
+
+        def runSteps(
+                protocolSelf,
+                doneSteps,
+        ):
+            (
+                RuntimeProtocolStatusSyncService()
+                .markProtocolRunning(
+                    mapper=adapter.mapper,
+                    projectId=adapter.projectId,
+                    protocolId=adapter.protocolId,
+                    startedAtEpochSeconds=time.time(),
+                )
+            )
+
+            return originalRunSteps(
+                doneSteps
+            )
 
         def updateStep(protocolSelf, step):
             adapter.installStepThreadResourceCleanup(step)
@@ -386,6 +408,13 @@ class RuntimePostgresqlStepAdapter:
         self.protocol._store = (
             MethodType(
                 store,
+                self.protocol,
+            )
+        )
+
+        self.protocol._runSteps = (
+            MethodType(
+                runSteps,
                 self.protocol,
             )
         )
@@ -3796,11 +3825,6 @@ class RuntimePostgresqlProtocolWorker:
         self.markProtocolExecutionLaunched()
 
         elapsedStatusService = RuntimeProtocolStatusSyncService()
-        elapsedSnapshot = elapsedStatusService.captureProtocolElapsedState(
-            mapper=self.mapper,
-            projectId=self.projectId,
-            protocolId=self.protocolId,
-        )
 
         if not self.waitForUserExecutionSlot():
             return 0
@@ -3826,6 +3850,14 @@ class RuntimePostgresqlProtocolWorker:
 
         finally:
             try:
+                elapsedSnapshot = (
+                    elapsedStatusService
+                    .captureProtocolElapsedState(
+                        mapper=self.mapper,
+                        projectId=self.projectId,
+                        protocolId=self.protocolId,
+                    )
+                )
                 elapsedStatusService.finalizeProtocolElapsedTime(
                     mapper=self.mapper,
                     projectId=self.projectId,
