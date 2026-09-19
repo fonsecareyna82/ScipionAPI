@@ -1317,6 +1317,55 @@ def test_WritableLogicalMapperRequiresParentItemId():
         )
 
 
+def test_SelectAllFlushesQueuedAppendsBeforeReading(monkeypatch):
+    events = []
+
+    class ReadAfterWriteDb(WritableFakeDb):
+        def fetchAll(self, query, params=None):
+            normalizedQuery = " ".join(str(query).split())
+
+            if "FROM scipion_set_items" in normalizedQuery:
+                events.append("read")
+
+            return super().fetchAll(query, params)
+
+    db = ReadAfterWriteDb()
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db,
+        setId=31,
+        rootTableId=71,
+        itemBuilder=buildItem,
+        itemSerializer=serializeWritableItem,
+        writable=True,
+    )
+
+    item = FakeWritableItem(itemId=14)
+
+    assert mapper.queueAppendItem(item) == 14
+    assert len(mapper._pendingAppendItems) == 1
+
+    originalFlush = mapper._flushPendingAppends
+
+    def flushPendingAppends():
+        events.append("flush")
+        return originalFlush()
+
+    monkeypatch.setattr(
+        mapper,
+        "_flushPendingAppends",
+        flushPendingAppends,
+    )
+
+    mapper.selectAll(iterate=False)
+
+    assert events[:2] == [
+        "flush",
+        "read",
+    ]
+    assert mapper._pendingAppendItems == []
+
+
 def test_QueuedAppendsFlushInSingleTransaction():
     db = WritableFakeDb(
         nextItemId=16

@@ -373,6 +373,7 @@ class PostgresqlSetRuntimeMapper:
             iterate=True,
             rowFilter=None,
     ):
+        self._flushPendingAppends()
         self._refreshReadSchema()
 
         whereSql, whereParams = self._buildWhere(
