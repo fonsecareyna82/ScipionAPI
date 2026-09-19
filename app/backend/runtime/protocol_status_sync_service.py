@@ -724,6 +724,10 @@ class RuntimeProtocolStatusSyncService:
                 uuid4().hex
             )
 
+        runtimeMetadata[
+            self.ELAPSED_SESSION_ID_KEY
+        ] = elapsedSessionId
+
         runtimeMetadata.pop(
             self.ELAPSED_UPDATED_AT_KEY,
             None,
@@ -744,10 +748,6 @@ class RuntimeProtocolStatusSyncService:
         runtimeMetadata[
             "elapsedTimeSeconds"
         ] = elapsedSeconds
-
-        runtimeMetadata[
-            self.ELAPSED_UPDATED_AT_KEY
-        ] = time.time()
 
         params[
             self.RUNTIME_METADATA_KEY
