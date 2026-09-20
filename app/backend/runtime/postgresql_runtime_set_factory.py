@@ -910,7 +910,7 @@ class PostgresqlRuntimeSetMixin:
     ) -> None:
         """
         Append through PostgreSQL while preserving the native
-        Scipion metadata invariants of image-based Sets.
+        Scipion Set.append() contract and image metadata invariants.
         """
         mapper = self._getMapper()
 
@@ -939,6 +939,19 @@ class PostgresqlRuntimeSetMixin:
             item
         )
 
+        # Native Scipion Set.append() assigns an object id before
+        # inserting the item. Preserve that contract so PostgreSQL
+        # appends can be buffered until Set.write()/commit() instead
+        # of publishing id-less items one by one.
+        if not item.hasObjId():
+            nextItemId = int(
+                self._idCount
+                or 0
+            ) + 1
+            item.setObjId(
+                nextItemId
+            )
+
         queueAppendItem = getattr(
             mapper,
             "queueAppendItem",
@@ -958,8 +971,6 @@ class PostgresqlRuntimeSetMixin:
                 )
             )
 
-            # Keep the concurrency-safe behavior for
-            # immediate appends.
             self._size.set(
                 mapper.count()
             )
@@ -969,8 +980,8 @@ class PostgresqlRuntimeSetMixin:
                 queuedItemId
             )
 
-            # Buffered appends are made durable together
-            # when write() commits the Set.
+            # Buffered appends become durable together when
+            # Set.write() commits the Set.
             self._size.increment()
 
         self._updatePostgresqlAppendMetadata(

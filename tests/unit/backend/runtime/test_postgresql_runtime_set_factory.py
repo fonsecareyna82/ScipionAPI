@@ -983,6 +983,93 @@ def test_RuntimeSetBufferedAppendAvoidsPerItemCount():
     assert runtimeSet._idCount == 17
 
 
+def test_RuntimeSetIdlessAppendsRemainInvisibleUntilWrite():
+    class FakeAtomicMapper:
+        def __init__(self):
+            self.visibleIds = []
+            self.pendingIds = []
+            self.nextId = 0
+            self.countCalls = 0
+
+        def isWritable(self):
+            return True
+
+        def queueAppendItem(self, item):
+            if not item.hasObjId():
+                return None
+
+            itemId = int(item.getObjId())
+            self.pendingIds.append(itemId)
+            return itemId
+
+        def appendItem(self, item):
+            if not item.hasObjId():
+                self.nextId += 1
+                item.setObjId(self.nextId)
+
+            itemId = int(item.getObjId())
+            self.visibleIds.append(itemId)
+            return itemId
+
+        def count(self):
+            self.countCalls += 1
+            return len(self.visibleIds)
+
+        def maxId(self):
+            return max(self.visibleIds, default=0)
+
+        def commit(self):
+            self.visibleIds.extend(self.pendingIds)
+            self.pendingIds.clear()
+
+        def close(self):
+            pass
+
+    runtimeClass = type(
+        "ExampleRuntimeAtomicAppendSet",
+        (
+            PostgresqlRuntimeSetMixin,
+            ExampleAppendSet,
+        ),
+        {
+            "__module__": __name__,
+        },
+    )
+
+    runtimeSet = runtimeClass()
+    mapper = FakeAtomicMapper()
+
+    runtimeSet._mapper = mapper
+    runtimeSet._postgresqlWritable = True
+    runtimeSet._postgresqlSupportsNativeWrite = True
+
+    first = ExampleAppendItem(
+        dim=(128, 96, 1),
+        samplingRate=2.5,
+    )
+    second = ExampleAppendItem(
+        dim=(128, 96, 1),
+        samplingRate=2.5,
+    )
+
+    runtimeSet.append(first)
+    runtimeSet.append(second)
+
+    assert mapper.visibleIds == [], (
+        "PostgreSQL runtime Set.append() must not publish id-less items "
+        "before Set.write()/commit()."
+    )
+    assert mapper.pendingIds == [1, 2]
+    assert first.getObjId() == 1
+    assert second.getObjId() == 2
+    assert runtimeSet.getSize() == 2
+
+    runtimeSet.write(properties=False)
+
+    assert mapper.visibleIds == [1, 2]
+    assert mapper.pendingIds == []
+
+
 def test_RefreshRuntimePropertiesSkipsCallableAliases():
     _, runtimeSet = buildRuntimeSet()
 
