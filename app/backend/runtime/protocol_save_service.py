@@ -477,7 +477,7 @@ class RuntimeProtocolSaveService:
                     )
                 )
 
-            elif isinstance(param, PointerParam):
+            elif isinstance(param, (PointerParam, RelationParam,),):
                 errorList.extend(
                     self._applyPointerParam(
                         mapper=mapper,

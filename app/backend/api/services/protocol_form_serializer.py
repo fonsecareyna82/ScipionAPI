@@ -254,10 +254,6 @@ class ProtocolFormSerializer:
             paramDict = {}
             paramValue = ""
 
-            # Keep current behavior for RelationParam.
-            if isinstance(param, RelationParam):
-                return {}, None
-
             paramDict["name"] = paramName
 
             wizardItems = (
@@ -291,6 +287,19 @@ class ProtocolFormSerializer:
                 paramClass = "Label"
 
             paramDict["paramClass"] = paramClass
+
+            if isinstance(param, RelationParam):
+                paramDict["relationName"] = (
+                    param.getName()
+                )
+
+                paramDict["attributeName"] = (
+                    param.getAttributeName()
+                )
+
+                paramDict["direction"] = (
+                    param.getDirection()
+                )
 
             conditionContext = (
                 self._buildConditionContext(
@@ -425,7 +434,7 @@ class ProtocolFormSerializer:
                     paramValue = valueList
                     paramDict["readOnly"] = True
 
-                elif isinstance(param, PointerParam):
+                elif isinstance(param,  (PointerParam,  RelationParam,),):
                     parentId = None
                     paramValue = None
                     protocolDbId = None

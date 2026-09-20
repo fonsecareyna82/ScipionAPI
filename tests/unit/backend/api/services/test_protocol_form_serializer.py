@@ -41,6 +41,8 @@ from pyworkflow.protocol.params import (
     Form,
     IntParam,
     PathParam,
+    PointerParam,
+    RelationParam,
 )
 
 from app.backend.api.services.protocol_form_serializer import (
@@ -378,5 +380,81 @@ def test_condition_context_preserves_protocol_constants():
     ] == {
         "IMPORT_FROM_FILES": 0,
     }
+
+
+def test_relation_param_preserves_relation_metadata_and_condition():
+    class FakeProtocol(Object):
+        def getInputMicrographs(self):
+            return None
+
+    protocol = FakeProtocol()
+
+    form = Form(protocol)
+    form.addSection("Input")
+
+    form.addParam(
+        "inputCoordinates",
+        PointerParam,
+        pointerClass=Object,
+        allowsNull=True,
+    )
+
+    form.addParam(
+        "ctfRelations",
+        RelationParam,
+        allowsNull=True,
+        condition="inputCoordinates is not None",
+        relationName="relation_ctf",
+        attributeName="getInputMicrographs",
+    )
+
+    protocol._definition = form
+
+    param = form.getParam(
+        "ctfRelations"
+    )
+
+    paramDict, paramValue = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="ctfRelations",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=Pointer(),
+            mapper=None,
+            projectId=None,
+            protocol=protocol,
+            getScipionObjectIdCallback=lambda obj: None,
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=lambda value: (None, None),
+        )
+    )
+
+    assert paramDict[
+        "paramClass"
+    ] == "RelationParam"
+
+    assert paramDict[
+        "condition"
+    ] == "inputCoordinates is not None"
+
+    assert paramDict[
+        "relationName"
+    ] == "relation_ctf"
+
+    assert paramDict[
+        "attributeName"
+    ] == "getInputMicrographs"
+
+    assert isinstance(
+        paramDict["direction"],
+        int,
+    )
+
+    assert paramValue is None
+
+
 
 
