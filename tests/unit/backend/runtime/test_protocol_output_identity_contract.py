@@ -87,6 +87,51 @@ class CaseInsensitiveOutputMapper:
         self.db = CaseInsensitiveOutputDb()
 
 
+
+def test_InputRefOutputInfoDoesNotExposeReservedSetIdentity():
+    class ReservedSetDb:
+        def __init__(self):
+            self.query = None
+            self.params = None
+
+        def fetchOne(self, query, params=None):
+            self.query = " ".join(str(query).split())
+            self.params = params
+
+            if "runtimeReserved" in self.query:
+                return None
+
+            return {
+                "runtimeObjectId": "1000062",
+                "className": "SetOfCTF",
+                "outputName": "outputCTF",
+            }
+
+        def fetchAll(self, query, params=None):
+            return []
+
+    class ReservedSetMapper:
+        def __init__(self):
+            self.db = ReservedSetDb()
+
+    mapper = ReservedSetMapper()
+
+    result = ProtocolGraphRepository().getPersistedOutputInfoForInputRef(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=31,
+        outputName="outputCTF",
+    )
+
+    assert result == {
+        "runtimeObjectId": None,
+        "className": None,
+        "outputName": None,
+    }
+
+    assert "runtimeReserved" in mapper.db.query
+
+
 def test_InputRefOutputInfoReturnsRuntimeObjectId():
     mapper = FakeMapper({
         "runtimeObjectId": "245",
@@ -109,6 +154,33 @@ def test_InputRefOutputInfoReturnsRuntimeObjectId():
 
     assert 'AS "runtimeObjectId"' in mapper.db.query
     assert 's."objectId"::text AS "objectId"' not in mapper.db.query
+
+
+
+def test_RuntimeOutputInfoHidesReservedSetOutputs():
+    mapper = FakeMapper({
+        "kind": "set",
+        "setId": 4728,
+        "objectId": "20670",
+        "runtimeObjectId": "1000062",
+        "outputName": "outputCTF",
+        "className": "SetOfCTF",
+        "itemClassName": "CTFModel",
+        "properties": {
+            "runtimeReserved": True,
+            "itemsCount": 25,
+        },
+    })
+
+    result = ProtocolGraphRepository().getPostgresqlRuntimeOutputInfo(
+        mapper=mapper,
+        projectId=7,
+        parentProtocolDbId=31,
+        outputName="outputCTF",
+    )
+
+    assert result["exists"] is False
+    assert result["runtimeObjectId"] is None
 
 
 def test_RuntimeOutputInfoKeepsCanonicalAndRuntimeIdsSeparated():

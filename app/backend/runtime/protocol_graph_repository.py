@@ -109,6 +109,10 @@ class ProtocolGraphRepository:
                  WHERE s."projectId" = %s
                    AND s."protocolDbId" = %s
                    AND LOWER(s."outputName") = LOWER(%s)
+                   AND COALESCE(
+                           s.properties ->> 'runtimeReserved',
+                           'false'
+                       ) <> 'true'
                  ORDER BY s.id
                  LIMIT 2
                 """,
@@ -806,6 +810,10 @@ class ProtocolGraphRepository:
              WHERE s."projectId" = %s
                AND s."protocolDbId" = %s
                AND s."outputName" = %s
+               AND COALESCE(
+                       s.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
 
             UNION ALL
 
@@ -952,6 +960,27 @@ class ProtocolGraphRepository:
                 properties = {}
 
         info["properties"] = properties
+
+        if (
+                info.get("kind") == "set"
+                and properties.get("runtimeReserved") is True
+        ):
+            return {
+                "exists": False,
+                "kind": None,
+                "setId": None,
+                "objectId": None,
+                "runtimeObjectId": None,
+                "outputName": outputName,
+                "className": None,
+                "itemClassName": None,
+                "properties": {},
+                "itemsCount": None,
+                "tablesCount": None,
+                "tableItemsCount": None,
+                "value": None,
+            }
+
         info["exists"] = True
 
         setId = info.get("setId")
