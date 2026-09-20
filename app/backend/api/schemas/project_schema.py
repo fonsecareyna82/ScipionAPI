@@ -124,6 +124,22 @@ class ProtocolWizardExecuteRequest(BaseModel):
     wizardInputs: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ProtocolRelationCandidatesRequest(BaseModel):
+    protocolClassName: str
+    paramName: str
+    formValues: Dict[str, Any] = Field(
+        default_factory=dict
+    )
+
+
+class ProtocolRelationCandidatesResponse(BaseModel):
+    paramName: str
+    relationName: str
+    values: List[str] = Field(
+        default_factory=list
+    )
+
+
 class WizardInputFieldResponse(BaseModel):
     name: str
     label: str

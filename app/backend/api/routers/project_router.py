@@ -34,7 +34,8 @@ from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
-                                                    ProtocolWizardExecuteRequest, ProjectImportOut)
+                                                    ProtocolWizardExecuteRequest, ProjectImportOut,
+                                                    ProtocolRelationCandidatesRequest, ProtocolRelationCandidatesResponse,)
 from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.runtime.preview_process_executor import (
     runOutputPreviewInProcess,
@@ -4822,6 +4823,32 @@ async def getProtocolOutputThumbnailsBatch(
     return _attachDebugHeaders(
         response,
         currentUser,
+    )
+
+# *****************************************
+# RelationParam routers
+# *****************************************
+@router.post(
+    "/{projectId}/relations/candidates",
+    response_model=ProtocolRelationCandidatesResponse,
+)
+def resolveProtocolRelationCandidatesRoute(
+    projectId: int,
+    payload: ProtocolRelationCandidatesRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(
+        getProjectService
+    ),
+):
+    return (
+        service
+        .resolveProtocolRelationCandidates(
+            mapper=mapper,
+            projectId=projectId,
+            currentUser=currentUser,
+            payload=payload,
+        )
     )
 
 # *****************************************

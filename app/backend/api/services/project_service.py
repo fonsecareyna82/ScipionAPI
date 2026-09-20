@@ -52,6 +52,9 @@ from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from app.backend.api.services.protocol_wizard_service import (
     ProtocolWizardService,
 )
+from app.backend.api.services.protocol_relation_service import (
+    ProtocolRelationService,
+)
 from app.backend.api.services.protocol_context_service import ProtocolContextService
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
@@ -18213,6 +18216,44 @@ class ProjectService:
                "upload":  True,
                "nextSteps":  True,
         }
+
+    # -------------------------------
+    # Relation params
+    # -------------------------------
+    def resolveProtocolRelationCandidates(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            currentUser: dict,
+            payload,
+    ) -> Dict[str, Any]:
+        relationService = (
+            ProtocolRelationService(
+                currentProject=(
+                    self.currentProject
+                ),
+                projectService=self,
+            )
+        )
+
+        return (
+            relationService
+            .resolveRelationCandidates(
+                mapper=mapper,
+                projectId=projectId,
+                currentUser=currentUser,
+                protocolClassName=(
+                    payload.protocolClassName
+                ),
+                paramName=(
+                    payload.paramName
+                ),
+                formValues=(
+                        payload.formValues
+                        or {}
+                ),
+            )
+        )
 
     # -------------------------------
     # Wizards methods
