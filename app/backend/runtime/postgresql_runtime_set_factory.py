@@ -224,6 +224,8 @@ class PostgresqlRuntimeSetMixin:
                     if firstItemSamplingRate is not None:
                         runtimeProperties["_samplingRate"] = firstItemSamplingRate
 
+        unresolvedPointerProperties = {}
+
         for propertyName, propertyValue in runtimeProperties.items():
             propertyName = str(
                 propertyName
@@ -235,6 +237,11 @@ class PostgresqlRuntimeSetMixin:
             if self._isPostgresqlRuntimePointerProperty(
                     propertyName
             ):
+                if self._isPostgresqlRuntimePointerUnresolved(
+                        propertyName
+                ):
+                    unresolvedPointerProperties[propertyName] = propertyValue
+
                 continue
 
             currentAttribute = self
@@ -274,9 +281,66 @@ class PostgresqlRuntimeSetMixin:
                     exc_info=True,
                 )
 
+        if unresolvedPointerProperties:
+            propertyHydrator = getattr(
+                self,
+                "_postgresqlRuntimePropertyHydrator",
+                None,
+            )
+
+            if callable(propertyHydrator):
+                propertyHydrator(
+                    unresolvedPointerProperties
+                )
+
         self._postgresqlRuntimeProperties = (
             runtimeProperties
         )
+
+    def _getPostgresqlRuntimePropertyAttribute(
+            self,
+            propertyName,
+    ):
+        current = self
+
+        for attributeName in str(propertyName).split("."):
+            current = getattr(
+                current,
+                attributeName,
+                None,
+            )
+
+            if current is None:
+                return None
+
+        return current
+
+    def _isPostgresqlRuntimePointerUnresolved(
+            self,
+            propertyName,
+    ):
+        current = self._getPostgresqlRuntimePropertyAttribute(
+            propertyName
+        )
+
+        if isinstance(current, Pointer):
+            try:
+                return current.getObjValue() is None
+            except Exception:
+                return True
+
+        if isinstance(current, PointerList):
+            for pointer in current:
+                if not isinstance(pointer, Pointer):
+                    continue
+
+                try:
+                    if pointer.getObjValue() is None:
+                        return True
+                except Exception:
+                    return True
+
+        return False
 
     def _isPostgresqlRuntimePointerProperty(self, propertyName):
         current = self
@@ -3936,6 +4000,16 @@ class PostgresqlRuntimeSetFactory:
             db,
             classRegistry: Dict[str, Type],
     ) -> None:
+        runtimeSet._postgresqlRuntimePropertyHydrator = (
+            lambda refreshedProperties:
+            self._hydrateSetProperties(
+                runtimeSet=runtimeSet,
+                properties=refreshedProperties,
+                db=db,
+                classRegistry=classRegistry,
+            )
+        )
+
         pointerResolver = (
             self._buildPointerResolver(
                 db=db,

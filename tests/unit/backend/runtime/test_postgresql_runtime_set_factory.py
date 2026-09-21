@@ -2400,6 +2400,144 @@ def test_SetOfCtfHydratesProtocolExtendedMicrographsPointer():
     }]
 
 
+
+def test_RuntimeSetRefreshRetriesUnresolvedProtocolExtendedPointer():
+    targetMicrographs = SetOfMicrographs()
+    targetMicrographs.setObjId(999)
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.projectId = 12
+            self.db = object()
+            self.properties = {}
+            self.calls = []
+            self.targetProtocol = None
+
+        def selectDetachedProtocolViewById(
+                self,
+                protocolId,
+                outputNames=None,
+        ):
+            self.calls.append({
+                "protocolId": protocolId,
+                "outputNames": outputNames,
+            })
+
+            if protocolId == 2640:
+                return self.targetProtocol
+
+            return None
+
+        def refreshProperties(self):
+            pass
+
+        def count(self):
+            return 10
+
+        def maxId(self):
+            return 10
+
+        def getPropertyKeys(self):
+            return list(self.properties)
+
+        def getProperty(
+                self,
+                key,
+                defaultValue=None,
+        ):
+            return self.properties.get(
+                key,
+                defaultValue,
+            )
+
+    class SourceProtocol(FakeParent):
+        def __init__(self, mapper):
+            super().__init__()
+            self.mapper = mapper
+
+        def getMapper(self):
+            return self.mapper
+
+    runtimeMapper = RuntimeMapperStub()
+
+    sourceProtocol = SourceProtocol(
+        runtimeMapper
+    )
+    sourceProtocol.setObjId(2640)
+
+    runtimeMapper.targetProtocol = (
+        sourceProtocol
+    )
+
+    factory = PostgresqlRuntimeSetFactory()
+    runtimeSetClass = factory._getRuntimeSetClass(
+        SetOfCTF
+    )
+    ctfSet = runtimeSetClass()
+    ctfSet.setObjId(998)
+
+    ctfSet._postgresqlRuntimeInfo = {
+        "projectId": 12,
+        "runtimeObjectId": 998,
+    }
+    ctfSet._postgresqlRuntimeClasses = {}
+    ctfSet._postgresqlRuntimeProperties = {}
+    ctfSet._mapper = runtimeMapper
+
+    setPostgresqlRuntimeParentReference(
+        runtimeObject=ctfSet,
+        parent=sourceProtocol,
+    )
+
+    reference = {
+        "version": 1,
+        "kind": "pointer",
+        "targetObjectId": 2640,
+        "targetClassName": (
+            "XmippProtCTFConsensus"
+        ),
+        "targetObjectName": None,
+        "targetParentObjectId": None,
+        "targetParentClassName": None,
+        "extended": (
+            "outputMicrographs"
+        ),
+        "uniqueId": (
+            "2640.outputMicrographs"
+        ),
+    }
+
+    runtimeMapper.properties[
+        "_micrographsPointer"
+    ] = reference
+
+    factory._hydrateSetProperties(
+        runtimeSet=ctfSet,
+        properties={
+            "_micrographsPointer": reference,
+        },
+        db=runtimeMapper.db,
+        classRegistry={},
+    )
+
+    assert ctfSet.getMicrographs() is None
+
+    sourceProtocol.outputMicrographs = (
+        targetMicrographs
+    )
+
+    ctfSet.loadAllProperties()
+
+    assert (
+        ctfSet.getMicrographs()
+        is targetMicrographs
+    ), (
+        "loadAllProperties() must retry an unresolved "
+        "PostgreSQL runtime Pointer after its target "
+        "output becomes available."
+    )
+
+
 def test_RuntimeSetPointerReturnsNoneWhenTargetOutputDoesNotExist():
     class FakePointerRepository:
         def __init__(self):
