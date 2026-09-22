@@ -37,6 +37,8 @@ from pyworkflow.protocol import (
     RelationParam,
 )
 
+from pyworkflow.object import OBJECTS_DICT
+
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
@@ -48,6 +50,149 @@ logger = logging.getLogger(__name__)
 
 class ProtocolFormSerializer:
     """Serialize Scipion protocol parameters for the web form."""
+
+    @staticmethod
+    def _getClassHierarchyNames(
+            objectClass,
+    ) -> List[str]:
+        if not isinstance(
+                objectClass,
+                type,
+        ):
+            return []
+
+        hierarchy = []
+
+        for baseClass in getattr(
+                objectClass,
+                "__mro__",
+                (),
+        ):
+            className = str(
+                getattr(
+                    baseClass,
+                    "__name__",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            if (
+                    not className
+                    or className == "object"
+                    or className in hierarchy
+            ):
+                continue
+
+            hierarchy.append(
+                className
+            )
+
+        return hierarchy
+
+    @classmethod
+    def _getRuntimeObjectClassHierarchy(
+            cls,
+            runtimeObject,
+    ) -> List[str]:
+        if runtimeObject is None:
+            return []
+
+        objectClass = None
+
+        getClass = getattr(
+            runtimeObject,
+            "getClass",
+            None,
+        )
+
+        if callable(getClass):
+            try:
+                candidateClass = getClass()
+
+                if isinstance(
+                        candidateClass,
+                        type,
+                ):
+                    objectClass = (
+                        candidateClass
+                    )
+
+            except Exception:
+                objectClass = None
+
+        if objectClass is None:
+            objectClass = (
+                runtimeObject.__class__
+            )
+
+        return (
+            cls
+            ._getClassHierarchyNames(
+                objectClass
+            )
+        )
+
+    @staticmethod
+    def _loadScipionObjectClasses():
+        classes = dict(
+            OBJECTS_DICT
+            or {}
+        )
+
+        try:
+            from pwem import Domain
+
+            classes.update(
+                Domain.getObjects()
+                or {}
+            )
+
+        except Exception:
+            logger.debug(
+                "Could not load Scipion Domain objects "
+                "while resolving output class hierarchy.",
+                exc_info=True,
+            )
+
+        return classes
+
+    @classmethod
+    def _getPersistedClassHierarchy(
+            cls,
+            className,
+            classRegistry,
+    ) -> List[str]:
+        normalizedClassName = str(
+            className
+            or ""
+        ).strip()
+
+        if not normalizedClassName:
+            return []
+
+        objectClass = (
+            classRegistry.get(
+                normalizedClassName
+            )
+        )
+
+        if isinstance(
+                objectClass,
+                type,
+        ):
+            return (
+                cls
+                ._getClassHierarchyNames(
+                    objectClass
+                )
+            )
+
+        # Unknown plugin/object class: preserve at least
+        # the concrete class instead of dropping metadata.
+        return [
+            normalizedClassName
+        ]
 
     @staticmethod
     def _allowsScalarPointers(param) -> bool:
@@ -1307,11 +1452,25 @@ class ProtocolFormSerializer:
             if not outputName:
                 continue
 
+            pointerClassHierarchy = (
+                self
+                ._getRuntimeObjectClassHierarchy(
+                    attr
+                )
+            )
+
+            pointerClass = (
+                pointerClassHierarchy[0]
+                if pointerClassHierarchy
+                else attr.__class__.__name__
+            )
+
             outputData = {
                 "outputName": outputName,
                 "paramClass": "PointerParam",
-                "pointerClass": (
-                    attr.__class__.__name__
+                "pointerClass": pointerClass,
+                "pointerClassHierarchy": (
+                    pointerClassHierarchy
                 ),
                 "info": "",
                 "value": (
@@ -1335,6 +1494,11 @@ class ProtocolFormSerializer:
             outputsByName[
                 outputName
             ] = outputData
+
+        classRegistry = (
+            self
+            ._loadScipionObjectClasses()
+        )
 
         for outputName, persistedOutput in sorted(
                 (
@@ -1366,6 +1530,14 @@ class ProtocolFormSerializer:
                 or ""
             )
 
+            persistedClassHierarchy = (
+                self
+                ._getPersistedClassHierarchy(
+                    persistedClassName,
+                    classRegistry,
+                )
+            )
+
             persistedInfo = str(
                 persistedOutput.get(
                     "info"
@@ -1380,6 +1552,15 @@ class ProtocolFormSerializer:
                     existingOutput[
                         "pointerClass"
                     ] = persistedClassName
+
+                if not existingOutput.get(
+                        "pointerClassHierarchy"
+                ):
+                    existingOutput[
+                        "pointerClassHierarchy"
+                    ] = (
+                        persistedClassHierarchy
+                    )
 
                 if not existingOutput.get(
                         "info"
@@ -1399,6 +1580,9 @@ class ProtocolFormSerializer:
                 ),
                 "pointerClass": (
                     persistedClassName
+                ),
+                "pointerClassHierarchy": (
+                    persistedClassHierarchy
                 ),
                 "info": persistedInfo,
                 "value": (

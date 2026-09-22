@@ -49,6 +49,11 @@ from app.backend.api.services.protocol_form_serializer import (
     ProtocolFormSerializer,
 )
 
+from pwem.objects import (
+    SetOfMicrographs,
+    SetOfParticles,
+)
+
 
 def test_scalar_pointer_runtime_value_from_direct_output():
     output = Integer(128)
@@ -454,6 +459,150 @@ def test_relation_param_preserves_relation_metadata_and_condition():
     )
 
     assert paramValue is None
+
+
+
+def test_protocol_outputs_preserve_runtime_class_hierarchy():
+    class FakeProtocol:
+        def getObjId(self):
+            return 21
+
+        def iterOutputAttributes(self):
+            return [
+                (
+                    "outputMicrographs",
+                    SetOfMicrographs(),
+                ),
+                (
+                    "outputParticles",
+                    SetOfParticles(),
+                ),
+            ]
+
+    outputs = (
+        ProtocolFormSerializer()
+        .serializeProtocolOutputs(
+            protocol=FakeProtocol(),
+            protocolName="producer",
+        )
+    )
+
+    outputsByName = {
+        output["outputName"]: output
+        for output in outputs
+    }
+
+    micrographs = outputsByName[
+        "outputMicrographs"
+    ]
+
+    assert (
+        micrographs["pointerClass"]
+        == "SetOfMicrographs"
+    )
+
+    assert (
+        "SetOfMicrographs"
+        in micrographs[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    assert (
+        "SetOfMicrographsBase"
+        in micrographs[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    assert (
+        "SetOfImages"
+        in micrographs[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    particles = outputsByName[
+        "outputParticles"
+    ]
+
+    assert (
+        particles["pointerClass"]
+        == "SetOfParticles"
+    )
+
+    assert (
+        "SetOfParticles"
+        in particles[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    assert (
+        "SetOfImages"
+        in particles[
+            "pointerClassHierarchy"
+        ]
+    )
+
+
+def test_persisted_protocol_outputs_restore_class_hierarchy():
+    class FakeProtocol:
+        def getObjId(self):
+            return 21
+
+        def iterOutputAttributes(self):
+            return []
+
+    outputs = (
+        ProtocolFormSerializer()
+        .serializeProtocolOutputs(
+            protocol=FakeProtocol(),
+            protocolName="producer",
+            persistedOutputs={
+                "outputMicrographs": {
+                    "className":
+                        "SetOfMicrographs",
+                    "info":
+                        "Persisted micrographs",
+                },
+            },
+        )
+    )
+
+    assert len(outputs) == 1
+
+    output = outputs[0]
+
+    assert (
+        output["pointerClass"]
+        == "SetOfMicrographs"
+    )
+
+    assert (
+        "SetOfMicrographs"
+        in output[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    assert (
+        "SetOfMicrographsBase"
+        in output[
+            "pointerClassHierarchy"
+        ]
+    )
+
+    assert (
+        "SetOfImages"
+        in output[
+            "pointerClassHierarchy"
+        ]
+    )
+
+
+
+
 
 
 
