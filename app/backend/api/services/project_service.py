@@ -11272,6 +11272,120 @@ class ProjectService:
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.listOutputVolumes()
 
+    def _resolveTomogramReviewSetId(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> int:
+        from app.backend.mapper.tomogram_review_mapper import (
+            TomogramReviewPostgresqlMapper,
+            TomogramReviewTargetNotFound,
+        )
+
+        protocolDbId = self._resolvePostgresqlReaderProtocolId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        reviewMapper = TomogramReviewPostgresqlMapper(
+            mapper.db
+        )
+
+        try:
+            return reviewMapper.resolveSetId(
+                projectId=projectId,
+                protocolDbId=protocolDbId,
+                outputName=outputName,
+            )
+        except TomogramReviewTargetNotFound as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(error),
+            ) from error
+
+    def getTomogramReviewContextService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+    ) -> Dict[str, Any]:
+        from app.backend.mapper.tomogram_review_mapper import (
+            TomogramReviewPostgresqlMapper,
+            TomogramReviewTargetNotFound,
+        )
+
+        setId = self._resolveTomogramReviewSetId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        try:
+            return TomogramReviewPostgresqlMapper(
+                mapper.db
+            ).getReviewContext(
+                projectId=projectId,
+                setId=setId,
+            )
+        except TomogramReviewTargetNotFound as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(error),
+            ) from error
+
+    def saveTomogramReviewService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            scipionItemId: int,
+            payload: Dict[str, Any],
+            reviewedByUserId: Optional[int],
+    ) -> Dict[str, Any]:
+        from app.backend.mapper.tomogram_review_mapper import (
+            TomogramReviewPostgresqlMapper,
+            TomogramReviewTargetNotFound,
+        )
+
+        setId = self._resolveTomogramReviewSetId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        try:
+            result = TomogramReviewPostgresqlMapper(
+                mapper.db
+            ).saveReview(
+                projectId=projectId,
+                setId=setId,
+                scipionItemId=scipionItemId,
+                reviewed=bool(payload["reviewed"]),
+                values=dict(payload.get("values") or {}),
+                comment=payload.get("comment"),
+                expectedRevision=int(payload["revision"]),
+                reviewedByUserId=reviewedByUserId,
+            )
+        except TomogramReviewTargetNotFound as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(error),
+            ) from error
+
+        self._touchProjectModificationTime(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return result
+
     def getVolumeInfoService(
             self,
             projectId: int,

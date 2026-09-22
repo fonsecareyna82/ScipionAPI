@@ -322,6 +322,28 @@ unrelated projects. Adding millions of persisted Set items elsewhere in the
 instance must not make opening a small project perform global item-level
 aggregations.
 
+
+## Set-attached human review state
+
+Human review data for a persisted Set is authoritative PostgreSQL state and
+must never be stored in Set JSON values, compatibility SQLite files, CSV files,
+browser storage, or node-local files.
+
+Review identity is the pair `setId + scipionItemId`. A review must reference
+`scipion_sets.id` with `ON DELETE CASCADE`, but it must not have a foreign key
+to the physical `scipion_set_items` row. Full snapshot synchronization deletes
+and rebuilds those item rows while preserving `scipion_sets.id`; reviews must
+survive that rebuild.
+
+Protocol restart and output replacement delete the old `scipion_sets` row.
+Reviews attached to that Set generation must then be deleted by the database
+cascade and must never appear on a replacement Set, even when it reuses the
+same output name or Scipion item identifiers.
+
+Canonical `scipionObjId` values are reused by output path and are not Set
+generation identifiers. They must not be used to distinguish review
+generations.
+
 ## Required regression tests
 
 Changes to PostgreSQL runtime Sets, materialization, `Set.load()`, `getFileName()`, streaming, or output restoration must preserve tests for all of the following:

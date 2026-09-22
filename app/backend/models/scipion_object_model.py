@@ -125,6 +125,19 @@ class ScipionSet(Base):
     columns = relationship("ScipionSetColumn", back_populates="set", cascade="all, delete-orphan")
     setProperties = relationship("ScipionSetProperty", back_populates="set", cascade="all, delete-orphan")
     items = relationship("ScipionSetItem", back_populates="set", cascade="all, delete-orphan")
+    reviewSchema = relationship(
+        "TomogramReviewSchema",
+        back_populates="set",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+    reviews = relationship(
+        "TomogramReview",
+        back_populates="set",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         UniqueConstraint("projectId", "protocolDbId", "outputName", name="ux_scipion_sets_project_protocol_output"),

@@ -25,10 +25,15 @@
 # ******************************************************************************
 from uuid import uuid4
 
+import pytest
 from pyworkflow.object import Float, Object, Set, String
 
 from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
+from app.backend.mapper.tomogram_review_mapper import (
+    TomogramReviewPostgresqlMapper,
+    TomogramReviewRevisionConflict,
+)
 from app.backend.runtime.postgresql_runtime_set_factory import PostgresqlRuntimeSetFactory
 
 
@@ -1694,3 +1699,373 @@ def test_NestedSetParentUpdatePreservesBufferedChildren(
                 "DELETE FROM users WHERE id = %s",
                 (userId,),
             )
+
+
+def _createTomogramReviewIdentityContext(postgresqlIntegrationDb):
+    mapper = PostgresqlFlatMapper(postgresqlIntegrationDb)
+    suffix = uuid4().hex
+
+    userId = mapper.insertUser(
+        email="tomogram-review-%s@example.com" % suffix,
+        hashedPassword="integration-test",
+        firstName="Tomogram",
+        lastName="Review Identity",
+        institution=None,
+        role="user",
+        isActive=True,
+        isVerified=True,
+        verificationCode="integration-test",
+    )
+
+    projectId = mapper.insertProject(
+        ownerId=userId,
+        name="Tomogram review identity %s" % suffix,
+        description="Tomogram review Set identity regression test.",
+        status="active",
+    )
+
+    protocolDbId = mapper.saveProtocol({
+        "info": {
+            "protocolId": 2,
+            "projectId": projectId,
+            "protocolClassName": "TomogramReviewIdentityProtocol",
+            "status": "running",
+        },
+        "values": {},
+        "parentIds": [],
+        "childIds": [],
+    })
+
+    return mapper, userId, projectId, protocolDbId
+
+
+def _storeTomogramReviewTestSet(
+        setMapper,
+        projectId,
+        protocolDbId,
+        runtimeObjectId,
+        itemIds,
+):
+    sourceSet = SourceOutputSetStub([
+        _buildItem(
+            itemId=itemId,
+            score=float(itemId),
+            code="TOMO_%02d" % itemId,
+        )
+        for itemId in itemIds
+    ])
+    sourceSet.setObjId(runtimeObjectId)
+
+    return setMapper.storeSet(
+        projectId=projectId,
+        protocolDbId=protocolDbId,
+        outputName="outputTomograms",
+        scipionSet=sourceSet,
+    )
+
+
+def _insertTomogramReview(
+        postgresqlIntegrationDb,
+        setId,
+        scipionItemId,
+):
+    postgresqlIntegrationDb.execute(
+        """
+        INSERT INTO tomogram_reviews (
+            "setId",
+            "scipionItemId",
+            reviewed,
+            values,
+            comment,
+            revision
+        )
+        VALUES (
+            %s,
+            %s,
+            TRUE,
+            '{"quality":"Good","mito":true}'::jsonb,
+            'Good membrane contrast',
+            1
+        )
+        """,
+        (setId, scipionItemId),
+    )
+
+
+def test_TomogramReviewSurvivesSnapshotRebuildOfSameLogicalSet(
+        postgresqlIntegrationDb,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+
+    try:
+        firstSnapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_100_001,
+            itemIds=[1],
+        )
+        setId = int(firstSnapshot["setId"])
+
+        _insertTomogramReview(
+            postgresqlIntegrationDb=postgresqlIntegrationDb,
+            setId=setId,
+            scipionItemId=1,
+        )
+
+        rebuiltSnapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_100_001,
+            itemIds=[1, 2],
+        )
+
+        assert int(rebuiltSnapshot["setId"]) == setId
+
+        review = postgresqlIntegrationDb.fetchOne(
+            """
+            SELECT "scipionItemId", reviewed, values, comment, revision
+              FROM tomogram_reviews
+             WHERE "setId" = %s
+               AND "scipionItemId" = %s
+            """,
+            (setId, 1),
+        )
+
+        assert review == {
+            "scipionItemId": 1,
+            "reviewed": True,
+            "values": {
+                "quality": "Good",
+                "mito": True,
+            },
+            "comment": "Good membrane contrast",
+            "revision": 1,
+        }
+
+    finally:
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )
+
+
+def test_TomogramReviewDoesNotLeakIntoReplacementSetGeneration(
+        postgresqlIntegrationDb,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+
+    try:
+        originalSnapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_200_001,
+            itemIds=[1],
+        )
+        originalSetId = int(originalSnapshot["setId"])
+
+        _insertTomogramReview(
+            postgresqlIntegrationDb=postgresqlIntegrationDb,
+            setId=originalSetId,
+            scipionItemId=1,
+        )
+
+        setMapper.deleteStoredSetOutput(
+            projectId=projectId,
+            setId=originalSetId,
+            objectId=int(originalSnapshot["rootObjectId"]),
+            runtimeObjectId=int(originalSnapshot["runtimeObjectId"]),
+        )
+
+        replacementSnapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_200_002,
+            itemIds=[1],
+        )
+        replacementSetId = int(replacementSnapshot["setId"])
+
+        assert replacementSetId != originalSetId
+
+        reviewCount = postgresqlIntegrationDb.fetchOne(
+            """
+            SELECT COUNT(*) AS count
+              FROM tomogram_reviews
+             WHERE "setId" IN (%s, %s)
+            """,
+            (originalSetId, replacementSetId),
+        )
+
+        assert int(reviewCount["count"]) == 0
+
+    finally:
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )
+
+
+def test_TomogramReviewRevisionedWritesAreVisibleAcrossConnections(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+    readerDb = None
+
+    try:
+        snapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_300_001,
+            itemIds=[1],
+        )
+        setId = int(snapshot["setId"])
+        writer = TomogramReviewPostgresqlMapper(postgresqlIntegrationDb)
+
+        created = writer.saveReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+            reviewed=True,
+            values={"quality": "Good", "mito": True},
+            comment="Initial review",
+            expectedRevision=0,
+            reviewedByUserId=userId,
+        )
+
+        assert created["revision"] == 1
+        assert created["comment"] == "Initial review"
+
+        readerDb = _openPostgresqlIntegrationDb(postgresqlMigratedEnv)
+        reader = TomogramReviewPostgresqlMapper(readerDb)
+        loaded = reader.getReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+        )
+
+        assert loaded["revision"] == 1
+        assert loaded["values"] == {"quality": "Good", "mito": True}
+
+        updated = reader.saveReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+            reviewed=True,
+            values={"quality": "Excellent", "mito": True},
+            comment="Updated from another API node",
+            expectedRevision=1,
+            reviewedByUserId=userId,
+        )
+
+        assert updated["revision"] == 2
+        assert updated["comment"] == "Updated from another API node"
+        assert updated["values"]["quality"] == "Excellent"
+
+    finally:
+        if readerDb is not None:
+            readerDb.close()
+
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )
+
+
+def test_TomogramReviewRejectsStaleRevisionWithoutOverwriting(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+    competingDb = None
+
+    try:
+        snapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_400_001,
+            itemIds=[1],
+        )
+        setId = int(snapshot["setId"])
+        firstNode = TomogramReviewPostgresqlMapper(postgresqlIntegrationDb)
+
+        firstNode.saveReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+            reviewed=True,
+            values={"quality": "Good"},
+            comment="Revision one",
+            expectedRevision=0,
+            reviewedByUserId=userId,
+        )
+
+        competingDb = _openPostgresqlIntegrationDb(postgresqlMigratedEnv)
+        secondNode = TomogramReviewPostgresqlMapper(competingDb)
+
+        winner = firstNode.saveReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+            reviewed=True,
+            values={"quality": "Excellent"},
+            comment="Winning update",
+            expectedRevision=1,
+            reviewedByUserId=userId,
+        )
+
+        with pytest.raises(TomogramReviewRevisionConflict) as conflict:
+            secondNode.saveReview(
+                projectId=projectId,
+                setId=setId,
+                scipionItemId=1,
+                reviewed=True,
+                values={"quality": "Bad"},
+                comment="Stale update",
+                expectedRevision=1,
+                reviewedByUserId=userId,
+            )
+
+        assert winner["revision"] == 2
+        assert conflict.value.current["revision"] == 2
+        assert conflict.value.current["comment"] == "Winning update"
+
+        current = secondNode.getReview(
+            projectId=projectId,
+            setId=setId,
+            scipionItemId=1,
+        )
+
+        assert current["revision"] == 2
+        assert current["comment"] == "Winning update"
+        assert current["values"] == {"quality": "Excellent"}
+
+    finally:
+        if competingDb is not None:
+            competingDb.close()
+
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )

@@ -16,6 +16,7 @@ from fastapi import (
     Request, Body,
     Header,
 )
+from fastapi.encoders import jsonable_encoder
 from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse, FileResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -49,6 +50,9 @@ from app.backend.models.protocol_model import (
     DeletePayload, ProtocolOutputThumbnailsRequest, ProtocolWorkflowExecutionRequest,
 )
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.mapper.tomogram_review_mapper import (
+    TomogramReviewRevisionConflict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3428,6 +3432,92 @@ def getIntegratedAnalyzeContext(
     resp.headers["Vary"] = "Authorization"
     return resp
 
+class TomogramReviewPatchRequest(BaseModel):
+    reviewed: bool
+    values: Dict[str, Any] = Field(default_factory=dict)
+    comment: Optional[str] = None
+    revision: int = Field(..., ge=0)
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/reviews",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getTomogramReviewContext(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return service.getTomogramReviewContextService(
+        mapper=mapper,
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+    )
+
+
+@router.patch(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tomograms/{scipionItemId}/review",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def patchTomogramReview(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    scipionItemId: int,
+    payload: TomogramReviewPatchRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if (
+            not bool(project.get("isOwner"))
+            and str(project.get("permission") or "").strip().lower() != "full"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project write permission is required",
+        )
+
+    reviewedByUserId = (
+        currentUser.get("id")
+        if isinstance(currentUser, dict)
+        else getattr(currentUser, "id", None)
+    )
+
+    try:
+        return service.saveTomogramReviewService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            scipionItemId=scipionItemId,
+            payload=payload.dict(),
+            reviewedByUserId=reviewedByUserId,
+        )
+    except TomogramReviewRevisionConflict as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Tomogram review was modified by another user",
+                "current": jsonable_encoder(error.current),
+            },
+        ) from error
+
+# ==============================================================================
 # ==============================================================================
 #        ANALYZE RESULTS: FSC (SetOfFSCs)
 # ==============================================================================
