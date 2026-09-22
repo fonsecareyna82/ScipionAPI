@@ -52,6 +52,7 @@ from app.backend.models.protocol_model import (
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.mapper.tomogram_review_mapper import (
     TomogramReviewRevisionConflict,
+    TomogramReviewSchemaRevisionConflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -3439,6 +3440,11 @@ class TomogramReviewPatchRequest(BaseModel):
     revision: int = Field(..., ge=0)
 
 
+class TomogramReviewSchemaPutRequest(BaseModel):
+    definition: Dict[str, Any]
+    revision: int = Field(..., ge=0)
+
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/reviews",
     response_model=Any,
@@ -3462,6 +3468,58 @@ def getTomogramReviewContext(
         protocolId=protocolId,
         outputName=outputName,
     )
+
+
+@router.put(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/reviews/schema",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def putTomogramReviewSchema(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: TomogramReviewSchemaPutRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if (
+            not bool(project.get("isOwner"))
+            and str(project.get("permission") or "").strip().lower() != "full"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project write permission is required",
+        )
+
+    createdByUserId = (
+        currentUser.get("id")
+        if isinstance(currentUser, dict)
+        else getattr(currentUser, "id", None)
+    )
+
+    try:
+        return service.saveTomogramReviewSchemaService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            payload=payload.dict(),
+            createdByUserId=createdByUserId,
+        )
+    except TomogramReviewSchemaRevisionConflict as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Tomogram review schema was modified by another user",
+                "current": jsonable_encoder(error.current),
+            },
+        ) from error
 
 
 @router.patch(

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.backend.mapper.tomogram_review_mapper import (
     TomogramReviewRevisionConflict,
+    TomogramReviewSchemaRevisionConflict,
 )
 
 
@@ -43,9 +44,23 @@ class FakeTomogramReviewService:
             "revision": 5,
         }
         self.saveError: Optional[Exception] = None
+        self.schemaResult = {
+            "id": 8,
+            "setId": 47,
+            "version": 1,
+            "definition": {
+                "tags": [
+                    {"key": "feature_a", "label": "Feature A"},
+                ],
+            },
+            "revision": 1,
+            "createdByUserId": 13,
+        }
+        self.schemaError: Optional[Exception] = None
         self.lastGetProjectDbRowCall = None
         self.lastContextCall = None
         self.lastSaveCall = None
+        self.lastSchemaCall = None
 
     def getProjectDbRow(self, mapper, projectId, currentUser):
         self.lastGetProjectDbRowCall = {
@@ -94,6 +109,29 @@ class FakeTomogramReviewService:
             raise self.saveError
 
         return self.saveResult
+
+    def saveTomogramReviewSchemaService(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            outputName,
+            payload,
+            createdByUserId,
+    ):
+        self.lastSchemaCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "payload": payload,
+            "createdByUserId": createdByUserId,
+        }
+
+        if self.schemaError is not None:
+            raise self.schemaError
+
+        return self.schemaResult
 
 
 @pytest.fixture
@@ -233,3 +271,97 @@ def test_PatchTomogramReviewRejectsReadOnlyProjectAccess(
     assert response.status_code == 403
     assert response.json()["detail"] == "Project write permission is required"
     assert fakeTomogramReviewService.lastSaveCall is None
+
+
+def test_PutTomogramReviewSchemaDelegatesRevisionedWrite(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+        fakeProjectMapper,
+):
+    payload = {
+        "definition": {
+            "tags": [
+                {"key": "feature_a", "label": "Feature A"},
+            ],
+        },
+        "revision": 0,
+    }
+
+    response = tomogramReviewClient.put(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/schema",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeTomogramReviewService.schemaResult
+    assert fakeTomogramReviewService.lastSchemaCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 7,
+        "protocolId": 42,
+        "outputName": "outputTomograms",
+        "payload": payload,
+        "createdByUserId": 13,
+    }
+
+
+def test_PutTomogramReviewSchemaReturnsCurrentSchemaOnRevisionConflict(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+):
+    current = {
+        "id": 8,
+        "setId": 47,
+        "version": 2,
+        "definition": {
+            "tags": [
+                {"key": "winner", "label": "Winning tag"},
+            ],
+        },
+        "revision": 2,
+    }
+    fakeTomogramReviewService.schemaError = TomogramReviewSchemaRevisionConflict(
+        current=current
+    )
+
+    response = tomogramReviewClient.put(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/schema",
+        json={
+            "definition": {
+                "tags": [
+                    {"key": "stale", "label": "Stale tag"},
+                ],
+            },
+            "revision": 1,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "message": "Tomogram review schema was modified by another user",
+            "current": current,
+        },
+    }
+
+
+def test_PutTomogramReviewSchemaRejectsReadOnlyProjectAccess(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+):
+    fakeTomogramReviewService.projectDbRowResult = {
+        "id": 7,
+        "isOwner": False,
+        "permission": "read",
+    }
+
+    response = tomogramReviewClient.put(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/schema",
+        json={
+            "definition": {"tags": []},
+            "revision": 0,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Project write permission is required"
+    assert fakeTomogramReviewService.lastSchemaCall is None

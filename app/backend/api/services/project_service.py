@@ -11338,6 +11338,50 @@ class ProjectService:
                 detail=str(error),
             ) from error
 
+    def saveTomogramReviewSchemaService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            payload: Dict[str, Any],
+            createdByUserId: Optional[int],
+    ) -> Dict[str, Any]:
+        from app.backend.mapper.tomogram_review_mapper import (
+            TomogramReviewPostgresqlMapper,
+            TomogramReviewTargetNotFound,
+        )
+
+        setId = self._resolveTomogramReviewSetId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+
+        try:
+            result = TomogramReviewPostgresqlMapper(
+                mapper.db
+            ).saveSchema(
+                projectId=projectId,
+                setId=setId,
+                definition=dict(payload.get("definition") or {}),
+                expectedRevision=int(payload["revision"]),
+                createdByUserId=createdByUserId,
+            )
+        except TomogramReviewTargetNotFound as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(error),
+            ) from error
+
+        self._touchProjectModificationTime(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return result
+
     def saveTomogramReviewService(
             self,
             mapper,

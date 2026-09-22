@@ -2069,3 +2069,162 @@ def test_TomogramReviewRejectsStaleRevisionWithoutOverwriting(
             "DELETE FROM users WHERE id = %s",
             (userId,),
         )
+
+
+def test_TomogramReviewSchemaRevisionedWritesAreVisibleAcrossConnections(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+    readerDb = None
+
+    try:
+        snapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_500_001,
+            itemIds=[1, 2],
+        )
+        setId = int(snapshot["setId"])
+        writer = TomogramReviewPostgresqlMapper(postgresqlIntegrationDb)
+        initialDefinition = {
+            "tags": [
+                {"key": "feature_a", "label": "Feature A"},
+            ],
+        }
+
+        created = writer.saveSchema(
+            projectId=projectId,
+            setId=setId,
+            definition=initialDefinition,
+            expectedRevision=0,
+            createdByUserId=userId,
+        )
+
+        assert created["version"] == 1
+        assert created["revision"] == 1
+        assert created["definition"] == initialDefinition
+
+        readerDb = _openPostgresqlIntegrationDb(postgresqlMigratedEnv)
+        reader = TomogramReviewPostgresqlMapper(readerDb)
+        loaded = reader.getReviewContext(
+            projectId=projectId,
+            setId=setId,
+        )["schema"]
+
+        assert loaded["revision"] == 1
+        assert loaded["definition"] == initialDefinition
+
+        updatedDefinition = {
+            "tags": [
+                {"key": "feature_a", "label": "Feature A"},
+                {"key": "needs_follow_up", "label": "Needs follow-up"},
+            ],
+        }
+        updated = reader.saveSchema(
+            projectId=projectId,
+            setId=setId,
+            definition=updatedDefinition,
+            expectedRevision=1,
+            createdByUserId=userId,
+        )
+
+        assert updated["version"] == 2
+        assert updated["revision"] == 2
+        assert updated["definition"] == updatedDefinition
+
+    finally:
+        if readerDb is not None:
+            readerDb.close()
+
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )
+
+
+def test_TomogramReviewSchemaRejectsStaleRevisionWithoutOverwriting(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    mapper, userId, projectId, protocolDbId = _createTomogramReviewIdentityContext(
+        postgresqlIntegrationDb
+    )
+    setMapper = ScipionSetPostgresqlMapper(postgresqlIntegrationDb)
+    competingDb = None
+
+    try:
+        snapshot = _storeTomogramReviewTestSet(
+            setMapper=setMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            runtimeObjectId=1_600_001,
+            itemIds=[1],
+        )
+        setId = int(snapshot["setId"])
+        firstNode = TomogramReviewPostgresqlMapper(postgresqlIntegrationDb)
+        firstNode.saveSchema(
+            projectId=projectId,
+            setId=setId,
+            definition={"tags": [{"key": "feature_a", "label": "Feature A"}]},
+            expectedRevision=0,
+            createdByUserId=userId,
+        )
+
+        competingDb = _openPostgresqlIntegrationDb(postgresqlMigratedEnv)
+        secondNode = TomogramReviewPostgresqlMapper(competingDb)
+        winningDefinition = {
+            "tags": [
+                {"key": "feature_a", "label": "Feature A"},
+                {"key": "winner", "label": "Winning tag"},
+            ],
+        }
+        winner = firstNode.saveSchema(
+            projectId=projectId,
+            setId=setId,
+            definition=winningDefinition,
+            expectedRevision=1,
+            createdByUserId=userId,
+        )
+
+        with pytest.raises(RuntimeError) as conflict:
+            secondNode.saveSchema(
+                projectId=projectId,
+                setId=setId,
+                definition={
+                    "tags": [
+                        {"key": "feature_a", "label": "Feature A"},
+                        {"key": "stale", "label": "Stale tag"},
+                    ],
+                },
+                expectedRevision=1,
+                createdByUserId=userId,
+            )
+
+        assert winner["version"] == 2
+        assert winner["revision"] == 2
+        assert conflict.value.current["revision"] == 2
+        assert conflict.value.current["definition"] == winningDefinition
+
+        current = secondNode.getReviewContext(
+            projectId=projectId,
+            setId=setId,
+        )["schema"]
+
+        assert current["revision"] == 2
+        assert current["definition"] == winningDefinition
+
+    finally:
+        if competingDb is not None:
+            competingDb.close()
+
+        mapper.deleteProject(projectId=projectId, ownerId=userId)
+        postgresqlIntegrationDb.execute(
+            "DELETE FROM users WHERE id = %s",
+            (userId,),
+        )

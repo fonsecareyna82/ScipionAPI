@@ -8,6 +8,12 @@ class TomogramReviewRevisionConflict(RuntimeError):
         self.current = current
 
 
+class TomogramReviewSchemaRevisionConflict(RuntimeError):
+    def __init__(self, current: Optional[Dict[str, Any]]):
+        super().__init__("Tomogram review schema revision conflict")
+        self.current = current
+
+
 class TomogramReviewTargetNotFound(LookupError):
     pass
 
@@ -129,6 +135,170 @@ class TomogramReviewPostgresqlMapper:
                 for row in reviewRows
             },
         }
+
+    def getSchema(
+            self,
+            projectId: int,
+            setId: int,
+    ) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne(
+            """
+            SELECT review_schema.id AS "schemaId",
+                   stored_set.id AS "setId",
+                   review_schema.version,
+                   review_schema.definition,
+                   review_schema.revision,
+                   review_schema."createdByUserId",
+                   review_schema."createdAt",
+                   review_schema."updatedAt"
+              FROM scipion_sets stored_set
+         LEFT JOIN tomogram_review_schemas review_schema
+                ON review_schema."setId" = stored_set.id
+             WHERE stored_set.id = %s
+               AND stored_set."projectId" = %s
+            """,
+            (
+                int(setId),
+                int(projectId),
+            ),
+        )
+
+        if row is None:
+            raise TomogramReviewTargetNotFound(
+                "Tomogram review Set was not found"
+            )
+
+        if row.get("schemaId") is None:
+            return None
+
+        row = dict(row)
+        row["id"] = row.pop("schemaId")
+        return row
+
+    def saveSchema(
+            self,
+            projectId: int,
+            setId: int,
+            definition: Dict[str, Any],
+            expectedRevision: int,
+            createdByUserId: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        expectedRevision = int(expectedRevision)
+
+        if expectedRevision < 0:
+            raise ValueError("expectedRevision must be greater than or equal to zero")
+
+        if not isinstance(definition, dict):
+            raise ValueError("Tomogram review schema definition must be a dictionary")
+
+        with self.db.transaction():
+            if expectedRevision == 0:
+                stored = self._insertSchema(
+                    projectId=projectId,
+                    setId=setId,
+                    definition=definition,
+                    createdByUserId=createdByUserId,
+                )
+            else:
+                stored = self._updateSchema(
+                    projectId=projectId,
+                    setId=setId,
+                    definition=definition,
+                    expectedRevision=expectedRevision,
+                )
+
+            if stored is not None:
+                return dict(stored)
+
+            current = self.getSchema(
+                projectId=projectId,
+                setId=setId,
+            )
+
+            raise TomogramReviewSchemaRevisionConflict(
+                current=current
+            )
+
+    def _insertSchema(
+            self,
+            projectId: int,
+            setId: int,
+            definition: Dict[str, Any],
+            createdByUserId: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        return self.db.executeReturningOne(
+            """
+            INSERT INTO tomogram_review_schemas (
+                "setId",
+                version,
+                definition,
+                revision,
+                "createdByUserId",
+                "updatedAt"
+            )
+            SELECT stored_set.id,
+                   1,
+                   %s::jsonb,
+                   1,
+                   %s,
+                   NOW()
+              FROM scipion_sets stored_set
+             WHERE stored_set.id = %s
+               AND stored_set."projectId" = %s
+            ON CONFLICT ON CONSTRAINT ux_tomogram_review_schemas_set
+            DO NOTHING
+            RETURNING id,
+                      "setId",
+                      version,
+                      definition,
+                      revision,
+                      "createdByUserId",
+                      "createdAt",
+                      "updatedAt"
+            """,
+            (
+                json.dumps(definition),
+                createdByUserId,
+                int(setId),
+                int(projectId),
+            ),
+        )
+
+    def _updateSchema(
+            self,
+            projectId: int,
+            setId: int,
+            definition: Dict[str, Any],
+            expectedRevision: int,
+    ) -> Optional[Dict[str, Any]]:
+        return self.db.executeReturningOne(
+            """
+            UPDATE tomogram_review_schemas review_schema
+               SET version = review_schema.version + 1,
+                   definition = %s::jsonb,
+                   revision = review_schema.revision + 1,
+                   "updatedAt" = NOW()
+              FROM scipion_sets stored_set
+             WHERE review_schema."setId" = stored_set.id
+               AND review_schema."setId" = %s
+               AND review_schema.revision = %s
+               AND stored_set."projectId" = %s
+            RETURNING review_schema.id,
+                      review_schema."setId",
+                      review_schema.version,
+                      review_schema.definition,
+                      review_schema.revision,
+                      review_schema."createdByUserId",
+                      review_schema."createdAt",
+                      review_schema."updatedAt"
+            """,
+            (
+                json.dumps(definition),
+                int(setId),
+                int(expectedRevision),
+                int(projectId),
+            ),
+        )
 
     def getReview(
             self,

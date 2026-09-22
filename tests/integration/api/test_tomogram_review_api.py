@@ -148,13 +148,73 @@ def test_TomogramReviewHttpFlowUsesPostgresqlEndToEnd(
             }
             assert initialContext.json()["reviews"] == {}
 
+            createdSchema = client.put(
+                baseUrl + "/reviews/schema",
+                json={
+                    "definition": {
+                        "tags": [
+                            {"key": "feature_a", "label": "Feature A"},
+                        ],
+                    },
+                    "revision": 0,
+                },
+            )
+
+            assert createdSchema.status_code == 200
+            assert createdSchema.json()["version"] == 1
+            assert createdSchema.json()["revision"] == 1
+
+            updatedDefinition = {
+                "tags": [
+                    {"key": "feature_a", "label": "Feature A"},
+                    {"key": "needs_follow_up", "label": "Needs follow-up"},
+                ],
+            }
+            updatedSchema = client.put(
+                baseUrl + "/reviews/schema",
+                json={
+                    "definition": updatedDefinition,
+                    "revision": 1,
+                },
+            )
+
+            assert updatedSchema.status_code == 200
+            assert updatedSchema.json()["version"] == 2
+            assert updatedSchema.json()["revision"] == 2
+            assert updatedSchema.json()["definition"] == updatedDefinition
+
+            staleSchema = client.put(
+                baseUrl + "/reviews/schema",
+                json={
+                    "definition": {
+                        "tags": [
+                            {"key": "stale", "label": "Stale tag"},
+                        ],
+                    },
+                    "revision": 1,
+                },
+            )
+
+            assert staleSchema.status_code == 409
+            assert staleSchema.json()["detail"]["current"]["version"] == 2
+            assert staleSchema.json()["detail"]["current"]["revision"] == 2
+            assert staleSchema.json()["detail"]["current"]["definition"] == (
+                updatedDefinition
+            )
+
+            schemaContext = client.get(baseUrl + "/reviews")
+
+            assert schemaContext.status_code == 200
+            assert schemaContext.json()["schema"]["version"] == 2
+            assert schemaContext.json()["schema"]["definition"] == updatedDefinition
+
             created = client.patch(
                 baseUrl + "/tomograms/31/review",
                 json={
                     "reviewed": True,
                     "values": {
                         "quality": "Good",
-                        "mito": True,
+                        "tags": ["feature_a"],
                     },
                     "comment": "Good membrane contrast",
                     "revision": 0,
@@ -163,6 +223,7 @@ def test_TomogramReviewHttpFlowUsesPostgresqlEndToEnd(
 
             assert created.status_code == 200
             assert created.json()["revision"] == 1
+            assert created.json()["schemaVersion"] == 2
             assert created.json()["scipionItemId"] == 31
 
             storedContext = client.get(baseUrl + "/reviews")
