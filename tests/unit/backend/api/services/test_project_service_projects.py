@@ -1083,6 +1083,7 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
         },
     }
 
+
     assert graph["10"]["outputs"] == [
         {
             "name": "outputMovies",
@@ -1485,5 +1486,121 @@ def test_GetProtocolWorkingDirSizesCalculatesSizesInBatch(service, tmp_path, mon
 
     assert len(calls) == 1
     assert calls[0][0:2] == ["du", "-sb"]
+
+
+def test_BuildProtocolsGraphPreservesPersistedOutputClassHierarchy(
+        service,
+):
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportMovies",
+                "status": "finished",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "10": {
+                "outputMicrographs": {
+                    "className": "SetOfMicrographs",
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    output = graph[
+        "10"
+    ][
+        "outputs"
+    ][0]
+
+    assert (
+        output["pointerClass"]
+        == "SetOfMicrographs"
+    )
+
+    assert (
+        "SetOfImages"
+        in output[
+            "pointerClassHierarchy"
+        ]
+    )
+
+
+def test_GetProtocolRuntimeSummariesPreservesOutputClassHierarchy(
+        service,
+        mapper,
+        projectServiceModule,
+        monkeypatch,
+):
+    mapper.getProjectProtocolRuntimeRows = (
+        lambda projectId, protocolIds: [
+            {
+                "protocolId": "10",
+                "status": "running",
+                "params": {},
+            },
+        ]
+    )
+
+    mapper.getProjectProtocolStepSummaryByProtocolId = (
+        lambda projectId: {}
+    )
+
+    class RuntimeOutputPersistenceStub:
+        def loadPersistedOutputsByProtocolId(
+                self,
+                mapper,
+                projectId,
+        ):
+            return {
+                "10": {
+                    "outputMicrographs": {
+                        "className":
+                            "SetOfMicrographs",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        RuntimeOutputPersistenceStub,
+    )
+
+    summaries = (
+        service
+        .getProtocolRuntimeSummaries(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=[10],
+        )
+    )
+
+    output = summaries[
+        0
+    ][
+        "outputs"
+    ][0]
+
+    assert (
+        output["pointerClass"]
+        == "SetOfMicrographs"
+    )
+
+    assert (
+        "SetOfImages"
+        in output[
+            "pointerClassHierarchy"
+        ]
+    )
+
+
+
 
 

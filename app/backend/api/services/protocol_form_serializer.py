@@ -37,7 +37,9 @@ from pyworkflow.protocol import (
     RelationParam,
 )
 
-from pyworkflow.object import OBJECTS_DICT
+from app.backend.api.services.scipion_class_hierarchy import (
+    ScipionClassHierarchyResolver,
+)
 
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
@@ -55,144 +57,43 @@ class ProtocolFormSerializer:
     def _getClassHierarchyNames(
             objectClass,
     ) -> List[str]:
-        if not isinstance(
-                objectClass,
-                type,
-        ):
-            return []
-
-        hierarchy = []
-
-        for baseClass in getattr(
-                objectClass,
-                "__mro__",
-                (),
-        ):
-            className = str(
-                getattr(
-                    baseClass,
-                    "__name__",
-                    "",
-                )
-                or ""
-            ).strip()
-
-            if (
-                    not className
-                    or className == "object"
-                    or className in hierarchy
-            ):
-                continue
-
-            hierarchy.append(
-                className
-            )
-
-        return hierarchy
-
-    @classmethod
-    def _getRuntimeObjectClassHierarchy(
-            cls,
-            runtimeObject,
-    ) -> List[str]:
-        if runtimeObject is None:
-            return []
-
-        objectClass = None
-
-        getClass = getattr(
-            runtimeObject,
-            "getClass",
-            None,
-        )
-
-        if callable(getClass):
-            try:
-                candidateClass = getClass()
-
-                if isinstance(
-                        candidateClass,
-                        type,
-                ):
-                    objectClass = (
-                        candidateClass
-                    )
-
-            except Exception:
-                objectClass = None
-
-        if objectClass is None:
-            objectClass = (
-                runtimeObject.__class__
-            )
-
         return (
-            cls
-            ._getClassHierarchyNames(
+            ScipionClassHierarchyResolver
+            .getClassHierarchyNames(
                 objectClass
             )
         )
 
     @staticmethod
-    def _loadScipionObjectClasses():
-        classes = dict(
-            OBJECTS_DICT
-            or {}
+    def _getRuntimeObjectClassHierarchy(
+            runtimeObject,
+    ) -> List[str]:
+        return (
+            ScipionClassHierarchyResolver
+            .getRuntimeObjectClassHierarchy(
+                runtimeObject
+            )
         )
 
-        try:
-            from pwem import Domain
+    @staticmethod
+    def _loadScipionObjectClasses():
+        return (
+            ScipionClassHierarchyResolver
+            .loadScipionObjectClasses()
+        )
 
-            classes.update(
-                Domain.getObjects()
-                or {}
-            )
-
-        except Exception:
-            logger.debug(
-                "Could not load Scipion Domain objects "
-                "while resolving output class hierarchy.",
-                exc_info=True,
-            )
-
-        return classes
-
-    @classmethod
+    @staticmethod
     def _getPersistedClassHierarchy(
-            cls,
             className,
             classRegistry,
     ) -> List[str]:
-        normalizedClassName = str(
-            className
-            or ""
-        ).strip()
-
-        if not normalizedClassName:
-            return []
-
-        objectClass = (
-            classRegistry.get(
-                normalizedClassName
+        return (
+            ScipionClassHierarchyResolver
+            .getPersistedClassHierarchy(
+                className,
+                classRegistry,
             )
         )
-
-        if isinstance(
-                objectClass,
-                type,
-        ):
-            return (
-                cls
-                ._getClassHierarchyNames(
-                    objectClass
-                )
-            )
-
-        # Unknown plugin/object class: preserve at least
-        # the concrete class instead of dropping metadata.
-        return [
-            normalizedClassName
-        ]
 
     @staticmethod
     def _allowsScalarPointers(param) -> bool:

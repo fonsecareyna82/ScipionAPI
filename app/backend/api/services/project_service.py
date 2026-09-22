@@ -60,6 +60,7 @@ from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
 from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
+from app.backend.api.services.scipion_class_hierarchy import ScipionClassHierarchyResolver
 
 from pwem.emlib.image.image_readers import (
     ImageReadersRegistry,
@@ -3339,6 +3340,7 @@ class ProjectService:
         protocolStepSummaryByProtocolId = protocolStepSummaryByProtocolId or {}
         inputRefsByProtocolId = inputRefsByProtocolId or {}
         runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
+        classRegistry = ScipionClassHierarchyResolver.loadScipionObjectClasses()
 
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
@@ -3636,7 +3638,30 @@ class ProjectService:
                         outputItem = {}
                         outputItem["name"] = key
                         outputItem["paramClass"] = "PointerParam"
-                        outputItem["pointerClass"] = attr.__class__.__name__
+                        pointerClassHierarchy = (
+                            ScipionClassHierarchyResolver
+                            .getRuntimeObjectClassHierarchy(
+                                attr
+                            )
+                        )
+
+                        outputItem[
+                            "paramClass"
+                        ] = "PointerParam"
+
+                        outputItem[
+                            "pointerClass"
+                        ] = (
+                            pointerClassHierarchy[0]
+                            if pointerClassHierarchy
+                            else attr.__class__.__name__
+                        )
+
+                        outputItem[
+                            "pointerClassHierarchy"
+                        ] = (
+                            pointerClassHierarchy
+                        )
 
                         try:
                             outputItem["info"] = attr.__str__()
@@ -3725,10 +3750,32 @@ class ProjectService:
                 if outputName in seenOutputNames:
                     continue
 
+                pointerClass = str(
+                    persistedOutput.get(
+                        "className"
+                    )
+                    or persistedOutput.get(
+                        "rootObjectClassName"
+                    )
+                    or persistedOutput.get(
+                        "itemClassName"
+                    )
+                    or ""
+                )
+
+                pointerClassHierarchy = (
+                    ScipionClassHierarchyResolver
+                    .getPersistedClassHierarchy(
+                        pointerClass,
+                        classRegistry,
+                    )
+                )
+
                 outputs.append({
                     "name": outputName,
                     "paramClass": "PointerParam",
-                    "pointerClass": persistedOutput.get("className") or "",
+                    "pointerClass": pointerClass,
+                    "pointerClassHierarchy": pointerClassHierarchy,
                     "info": persistedOutput.get("info") or "",
                     "value": "%s.%s" % (nodeId, outputName),
                     "parentId": nodeId,
@@ -6225,6 +6272,7 @@ class ProjectService:
 
         persistedOutputsByProtocolId = RuntimeProtocolOutputPersistenceService().loadPersistedOutputsByProtocolId(mapper=mapper,
                                                                                                                   projectId=projectId)
+        classRegistry = ScipionClassHierarchyResolver.loadScipionObjectClasses()
 
         result = []
 
@@ -6319,6 +6367,14 @@ class ProjectService:
 
                 pointerClass = str(outputInfo.get("className") or outputInfo.get("rootObjectClassName") or outputInfo.get("itemClassName") or "")
 
+                pointerClassHierarchy = (
+                    ScipionClassHierarchyResolver
+                    .getPersistedClassHierarchy(
+                        pointerClass,
+                        classRegistry,
+                    )
+                )
+
                 runtimeOutputs.append({
                     "outputName": normalizedOutputName,
                     "paramClass": "PointerParam",
@@ -6361,6 +6417,9 @@ class ProjectService:
                     or 0
                 ),
                 "outputs": runtimeOutputs,
+                "pointerClassHierarchy": (
+                    pointerClassHierarchy
+                ),
             })
 
         return result
