@@ -57,13 +57,35 @@ class FakeTomogramReviewService:
             "createdByUserId": 13,
         }
         self.schemaError: Optional[Exception] = None
+        self.subsetResult = {
+            "success": True,
+            "outputName": "reviewedTomograms",
+            "createdTomograms": 37,
+            "filter": "reviewed",
+            "postgresqlStored": True,
+        }
         self.lastGetProjectDbRowCall = None
+        self.lastLoadRuntimeProjectCall = None
         self.lastContextCall = None
         self.lastSaveCall = None
         self.lastSchemaCall = None
+        self.lastSubsetCall = None
 
     def getProjectDbRow(self, mapper, projectId, currentUser):
         self.lastGetProjectDbRowCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "currentUser": currentUser,
+        }
+        return self.projectDbRowResult
+
+    def loadPostgresqlRuntimeProjectForMutation(
+            self,
+            mapper,
+            projectId,
+            currentUser,
+    ):
+        self.lastLoadRuntimeProjectCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
@@ -132,6 +154,23 @@ class FakeTomogramReviewService:
             raise self.schemaError
 
         return self.schemaResult
+
+    def createTomogramReviewSubsetService(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            outputName,
+            reviewFilter,
+    ):
+        self.lastSubsetCall = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "reviewFilter": reviewFilter,
+        }
+        return self.subsetResult
 
 
 @pytest.fixture
@@ -365,3 +404,63 @@ def test_PutTomogramReviewSchemaRejectsReadOnlyProjectAccess(
     assert response.status_code == 403
     assert response.json()["detail"] == "Project write permission is required"
     assert fakeTomogramReviewService.lastSchemaCall is None
+
+
+def test_PostTomogramReviewSubsetDelegatesPostgresqlFilteredCreation(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+        fakeProjectMapper,
+):
+    response = tomogramReviewClient.post(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/subset",
+        json={
+            "filter": "reviewed",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fakeTomogramReviewService.subsetResult
+    assert fakeTomogramReviewService.lastSubsetCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 7,
+        "protocolId": 42,
+        "outputName": "outputTomograms",
+        "reviewFilter": "reviewed",
+    }
+
+
+def test_PostTomogramReviewSubsetRejectsReadOnlyProjectAccess(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+):
+    fakeTomogramReviewService.projectDbRowResult = {
+        "id": 7,
+        "isOwner": False,
+        "permission": "read",
+    }
+
+    response = tomogramReviewClient.post(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/subset",
+        json={
+            "filter": "reviewed",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Project write permission is required"
+    assert fakeTomogramReviewService.lastSubsetCall is None
+
+
+def test_PostTomogramReviewSubsetRejectsUnsupportedFilter(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+):
+    response = tomogramReviewClient.post(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/subset",
+        json={
+            "filter": "flagged",
+        },
+    )
+
+    assert response.status_code == 422
+    assert fakeTomogramReviewService.lastSubsetCall is None

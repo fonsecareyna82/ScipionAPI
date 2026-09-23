@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class TomogramReviewRevisionConflict(RuntimeError):
@@ -135,6 +135,51 @@ class TomogramReviewPostgresqlMapper:
                 for row in reviewRows
             },
         }
+
+    def getFilteredScipionItemIds(
+            self,
+            projectId: int,
+            setId: int,
+            reviewFilter: str,
+    ) -> List[int]:
+        reviewFilter = str(reviewFilter or "").strip().lower()
+
+        filterConditions = {
+            "all": "",
+            "pending": "AND COALESCE(review.reviewed, FALSE) = FALSE",
+            "reviewed": "AND COALESCE(review.reviewed, FALSE) = TRUE",
+        }
+
+        if reviewFilter not in filterConditions:
+            raise ValueError(
+                "reviewFilter must be one of: all, pending, reviewed"
+            )
+
+        rows = self.db.fetchAll(
+            f"""
+            SELECT item."scipionItemId"
+              FROM scipion_sets stored_set
+              JOIN scipion_set_items item
+                ON item."setId" = stored_set.id
+         LEFT JOIN tomogram_reviews review
+                ON review."setId" = stored_set.id
+               AND review."scipionItemId" = item."scipionItemId"
+             WHERE stored_set.id = %s
+               AND stored_set."projectId" = %s
+               {filterConditions[reviewFilter]}
+          ORDER BY item."scipionItemId"
+            """,
+            (
+                int(setId),
+                int(projectId),
+            ),
+        ) or []
+
+        return [
+            int(row["scipionItemId"])
+            for row in rows
+        ]
+
 
     def getSchema(
             self,

@@ -274,6 +274,62 @@ def test_ResolveOutputForVolumesSupportsAliasFallback(service):
     assert resolvedProtocol is protocol
     assert resolvedOutput is volume
 
+def test_ResolveOutputForVolumesReconstructsPostgresqlSetWithoutProtocolAttribute(
+    projectServiceModule,
+    service,
+    monkeypatch,
+):
+    protocol = FakeProtocol()
+    reconstructedOutput = object()
+    runtimeMapper = object()
+    service.currentProject = FakeCurrentProject(protocol=protocol)
+    service.currentProject.mapper = runtimeMapper
+
+    class FakeMapper:
+        db = object()
+
+    class FakeRuntimeOutputProxyService:
+        def attachPostgresqlRuntimeOutputProxy(self, **kwargs):
+            assert kwargs == {
+                "parentProtocol": protocol,
+                "outputName": "outputSet",
+                "outputInfo": {
+                    "exists": True,
+                    "setId": 47,
+                    "runtimeObjectId": 9001,
+                },
+                "mapper": runtimeMapper,
+            }
+            return reconstructedOutput
+
+    monkeypatch.setattr(
+        service,
+        "_getScipionProtocolForRuntime",
+        lambda **kwargs: protocol,
+    )
+    monkeypatch.setattr(service, "_resolvePostgresqlReaderProtocolId", lambda **kwargs: 741)
+    monkeypatch.setattr(
+        service,
+        "_getPostgresqlRuntimeOutputInfo",
+        lambda **kwargs: {
+            "exists": True,
+            "setId": 47,
+            "runtimeObjectId": 9001,
+        },
+    )
+    monkeypatch.setattr(projectServiceModule, "RuntimeOutputProxyService", FakeRuntimeOutputProxyService)
+
+    resolvedProtocol, resolvedOutput = service._resolveOutputForVolumes(
+        protocolId=42,
+        outputName="outputSet",
+        mapper=FakeMapper(),
+        projectId=7,
+    )
+
+    assert resolvedProtocol is protocol
+    assert resolvedOutput is reconstructedOutput
+
+
 @pytest.mark.parametrize(
     "serviceCall, expectedDetail",
     [

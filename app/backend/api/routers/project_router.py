@@ -3445,6 +3445,10 @@ class TomogramReviewSchemaPutRequest(BaseModel):
     revision: int = Field(..., ge=0)
 
 
+class TomogramReviewSubsetRequest(BaseModel):
+    filter: Literal["all", "pending", "reviewed"] = "reviewed"
+
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/reviews",
     response_model=Any,
@@ -3575,7 +3579,63 @@ def patchTomogramReview(
             },
         ) from error
 
-# ==============================================================================
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/reviews/subset",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def createTomogramReviewSubset(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    payload: TomogramReviewSubsetRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.loadPostgresqlRuntimeProjectForMutation(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+    )
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    if (
+            not bool(project.get("isOwner"))
+            and str(project.get("permission") or "").strip().lower() != "full"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Project write permission is required",
+        )
+
+    try:
+        return service.createTomogramReviewSubsetService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            reviewFilter=payload.filter,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception(
+            "Error creating tomogram review subset. projectId=%s protocolId=%s outputName=%s",
+            projectId,
+            protocolId,
+            outputName,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create tomogram review subset: {error}",
+        ) from error
+
 # ==============================================================================
 #        ANALYZE RESULTS: FSC (SetOfFSCs)
 # ==============================================================================

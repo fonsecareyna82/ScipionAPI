@@ -11142,6 +11142,48 @@ class ProjectService:
             protocolId=protocolId,
         )
 
+        if mapper is not None:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+            outputInfo = self._getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=int(protocolDbId),
+                outputName=outputName,
+            )
+
+            if not outputInfo.get("exists"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' not found in PostgreSQL",
+                )
+
+            runtimeMapper = getattr(self.currentProject, "mapper", None)
+
+            if runtimeMapper is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="PostgreSQL runtime mapper is not available",
+                )
+
+            output = RuntimeOutputProxyService().attachPostgresqlRuntimeOutputProxy(
+                parentProtocol=protocol,
+                outputName=outputName,
+                outputInfo=outputInfo,
+                mapper=runtimeMapper,
+            )
+
+            if output is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Output '{outputName}' could not be reconstructed from PostgreSQL",
+                )
+
+            return protocol, output
+
         # Try exact + common alternates (singular/plural/alias)
         candidates = [outputName]
         alias = {
@@ -11429,6 +11471,148 @@ class ProjectService:
         )
 
         return result
+
+    def createTomogramReviewSubsetService(
+            self,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            reviewFilter: str,
+    ) -> Dict[str, Any]:
+        from app.backend.mapper.tomogram_review_mapper import (
+            TomogramReviewPostgresqlMapper,
+        )
+
+        normalizedFilter = str(reviewFilter or "").strip().lower()
+        outputPrefixes = {
+            "all": "tomogramSubset",
+            "pending": "pendingTomograms",
+            "reviewed": "reviewedTomograms",
+        }
+
+        if normalizedFilter not in outputPrefixes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="filter must be one of: all, pending, reviewed",
+            )
+
+        protocol, inputSet = self._resolveOutputForVolumes(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+        )
+        setId = self._resolveTomogramReviewSetId(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+        )
+        selectedItemIds = set(
+            TomogramReviewPostgresqlMapper(
+                mapper.db
+            ).getFilteredScipionItemIds(
+                projectId=projectId,
+                setId=setId,
+                reviewFilter=normalizedFilter,
+            )
+        )
+
+        outputIdentity = self._getGeneratedSetOutputIdentity(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputPrefix=outputPrefixes[normalizedFilter],
+        )
+        newOutputName = outputIdentity["outputName"]
+
+        if not selectedItemIds:
+            return {
+                "success": False,
+                "status": "empty",
+                "outputName": newOutputName,
+                "createdTomograms": 0,
+                "filter": normalizedFilter,
+                "postgresqlStored": False,
+                "message": "No output was generated because it cannot be empty",
+            }
+
+        generatedSetContext = self._createWritableGeneratedPostgresqlSet(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            protocol=protocol,
+            outputName=newOutputName,
+            sourceSet=inputSet,
+        )
+        outputSet = generatedSetContext["outputSet"]
+        finalized = False
+
+        try:
+            for tomogram in inputSet.iterItems(iterate=False):
+                scipionItemId = tomogram.getObjId()
+
+                if scipionItemId is None or int(scipionItemId) not in selectedItemIds:
+                    continue
+
+                newTomogram = tomogram.clone()
+                newTomogram.setObjId(None)
+                outputSet.append(newTomogram)
+
+            createdCount = outputSet.getSize()
+
+            if not createdCount:
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
+                generatedSetContext = None
+
+                return {
+                    "success": False,
+                    "status": "empty",
+                    "outputName": newOutputName,
+                    "createdTomograms": 0,
+                    "filter": normalizedFilter,
+                    "postgresqlStored": False,
+                    "message": "No output was generated because it cannot be empty",
+                }
+
+            protocol._defineOutputs(
+                **{
+                    newOutputName: outputSet,
+                }
+            )
+            protocol._store()
+
+            postgresqlSync = self._finalizeGeneratedPostgresqlSet(
+                context=generatedSetContext,
+                projectId=projectId,
+                outputName=newOutputName,
+            )
+            finalized = True
+
+            return {
+                "success": True,
+                "status": 0,
+                "outputName": newOutputName,
+                "createdTomograms": createdCount,
+                "filter": normalizedFilter,
+                "postgresqlStored": True,
+                "postgresqlSync": postgresqlSync,
+            }
+
+        except Exception:
+            if not finalized:
+                self._discardGeneratedPostgresqlSet(
+                    context=generatedSetContext,
+                    projectId=projectId,
+                )
+
+            raise
+
 
     def getVolumeInfoService(
             self,
