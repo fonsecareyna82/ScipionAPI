@@ -11479,6 +11479,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             reviewFilter: str,
+            reviewCriteria: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
@@ -11496,6 +11497,13 @@ class ProjectService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="filter must be one of: all, pending, reviewed",
             )
+
+        normalizedCriteria = dict(reviewCriteria or {})
+        hasAdvancedCriteria = any((
+            normalizedCriteria.get("qualities"),
+            normalizedCriteria.get("tags"),
+            normalizedCriteria.get("minimumTagCounts"),
+        ))
 
         protocol, inputSet = self._resolveOutputForVolumes(
             protocolId=protocolId,
@@ -11516,6 +11524,7 @@ class ProjectService:
                 projectId=projectId,
                 setId=setId,
                 reviewFilter=normalizedFilter,
+                reviewCriteria=normalizedCriteria,
             )
         )
 
@@ -11524,7 +11533,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             protocol=protocol,
-            outputPrefix=outputPrefixes[normalizedFilter],
+            outputPrefix="filteredTomograms" if hasAdvancedCriteria else outputPrefixes[normalizedFilter],
         )
         newOutputName = outputIdentity["outputName"]
 

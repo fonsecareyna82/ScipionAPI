@@ -3445,8 +3445,15 @@ class TomogramReviewSchemaPutRequest(BaseModel):
     revision: int = Field(..., ge=0)
 
 
+class TomogramReviewSubsetCriteria(BaseModel):
+    qualities: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    minimumTagCounts: Dict[str, int] = Field(default_factory=dict)
+
+
 class TomogramReviewSubsetRequest(BaseModel):
     filter: Literal["all", "pending", "reviewed"] = "reviewed"
+    criteria: Optional[TomogramReviewSubsetCriteria] = None
 
 
 @router.get(
@@ -3621,6 +3628,7 @@ def createTomogramReviewSubset(
             protocolId=protocolId,
             outputName=outputName,
             reviewFilter=payload.filter,
+            reviewCriteria=payload.criteria.dict() if payload.criteria is not None else None,
         )
     except HTTPException:
         raise

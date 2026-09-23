@@ -162,6 +162,7 @@ class FakeTomogramReviewService:
             protocolId,
             outputName,
             reviewFilter,
+            reviewCriteria=None,
     ):
         self.lastSubsetCall = {
             "mapper": mapper,
@@ -170,6 +171,8 @@ class FakeTomogramReviewService:
             "outputName": outputName,
             "reviewFilter": reviewFilter,
         }
+        if reviewCriteria is not None:
+            self.lastSubsetCall["reviewCriteria"] = reviewCriteria
         return self.subsetResult
 
 
@@ -426,6 +429,38 @@ def test_PostTomogramReviewSubsetDelegatesPostgresqlFilteredCreation(
         "protocolId": 42,
         "outputName": "outputTomograms",
         "reviewFilter": "reviewed",
+    }
+
+
+def test_PostTomogramReviewSubsetDelegatesAdvancedCriteria(
+        tomogramReviewClient,
+        fakeTomogramReviewService,
+        fakeProjectMapper,
+):
+    response = tomogramReviewClient.post(
+        "/projects/7/protocols/42/outputs/outputTomograms/reviews/subset",
+        json={
+            "filter": "reviewed",
+            "criteria": {
+                "qualities": ["Excellent", "Good"],
+                "tags": ["feature_a"],
+                "minimumTagCounts": {"mito": 2},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert fakeTomogramReviewService.lastSubsetCall == {
+        "mapper": fakeProjectMapper,
+        "projectId": 7,
+        "protocolId": 42,
+        "outputName": "outputTomograms",
+        "reviewFilter": "reviewed",
+        "reviewCriteria": {
+            "qualities": ["Excellent", "Good"],
+            "tags": ["feature_a"],
+            "minimumTagCounts": {"mito": 2},
+        },
     }
 
 

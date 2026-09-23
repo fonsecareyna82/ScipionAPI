@@ -141,6 +141,7 @@ class TomogramReviewPostgresqlMapper:
             projectId: int,
             setId: int,
             reviewFilter: str,
+            reviewCriteria: Optional[Dict[str, Any]] = None,
     ) -> List[int]:
         reviewFilter = str(reviewFilter or "").strip().lower()
 
@@ -155,6 +156,46 @@ class TomogramReviewPostgresqlMapper:
                 "reviewFilter must be one of: all, pending, reviewed"
             )
 
+        reviewCriteria = reviewCriteria or {}
+        qualities = self._normalizedStringList(reviewCriteria.get("qualities"))
+        tags = self._normalizedStringList(reviewCriteria.get("tags"))
+        minimumTagCounts = self._normalizedMinimumTagCounts(
+            reviewCriteria.get("minimumTagCounts")
+        )
+        advancedConditions = []
+        advancedParams = []
+
+        if qualities:
+            advancedConditions.append("AND review.values ->> 'quality' = ANY(%s)")
+            advancedParams.append(qualities)
+
+        if tags:
+            advancedConditions.append(
+                "AND COALESCE(review.values -> 'tags', '[]'::jsonb) @> %s::jsonb"
+            )
+            advancedParams.append(json.dumps(tags))
+
+        for tagKey, minimumCount in minimumTagCounts.items():
+            advancedConditions.append(
+                """
+                AND COALESCE(
+                    CASE
+                        WHEN jsonb_typeof(review.values -> 'tagCounts' -> %s) = 'number'
+                        THEN (review.values -> 'tagCounts' ->> %s)::numeric
+                        ELSE NULL
+                    END,
+                    CASE
+                        WHEN COALESCE(review.values -> 'tags', '[]'::jsonb) @> %s::jsonb
+                        THEN 1
+                        ELSE 0
+                    END
+                ) >= %s
+                """
+            )
+            advancedParams.extend((tagKey, tagKey, json.dumps([tagKey]), minimumCount))
+
+        advancedWhere = "\n".join(advancedConditions)
+
         rows = self.db.fetchAll(
             f"""
             SELECT item."scipionItemId"
@@ -167,11 +208,13 @@ class TomogramReviewPostgresqlMapper:
              WHERE stored_set.id = %s
                AND stored_set."projectId" = %s
                {filterConditions[reviewFilter]}
+               {advancedWhere}
           ORDER BY item."scipionItemId"
             """,
             (
                 int(setId),
                 int(projectId),
+                *advancedParams,
             ),
         ) or []
 
@@ -179,6 +222,38 @@ class TomogramReviewPostgresqlMapper:
             int(row["scipionItemId"])
             for row in rows
         ]
+
+    @staticmethod
+    def _normalizedStringList(rawValues) -> List[str]:
+        if not isinstance(rawValues, list):
+            return []
+
+        normalized = []
+        for rawValue in rawValues:
+            if not isinstance(rawValue, str):
+                continue
+            value = rawValue.strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _normalizedMinimumTagCounts(rawCounts) -> Dict[str, int]:
+        if not isinstance(rawCounts, dict):
+            return {}
+
+        normalized = {}
+        for rawKey, rawCount in rawCounts.items():
+            key = rawKey.strip() if isinstance(rawKey, str) else ""
+            if not key or isinstance(rawCount, bool):
+                continue
+            try:
+                count = int(rawCount)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                normalized[key] = count
+        return normalized
 
 
     def getSchema(
