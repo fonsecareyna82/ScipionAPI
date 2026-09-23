@@ -1001,4 +1001,61 @@ def test_ReapChildProcessIgnoresNonChild(
     )
 
 
+def test_PostgresqlStopDoesNotKillCoordinatorOwnedByAnotherHost(monkeypatch):
+    import socket
+
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+
+    localHostname = socket.gethostname()
+    remoteHostname = "%s-remote" % localHostname
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {
+                    "hostname": remoteHostname,
+                },
+            },
+        },
+    )
+
+    killCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_killProcessGroup",
+        lambda **kwargs: killCalls.append(kwargs) or {
+            "pid": 1234,
+            "processGroupId": 1234,
+            "terminated": True,
+            "alreadyStopped": False,
+            "signal": "SIGTERM",
+            "verified": True,
+        },
+    )
+
+    try:
+        service.stopProtocols(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=["10"],
+            currentProject=currentProject,
+            getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+            buildProtocolMutationResultCallback=buildResult,
+        )
+    except HTTPException:
+        pass
+
+    assert killCalls == []
 

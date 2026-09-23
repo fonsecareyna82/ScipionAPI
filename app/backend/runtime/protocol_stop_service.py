@@ -24,9 +24,11 @@
 # *
 # ******************************************************************************
 import datetime
+import json
 import logging
 import os
 import signal
+import socket
 import psutil
 import subprocess
 import time
@@ -39,6 +41,8 @@ from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
 
+
+RUNTIME_METADATA_KEY = RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,45 @@ class RuntimeProtocolStopService:
         return str(
             value or ""
         ).strip().lower()
+
+    @staticmethod
+    def _getStoredRuntimeMetadata(
+            storedRow,
+    ):
+        params = storedRow.get(
+            "params"
+        ) or {}
+
+        if isinstance(
+                params,
+                str,
+        ):
+            try:
+                params = json.loads(
+                    params
+                )
+
+            except Exception:
+                return {}
+
+        if not isinstance(
+                params,
+                dict,
+        ):
+            return {}
+
+        runtimeMetadata = params.get(
+            RUNTIME_METADATA_KEY
+        ) or {}
+
+        return (
+            runtimeMetadata
+            if isinstance(
+                runtimeMetadata,
+                dict,
+            )
+            else {}
+        )
 
     def _getProtocolPid(
             self,
@@ -1121,6 +1164,34 @@ class RuntimeProtocolStopService:
             pid = self._getProtocolPid(
                 protocol
             )
+
+            runtimeMetadata = (
+                self._getStoredRuntimeMetadata(
+                    storedRow
+                )
+            )
+
+            ownerHostname = str(
+                runtimeMetadata.get(
+                    "hostname"
+                )
+                or ""
+            ).strip()
+
+            if (
+                    pid
+                    and ownerHostname
+                    and ownerHostname != socket.gethostname()
+            ):
+                raise RuntimeError(
+                    "Cannot stop PostgreSQL protocol %s "
+                    "locally because its coordinator is "
+                    "owned by host %s"
+                    % (
+                        protocolId,
+                        ownerHostname,
+                    )
+                )
 
             jobIds = (
                 self._getProtocolJobIds(
