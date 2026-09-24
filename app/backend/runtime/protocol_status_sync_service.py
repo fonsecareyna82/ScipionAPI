@@ -946,9 +946,15 @@ class RuntimeProtocolStatusSyncService:
                 self.ELAPSED_SESSION_ID_KEY
             ] = elapsedSessionId
 
-            runtimeMetadata[
-                self.ELAPSED_UPDATED_AT_KEY
-            ] = time.time()
+            # Do not stamp ELAPSED_UPDATED_AT_KEY here: the elapsed clock
+            # must reflect actual execution time, not queue wait. Launched
+            # protocols (including ones sitting in a cluster queue) stay
+            # frozen at elapsedSeconds until markProtocolRunning() stamps
+            # the real start time once steps actually begin.
+            runtimeMetadata.pop(
+                self.ELAPSED_UPDATED_AT_KEY,
+                None,
+            )
 
             elapsedSeconds = (
                 0.0

@@ -6379,6 +6379,7 @@ class ProjectService:
                     "outputName": normalizedOutputName,
                     "paramClass": "PointerParam",
                     "pointerClass": pointerClass,
+                    "pointerClassHierarchy": pointerClassHierarchy,
                     "info": str(outputInfo.get("info") or ""),
                     "value": f"{protocolId}.{normalizedOutputName}",
                     "parentId": int(protocolId) if protocolId.isdigit() else protocolId,
@@ -6417,9 +6418,6 @@ class ProjectService:
                     or 0
                 ),
                 "outputs": runtimeOutputs,
-                "pointerClassHierarchy": (
-                    pointerClassHierarchy
-                ),
             })
 
         return result

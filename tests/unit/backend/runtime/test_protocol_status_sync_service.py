@@ -412,9 +412,14 @@ def test_PersistProtocolExecutionUserStoresExecutionId():
         "executionId": "execution-123",
     }
 
-def test_MarkProtocolLaunchedStartsElapsedCheckpointImmediately(
+def test_MarkProtocolLaunchedDoesNotStartElapsedClockImmediately(
         monkeypatch,
 ):
+    """
+    The elapsed clock must reflect actual execution time, not queue
+    wait, so a plain launch (no execution has started yet) must leave
+    the checkpoint unset and the effective elapsed time frozen.
+    """
     service = RuntimeProtocolStatusSyncService()
     mapper = FakeMapper()
 
@@ -438,9 +443,10 @@ def test_MarkProtocolLaunchedStartsElapsedCheckpointImmediately(
         service.RUNTIME_METADATA_KEY
     ]
 
-    assert metadata[
+    assert (
         service.ELAPSED_UPDATED_AT_KEY
-    ] == 100.0
+        not in metadata
+    )
 
     assert (
         service.getEffectiveElapsedTimeSeconds(
@@ -448,12 +454,18 @@ def test_MarkProtocolLaunchedStartsElapsedCheckpointImmediately(
             statusValue="launched",
             nowEpochSeconds=115.0,
         )
-        == 15.0
+        == 0.0
     )
 
-def test_MarkProtocolLaunchedIsIdempotentForActiveElapsedSession(
+def test_MarkProtocolLaunchedRepeatedCallsStayFrozenWhileQueued(
         monkeypatch,
 ):
+    """
+    Both the initial queue submission and the later execute() re-affirm
+    of the Launched status (once the queued job actually starts) call
+    markProtocolLaunched(); while still queued/launched, neither call
+    should make the effective elapsed time advance with wall-clock time.
+    """
     service = RuntimeProtocolStatusSyncService()
     mapper = FakeMapper()
 
@@ -466,7 +478,7 @@ def test_MarkProtocolLaunchedIsIdempotentForActiveElapsedSession(
         lambda: currentTime["value"],
     )
 
-    firstReport = service.markProtocolLaunched(
+    service.markProtocolLaunched(
         mapper=mapper,
         projectId=1,
         protocolId=10,
@@ -492,16 +504,16 @@ def test_MarkProtocolLaunchedIsIdempotentForActiveElapsedSession(
 
     assert (
         secondReport["elapsedSessionId"]
-        == firstReport["elapsedSessionId"]
     )
 
     assert metadata[
         "elapsedTimeSeconds"
     ] == 0.0
 
-    assert metadata[
+    assert (
         service.ELAPSED_UPDATED_AT_KEY
-    ] == 100.0
+        not in metadata
+    )
 
     assert (
         service.getEffectiveElapsedTimeSeconds(
@@ -509,7 +521,7 @@ def test_MarkProtocolLaunchedIsIdempotentForActiveElapsedSession(
             statusValue="launched",
             nowEpochSeconds=145.0,
         )
-        == 45.0
+        == 0.0
     )
 
 def test_MarkProtocolLaunchedRestartAfterTerminalCreatesNewElapsedSession(
@@ -555,9 +567,10 @@ def test_MarkProtocolLaunchedRestartAfterTerminalCreatesNewElapsedSession(
         "elapsedTimeSeconds"
     ] == 0.0
 
-    assert metadata[
+    assert (
         service.ELAPSED_UPDATED_AT_KEY
-    ] == 200.0
+        not in metadata
+    )
 
     assert (
         service.getEffectiveElapsedTimeSeconds(
@@ -565,7 +578,7 @@ def test_MarkProtocolLaunchedRestartAfterTerminalCreatesNewElapsedSession(
             statusValue="launched",
             nowEpochSeconds=215.0,
         )
-        == 15.0
+        == 0.0
     )
 
 
@@ -612,9 +625,10 @@ def test_MarkProtocolLaunchedResumeAfterTerminalKeepsAccumulatedElapsed(
         "elapsedTimeSeconds"
     ] == 40.0
 
-    assert metadata[
+    assert (
         service.ELAPSED_UPDATED_AT_KEY
-    ] == 200.0
+        not in metadata
+    )
 
     assert (
         service.getEffectiveElapsedTimeSeconds(
@@ -622,7 +636,7 @@ def test_MarkProtocolLaunchedResumeAfterTerminalKeepsAccumulatedElapsed(
             statusValue="launched",
             nowEpochSeconds=215.0,
         )
-        == 55.0
+        == 40.0
     )
 
 

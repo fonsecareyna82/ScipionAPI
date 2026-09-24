@@ -1601,6 +1601,53 @@ def test_GetProtocolRuntimeSummariesPreservesOutputClassHierarchy(
     )
 
 
+def test_GetProtocolRuntimeSummariesWorksForProtocolWithoutOutputsYet(
+        service,
+        mapper,
+        projectServiceModule,
+        monkeypatch,
+):
+    mapper.getProjectProtocolRuntimeRows = (
+        lambda projectId, protocolIds: [
+            {
+                "protocolId": "10",
+                "status": "running",
+                "params": {},
+            },
+        ]
+    )
+
+    mapper.getProjectProtocolStepSummaryByProtocolId = (
+        lambda projectId: {}
+    )
+
+    class RuntimeOutputPersistenceStub:
+        def loadPersistedOutputsByProtocolId(
+                self,
+                mapper,
+                projectId,
+        ):
+            return {}
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        RuntimeOutputPersistenceStub,
+    )
+
+    summaries = (
+        service
+        .getProtocolRuntimeSummaries(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=[10],
+        )
+    )
+
+    assert summaries[0]["status"] == "running"
+    assert summaries[0]["outputs"] == []
+
+
 
 
 
