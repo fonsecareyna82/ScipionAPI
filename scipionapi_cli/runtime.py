@@ -690,7 +690,9 @@ def _getWorkerRuntimeSpec(
         logPath = logsDir / "celery.log"
 
     else:
-        queueName = "protocols"
+        queueName = (
+            env.get("PROTOCOLS_CELERY_QUEUE") or "protocols"
+        ).strip() or "protocols"
         hostname = "protocols@%h"
         concurrency = max(
             1,
@@ -895,13 +897,16 @@ def restartWorkerProcess(
     )
 
 
-def startCommand(role: str = DEFAULT_ROLE) -> None:
+def startCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # startApiAndWorkers
     role = normalizeRole(role)
 
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
+
+    if queue:
+        env["PROTOCOLS_CELERY_QUEUE"] = queue.strip()
 
     runDir = _pidDir(repoRoot)
     apiPidPath = runDir / "api.pid"
@@ -919,6 +924,7 @@ def startCommand(role: str = DEFAULT_ROLE) -> None:
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
     protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
+    protocolsQueueName = (env.get("PROTOCOLS_CELERY_QUEUE") or "protocols").strip() or "protocols"
 
     apiStartupTimeout = _envFloat(env, "API_STARTUP_TIMEOUT", 20.0)
     workerStartupWait = _envFloat(env, "WORKER_STARTUP_WAIT", 2.0)
@@ -1070,14 +1076,14 @@ def startCommand(role: str = DEFAULT_ROLE) -> None:
                 ("Celery app", celeryApp),
                 ("Log level", celeryLogLevel),
                 ("Concurrency", protocolWorkerConcurrency),
-                ("Queue", "protocols"),
+                ("Queue", protocolsQueueName),
                 ("PID file", protocolWorkerPidPath),
                 ("Log file", protocolWorkerLogPath),
             ],
         )
 
         if not protocolWorkerPidPath.exists():
-            _printInfo("Launching protocol Celery worker")
+            _printInfo(f"Launching protocol Celery worker (queue={protocolsQueueName})")
             protocolWorkerEnv = os.environ.copy()
             protocolWorkerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
             protocolWorkerEnv["PYTHONUNBUFFERED"] = "1"
@@ -1085,7 +1091,7 @@ def startCommand(role: str = DEFAULT_ROLE) -> None:
             protocolWorkerCommand = _buildCeleryWorkerCommand(
                 celeryApp=celeryApp,
                 celeryLogLevel=celeryLogLevel,
-                queueName="protocols",
+                queueName=protocolsQueueName,
                 concurrency=protocolWorkerConcurrency,
                 hostname="protocols@%h",
             )
@@ -1161,7 +1167,7 @@ def stopCommand(role: str = DEFAULT_ROLE) -> None:
     _printSuccess("Stop completed.")
 
 
-def restartCommand(role: str = DEFAULT_ROLE) -> None:
+def restartCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # restartApiAndWorker
     role = normalizeRole(role)
 
@@ -1170,11 +1176,11 @@ def restartCommand(role: str = DEFAULT_ROLE) -> None:
     stopCommand(role)
     time.sleep(0.5)
     _printInfo("Starting services again")
-    startCommand(role)
+    startCommand(role, queue=queue)
     _printSuccess("Restart completed.")
 
 
-def statusCommand(role: str = DEFAULT_ROLE) -> None:
+def statusCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # statusApiAndWorkers
     role = normalizeRole(role)
 
@@ -1182,6 +1188,9 @@ def statusCommand(role: str = DEFAULT_ROLE) -> None:
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
     runDir = _pidDir(repoRoot)
+
+    if queue:
+        env["PROTOCOLS_CELERY_QUEUE"] = queue.strip()
 
     apiPidPath = runDir / "api.pid"
     workerPidPath = runDir / "worker.pid"
@@ -1197,6 +1206,7 @@ def statusCommand(role: str = DEFAULT_ROLE) -> None:
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
     protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
+    protocolsQueueName = (env.get("PROTOCOLS_CELERY_QUEUE") or "protocols").strip() or "protocols"
 
     docsUrl = _docsUrl(env)
     webUrl = _webUrl(env)
@@ -1283,7 +1293,7 @@ def statusCommand(role: str = DEFAULT_ROLE) -> None:
                 ("Celery app", celeryApp),
                 ("Log level", celeryLogLevel),
                 ("Concurrency", protocolWorkerConcurrency),
-                ("Queue", "protocols"),
+                ("Queue", protocolsQueueName),
                 ("PID file", protocolWorkerPidPath),
                 ("Log file", protocolCeleryLogPath),
             ],

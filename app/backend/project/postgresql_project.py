@@ -498,6 +498,26 @@ class PostgresqlProject(ScipionProject):
         logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)
         return process.wait() if wait else process.pid
 
+    def _resolveCeleryQueueForProtocol(
+            self,
+            protocol,
+    ) -> Optional[str]:
+        from app.backend.runtime.celery_queue_routing_service import (
+            resolveCeleryQueueForHost,
+        )
+
+        try:
+            hostName = protocol.getHostName()
+        except Exception:
+            return None
+
+        scipionHome = os.environ.get(pw.SCIPION_HOME_VAR)
+
+        return resolveCeleryQueueForHost(
+            scipionHome=scipionHome,
+            hostName=hostName,
+        )
+
     def _enqueuePostgresqlProtocolTask(
             self,
             protocol,
@@ -522,17 +542,25 @@ class PostgresqlProject(ScipionProject):
             mapper=self.postgresqlFlatMapper, projectId=self.postgresqlProjectId,
             protocolId=int(protocolId),
         )
-        taskResult = executeProtocolTask.apply_async(
-            args=[self.postgresqlProjectId, int(protocolId), runMode, coordinatorRunId]
-        )
+
+        celeryQueue = self._resolveCeleryQueueForProtocol(protocol)
+        applyAsyncKwargs: Dict[str, Any] = {
+            "args": [self.postgresqlProjectId, int(protocolId), runMode, coordinatorRunId],
+        }
+
+        if celeryQueue:
+            applyAsyncKwargs["queue"] = celeryQueue
+
+        taskResult = executeProtocolTask.apply_async(**applyAsyncKwargs)
 
         logger.info(
             "Queued PostgreSQL protocol task. "
-            "projectId=%s protocolId=%s runMode=%s taskId=%s",
+            "projectId=%s protocolId=%s runMode=%s taskId=%s queue=%s",
             self.postgresqlProjectId,
             protocolId,
             runMode,
             taskResult.id,
+            celeryQueue or "protocols (default)",
         )
 
         if not wait:

@@ -588,6 +588,14 @@ _ROLE_HELP = (
     "Use a non-'all' role to run only part of the stack on a given node in a multi-node deployment."
 )
 
+_QUEUE_HELP = (
+    "Name of the Celery queue the protocol worker listens on (default: 'protocols'). "
+    "Set this on a dedicated node (e.g. --queue protocols-gpu) and map protocol hosts to "
+    "that same queue name in scipion_home/config/celery_queue_routing.json so only matching "
+    "protocols are dispatched to it. For the setting to also apply to worker restarts "
+    "triggered from the web UI, set PROTOCOLS_CELERY_QUEUE in the node's .env instead."
+)
+
 
 @app.command(
     "start",
@@ -600,9 +608,14 @@ def start(
         help=_ROLE_HELP,
         show_default=True,
     ),
+    queue: Optional[str] = typer.Option(
+        None,
+        "--queue",
+        help=_QUEUE_HELP,
+    ),
 ) -> None:
     # startRuntimeServices
-    startCommand(_validateRole(role))
+    startCommand(_validateRole(role), queue=queue)
 
 
 @app.command(
@@ -632,9 +645,14 @@ def restart(
         help=_ROLE_HELP,
         show_default=True,
     ),
+    queue: Optional[str] = typer.Option(
+        None,
+        "--queue",
+        help=_QUEUE_HELP,
+    ),
 ) -> None:
     # restartRuntimeServices
-    restartCommand(_validateRole(role))
+    restartCommand(_validateRole(role), queue=queue)
 
 
 @app.command(
@@ -648,9 +666,14 @@ def status(
         help=_ROLE_HELP,
         show_default=True,
     ),
+    queue: Optional[str] = typer.Option(
+        None,
+        "--queue",
+        help=_QUEUE_HELP,
+    ),
 ) -> None:
     # showRuntimeStatus
-    statusCommand(_validateRole(role))
+    statusCommand(_validateRole(role), queue=queue)
 
 
 @app.command(

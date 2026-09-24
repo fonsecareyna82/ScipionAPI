@@ -40,12 +40,17 @@ class FakeProtocol:
             scheduleLog,
             queueName=None,
             queueParams=None,
+            hostName="localhost",
     ):
         self.protocolId = protocolId
         self.scheduleLog = scheduleLog
         self.queueName = queueName
         self.queueParams = queueParams
         self.pid = 0
+        self.hostName = hostName
+
+    def getHostName(self):
+        return self.hostName
 
     def getObjId(self):
         return self.protocolId
@@ -346,3 +351,109 @@ def test_EnqueueProtocolMintsUniqueCoordinatorRunIdAndForwardsToCelery(monkeypat
     assert runIds[0]
     assert runIds[0] != runIds[1]
     assert project.postgresqlFlatMapper.row["status"] == "scheduled"
+
+
+def test_EnqueueProtocolRoutesToMappedCeleryQueueForHost(
+        tmp_path,
+        monkeypatch,
+):
+    import sys
+    from types import SimpleNamespace
+
+    scipionHome = tmp_path / "scipion_home"
+    configDir = scipionHome / "config"
+    configDir.mkdir(parents=True)
+    (configDir / "celery_queue_routing.json").write_text(
+        json.dumps({"gpu-cluster": "protocols-gpu"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+
+    protocol = FakeProtocol(
+        41,
+        "Runs/000041_FakeProtocol/logs/schedule.log",
+        hostName="gpu-cluster",
+    )
+
+    project = PostgresqlProject.__new__(PostgresqlProject)
+    project.postgresqlProjectId = 344
+
+    class Mapper:
+        def __init__(self):
+            self.row = {"id": 91, "status": "scheduled", "params": {}}
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return dict(self.row)
+
+        def updateProtocol(self, values):
+            self.row.update(values)
+
+    project.postgresqlFlatMapper = Mapper()
+    dispatches = []
+
+    def applyAsync(**kwargs):
+        dispatches.append(kwargs)
+        return SimpleNamespace(id="celery-task-1")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app.workers.task_queue",
+        SimpleNamespace(executeProtocolTask=SimpleNamespace(apply_async=applyAsync)),
+    )
+
+    project._enqueuePostgresqlProtocolTask(
+        protocol=protocol, runMode="resume", wait=False,
+    )
+
+    assert dispatches[0]["queue"] == "protocols-gpu"
+
+
+def test_EnqueueProtocolDoesNotOverrideQueueForUnmappedHost(
+        tmp_path,
+        monkeypatch,
+):
+    import sys
+    from types import SimpleNamespace
+
+    scipionHome = tmp_path / "scipion_home"
+    scipionHome.mkdir(parents=True)
+    monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+
+    protocol = FakeProtocol(
+        41,
+        "Runs/000041_FakeProtocol/logs/schedule.log",
+        hostName="localhost",
+    )
+
+    project = PostgresqlProject.__new__(PostgresqlProject)
+    project.postgresqlProjectId = 344
+
+    class Mapper:
+        def __init__(self):
+            self.row = {"id": 91, "status": "scheduled", "params": {}}
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return dict(self.row)
+
+        def updateProtocol(self, values):
+            self.row.update(values)
+
+    project.postgresqlFlatMapper = Mapper()
+    dispatches = []
+
+    def applyAsync(**kwargs):
+        dispatches.append(kwargs)
+        return SimpleNamespace(id="celery-task-1")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app.workers.task_queue",
+        SimpleNamespace(executeProtocolTask=SimpleNamespace(apply_async=applyAsync)),
+    )
+
+    project._enqueuePostgresqlProtocolTask(
+        protocol=protocol, runMode="resume", wait=False,
+    )
+
+    assert "queue" not in dispatches[0]
