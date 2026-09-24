@@ -806,12 +806,46 @@ def stop_postgresql_coordinator(state, project_id, protocol_id, pid, owner_hostn
             mapper.db.close()
 
 
+def _listInstalledPluginsFromLocalDomainRegistry():
+    # Deliberately avoids PluginService/PluginRepository: those fetch the
+    # remote plugin catalog from scipion.i2pc.es, which is unbounded and
+    # network-dependent. A control command runs synchronously inside the
+    # worker's control channel, so a stalled network call there can wedge
+    # the whole worker (observed: it stopped consuming from its task
+    # queue entirely). Domain.getPlugins() only reflects plugin entry
+    # points already discovered locally via importlib.metadata, and is
+    # already warm by the time a worker is ready (prepareEnvironment()
+    # forces protocol/plugin discovery at startup) - purely local, no I/O.
+    import importlib.metadata
+
+    from pyworkflow.plugin import Domain
+
+    plugins = []
+
+    for pluginName in sorted(Domain.getPlugins().keys()):
+        try:
+            version = importlib.metadata.version(pluginName)
+        except Exception:
+            version = ""
+
+        plugins.append({
+            "pipName": pluginName,
+            "name": pluginName,
+            "pipVersion": version,
+        })
+
+    return plugins
+
+
 @control_command()
 def report_node_capabilities(state):
     """Report this node's hostname, GPU inventory, and installed plugins.
 
     Used by the monitoring dashboard to show, per multi-node deployment
     host, what compute/plugin capabilities are actually available there.
+    Must stay strictly local/offline: this runs synchronously on the
+    worker's control channel, so any blocking network call here can
+    wedge the worker (see _listInstalledPluginsFromLocalDomainRegistry).
     """
     import socket
 
@@ -821,26 +855,17 @@ def report_node_capabilities(state):
         from app.backend.api.services.settings_service import (
             _getNvidiaGpuResources,
         )
-        from app.backend.api.services.plugin_service import PluginService
 
         gpus = _getNvidiaGpuResources()
 
-        installedPlugins = []
         try:
-            for plugin in PluginService().getPlugins():
-                if not plugin.get("installed"):
-                    continue
-
-                installedPlugins.append({
-                    "pipName": plugin.get("pipName"),
-                    "name": plugin.get("name"),
-                    "pipVersion": plugin.get("pipVersion"),
-                })
+            installedPlugins = _listInstalledPluginsFromLocalDomainRegistry()
         except Exception:
             logger.exception(
                 "Failed to list installed plugins for node capability report. hostname=%s",
                 hostname,
             )
+            installedPlugins = []
 
         return {
             "hostname": hostname,

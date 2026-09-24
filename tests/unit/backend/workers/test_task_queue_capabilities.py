@@ -23,9 +23,12 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import importlib.metadata
 import socket
 import sys
 import types
+
+from pyworkflow.plugin import Domain
 
 import app.workers.task_queue as taskQueueModule
 
@@ -38,27 +41,27 @@ def test_ReportNodeCapabilitiesReturnsGpusAndInstalledPlugins(monkeypatch):
         {"index": 0, "name": "RTX 4090", "memoryTotalBytes": 25000000000},
     ]
 
-    class FakePluginService:
-        def getPlugins(self):
-            return [
-                {"pipName": "scipion-em-warp", "name": "warp", "installed": True, "pipVersion": "3.6.3"},
-                {"pipName": "scipion-em-relion", "name": "relion", "installed": False, "pipVersion": ""},
-            ]
-
-    pluginServiceModule = types.ModuleType(
-        "app.backend.api.services.plugin_service"
-    )
-    pluginServiceModule.PluginService = FakePluginService
-
     monkeypatch.setitem(
         sys.modules,
         "app.backend.api.services.settings_service",
         settingsServiceModule,
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "app.backend.api.services.plugin_service",
-        pluginServiceModule,
+
+    monkeypatch.setattr(
+        Domain,
+        "getPlugins",
+        classmethod(lambda cls: {"warp": object(), "relion": object()}),
+    )
+
+    def fakeVersion(pluginName):
+        if pluginName == "warp":
+            return "3.6.3"
+        raise importlib.metadata.PackageNotFoundError(pluginName)
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        fakeVersion,
     )
 
     result = taskQueueModule.report_node_capabilities(state=None)
@@ -67,7 +70,8 @@ def test_ReportNodeCapabilitiesReturnsGpusAndInstalledPlugins(monkeypatch):
     assert result["gpuCount"] == 1
     assert result["gpus"] == [{"index": 0, "name": "RTX 4090", "memoryTotalBytes": 25000000000}]
     assert result["plugins"] == [
-        {"pipName": "scipion-em-warp", "name": "warp", "pipVersion": "3.6.3"},
+        {"pipName": "relion", "name": "relion", "pipVersion": ""},
+        {"pipName": "warp", "name": "warp", "pipVersion": "3.6.3"},
     ]
 
 
@@ -93,30 +97,25 @@ def test_ReportNodeCapabilitiesReturnsErrorPayloadWhenGpuLookupFails(monkeypatch
     assert "nvidia-smi not found" in result["error"]
 
 
-def test_ReportNodeCapabilitiesToleratesPluginServiceFailure(monkeypatch):
+def test_ReportNodeCapabilitiesToleratesLocalPluginRegistryFailure(monkeypatch):
     settingsServiceModule = types.ModuleType(
         "app.backend.api.services.settings_service"
     )
     settingsServiceModule._getNvidiaGpuResources = lambda: []
-
-    class BrokenPluginService:
-        def getPlugins(self):
-            raise RuntimeError("plugin repository unavailable")
-
-    pluginServiceModule = types.ModuleType(
-        "app.backend.api.services.plugin_service"
-    )
-    pluginServiceModule.PluginService = BrokenPluginService
 
     monkeypatch.setitem(
         sys.modules,
         "app.backend.api.services.settings_service",
         settingsServiceModule,
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "app.backend.api.services.plugin_service",
-        pluginServiceModule,
+
+    def raiseError(cls):
+        raise RuntimeError("plugin registry unavailable")
+
+    monkeypatch.setattr(
+        Domain,
+        "getPlugins",
+        classmethod(raiseError),
     )
 
     result = taskQueueModule.report_node_capabilities(state=None)
@@ -125,3 +124,21 @@ def test_ReportNodeCapabilitiesToleratesPluginServiceFailure(monkeypatch):
     assert result["gpuCount"] == 0
     assert result["plugins"] == []
     assert "error" not in result
+
+
+def test_ListInstalledPluginsFromLocalDomainRegistryNeverImportsPluginService(monkeypatch):
+    # This is the exact regression this module guards against: a control
+    # command that touches the network-backed PluginRepository can wedge
+    # the whole worker, since control commands run synchronously on the
+    # worker's control channel. plugin_service must never be imported here.
+    monkeypatch.setattr(
+        Domain,
+        "getPlugins",
+        classmethod(lambda cls: {}),
+    )
+
+    sys.modules.pop("app.backend.api.services.plugin_service", None)
+
+    taskQueueModule._listInstalledPluginsFromLocalDomainRegistry()
+
+    assert "app.backend.api.services.plugin_service" not in sys.modules
