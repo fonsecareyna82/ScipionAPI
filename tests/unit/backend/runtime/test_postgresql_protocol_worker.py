@@ -3241,3 +3241,47 @@ def test_StaleCoordinatorCannotOverwriteNewRunOwnership(monkeypatch):
     assert updates == [], "An old coordinator must not overwrite the current run"
     assert storedParams["_scipionWebRuntime"] == metadata
     assert row["status"] == "scheduled"
+
+
+def test_StaleCoordinatorFailureDoesNotMarkNewRunFailed():
+    events = []
+    row = {
+        "id": 50,
+        "status": "scheduled",
+        "params": {"_scipionWebRuntime": {"coordinatorRunId": "new-run"}},
+    }
+
+    class Mapper:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert (projectId, protocolId) == (1, 30)
+            return dict(row)
+
+        def updateProjectProtocolStatus(self, **kwargs):
+            events.append("fallback-failed")
+            row["status"] = "failed"
+
+    class Protocol:
+        failed = False
+
+        def setFailed(self, message):
+            self.failed = True
+            events.append("failed")
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = Mapper()
+    worker.protocol = Protocol()
+    worker.coordinatorRunId = "old-run"
+    worker.rollbackPostgresqlTransaction = lambda: events.append("rollback")
+
+    def storeProtocol():
+        events.append("store")
+        if worker.protocol.failed:
+            row["status"] = "failed"
+
+    worker.storeProtocol = storeProtocol
+    worker.markFailed(RuntimeError("old coordinator failed"))
+
+    assert "failed" not in events
+    assert "store" not in events
+    assert "fallback-failed" not in events
+    assert row["status"] == "scheduled"

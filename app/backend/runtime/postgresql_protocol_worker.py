@@ -3615,6 +3615,17 @@ class RuntimePostgresqlProtocolWorker:
         # persist the terminal protocol state.
         self.rollbackPostgresqlTransaction()
 
+        if callable(getattr(self.mapper, "getProjectProtocolByProtocolId", None)):
+            storedRunId = self.getStoredCoordinatorRunId()
+            if (storedRunId or self.coordinatorRunId) and storedRunId != (self.coordinatorRunId or ""):
+                logger.info(
+                    "Skipping failure from superseded PostgreSQL coordinator. "
+                    "projectId=%s protocolId=%s",
+                    self.projectId,
+                    self.protocolId,
+                )
+                return
+
         # A failure can happen after the elapsed session has
         # started but before execute() reaches its run/finally
         # block. Freeze managed elapsed metadata here as well.
