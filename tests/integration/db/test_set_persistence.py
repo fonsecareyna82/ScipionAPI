@@ -615,6 +615,10 @@ def test_PostgresqlRuntimeSetAppendPersistsAcrossConnections(
             appendedItem
         )
 
+        # Buffered appends only become durable once the Set is
+        # written/committed; close() alone does not flush them.
+        runtimeSet.write()
+
         assert appendedItem.getObjId() == 3
         assert runtimeSet.getSize() == 3
 
@@ -1377,6 +1381,11 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
 
         assert runtimeSet.getSize() == 1
 
+        # Needed so runtimeSet.update(hydratedNestedSet) below can commit
+        # the buffered nested append, mirroring how a protocol enables
+        # writing on the parent output Set before updating a nested one.
+        runtimeSet.enablePostgresqlWrite()
+
         hydratedNestedSet = runtimeSet.getFirstItem()
 
         assert isinstance(
@@ -1413,6 +1422,13 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
 
         hydratedNestedSet.append(
             appendedChild
+        )
+
+        # Buffered appends on a nested child Set only become durable
+        # once the parent commits the update, mirroring how a protocol
+        # calls self._store()/update() after appending to a nested output.
+        runtimeSet.update(
+            hydratedNestedSet
         )
 
         assert appendedChild.getObjId() == 3
