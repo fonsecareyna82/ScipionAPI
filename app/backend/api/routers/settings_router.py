@@ -48,6 +48,7 @@ from app.backend.api.schemas.settings_schema import (
 )
 from app.backend.api.schemas.job_monitoring_schema import (
     JobMonitoringOverviewOut,
+    NodeCapabilitiesListOut,
 )
 from app.backend.api.services.settings_service import SettingsService
 from app.backend.api.services.job_monitoring_service import (
@@ -254,6 +255,43 @@ def getJobsOverview(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
                 "Failed to load job monitoring data: %s"
+                % error
+            ),
+        )
+
+
+@router.get(
+    "/jobs/nodes",
+    response_model=NodeCapabilitiesListOut,
+    status_code=status.HTTP_200_OK,
+)
+def getJobNodeCapabilities(
+    timeout: float = Query(
+        5.0,
+        ge=0.5,
+        le=30.0,
+    ),
+    currentUser=Depends(requireAdmin),
+    service: JobMonitoringService = Depends(getJobMonitoringService),
+):
+    try:
+        return service.getNodeCapabilities(
+            timeout=timeout,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error in getJobNodeCapabilities: %s",
+            error,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Failed to load node capabilities: %s"
                 % error
             ),
         )

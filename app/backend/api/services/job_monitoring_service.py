@@ -1053,3 +1053,82 @@ class JobMonitoringService:
                 tz=timezone.utc,
             ),
         }
+
+    def getNodeCapabilities(
+            self,
+            timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        # Broadcast a control command to every online worker (across
+        # nodes) and collect one capability report per distinct host.
+        if self.celeryApp is None:
+            return {
+                "available": False,
+                "error": (
+                    self.celeryImportError
+                    or "Celery is not available."
+                ),
+                "nodes": [],
+            }
+
+        try:
+            replies = self.celeryApp.control.broadcast(
+                "report_node_capabilities",
+                reply=True,
+                timeout=max(0.5, float(timeout)),
+            )
+        except Exception as error:
+            return {
+                "available": False,
+                "error": str(error),
+                "nodes": [],
+            }
+
+        nodesByHostname: Dict[str, Dict[str, Any]] = {}
+
+        for replyEnvelope in replies or []:
+            if not isinstance(replyEnvelope, dict):
+                continue
+
+            for workerName, payload in replyEnvelope.items():
+                if not isinstance(payload, dict):
+                    continue
+
+                hostname = str(
+                    payload.get("hostname") or ""
+                ).strip()
+
+                if not hostname:
+                    parts = str(workerName or "").split("@", 1)
+                    hostname = parts[1].strip() if len(parts) > 1 else ""
+
+                if not hostname or hostname in nodesByHostname:
+                    continue
+
+                if payload.get("error"):
+                    nodesByHostname[hostname] = {
+                        "hostname": hostname,
+                        "error": str(payload.get("error")),
+                        "gpuCount": 0,
+                        "gpus": [],
+                        "plugins": [],
+                    }
+                    continue
+
+                nodesByHostname[hostname] = {
+                    "hostname": hostname,
+                    "error": None,
+                    "gpuCount": self._optionalInt(payload.get("gpuCount")) or 0,
+                    "gpus": payload.get("gpus") or [],
+                    "plugins": payload.get("plugins") or [],
+                }
+
+        nodes = sorted(
+            nodesByHostname.values(),
+            key=lambda node: node["hostname"],
+        )
+
+        return {
+            "available": bool(nodes),
+            "error": None if nodes else "No node capability reports were received.",
+            "nodes": nodes,
+        }

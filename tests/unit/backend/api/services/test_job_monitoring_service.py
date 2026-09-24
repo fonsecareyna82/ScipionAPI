@@ -688,3 +688,132 @@ def test_JobMonitoringLeavesWorkerNoneWithoutAnyRecordedHostname(
     assert result["activeJobs"][0]["worker"] is None
 
 
+
+
+class FakeCeleryControl:
+    def __init__(self, replies=None, error=None):
+        self.replies = replies if replies is not None else []
+        self.error = error
+        self.broadcastCalls = []
+
+    def broadcast(self, commandName, reply=True, timeout=None):
+        self.broadcastCalls.append({
+            "commandName": commandName,
+            "reply": reply,
+            "timeout": timeout,
+        })
+
+        if self.error is not None:
+            raise self.error
+
+        return self.replies
+
+
+class FakeCeleryApp:
+    def __init__(self, replies=None, error=None):
+        self.control = FakeCeleryControl(replies=replies, error=error)
+
+
+def test_GetNodeCapabilitiesMergesRepliesPerHostname():
+    replies = [
+        {
+            "protocols@blackwell": {
+                "hostname": "blackwell",
+                "gpuCount": 1,
+                "gpus": [{"index": 0, "name": "RTX 4090", "memoryTotalBytes": 25000000000}],
+                "plugins": [{"pipName": "scipion-em-warp", "name": "warp", "pipVersion": "3.6.3"}],
+            },
+        },
+        {
+            "plugins@blackwell": {
+                "hostname": "blackwell",
+                "gpuCount": 1,
+                "gpus": [{"index": 0, "name": "RTX 4090", "memoryTotalBytes": 25000000000}],
+                "plugins": [{"pipName": "scipion-em-warp", "name": "warp", "pipVersion": "3.6.3"}],
+            },
+        },
+        {
+            "protocols@gpu-node-2": {
+                "hostname": "gpu-node-2",
+                "gpuCount": 0,
+                "gpus": [],
+                "plugins": [],
+            },
+        },
+    ]
+
+    service = JobMonitoringService(
+        celeryAppInstance=FakeCeleryApp(replies=replies),
+    )
+
+    result = service.getNodeCapabilities(timeout=5.0)
+
+    assert result["available"] is True
+    assert result["error"] is None
+
+    hostnames = [node["hostname"] for node in result["nodes"]]
+    assert hostnames == ["blackwell", "gpu-node-2"]
+
+    blackwellNode = result["nodes"][0]
+    assert blackwellNode["gpuCount"] == 1
+    assert blackwellNode["gpus"][0]["name"] == "RTX 4090"
+    assert blackwellNode["plugins"][0]["pipName"] == "scipion-em-warp"
+
+    assert service.celeryApp.control.broadcastCalls == [
+        {"commandName": "report_node_capabilities", "reply": True, "timeout": 5.0},
+    ]
+
+
+def test_GetNodeCapabilitiesSurfacesPerNodeErrorWithoutHidingOtherNodes():
+    replies = [
+        {"protocols@ok-node": {"hostname": "ok-node", "gpuCount": 0, "gpus": [], "plugins": []}},
+        {"protocols@broken-node": {"hostname": "broken-node", "error": "nvidia-smi timed out"}},
+    ]
+
+    service = JobMonitoringService(
+        celeryAppInstance=FakeCeleryApp(replies=replies),
+    )
+
+    result = service.getNodeCapabilities()
+
+    nodesByHostname = {node["hostname"]: node for node in result["nodes"]}
+
+    assert nodesByHostname["ok-node"]["error"] is None
+    assert nodesByHostname["broken-node"]["error"] == "nvidia-smi timed out"
+    assert nodesByHostname["broken-node"]["gpus"] == []
+
+
+def test_GetNodeCapabilitiesReturnsUnavailableWithoutCelery():
+    service = JobMonitoringService.__new__(JobMonitoringService)
+    service.celeryApp = None
+    service.celeryImportError = "celery import failed"
+
+    result = service.getNodeCapabilities()
+
+    assert result["available"] is False
+    assert result["error"] == "celery import failed"
+    assert result["nodes"] == []
+
+
+def test_GetNodeCapabilitiesReturnsUnavailableWhenNoRepliesArrive():
+    service = JobMonitoringService(
+        celeryAppInstance=FakeCeleryApp(replies=[]),
+    )
+
+    result = service.getNodeCapabilities()
+
+    assert result["available"] is False
+    assert result["error"] == "No node capability reports were received."
+    assert result["nodes"] == []
+
+
+def test_GetNodeCapabilitiesHandlesBroadcastException():
+    service = JobMonitoringService(
+        celeryAppInstance=FakeCeleryApp(error=RuntimeError("broker unreachable")),
+    )
+
+    result = service.getNodeCapabilities()
+
+    assert result["available"] is False
+    assert result["error"] == "broker unreachable"
+    assert result["nodes"] == []

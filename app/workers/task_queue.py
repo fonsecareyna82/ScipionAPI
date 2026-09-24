@@ -804,3 +804,54 @@ def stop_postgresql_coordinator(state, project_id, protocol_id, pid, owner_hostn
     finally:
         if mapper is not None:
             mapper.db.close()
+
+
+@control_command()
+def report_node_capabilities(state):
+    """Report this node's hostname, GPU inventory, and installed plugins.
+
+    Used by the monitoring dashboard to show, per multi-node deployment
+    host, what compute/plugin capabilities are actually available there.
+    """
+    import socket
+
+    hostname = socket.gethostname()
+
+    try:
+        from app.backend.api.services.settings_service import (
+            _getNvidiaGpuResources,
+        )
+        from app.backend.api.services.plugin_service import PluginService
+
+        gpus = _getNvidiaGpuResources()
+
+        installedPlugins = []
+        try:
+            for plugin in PluginService().getPlugins():
+                if not plugin.get("installed"):
+                    continue
+
+                installedPlugins.append({
+                    "pipName": plugin.get("pipName"),
+                    "name": plugin.get("name"),
+                    "pipVersion": plugin.get("pipVersion"),
+                })
+        except Exception:
+            logger.exception(
+                "Failed to list installed plugins for node capability report. hostname=%s",
+                hostname,
+            )
+
+        return {
+            "hostname": hostname,
+            "gpuCount": len(gpus),
+            "gpus": gpus,
+            "plugins": installedPlugins,
+        }
+
+    except Exception as error:
+        logger.exception(
+            "Failed to report node capabilities. hostname=%s",
+            hostname,
+        )
+        return {"hostname": hostname, "error": str(error)}

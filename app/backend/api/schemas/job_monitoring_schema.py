@@ -80,3 +80,29 @@ class JobMonitoringOverviewOut(BaseModel):
     activeJobs: List[ActiveProtocolJobOut] = Field(default_factory=list)
     recentJobs: List[RecentProtocolJobOut] = Field(default_factory=list)
     refreshedAt: datetime
+
+
+class NodeGpuOut(BaseModel):
+    index: int
+    name: str
+    memoryTotalBytes: Optional[int] = None
+
+
+class NodePluginOut(BaseModel):
+    pipName: Optional[str] = None
+    name: Optional[str] = None
+    pipVersion: Optional[str] = None
+
+
+class NodeCapabilitiesOut(BaseModel):
+    hostname: str
+    error: Optional[str] = None
+    gpuCount: int = 0
+    gpus: List[NodeGpuOut] = Field(default_factory=list)
+    plugins: List[NodePluginOut] = Field(default_factory=list)
+
+
+class NodeCapabilitiesListOut(BaseModel):
+    available: bool
+    error: Optional[str] = None
+    nodes: List[NodeCapabilitiesOut] = Field(default_factory=list)
