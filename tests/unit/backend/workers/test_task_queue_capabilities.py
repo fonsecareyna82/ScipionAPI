@@ -24,9 +24,22 @@
 # *
 # ******************************************************************************
 import importlib.metadata
+import os
 import socket
 import sys
 import types
+
+# app.workers.task_queue transitively imports app.backend.database, which
+# requires DATABASE_URL to be set at import time. Locally this is normally
+# populated by task_queue.py's own load_dotenv(scipion_home/.env), but a
+# fresh CI checkout has no scipion_home/.env, so it must be set explicitly
+# here before the import below. The tests in this module never touch the
+# database, so a placeholder value is sufficient (SQLAlchemy engines are
+# lazy and do not connect at import/construction time).
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql://test:test@localhost/test",
+)
 
 from pyworkflow.plugin import Domain
 
