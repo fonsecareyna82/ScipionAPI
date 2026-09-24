@@ -3105,3 +3105,73 @@ def test_ExecuteFinalizesManagedElapsedBeforeTerminalStore():
         < finalizeIndex
         < terminalStoreIndex
     )
+
+
+@pytest.mark.parametrize("previousHostname", [None, "previous-node-01"])
+def test_RegisterCoordinatorProcessPersistsOwnerHostname(monkeypatch, previousHostname):
+    import json
+    import socket
+
+    coordinatorPid = 23456
+    coordinatorHostname = "coordinator-node-03"
+    row = {
+        "id": 50,
+        "status": "scheduled",
+        "params": {
+            "inputImages": "preserved-input",
+            "_scipionWebRuntime": {
+                "executionId": "workflow-execution",
+                "elapsedTimeSeconds": 18.5,
+                "pid": None,
+                "jobIds": [],
+            },
+        },
+    }
+    if previousHostname is not None:
+        row["params"]["_scipionWebRuntime"]["hostname"] = previousHostname
+    updates = []
+
+    class CoordinatorProtocol:
+        def __init__(self):
+            self.pid = 0
+
+        def setPid(self, pid):
+            self.pid = pid
+
+        def getPid(self):
+            return self.pid
+
+        def getJobIds(self):
+            return []
+
+    class CoordinatorMapper:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert projectId == 1
+            assert str(protocolId) == "30"
+            return dict(row)
+
+        def updateProtocol(self, values):
+            assert values["id"] == row["id"]
+            updates.append(dict(values))
+            row.update(values)
+
+    monkeypatch.setattr(postgresqlProtocolWorkerModule.os, "getpid", lambda: coordinatorPid)
+    monkeypatch.setattr(socket, "gethostname", lambda: coordinatorHostname)
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = CoordinatorMapper()
+    worker.protocol = CoordinatorProtocol()
+
+    worker.registerCoordinatorProcess()
+
+    assert updates, "Coordinator registration must persist its process identity"
+    params = json.loads(row["params"]) if isinstance(row["params"], str) else row["params"]
+    metadata = params["_scipionWebRuntime"]
+    assert worker.protocol.getPid() == coordinatorPid
+    assert metadata["pid"] == coordinatorPid
+    assert metadata["jobIds"] == []
+    assert row["status"] == "scheduled"
+    assert params["inputImages"] == "preserved-input"
+    assert metadata["executionId"] == "workflow-execution"
+    assert metadata["elapsedTimeSeconds"] == 18.5
+    assert metadata.get("hostname") == coordinatorHostname

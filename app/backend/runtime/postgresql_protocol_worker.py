@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import shlex
+import socket
 import sys
 import time
 from types import MethodType
@@ -3546,6 +3547,7 @@ class RuntimePostgresqlProtocolWorker:
             projectId=self.projectId,
             protocolId=self.protocolId,
             protocol=self.protocol,
+            hostname=socket.gethostname(),
         )
 
     def rollbackPostgresqlTransaction(

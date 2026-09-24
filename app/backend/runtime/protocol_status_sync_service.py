@@ -221,9 +221,13 @@ class RuntimeProtocolStatusSyncService:
             projectId: int,
             protocolId,
             protocol,
+            hostname=None,
     ) -> Dict[str, Any]:
         """
         Persist only the active process and queue identity.
+
+        The coordinator supplies its hostname at registration. Other
+        callers preserve the stored owner by leaving hostname unset.
 
         This is used by QueueStepExecutor whenever a step job
         is submitted to or removed from the queue.
@@ -274,6 +278,9 @@ class RuntimeProtocolStatusSyncService:
         jobIds = self.getProtocolJobIds(
             protocol
         )
+
+        if hostname is not None:
+            runtimeMetadata["hostname"] = hostname
 
         runtimeMetadata["pid"] = pid
         runtimeMetadata["jobIds"] = list(
