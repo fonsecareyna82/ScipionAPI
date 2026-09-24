@@ -3285,3 +3285,108 @@ def test_StaleCoordinatorFailureDoesNotMarkNewRunFailed():
     assert "store" not in events
     assert "fallback-failed" not in events
     assert row["status"] == "scheduled"
+
+
+def test_CoordinatorHeartbeatTickWritesWhileStillOwner(monkeypatch):
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
+    calls = []
+
+    def fakeWrite(self, mapper, projectId, protocolId, coordinatorRunId):
+        calls.append((mapper, projectId, protocolId, coordinatorRunId))
+        return True
+
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService, "writeCoordinatorHeartbeat", fakeWrite,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = "run-1"
+
+    assert worker._coordinatorHeartbeatTick() is True
+    assert calls == [(worker.mapper, 1, 30, "run-1")]
+
+
+def test_CoordinatorHeartbeatTickStopsLoopWhenSuperseded(monkeypatch):
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService,
+        "writeCoordinatorHeartbeat",
+        lambda self, **kwargs: False,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = "old-run"
+
+    assert worker._coordinatorHeartbeatTick() is False
+
+
+def test_CoordinatorHeartbeatTickKeepsGoingOnTransientError(monkeypatch):
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
+    def boom(self, **kwargs):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService, "writeCoordinatorHeartbeat", boom,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = "run-1"
+
+    # A transient write error must not end the heartbeat -- the next tick
+    # gets another chance rather than presuming ourselves dead.
+    assert worker._coordinatorHeartbeatTick() is True
+
+
+def test_StartCoordinatorHeartbeatNoOpsWithoutCoordinatorRunId():
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = None
+
+    worker._startCoordinatorHeartbeat()
+
+    assert worker._heartbeatThread is None
+
+
+def test_StartCoordinatorHeartbeatNoOpsWithoutMapper():
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = None
+    worker.coordinatorRunId = "run-1"
+
+    worker._startCoordinatorHeartbeat()
+
+    assert worker._heartbeatThread is None
+
+
+def test_CoordinatorHeartbeatThreadStopsPromptlyOnRequest(monkeypatch):
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
+    # The stop event fires before the first interval elapses (the default
+    # floor is 15s), so the loop body must never actually run here. This
+    # only proves the thread lifecycle itself (start -> stop -> join)
+    # works and doesn't hang -- tick behavior is covered above.
+    monkeypatch.setattr(
+        RuntimeProtocolStatusSyncService,
+        "writeCoordinatorHeartbeat",
+        lambda self, **kwargs: pytest.fail("must not run before the first interval elapses"),
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = "run-1"
+
+    worker._startCoordinatorHeartbeat()
+    assert worker._heartbeatThread is not None
+    thread = worker._heartbeatThread
+
+    worker._stopCoordinatorHeartbeat()
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert worker._heartbeatStopEvent is None
+    assert worker._heartbeatThread is None

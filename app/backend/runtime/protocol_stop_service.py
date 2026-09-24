@@ -47,6 +47,16 @@ RUNTIME_METADATA_KEY = RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY
 logger = logging.getLogger(__name__)
 
 
+class RemoteCoordinatorUnreachableError(RuntimeError):
+    """The owning host never answered the Stop broadcast at all.
+
+    Distinct from other _stopRemoteCoordinator failures (an explicit error
+    report, or a reply that doesn't match what we expect): those mean the
+    host IS reachable and something else is wrong, so they must not be
+    treated as "coordinator is presumed dead".
+    """
+
+
 class RuntimeProtocolStopService:
     """
     Stop Scipion runtime protocols.
@@ -1071,6 +1081,14 @@ class RuntimeProtocolStopService:
             limit=1,
         ) or []
 
+        if not replies:
+            # Genuine silence within the timeout -- no worker on that host
+            # answered at all. A malformed/ambiguous reply below means
+            # SOMETHING did answer, which is a different kind of problem.
+            raise RemoteCoordinatorUnreachableError(
+                "No Stop reply from %s" % destination
+            )
+
         if len(replies) != 1 or set(replies[0]) != {destination}:
             raise RuntimeError("No unambiguous Stop reply from %s" % destination)
 
@@ -1111,6 +1129,7 @@ class RuntimeProtocolStopService:
         skipped = []
         localStopped = []
         remoteStopped = []
+        presumedFailed = []
         queueStopped = []
         stepReports = []
         outputReports = []
@@ -1288,12 +1307,48 @@ class RuntimeProtocolStopService:
             # PID before it submits the actual queue job.
             if pid:
                 if isRemoteCoordinator:
-                    processReport = self._stopRemoteCoordinator(
-                        ownerHostname=ownerHostname,
-                        pid=pid,
-                        projectId=projectId,
-                        protocolId=protocolId,
-                    )
+                    try:
+                        processReport = self._stopRemoteCoordinator(
+                            ownerHostname=ownerHostname,
+                            pid=pid,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                        )
+                    except RemoteCoordinatorUnreachableError:
+                        # The host never answered at all -- only presume it
+                        # dead (and recover) if we also have a stale
+                        # heartbeat AND a coordinatorRunId to fence the
+                        # recovery write on. Otherwise keep failing safe,
+                        # same as before this existed.
+                        if not coordinatorRunId or not statusService.isCoordinatorHeartbeatStale(
+                            runtimeMetadata, time.time(),
+                        ):
+                            raise
+
+                        reason = (
+                            "Coordinator on host %s did not respond to Stop "
+                            "and its heartbeat is stale -- presumed dead."
+                            % ownerHostname
+                        )
+
+                        statusService.markProtocolPresumedFailed(
+                            mapper=mapper,
+                            projectId=projectId,
+                            protocolId=protocolId,
+                            expectedCoordinatorRunId=coordinatorRunId,
+                            reason=reason,
+                        )
+
+                        presumedFailed.append({
+                            "protocolId": str(protocolId),
+                            "protocolDbId": protocolDbId,
+                            "hostname": ownerHostname,
+                            "pid": pid,
+                            "reason": reason,
+                        })
+
+                        continue
+
                     currentRow = mapper.getProjectProtocolByProtocolId(
                         projectId=projectId, protocolId=protocolId,
                     )
@@ -1461,6 +1516,7 @@ class RuntimeProtocolStopService:
                 skipped=skipped,
                 localStopped=localStopped,
                 remoteStopped=remoteStopped,
+                presumedFailed=presumedFailed,
                 queueStopped=queueStopped,
                 postgresqlRuntimeStatus=(
                     statusReports

@@ -29,7 +29,7 @@ import time
 from uuid import uuid4
 from typing import Any, Dict, Optional
 
-from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED
+from pyworkflow.protocol import STATUS_NEW, STATUS_ABORTED, STATUS_FAILED
 from app.backend.runtime.postgresql_runtime_event_service import (
     PostgresqlRuntimeEventPublisher,
 )
@@ -44,6 +44,13 @@ class StaleCoordinatorRunError(RuntimeError):
 class RuntimeProtocolStatusSyncService:
     """Manage PostgreSQL runtime protocol status, timing and process metadata."""
     RUNTIME_METADATA_KEY = "_scipionWebRuntime"
+
+    COORDINATOR_HEARTBEAT_KEY = "coordinatorHeartbeatAt"
+    # Default only -- the worker's actual interval is
+    # SCIPION_POSTGRESQL_COORDINATOR_HEARTBEAT_SECONDS (see
+    # postgresql_protocol_worker.py). Kept at 3x the default interval so a
+    # single slow/dropped write doesn't get treated as a dead coordinator.
+    COORDINATOR_STALE_AFTER_SECONDS = 180.0
 
     ACTIVE_STATUS_TEXTS = {
         "launched",
@@ -231,11 +238,70 @@ class RuntimeProtocolStatusSyncService:
         runId = uuid4().hex
         metadata["coordinatorRunId"] = runId
         metadata.pop("hostname", None)
+        metadata.pop(self.COORDINATOR_HEARTBEAT_KEY, None)
         metadata["pid"] = None
         metadata["jobIds"] = []
         params[self.RUNTIME_METADATA_KEY] = metadata
         mapper.updateProtocol({"id": row["id"], "params": json.dumps(params, ensure_ascii=False)})
         return runId
+
+    def writeCoordinatorHeartbeat(
+            self, mapper, projectId: int, protocolId, coordinatorRunId: str,
+    ) -> bool:
+        """Bump this coordinator's liveness timestamp, only while it still owns the row.
+
+        Called periodically (see the background thread started around
+        protocol.run() in RuntimePostgresqlProtocolWorker) so a Stop that
+        can't reach this host can tell "recently alive but slow to answer"
+        apart from "genuinely gone" -- see isCoordinatorHeartbeatStale.
+        Fenced by the same atomic compare-and-swap as identity writes, so a
+        superseded coordinator's heartbeat can't resurrect its ownership.
+        """
+        row = mapper.getProjectProtocolByProtocolId(projectId=projectId, protocolId=protocolId)
+        if not row:
+            return False
+
+        params = self.normalizeParams(row.get("params"))
+        metadata = params.get(self.RUNTIME_METADATA_KEY) or {}
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata[self.COORDINATOR_HEARTBEAT_KEY] = time.time()
+        params[self.RUNTIME_METADATA_KEY] = metadata
+
+        return mapper.updateProtocolParamsIfCoordinatorRunId(
+            protocolDbId=row["id"],
+            expectedRunId=coordinatorRunId,
+            params=json.dumps(params, ensure_ascii=False),
+        )
+
+    @classmethod
+    def isCoordinatorHeartbeatStale(
+            cls,
+            runtimeMetadata: Dict[str, Any],
+            nowEpochSeconds: float,
+            staleAfterSeconds: float = COORDINATOR_STALE_AFTER_SECONDS,
+    ) -> bool:
+        """True only when we have a heartbeat AND it's old enough to presume the coordinator is gone.
+
+        A missing heartbeat (never registered, or predates this feature)
+        is deliberately NOT considered stale -- there's not enough
+        information to presume anything, so callers should keep failing
+        safe rather than guessing.
+        """
+        heartbeatAt = (
+            runtimeMetadata.get(cls.COORDINATOR_HEARTBEAT_KEY)
+            if isinstance(runtimeMetadata, dict)
+            else None
+        )
+
+        if heartbeatAt is None:
+            return False
+
+        try:
+            heartbeatAt = float(heartbeatAt)
+        except (TypeError, ValueError):
+            return False
+
+        return (nowEpochSeconds - heartbeatAt) > staleAfterSeconds
 
     def persistProtocolProcessIdentity(
             self,
@@ -732,6 +798,72 @@ class RuntimeProtocolStatusSyncService:
         return {
             "protocolId": str(protocolId),
             "status": STATUS_ABORTED,
+        }
+
+    def markProtocolPresumedFailed(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+            expectedCoordinatorRunId: str,
+            reason: str,
+    ) -> Dict[str, Any]:
+        """Mark a protocol failed because its coordinator is presumed dead.
+
+        Only used by Stop when a remote coordinator doesn't answer AND its
+        heartbeat is stale (see isCoordinatorHeartbeatStale) -- we never
+        confirmed the process actually stopped, so this is deliberately
+        distinct from markProtocolAborted (a confirmed kill). Ownership is
+        REQUIRED here (unlike markProtocolAborted's optional legacy path):
+        presuming a coordinator dead without fencing on its exact run would
+        risk clobbering a newer, legitimate relaunch.
+        """
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=projectId,
+            protocolId=protocolId,
+        )
+
+        if not row:
+            raise RuntimeError(
+                "Cannot mark runtime protocol as presumed failed: "
+                "protocol row not found. "
+                f"projectId={projectId} "
+                f"protocolId={protocolId}"
+            )
+
+        params = self.normalizeParams(row.get("params"))
+        metadata = params.get(self.RUNTIME_METADATA_KEY) or {}
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata["presumedFailedReason"] = str(reason)
+        params[self.RUNTIME_METADATA_KEY] = metadata
+
+        updated = mapper.updateProtocolStatusAndParamsIfCoordinatorRunId(
+            protocolDbId=row["id"],
+            expectedRunId=expectedCoordinatorRunId,
+            status=STATUS_FAILED,
+            params=json.dumps(params, ensure_ascii=False),
+        )
+
+        if not updated:
+            raise StaleCoordinatorRunError(
+                "Coordinator ownership changed before the presumed-dead "
+                "Failed status could be written. "
+                "projectId=%s protocolId=%s" % (projectId, protocolId)
+            )
+
+        PostgresqlRuntimeEventPublisher.publish(
+            db=mapper.db,
+            projectId=projectId,
+            eventType="protocol_changed",
+            protocolId=protocolId,
+            protocolDbId=row["id"],
+            status=str(STATUS_FAILED),
+        )
+
+        return {
+            "protocolId": str(protocolId),
+            "status": STATUS_FAILED,
+            "reason": str(reason),
         }
 
     def markProtocolLaunched(

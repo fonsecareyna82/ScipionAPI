@@ -30,11 +30,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from pyworkflow.object import CsvList
-from pyworkflow.protocol import STATUS_ABORTED
+from pyworkflow.protocol import STATUS_ABORTED, STATUS_FAILED
 
 import app.backend.runtime.protocol_stop_service as stopModule
 from app.backend.runtime.protocol_stop_service import (
     RuntimeProtocolStopService,
+    RemoteCoordinatorUnreachableError,
 )
 
 
@@ -215,6 +216,20 @@ class FakeMapper:
         })
 
         return 2
+
+    def updateProtocolStatusAndParamsIfCoordinatorRunId(
+            self, protocolDbId, expectedRunId, status, params,
+    ):
+        # Used by markProtocolPresumedFailed -- always agrees in these
+        # tests since getProjectProtocolByProtocolId is monkeypatched per
+        # test to return the ownership state each scenario needs.
+        self.lastPresumedFailedWrite = {
+            "protocolDbId": protocolDbId,
+            "expectedRunId": expectedRunId,
+            "status": status,
+            "params": params,
+        }
+        return True
 
 
 class FakeSetMapper:
@@ -1243,11 +1258,179 @@ def test_RemoteStopBroadcastTargetsOwnerAndRequiresConfirmedReply(monkeypatch):
         },
     )]
 
+    # Genuine silence (nobody answered within the timeout) is a distinct,
+    # more specific failure than an ambiguous reply -- it's what Stop's
+    # presumed-dead recovery keys off (see the CoordinatorRunId test
+    # above and StaleCoordinatorRun tests in
+    # test_protocol_status_sync_service.py).
     replies.clear()
-    with pytest.raises(RuntimeError, match="No unambiguous Stop reply"):
+    with pytest.raises(RemoteCoordinatorUnreachableError, match="No Stop reply"):
         service._stopRemoteCoordinator(
             ownerHostname=hostname, pid=1234, projectId=1, protocolId=10,
         )
+
+    # More than one reply (or a reply keyed under the wrong destination)
+    # means the broadcast WAS answered, just ambiguously -- that's a
+    # different problem and must not be treated as "presumed dead".
+    replies.append({destination: {"hostname": hostname, "pid": 1234, "terminated": True, "verified": True}})
+    replies.append({"protocols@some-other-node": {"terminated": True}})
+    with pytest.raises(RuntimeError, match="No unambiguous Stop reply") as excInfo:
+        service._stopRemoteCoordinator(
+            ownerHostname=hostname, pid=1234, projectId=1, protocolId=10,
+        )
+    assert not isinstance(excInfo.value, RemoteCoordinatorUnreachableError)
+
+
+def test_PostgresqlStopRecoversPresumedDeadRemoteCoordinator(monkeypatch):
+    # Uses the REAL RuntimeProtocolStatusSyncService (not FakeStatusService)
+    # so isCoordinatorHeartbeatStale/markProtocolPresumedFailed actually run.
+    import time as timeModule
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+
+    staleHeartbeat = timeModule.time() - 400.0  # past the 180s default threshold
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {
+                    "hostname": "node-dead",
+                    "pid": 1234,
+                    "coordinatorRunId": "run-1",
+                    "coordinatorHeartbeatAt": staleHeartbeat,
+                },
+            },
+        },
+    )
+
+    def unreachable(**kwargs):
+        raise RemoteCoordinatorUnreachableError("no reply")
+
+    monkeypatch.setattr(service, "_stopRemoteCoordinator", unreachable, raising=False)
+    monkeypatch.setattr(
+        service, "_killProcessGroup",
+        lambda **kwargs: pytest.fail("must not kill a presumed-dead remote PID locally"),
+    )
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["localStopped"] == []
+    assert result["remoteStopped"] == []
+    assert result["stopped"] == []
+    assert len(result["presumedFailed"]) == 1
+    entry = result["presumedFailed"][0]
+    assert entry["protocolId"] == "10"
+    assert entry["hostname"] == "node-dead"
+    assert entry["pid"] == 1234
+    assert "presumed dead" in entry["reason"]
+    assert mapper.lastPresumedFailedWrite["expectedRunId"] == "run-1"
+    assert mapper.lastPresumedFailedWrite["status"] == STATUS_FAILED
+
+
+def test_PostgresqlStopDoesNotRecoverWhenHeartbeatIsFresh(monkeypatch):
+    # A host that's just slow to answer THIS broadcast, but was alive
+    # recently, must not be presumed dead -- Stop keeps failing safe.
+    import time as timeModule
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+
+    freshHeartbeat = timeModule.time() - 5.0
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {
+                    "hostname": "node-slow",
+                    "pid": 1234,
+                    "coordinatorRunId": "run-1",
+                    "coordinatorHeartbeatAt": freshHeartbeat,
+                },
+            },
+        },
+    )
+
+    def unreachable(**kwargs):
+        raise RemoteCoordinatorUnreachableError("no reply")
+
+    monkeypatch.setattr(service, "_stopRemoteCoordinator", unreachable, raising=False)
+
+    with pytest.raises(HTTPException) as excInfo:
+        service.stopProtocols(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=["10"],
+            currentProject=currentProject,
+            getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+            buildProtocolMutationResultCallback=buildResult,
+        )
+
+    assert excInfo.value.status_code == 500
+
+
+def test_PostgresqlStopDoesNotRecoverWithoutCoordinatorRunId(monkeypatch):
+    # Protocols predating this feature (no coordinatorRunId ever recorded)
+    # must not trigger automatic recovery -- there's no fencing token to
+    # safely condition the write on.
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {"hostname": "node-old", "pid": 1234},
+            },
+        },
+    )
+
+    def unreachable(**kwargs):
+        raise RemoteCoordinatorUnreachableError("no reply")
+
+    monkeypatch.setattr(service, "_stopRemoteCoordinator", unreachable, raising=False)
+
+    with pytest.raises(HTTPException) as excInfo:
+        service.stopProtocols(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=["10"],
+            currentProject=currentProject,
+            getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+            buildProtocolMutationResultCallback=buildResult,
+        )
+
+    assert excInfo.value.status_code == 500
 
 
 @pytest.mark.parametrize("storedPid", [1234, 9999])

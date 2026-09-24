@@ -2761,6 +2761,29 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cursor.rowcount == 1
 
+    def updateProtocolStatusAndParamsIfCoordinatorRunId(
+            self, protocolDbId: int, expectedRunId: str, status: str, params: str,
+    ) -> bool:
+        """Write status and params together, atomically, while still owner.
+
+        Used when a status change also needs to record something in the
+        runtime metadata (e.g. why it changed) -- writing both columns in
+        one statement avoids the window a separate params-then-status (or
+        status-then-params) pair of calls would leave between them.
+        """
+        cursor = self.db.execute(
+            """
+            UPDATE protocols
+               SET status = %s,
+                   params = %s,
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND params->'_scipionWebRuntime'->>'coordinatorRunId' = %s
+            """,
+            (status, params, int(protocolDbId), str(expectedRunId)),
+        )
+        return cursor.rowcount == 1
+
     def updateProtocol(self, protocol: Dict[str, Any]) -> None:
         """Update protocol fields dynamically."""
         updates = []

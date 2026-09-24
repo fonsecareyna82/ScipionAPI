@@ -86,6 +86,26 @@ class FakeMapper:
         self.row["status"] = status
         return True
 
+    def _storedCoordinatorRunId(self):
+        params = RuntimeProtocolStatusSyncService().normalizeParams(self.row["params"])
+        metadata = params.get(RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY) or {}
+        return metadata.get("coordinatorRunId") if isinstance(metadata, dict) else None
+
+    def updateProtocolParamsIfCoordinatorRunId(self, protocolDbId, expectedRunId, params):
+        assert protocolDbId == self.row["id"]
+        if self._storedCoordinatorRunId() != expectedRunId:
+            return False
+        self.row["params"] = params
+        return True
+
+    def updateProtocolStatusAndParamsIfCoordinatorRunId(self, protocolDbId, expectedRunId, status, params):
+        assert protocolDbId == self.row["id"]
+        if self._storedCoordinatorRunId() != expectedRunId:
+            return False
+        self.row["status"] = status
+        self.row["params"] = params
+        return True
+
 
 def test_PersistProtocolProcessIdentityPreservesRuntimeMetadata():
     mapper = FakeMapper()
@@ -731,3 +751,109 @@ def test_MarkProtocolAbortedWithoutExpectedRunIdWritesUnconditionally():
 
     assert report["status"] == STATUS_ABORTED
     assert mapper.row["status"] == STATUS_ABORTED
+
+
+def test_WriteCoordinatorHeartbeatSucceedsWhileStillOwner():
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "run-1"},
+    }
+
+    updated = service.writeCoordinatorHeartbeat(
+        mapper=mapper, projectId=1, protocolId=10, coordinatorRunId="run-1",
+    )
+
+    assert updated is True
+    params = service.normalizeParams(mapper.row["params"])
+    metadata = params[service.RUNTIME_METADATA_KEY]
+    assert isinstance(metadata[service.COORDINATOR_HEARTBEAT_KEY], float)
+
+
+def test_WriteCoordinatorHeartbeatFailsAfterSupersededRelaunch():
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "new-run"},
+    }
+
+    updated = service.writeCoordinatorHeartbeat(
+        mapper=mapper, projectId=1, protocolId=10, coordinatorRunId="old-run",
+    )
+
+    assert updated is False
+    # The stale coordinator's heartbeat must not have touched the row at
+    # all -- the newer run's identity stays exactly as it was.
+    params = service.normalizeParams(mapper.row["params"])
+    assert service.COORDINATOR_HEARTBEAT_KEY not in params[service.RUNTIME_METADATA_KEY]
+
+
+def test_IsCoordinatorHeartbeatStale():
+    service = RuntimeProtocolStatusSyncService()
+    now = 1_000_000.0
+
+    # No heartbeat recorded at all -- not enough information to presume
+    # anything, so this must NOT be reported as stale.
+    assert service.isCoordinatorHeartbeatStale({}, now) is False
+    assert service.isCoordinatorHeartbeatStale(
+        {service.COORDINATOR_HEARTBEAT_KEY: None}, now,
+    ) is False
+
+    # A recent heartbeat is not stale.
+    assert service.isCoordinatorHeartbeatStale(
+        {service.COORDINATOR_HEARTBEAT_KEY: now - 10.0}, now,
+    ) is False
+
+    # An old heartbeat, past the threshold, is stale.
+    assert service.isCoordinatorHeartbeatStale(
+        {service.COORDINATOR_HEARTBEAT_KEY: now - 200.0}, now,
+        staleAfterSeconds=180.0,
+    ) is True
+
+    # A custom threshold is respected.
+    assert service.isCoordinatorHeartbeatStale(
+        {service.COORDINATOR_HEARTBEAT_KEY: now - 50.0}, now,
+        staleAfterSeconds=30.0,
+    ) is True
+
+
+def test_MarkProtocolPresumedFailedWritesStatusAndReasonAtomically():
+    from pyworkflow.protocol import STATUS_FAILED
+
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "run-1"},
+    }
+
+    report = service.markProtocolPresumedFailed(
+        mapper=mapper, projectId=1, protocolId=10,
+        expectedCoordinatorRunId="run-1",
+        reason="host unreachable",
+    )
+
+    assert report["status"] == STATUS_FAILED
+    assert mapper.row["status"] == STATUS_FAILED
+    params = service.normalizeParams(mapper.row["params"])
+    assert params[service.RUNTIME_METADATA_KEY]["presumedFailedReason"] == "host unreachable"
+
+
+def test_MarkProtocolPresumedFailedRaisesWhenCoordinatorWasSuperseded():
+    import pytest
+    from app.backend.runtime.protocol_status_sync_service import StaleCoordinatorRunError
+
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "new-run"},
+    }
+
+    with pytest.raises(StaleCoordinatorRunError):
+        service.markProtocolPresumedFailed(
+            mapper=mapper, projectId=1, protocolId=10,
+            expectedCoordinatorRunId="old-run",
+            reason="host unreachable",
+        )
+
+    # The newer run's status must be untouched.
+    assert mapper.row["status"] == "running"

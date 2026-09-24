@@ -31,6 +31,7 @@ import re
 import shlex
 import socket
 import sys
+import threading
 import time
 from types import MethodType
 from typing import Any, Dict, List
@@ -790,6 +791,8 @@ class RuntimePostgresqlProtocolWorker:
 
         self.mapper = None
         self.coordinatorRunId = str(coordinatorRunId or "").strip() or None
+        self._heartbeatStopEvent = None
+        self._heartbeatThread = None
         self.project = None
         self.protocol = None
         self.runtimeMapper = None
@@ -3566,6 +3569,92 @@ class RuntimePostgresqlProtocolWorker:
             coordinatorRunId=self.coordinatorRunId,
         )
 
+    def _coordinatorHeartbeatTick(self) -> bool:
+        """
+        One heartbeat write attempt. Returns whether the loop should keep
+        going: False once this coordinator has been superseded (nothing
+        left to prove), True otherwise -- including on a transient write
+        error, which is retried on the next tick rather than ending the
+        heartbeat over what might be a momentary DB hiccup.
+
+        Split out from _startCoordinatorHeartbeat so it can be exercised
+        directly, synchronously, in tests without needing a real thread
+        and a multi-second wait.
+        """
+        try:
+            stillOwner = RuntimeProtocolStatusSyncService().writeCoordinatorHeartbeat(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+                coordinatorRunId=self.coordinatorRunId,
+            )
+        except Exception:
+            logger.exception(
+                "Could not write PostgreSQL coordinator heartbeat. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+            )
+            return True
+
+        if not stillOwner:
+            # Superseded by a newer launch -- nothing left to prove.
+            logger.info(
+                "Stopping coordinator heartbeat: no longer the "
+                "owning run. projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+            )
+            return False
+
+        return True
+
+    def _startCoordinatorHeartbeat(self) -> None:
+        """
+        Start a background thread that periodically proves this
+        coordinator is still alive, while protocol.run() is executing.
+
+        Single-node deployments never read this heartbeat for anything --
+        Stop only consults it on the remote-coordinator-unreachable path
+        (see RuntimeProtocolStopService), which is unreachable when the
+        coordinator is the local host. This is purely additive metadata.
+        """
+        if not self.coordinatorRunId or self.mapper is None:
+            return
+
+        intervalSeconds = max(
+            15.0,
+            float(
+                os.environ.get(
+                    "SCIPION_POSTGRESQL_COORDINATOR_HEARTBEAT_SECONDS",
+                    "60",
+                )
+                or 60
+            ),
+        )
+
+        stopEvent = threading.Event()
+        self._heartbeatStopEvent = stopEvent
+
+        def heartbeatLoop() -> None:
+            while not stopEvent.wait(intervalSeconds):
+                if not self._coordinatorHeartbeatTick():
+                    return
+
+        thread = threading.Thread(
+            target=heartbeatLoop,
+            name="postgresql-coordinator-heartbeat",
+            daemon=True,
+        )
+        self._heartbeatThread = thread
+        thread.start()
+
+    def _stopCoordinatorHeartbeat(self) -> None:
+        if self._heartbeatStopEvent is not None:
+            self._heartbeatStopEvent.set()
+            self._heartbeatStopEvent = None
+        self._heartbeatThread = None
+
     def rollbackPostgresqlTransaction(
             self,
     ) -> None:
@@ -3910,10 +3999,13 @@ class RuntimePostgresqlProtocolWorker:
 
         outputSetAdapter.install()
 
+        self._startCoordinatorHeartbeat()
+
         try:
             self.protocol.run()
 
         finally:
+            self._stopCoordinatorHeartbeat()
             try:
                 elapsedSnapshot = (
                     elapsedStatusService
