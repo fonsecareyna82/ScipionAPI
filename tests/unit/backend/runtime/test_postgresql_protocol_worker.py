@@ -1904,8 +1904,135 @@ def test_ResumeUsesNativePostgresqlWritableSet():
     )
 
 
-def test_MarkFailedRollsBackBeforeStoringProtocol():
+
+def test_MarkFailedFinalizesManagedElapsedBeforeStoringFailedProtocol(
+        monkeypatch,
+):
     events = []
+    elapsedSnapshot = {
+        "elapsedTimeSeconds": 12.0,
+        "elapsedUpdatedAtEpochSeconds": 100.0,
+    }
+
+    class StatusServiceStub:
+        def captureProtocolElapsedState(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+        ):
+            events.append("capture_elapsed")
+            return dict(elapsedSnapshot)
+
+        def finalizeProtocolElapsedTime(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+                elapsedSnapshot,
+                stoppedAtEpochSeconds,
+        ):
+            events.append((
+                "finalize_elapsed",
+                dict(elapsedSnapshot),
+                stoppedAtEpochSeconds,
+            ))
+            return {
+                "elapsedTimeSeconds": 27.0,
+            }
+
+    class FailedProtocolStub:
+        def setFailed(
+                self,
+                message,
+        ):
+            events.append((
+                "failed",
+                message,
+            ))
+
+    database = SimpleNamespace(
+        rollback=lambda: events.append(
+            "rollback"
+        )
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=344,
+        protocolId=24,
+    )
+
+    worker.mapper = SimpleNamespace(
+        db=database
+    )
+
+    worker.protocol = FailedProtocolStub()
+
+    worker.storeProtocol = (
+        lambda: events.append(
+            "store"
+        )
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "RuntimeProtocolStatusSyncService",
+        StatusServiceStub,
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule.time,
+        "time",
+        lambda: 115.0,
+    )
+
+    worker.markFailed(
+        RuntimeError(
+            "database failure"
+        )
+    )
+
+    assert events == [
+        "rollback",
+        "capture_elapsed",
+        (
+            "finalize_elapsed",
+            elapsedSnapshot,
+            115.0,
+        ),
+        (
+            "failed",
+            "database failure",
+        ),
+        "store",
+    ]
+
+
+def test_MarkFailedRollsBackBeforeStoringProtocol(
+        monkeypatch,
+):
+    events = []
+
+    class StatusServiceStub:
+        def captureProtocolElapsedState(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+        ):
+            return {}
+
+        def finalizeProtocolElapsedTime(
+                self,
+                mapper,
+                projectId,
+                protocolId,
+                elapsedSnapshot,
+                stoppedAtEpochSeconds,
+        ):
+            return {
+                "elapsedTimeSeconds": 0.0,
+            }
 
     class FailedProtocolStub:
         def setFailed(
@@ -1944,6 +2071,12 @@ def test_MarkFailedRollsBackBeforeStoringProtocol():
         lambda: events.append(
             "store"
         )
+    )
+
+    monkeypatch.setattr(
+        postgresqlProtocolWorkerModule,
+        "RuntimeProtocolStatusSyncService",
+        StatusServiceStub,
     )
 
     worker.markFailed(
