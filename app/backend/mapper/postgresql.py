@@ -2737,6 +2737,30 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cursor.rowcount == 1
 
+    def updateProtocolStatusIfCoordinatorRunId(
+            self, protocolDbId: int, expectedRunId: str, status: str,
+    ) -> bool:
+        """Write status only while this launch still owns the protocol row.
+
+        Mirrors updateProtocolParamsIfCoordinatorRunId's compare-and-swap:
+        a Stop (or any other terminal status write) that reads ownership
+        and writes the new status as two separate steps leaves a race
+        window where a newer relaunch could take over the row in between.
+        This makes the write itself conditional on ownership, closing that
+        window instead of just detecting it after the fact.
+        """
+        cursor = self.db.execute(
+            """
+            UPDATE protocols
+               SET status = %s,
+                   "updatedAt" = NOW()
+             WHERE id = %s
+               AND params->'_scipionWebRuntime'->>'coordinatorRunId' = %s
+            """,
+            (status, int(protocolDbId), str(expectedRunId)),
+        )
+        return cursor.rowcount == 1
+
     def updateProtocol(self, protocol: Dict[str, Any]) -> None:
         """Update protocol fields dynamically."""
         updates = []

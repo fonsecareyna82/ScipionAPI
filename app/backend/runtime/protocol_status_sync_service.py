@@ -678,6 +678,7 @@ class RuntimeProtocolStatusSyncService:
             mapper,
             projectId: int,
             protocolId,
+            expectedCoordinatorRunId: Optional[str] = None,
     ) -> Dict[str, Any]:
         row = mapper.getProjectProtocolByProtocolId(
             projectId=projectId,
@@ -692,10 +693,28 @@ class RuntimeProtocolStatusSyncService:
                 f"protocolId={protocolId}"
             )
 
-        mapper.updateProtocol({
-            "id": row["id"],
-            "status": STATUS_ABORTED,
-        })
+        if expectedCoordinatorRunId:
+            # Caller (e.g. Stop) already verified ownership before calling
+            # in, but that check and this write are two separate DB round
+            # trips -- a newer relaunch could take over in between. Make
+            # the write itself conditional on ownership instead of just
+            # detecting the change after the fact.
+            updated = mapper.updateProtocolStatusIfCoordinatorRunId(
+                protocolDbId=row["id"],
+                expectedRunId=expectedCoordinatorRunId,
+                status=STATUS_ABORTED,
+            )
+            if not updated:
+                raise StaleCoordinatorRunError(
+                    "Coordinator ownership changed before Abort could be "
+                    "written. projectId=%s protocolId=%s"
+                    % (projectId, protocolId)
+                )
+        else:
+            mapper.updateProtocol({
+                "id": row["id"],
+                "status": STATUS_ABORTED,
+            })
 
         PostgresqlRuntimeEventPublisher.publish(
             db=mapper.db,

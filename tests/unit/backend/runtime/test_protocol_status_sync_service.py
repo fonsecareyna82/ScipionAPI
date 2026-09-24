@@ -23,6 +23,8 @@
 # * e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+from pyworkflow.protocol import STATUS_ABORTED
+
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -52,6 +54,7 @@ class FakeRuntimeMetadataProtocol(FakeActiveRuntimeProtocol):
 
 class FakeMapper:
     def __init__(self):
+        self.db = None
         self.row = {
             "id": 10,
             "status": "running",
@@ -72,6 +75,16 @@ class FakeMapper:
 
         if "params" in values:
             self.row["params"] = values["params"]
+
+    def updateProtocolStatusIfCoordinatorRunId(self, protocolDbId, expectedRunId, status):
+        assert protocolDbId == self.row["id"]
+        params = RuntimeProtocolStatusSyncService().normalizeParams(self.row["params"])
+        metadata = params.get(RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY) or {}
+        runId = metadata.get("coordinatorRunId") if isinstance(metadata, dict) else None
+        if runId != expectedRunId:
+            return False
+        self.row["status"] = status
+        return True
 
 
 def test_PersistProtocolProcessIdentityPreservesRuntimeMetadata():
@@ -644,3 +657,77 @@ def test_StaleCoordinatorCannotWriteIdentityAfterConcurrentRelaunch():
 
     params = service.normalizeParams(mapper.row["params"])
     assert params[service.RUNTIME_METADATA_KEY] == currentMetadata
+
+
+def test_MarkProtocolAbortedWritesAtomicallyWhenStillOwner():
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "run-1"},
+    }
+
+    report = service.markProtocolAborted(
+        mapper=mapper, projectId=1, protocolId=10,
+        expectedCoordinatorRunId="run-1",
+    )
+
+    assert report["status"] == STATUS_ABORTED
+    assert mapper.row["status"] == STATUS_ABORTED
+
+
+def test_MarkProtocolAbortedRaisesWhenCoordinatorWasSupersededBeforeWrite():
+    # Regression test for the race the Stop flow used to have: it re-read
+    # PID/hostname right after killing the remote process and compared
+    # them in Python, but a relaunch landing between that check and the
+    # actual status write would still get silently overwritten as
+    # ABORTED. The write itself must now be conditional on ownership.
+    import pytest
+    from app.backend.runtime.protocol_status_sync_service import StaleCoordinatorRunError
+
+    service = RuntimeProtocolStatusSyncService()
+
+    class RacingMapper(FakeMapper):
+        def __init__(self):
+            super().__init__()
+            self.row["params"] = {
+                service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "old-run"},
+            }
+            self.relaunched = False
+
+        def updateProtocolStatusIfCoordinatorRunId(self, protocolDbId, expectedRunId, status):
+            # A newer launch takes over the row right as the Stop tries
+            # to write ABORTED for the old (already-killed) coordinator.
+            if not self.relaunched:
+                self.relaunched = True
+                self.row["params"] = {
+                    service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "new-run"},
+                }
+            return super().updateProtocolStatusIfCoordinatorRunId(
+                protocolDbId, expectedRunId, status,
+            )
+
+    mapper = RacingMapper()
+
+    with pytest.raises(StaleCoordinatorRunError):
+        service.markProtocolAborted(
+            mapper=mapper, projectId=1, protocolId=10,
+            expectedCoordinatorRunId="old-run",
+        )
+
+    # The superseded Stop must NOT have flipped the newer run's status.
+    assert mapper.row["status"] == "running"
+
+
+def test_MarkProtocolAbortedWithoutExpectedRunIdWritesUnconditionally():
+    # Callers (or protocols predating this feature) that never captured a
+    # coordinatorRunId keep the original unconditional-write behavior.
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+    mapper.row["params"] = {}
+
+    report = service.markProtocolAborted(
+        mapper=mapper, projectId=1, protocolId=10,
+    )
+
+    assert report["status"] == STATUS_ABORTED
+    assert mapper.row["status"] == STATUS_ABORTED

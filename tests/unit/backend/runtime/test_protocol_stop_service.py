@@ -1134,6 +1134,68 @@ def test_PostgresqlStopRoutesRemoteCoordinatorAndWaitsForConfirmation(monkeypatc
     assert protocol.getStatus() == STATUS_ABORTED
 
 
+def test_PostgresqlStopThreadsCoordinatorRunIdIntoAbortAndPropagatesStaleFailure(monkeypatch):
+    # The Stop flow reads the coordinatorRunId alongside pid/hostname and
+    # must hand it to markProtocolAborted so that write is conditional on
+    # still owning the row (see StaleCoordinatorCannotWriteIdentity... in
+    # test_protocol_status_sync_service.py for the atomic-write unit test).
+    # Here we confirm the id is actually threaded through, and that a
+    # StaleCoordinatorRunError raised from the abort write propagates
+    # (wrapped as a 500) instead of being reported as a successful Stop.
+    from app.backend.runtime.protocol_status_sync_service import StaleCoordinatorRunError
+
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {"pid": 1234, "coordinatorRunId": "run-1"},
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_killProcessGroup",
+        lambda **kwargs: {"terminated": True, "verified": True},
+    )
+
+    calls = []
+
+    def failingMarkProtocolAborted(self, mapper, projectId, protocolId, expectedCoordinatorRunId=None):
+        calls.append(expectedCoordinatorRunId)
+        raise StaleCoordinatorRunError("stale")
+
+    monkeypatch.setattr(
+        FakeStatusService,
+        "markProtocolAborted",
+        failingMarkProtocolAborted,
+    )
+
+    with pytest.raises(HTTPException) as excInfo:
+        service.stopProtocols(
+            mapper=mapper,
+            projectId=1,
+            protocolIds=["10"],
+            currentProject=currentProject,
+            getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+            buildProtocolMutationResultCallback=buildResult,
+        )
+
+    assert excInfo.value.status_code == 500
+    assert calls == ["run-1"]
+
+
 def test_RemoteStopBroadcastTargetsOwnerAndRequiresConfirmedReply(monkeypatch):
     import app.workers.task_queue as taskQueue
 

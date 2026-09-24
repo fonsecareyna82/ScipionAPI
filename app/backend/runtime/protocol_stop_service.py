@@ -1214,6 +1214,13 @@ class RuntimeProtocolStopService:
                 or ""
             ).strip()
 
+            coordinatorRunId = str(
+                runtimeMetadata.get(
+                    "coordinatorRunId"
+                )
+                or ""
+            ).strip()
+
             isRemoteCoordinator = bool(pid and ownerHostname and ownerHostname != socket.gethostname())
 
             if isRemoteCoordinator and runtimeMetadata.get("pid") != pid:
@@ -1376,6 +1383,9 @@ class RuntimeProtocolStopService:
                     mapper=mapper,
                     projectId=projectId,
                     protocolId=protocolId,
+                    expectedCoordinatorRunId=(
+                        coordinatorRunId or None
+                    ),
                 )
             )
 
