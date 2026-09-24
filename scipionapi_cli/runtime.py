@@ -46,6 +46,28 @@ from scipionapi_cli.envfile import readEnvFile, exportEnvToOs
 console = Console()
 
 
+VALID_ROLES = ("all", "api", "plugins", "protocols")
+DEFAULT_ROLE = "all"
+
+
+def normalizeRole(role: Optional[str]) -> str:
+    # normalizeRole
+    value = (role or DEFAULT_ROLE).strip().lower()
+
+    if value not in VALID_ROLES:
+        raise ValueError(
+            f"Unsupported role: {role!r}. "
+            f"Expected one of: {', '.join(VALID_ROLES)}."
+        )
+
+    return value
+
+
+def _roleIncludes(role: str, component: str) -> bool:
+    # roleIncludesComponent
+    return role in ("all", component)
+
+
 def _pidDir(repoRoot: Path) -> Path:
     # ensurePidDir
     runDir = repoRoot / ".run"
@@ -873,8 +895,10 @@ def restartWorkerProcess(
     )
 
 
-def startCommand() -> None:
+def startCommand(role: str = DEFAULT_ROLE) -> None:
     # startApiAndWorkers
+    role = normalizeRole(role)
+
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
@@ -903,6 +927,7 @@ def startCommand() -> None:
     _printKeyValueTable(
         "Environment",
         [
+            ("Role", role),
             ("Repo root", repoRoot),
             ("SCIPION_HOME", _resolveScipionHome(repoRoot)),
             ("Env file", envPath),
@@ -911,171 +936,196 @@ def startCommand() -> None:
         ],
     )
 
-    apiState, apiPid = _describePidState(apiPidPath)
-    if apiState in {"STALE PID", "INVALID PID FILE"}:
-        _safeUnlink(apiPidPath)
+    docsUrl = _docsUrl(env)
+    summaryRows: List[Tuple[str, Any]] = []
 
-    _printServiceStatusTable(
-        "API service",
-        [
-            ("State", apiState),
-            ("PID", apiPid if apiPid is not None else "-"),
-            ("Host", apiHost),
-            ("Port", apiPort),
-            ("PID file", apiPidPath),
-            ("Log file", apiLogPath),
-        ],
-    )
+    if _roleIncludes(role, "api"):
+        apiState, apiPid = _describePidState(apiPidPath)
+        if apiState in {"STALE PID", "INVALID PID FILE"}:
+            _safeUnlink(apiPidPath)
 
-    if not apiPidPath.exists():
-        if not _canBindTcpPort(apiHost, apiPort):
-            raise RuntimeError(
-                f"API port {apiPort} is already in use "
-                f"on host {apiHost}. "
-                "Run install/provision with --api-port <port> "
-                f"or update API_PORT in {envPath}."
+        _printServiceStatusTable(
+            "API service",
+            [
+                ("State", apiState),
+                ("PID", apiPid if apiPid is not None else "-"),
+                ("Host", apiHost),
+                ("Port", apiPort),
+                ("PID file", apiPidPath),
+                ("Log file", apiLogPath),
+            ],
+        )
+
+        if not apiPidPath.exists():
+            if not _canBindTcpPort(apiHost, apiPort):
+                raise RuntimeError(
+                    f"API port {apiPort} is already in use "
+                    f"on host {apiHost}. "
+                    "Run install/provision with --api-port <port> "
+                    f"or update API_PORT in {envPath}."
+                )
+
+            _printInfo("Launching uvicorn")
+            apiEnv = os.environ.copy()
+            apiEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
+            apiEnv["PYTHONUNBUFFERED"] = "1"
+
+            apiPid = _startDetachedProcess(
+                [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)],
+                cwd=repoRoot,
+                env=apiEnv,
+                logPath=apiLogPath,
+                sanityWaitSec=1.0,
+            )
+            _writePid(apiPidPath, apiPid)
+            _printSuccess(f"API started (pid={apiPid})")
+
+        if apiPidPath.exists():
+            apiTcpOk = _waitForTcp(apiHost, apiPort, timeoutSec=apiStartupTimeout)
+            docsHttpOk, docsHttpDetail = _waitForHttp(docsUrl, timeoutSec=apiStartupTimeout)
+        else:
+            apiTcpOk = False
+            docsHttpOk, docsHttpDetail = False, "API PID file not found"
+
+        _printServiceStatusTable(
+            "API checks",
+            [
+                ("TCP check", "OK" if apiTcpOk else "FAILED"),
+                ("Docs URL", docsUrl),
+                ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
+            ],
+        )
+
+        finalApiState, finalApiPid = _describePidState(apiPidPath)
+        summaryRows.append(
+            ("API", finalApiState if finalApiPid is None else f"{finalApiState} (pid={finalApiPid})")
+        )
+        summaryRows.append(("Docs", docsUrl))
+
+        webUrl = _webUrl(env)
+        if webUrl:
+            webHttpOk, webHttpDetail = _httpCheck(webUrl)
+            summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
+
+    if _roleIncludes(role, "plugins"):
+        workerState, workerPid = _describePidState(workerPidPath)
+        if workerState in {"STALE PID", "INVALID PID FILE"}:
+            _safeUnlink(workerPidPath)
+
+        _printServiceStatusTable(
+            "Plugin worker service",
+            [
+                ("State", workerState),
+                ("PID", workerPid if workerPid is not None else "-"),
+                ("Celery app", celeryApp),
+                ("Log level", celeryLogLevel),
+                ("Concurrency", 1),
+                ("Queue", "plugins"),
+                ("PID file", workerPidPath),
+                ("Log file", workerLogPath),
+            ],
+        )
+
+        if not workerPidPath.exists():
+            _recoverInterruptedPluginTasks()
+
+            _printInfo("Launching plugin Celery worker")
+            workerEnv = os.environ.copy()
+            workerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
+            workerEnv["PYTHONUNBUFFERED"] = "1"
+
+            workerCommand = _buildCeleryWorkerCommand(
+                celeryApp=celeryApp,
+                celeryLogLevel=celeryLogLevel,
+                queueName="plugins",
+                concurrency=1,
+                hostname="plugins@%h",
             )
 
-        _printInfo("Launching uvicorn")
-        apiEnv = os.environ.copy()
-        apiEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
-        apiEnv["PYTHONUNBUFFERED"] = "1"
+            workerPid = _startDetachedProcess(
+                workerCommand,
+                cwd=repoRoot,
+                env=workerEnv,
+                logPath=workerLogPath,
+                sanityWaitSec=workerStartupWait,
+            )
+            _writePid(workerPidPath, workerPid)
+            _printSuccess(f"Plugin worker started (pid={workerPid})")
 
-        apiPid = _startDetachedProcess(
-            [sys.executable, "-m", "uvicorn", "app.backend.main:app", "--host", apiHost, "--port", str(apiPort)],
-            cwd=repoRoot,
-            env=apiEnv,
-            logPath=apiLogPath,
-            sanityWaitSec=1.0,
-        )
-        _writePid(apiPidPath, apiPid)
-        _printSuccess(f"API started (pid={apiPid})")
-
-    docsUrl = _docsUrl(env)
-
-    if apiPidPath.exists():
-        apiTcpOk = _waitForTcp(apiHost, apiPort, timeoutSec=apiStartupTimeout)
-        docsHttpOk, docsHttpDetail = _waitForHttp(docsUrl, timeoutSec=apiStartupTimeout)
-    else:
-        apiTcpOk = False
-        docsHttpOk, docsHttpDetail = False, "API PID file not found"
-
-    _printServiceStatusTable(
-        "API checks",
-        [
-            ("TCP check", "OK" if apiTcpOk else "FAILED"),
-            ("Docs URL", docsUrl),
-            ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
-        ],
-    )
-
-    workerState, workerPid = _describePidState(workerPidPath)
-    if workerState in {"STALE PID", "INVALID PID FILE"}:
-        _safeUnlink(workerPidPath)
-
-    _printServiceStatusTable(
-        "Plugin worker service",
-        [
-            ("State", workerState),
-            ("PID", workerPid if workerPid is not None else "-"),
-            ("Celery app", celeryApp),
-            ("Log level", celeryLogLevel),
-            ("Concurrency", 1),
-            ("Queue", "plugins"),
-            ("PID file", workerPidPath),
-            ("Log file", workerLogPath),
-        ],
-    )
-
-    if not workerPidPath.exists():
-        _recoverInterruptedPluginTasks()
-
-        _printInfo("Launching plugin Celery worker")
-        workerEnv = os.environ.copy()
-        workerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
-        workerEnv["PYTHONUNBUFFERED"] = "1"
-
-        workerCommand = _buildCeleryWorkerCommand(
-            celeryApp=celeryApp,
-            celeryLogLevel=celeryLogLevel,
-            queueName="plugins",
-            concurrency=1,
-            hostname="plugins@%h",
+        finalWorkerState, finalWorkerPid = _describePidState(workerPidPath)
+        summaryRows.append(
+            ("Plugin worker", finalWorkerState if finalWorkerPid is None else f"{finalWorkerState} (pid={finalWorkerPid})")
         )
 
-        workerPid = _startDetachedProcess(
-            workerCommand,
-            cwd=repoRoot,
-            env=workerEnv,
-            logPath=workerLogPath,
-            sanityWaitSec=workerStartupWait,
-        )
-        _writePid(workerPidPath, workerPid)
-        _printSuccess(f"Plugin worker started (pid={workerPid})")
+    if _roleIncludes(role, "protocols"):
+        protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
+        if protocolWorkerState in {"STALE PID", "INVALID PID FILE"}:
+            _safeUnlink(protocolWorkerPidPath)
 
-    protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
-    if protocolWorkerState in {"STALE PID", "INVALID PID FILE"}:
-        _safeUnlink(protocolWorkerPidPath)
-
-    _printServiceStatusTable(
-        "Protocol worker service",
-        [
-            ("State", protocolWorkerState),
-            ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
-            ("Celery app", celeryApp),
-            ("Log level", celeryLogLevel),
-            ("Concurrency", protocolWorkerConcurrency),
-            ("Queue", "protocols"),
-            ("PID file", protocolWorkerPidPath),
-            ("Log file", protocolWorkerLogPath),
-        ],
-    )
-
-    if not protocolWorkerPidPath.exists():
-        _printInfo("Launching protocol Celery worker")
-        protocolWorkerEnv = os.environ.copy()
-        protocolWorkerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
-        protocolWorkerEnv["PYTHONUNBUFFERED"] = "1"
-
-        protocolWorkerCommand = _buildCeleryWorkerCommand(
-            celeryApp=celeryApp,
-            celeryLogLevel=celeryLogLevel,
-            queueName="protocols",
-            concurrency=protocolWorkerConcurrency,
-            hostname="protocols@%h",
+        _printServiceStatusTable(
+            "Protocol worker service",
+            [
+                ("State", protocolWorkerState),
+                ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
+                ("Celery app", celeryApp),
+                ("Log level", celeryLogLevel),
+                ("Concurrency", protocolWorkerConcurrency),
+                ("Queue", "protocols"),
+                ("PID file", protocolWorkerPidPath),
+                ("Log file", protocolWorkerLogPath),
+            ],
         )
 
-        protocolWorkerPid = _startDetachedProcess(
-            protocolWorkerCommand,
-            cwd=repoRoot,
-            env=protocolWorkerEnv,
-            logPath=protocolWorkerLogPath,
-            sanityWaitSec=workerStartupWait,
+        if not protocolWorkerPidPath.exists():
+            _printInfo("Launching protocol Celery worker")
+            protocolWorkerEnv = os.environ.copy()
+            protocolWorkerEnv["PYTHONPATH"] = _buildRuntimePythonPath(repoRoot)
+            protocolWorkerEnv["PYTHONUNBUFFERED"] = "1"
+
+            protocolWorkerCommand = _buildCeleryWorkerCommand(
+                celeryApp=celeryApp,
+                celeryLogLevel=celeryLogLevel,
+                queueName="protocols",
+                concurrency=protocolWorkerConcurrency,
+                hostname="protocols@%h",
+            )
+
+            protocolWorkerPid = _startDetachedProcess(
+                protocolWorkerCommand,
+                cwd=repoRoot,
+                env=protocolWorkerEnv,
+                logPath=protocolWorkerLogPath,
+                sanityWaitSec=workerStartupWait,
+            )
+            _writePid(protocolWorkerPidPath, protocolWorkerPid)
+            _printSuccess(f"Protocol worker started (pid={protocolWorkerPid})")
+
+        finalProtocolWorkerState, finalProtocolWorkerPid = _describePidState(protocolWorkerPidPath)
+        summaryRows.append(
+            (
+                "Protocol worker",
+                finalProtocolWorkerState if finalProtocolWorkerPid is None else f"{finalProtocolWorkerState} (pid={finalProtocolWorkerPid})",
+            )
         )
-        _writePid(protocolWorkerPidPath, protocolWorkerPid)
-        _printSuccess(f"Protocol worker started (pid={protocolWorkerPid})")
-
-    finalApiState, finalApiPid = _describePidState(apiPidPath)
-    finalWorkerState, finalWorkerPid = _describePidState(workerPidPath)
-    finalProtocolWorkerState, finalProtocolWorkerPid = _describePidState(protocolWorkerPidPath)
-
-    summaryRows = [
-        ("API", finalApiState if finalApiPid is None else f"{finalApiState} (pid={finalApiPid})"),
-        ("Plugin worker", finalWorkerState if finalWorkerPid is None else f"{finalWorkerState} (pid={finalWorkerPid})"),
-        ("Protocol worker", finalProtocolWorkerState if finalProtocolWorkerPid is None else f"{finalProtocolWorkerState} (pid={finalProtocolWorkerPid})"),
-        ("Docs", docsUrl),
-    ]
-
-    webUrl = _webUrl(env)
-    if webUrl:
-        webHttpOk, webHttpDetail = _httpCheck(webUrl)
-        summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
 
     _printSummaryTable(summaryRows)
 
 
-def stopCommand() -> None:
+def _stopResultDetail(status: str, pid: Optional[int]) -> str:
+    # stopResultDetail
+    if status == "stopped":
+        return f"Stopped pid={pid}"
+    if status == "stale":
+        return f"Removed stale pid={pid}"
+    if status == "invalid":
+        return "Removed invalid PID file"
+    return "Already stopped"
+
+
+def stopCommand(role: str = DEFAULT_ROLE) -> None:
     # stopApiAndWorkers
+    role = normalizeRole(role)
+
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     runDir = _pidDir(repoRoot)
@@ -1085,59 +1135,49 @@ def stopCommand() -> None:
     _printKeyValueTable(
         "Environment",
         [
+            ("Role", role),
             ("Repo root", repoRoot),
             ("PID directory", runDir),
             ("Logs directory", logsDir),
         ],
     )
 
-    apiStatus, apiPid = _stopPid(runDir / "api.pid")
-    workerStatus, workerPid = _stopPid(runDir / "worker.pid")
-    protocolWorkerStatus, protocolWorkerPid = _stopPid(runDir / "protocol-worker.pid")
+    resultRows: List[Tuple[str, Any]] = []
 
-    _printServiceStatusTable(
-        "Stop results",
-        [
-            (
-                "API",
-                f"Stopped pid={apiPid}" if apiStatus == "stopped"
-                else f"Removed stale pid={apiPid}" if apiStatus == "stale"
-                else "Removed invalid PID file" if apiStatus == "invalid"
-                else "Already stopped",
-            ),
-            (
-                "Plugin worker",
-                f"Stopped pid={workerPid}" if workerStatus == "stopped"
-                else f"Removed stale pid={workerPid}" if workerStatus == "stale"
-                else "Removed invalid PID file" if workerStatus == "invalid"
-                else "Already stopped",
-            ),
-            (
-                "Protocol worker",
-                f"Stopped pid={protocolWorkerPid}" if protocolWorkerStatus == "stopped"
-                else f"Removed stale pid={protocolWorkerPid}" if protocolWorkerStatus == "stale"
-                else "Removed invalid PID file" if protocolWorkerStatus == "invalid"
-                else "Already stopped",
-            ),
-        ],
-    )
+    if _roleIncludes(role, "api"):
+        apiStatus, apiPid = _stopPid(runDir / "api.pid")
+        resultRows.append(("API", _stopResultDetail(apiStatus, apiPid)))
+
+    if _roleIncludes(role, "plugins"):
+        workerStatus, workerPid = _stopPid(runDir / "worker.pid")
+        resultRows.append(("Plugin worker", _stopResultDetail(workerStatus, workerPid)))
+
+    if _roleIncludes(role, "protocols"):
+        protocolWorkerStatus, protocolWorkerPid = _stopPid(runDir / "protocol-worker.pid")
+        resultRows.append(("Protocol worker", _stopResultDetail(protocolWorkerStatus, protocolWorkerPid)))
+
+    _printServiceStatusTable("Stop results", resultRows)
 
     _printSuccess("Stop completed.")
 
 
-def restartCommand() -> None:
+def restartCommand(role: str = DEFAULT_ROLE) -> None:
     # restartApiAndWorker
+    role = normalizeRole(role)
+
     _printPanel("Restarting Scipion API services")
     _printInfo("Stopping running processes")
-    stopCommand()
+    stopCommand(role)
     time.sleep(0.5)
     _printInfo("Starting services again")
-    startCommand()
+    startCommand(role)
     _printSuccess("Restart completed.")
 
 
-def statusCommand() -> None:
+def statusCommand(role: str = DEFAULT_ROLE) -> None:
     # statusApiAndWorkers
+    role = normalizeRole(role)
+
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
     envPath = _resolveEnvPath(repoRoot)
@@ -1161,21 +1201,11 @@ def statusCommand() -> None:
     docsUrl = _docsUrl(env)
     webUrl = _webUrl(env)
 
-    apiState, apiPid = _describePidState(apiPidPath)
-    workerState, workerPid = _describePidState(workerPidPath)
-    protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
-
-    apiUptime = _getProcessElapsedTime(apiPid) if apiPid is not None and apiState == "RUNNING" else None
-    workerUptime = _getProcessElapsedTime(workerPid) if workerPid is not None and workerState == "RUNNING" else None
-    protocolWorkerUptime = _getProcessElapsedTime(protocolWorkerPid) if protocolWorkerPid is not None and protocolWorkerState == "RUNNING" else None
-
-    apiTcpOk = _tcpReachable(apiHost, apiPort)
-    docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
-
     _printPanel("Scipion API service status")
     _printKeyValueTable(
         "Environment",
         [
+            ("Role", role),
             ("Repo root", repoRoot),
             ("SCIPION_HOME", _resolveScipionHome(repoRoot)),
             ("Env file", envPath),
@@ -1184,68 +1214,95 @@ def statusCommand() -> None:
         ],
     )
 
-    _printServiceStatusTable(
-        "API service",
-        [
-            ("State", apiState),
-            ("PID", apiPid if apiPid is not None else "-"),
-            ("Uptime", apiUptime or "-"),
-            ("Host", apiHost),
-            ("Port", apiPort),
-            ("PID file", apiPidPath),
-            ("Log file", appLogPath),
-            ("TCP check", "OK" if apiTcpOk else "FAILED"),
-            ("Docs URL", docsUrl),
-            ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
-        ],
-    )
+    summaryRows: List[Tuple[str, Any]] = []
 
-    _printServiceStatusTable(
-        "Plugin worker service",
-        [
-            ("State", workerState),
-            ("PID", workerPid if workerPid is not None else "-"),
-            ("Uptime", workerUptime or "-"),
-            ("Celery app", celeryApp),
-            ("Log level", celeryLogLevel),
-            ("Concurrency", 1),
-            ("Queue", "plugins"),
-            ("PID file", workerPidPath),
-            ("Log file", celeryLogPath),
-        ],
-    )
+    if _roleIncludes(role, "api"):
+        apiState, apiPid = _describePidState(apiPidPath)
+        apiUptime = _getProcessElapsedTime(apiPid) if apiPid is not None and apiState == "RUNNING" else None
+        apiTcpOk = _tcpReachable(apiHost, apiPort)
+        docsHttpOk, docsHttpDetail = _httpCheck(docsUrl)
 
-    _printServiceStatusTable(
-        "Protocol worker service",
-        [
-            ("State", protocolWorkerState),
-            ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
-            ("Uptime", protocolWorkerUptime or "-"),
-            ("Celery app", celeryApp),
-            ("Log level", celeryLogLevel),
-            ("Concurrency", protocolWorkerConcurrency),
-            ("Queue", "protocols"),
-            ("PID file", protocolWorkerPidPath),
-            ("Log file", protocolCeleryLogPath),
-        ],
-    )
+        _printServiceStatusTable(
+            "API service",
+            [
+                ("State", apiState),
+                ("PID", apiPid if apiPid is not None else "-"),
+                ("Uptime", apiUptime or "-"),
+                ("Host", apiHost),
+                ("Port", apiPort),
+                ("PID file", apiPidPath),
+                ("Log file", appLogPath),
+                ("TCP check", "OK" if apiTcpOk else "FAILED"),
+                ("Docs URL", docsUrl),
+                ("HTTP docs check", f"OK ({docsHttpDetail})" if docsHttpOk else f"FAILED ({docsHttpDetail})"),
+            ],
+        )
 
-    summaryRows = [
-        ("API", apiState if apiPid is None else f"{apiState} (pid={apiPid})"),
-        ("Plugin worker", workerState if workerPid is None else f"{workerState} (pid={workerPid})"),
-        ("Protocol worker", protocolWorkerState if protocolWorkerPid is None else f"{protocolWorkerState} (pid={protocolWorkerPid})"),
-        ("Docs", docsUrl),
-    ]
+        summaryRows.append(("API", apiState if apiPid is None else f"{apiState} (pid={apiPid})"))
+        summaryRows.append(("Docs", docsUrl))
 
-    if webUrl:
-        webHttpOk, webHttpDetail = _httpCheck(webUrl)
-        summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
+        if webUrl:
+            webHttpOk, webHttpDetail = _httpCheck(webUrl)
+            summaryRows.append(("Web", f"{webUrl} [{'OK' if webHttpOk else 'FAILED'}: {webHttpDetail}]"))
+
+    if _roleIncludes(role, "plugins"):
+        workerState, workerPid = _describePidState(workerPidPath)
+        workerUptime = _getProcessElapsedTime(workerPid) if workerPid is not None and workerState == "RUNNING" else None
+
+        _printServiceStatusTable(
+            "Plugin worker service",
+            [
+                ("State", workerState),
+                ("PID", workerPid if workerPid is not None else "-"),
+                ("Uptime", workerUptime or "-"),
+                ("Celery app", celeryApp),
+                ("Log level", celeryLogLevel),
+                ("Concurrency", 1),
+                ("Queue", "plugins"),
+                ("PID file", workerPidPath),
+                ("Log file", celeryLogPath),
+            ],
+        )
+
+        summaryRows.append(("Plugin worker", workerState if workerPid is None else f"{workerState} (pid={workerPid})"))
+
+    if _roleIncludes(role, "protocols"):
+        protocolWorkerState, protocolWorkerPid = _describePidState(protocolWorkerPidPath)
+        protocolWorkerUptime = (
+            _getProcessElapsedTime(protocolWorkerPid)
+            if protocolWorkerPid is not None and protocolWorkerState == "RUNNING"
+            else None
+        )
+
+        _printServiceStatusTable(
+            "Protocol worker service",
+            [
+                ("State", protocolWorkerState),
+                ("PID", protocolWorkerPid if protocolWorkerPid is not None else "-"),
+                ("Uptime", protocolWorkerUptime or "-"),
+                ("Celery app", celeryApp),
+                ("Log level", celeryLogLevel),
+                ("Concurrency", protocolWorkerConcurrency),
+                ("Queue", "protocols"),
+                ("PID file", protocolWorkerPidPath),
+                ("Log file", protocolCeleryLogPath),
+            ],
+        )
+
+        summaryRows.append(
+            (
+                "Protocol worker",
+                protocolWorkerState if protocolWorkerPid is None else f"{protocolWorkerState} (pid={protocolWorkerPid})",
+            )
+        )
 
     _printSummaryTable(summaryRows)
 
 
-def logsCommand() -> None:
+def logsCommand(role: str = DEFAULT_ROLE) -> None:
     # tailLogs
+    role = normalizeRole(role)
+
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
 
@@ -1254,19 +1311,26 @@ def logsCommand() -> None:
     celeryLog = logsDir / "celery.log"
     protocolCeleryLog = logsDir / "celery-protocols.log"
 
-    _ensureLogFile(appLog)
-    _ensureLogFile(celeryLog)
-    _ensureLogFile(protocolCeleryLog)
+    logFiles: List[Path] = []
+    logRows: List[Tuple[str, Any]] = []
+
+    if _roleIncludes(role, "api"):
+        logFiles.append(appLog)
+        logRows.append(("App log", appLog))
+
+    if _roleIncludes(role, "plugins"):
+        logFiles.append(celeryLog)
+        logRows.append(("Plugin Celery log", celeryLog))
+
+    if _roleIncludes(role, "protocols"):
+        logFiles.append(protocolCeleryLog)
+        logRows.append(("Protocol Celery log", protocolCeleryLog))
+
+    for logFile in logFiles:
+        _ensureLogFile(logFile)
 
     _printPanel("Following logs")
-    _printKeyValueTable(
-        "Log files",
-        [
-            ("App log", appLog),
-            ("Plugin Celery log", celeryLog),
-            ("Protocol Celery log", protocolCeleryLog),
-        ],
-    )
+    _printKeyValueTable("Log files", logRows)
     console.print("Press Ctrl+C to stop.\n")
 
-    subprocess.run(["tail", "-n", "200", "-f", str(appLog), str(celeryLog), str(protocolCeleryLog)])
+    subprocess.run(["tail", "-n", "200", "-f"] + [str(logFile) for logFile in logFiles])

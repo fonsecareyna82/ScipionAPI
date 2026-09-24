@@ -27,9 +27,36 @@ import socket
 import sys
 import types
 
+import pytest
+
 import scipionapi_cli.runtime as runtimeModule
 
-from scipionapi_cli.runtime import _canBindTcpPort
+from scipionapi_cli.runtime import _canBindTcpPort, normalizeRole, _roleIncludes
+
+
+def test_NormalizeRoleDefaultsToAll():
+    assert normalizeRole(None) == "all"
+    assert normalizeRole("") == "all"
+
+
+def test_NormalizeRoleAcceptsValidRoles():
+    assert normalizeRole("api") == "api"
+    assert normalizeRole("PLUGINS") == "plugins"
+    assert normalizeRole(" protocols ") == "protocols"
+
+
+def test_NormalizeRoleRejectsInvalidRole():
+    with pytest.raises(ValueError):
+        normalizeRole("gpu-node")
+
+
+def test_RoleIncludesOnlyMatchingComponentUnlessAll():
+    assert _roleIncludes("all", "api") is True
+    assert _roleIncludes("all", "plugins") is True
+    assert _roleIncludes("api", "api") is True
+    assert _roleIncludes("api", "plugins") is False
+    assert _roleIncludes("protocols", "protocols") is True
+    assert _roleIncludes("protocols", "api") is False
 
 
 def test_CanBindTcpPortDetectsOccupiedPort():
@@ -404,6 +431,105 @@ def test_StartCommandRecoversInterruptedTasksBeforePluginWorkerLaunch(
     ).read_text(
         encoding="utf-8"
     ) == "202"
+
+
+def test_StartCommandWithProtocolsRoleOnlyLaunchesProtocolWorker(
+        tmp_path,
+        monkeypatch,
+):
+    runDir = tmp_path / ".run"
+    runDir.mkdir()
+
+    env = {
+        "API_HOST": "127.0.0.1",
+        "API_PORT": "39080",
+        "LOGS_PATH": str(tmp_path / "logs"),
+        "CELERY_APP": "app.workers.task_queue",
+        "CELERY_LOGLEVEL": "info",
+        "SERVE_WEB": "0",
+    }
+
+    events = []
+
+    monkeypatch.setattr(runtimeModule, "resolveRepoRoot", lambda: tmp_path)
+    monkeypatch.setattr(runtimeModule, "_loadEnv", lambda repoRoot: env)
+    monkeypatch.setattr(
+        runtimeModule,
+        "_resolveEnvPath",
+        lambda repoRoot: tmp_path / "scipion_home" / ".env",
+    )
+
+    def fakeDescribePidState(path):
+        if path.name == "protocol-worker.pid":
+            if path.exists():
+                return "RUNNING", 303
+            return "STOPPED", None
+
+        raise AssertionError(
+            f"Unexpected PID path checked while role=protocols: {path}"
+        )
+
+    monkeypatch.setattr(runtimeModule, "_describePidState", fakeDescribePidState)
+
+    def fakeCanBindTcpPort(*args, **kwargs):
+        raise AssertionError("API port should not be checked when role=protocols")
+
+    monkeypatch.setattr(runtimeModule, "_canBindTcpPort", fakeCanBindTcpPort)
+
+    def fakeRecoverInterruptedPluginTasks():
+        raise AssertionError("Plugin task recovery should not run when role=protocols")
+
+    monkeypatch.setattr(
+        runtimeModule,
+        "_recoverInterruptedPluginTasks",
+        fakeRecoverInterruptedPluginTasks,
+    )
+
+    def fakeStartDetachedProcess(args, cwd, env, logPath, sanityWaitSec):
+        events.append("launch")
+        return 303
+
+    monkeypatch.setattr(runtimeModule, "_startDetachedProcess", fakeStartDetachedProcess)
+
+    for name in (
+        "_printPanel",
+        "_printKeyValueTable",
+        "_printServiceStatusTable",
+        "_printSummaryTable",
+        "_printInfo",
+        "_printSuccess",
+    ):
+        monkeypatch.setattr(runtimeModule, name, lambda *args, **kwargs: None)
+
+    runtimeModule.startCommand("protocols")
+
+    assert events == ["launch"]
+    assert (runDir / "protocol-worker.pid").read_text(encoding="utf-8") == "303"
+    assert not (runDir / "api.pid").exists()
+    assert not (runDir / "worker.pid").exists()
+
+
+def test_StopCommandWithApiRoleOnlyStopsApi(tmp_path, monkeypatch):
+    runDir = tmp_path / ".run"
+    runDir.mkdir()
+
+    stoppedPaths = []
+
+    monkeypatch.setattr(runtimeModule, "resolveRepoRoot", lambda: tmp_path)
+    monkeypatch.setattr(runtimeModule, "_loadEnv", lambda repoRoot: {})
+
+    def fakeStopPid(path):
+        stoppedPaths.append(path.name)
+        return "stopped", 101
+
+    monkeypatch.setattr(runtimeModule, "_stopPid", fakeStopPid)
+
+    for name in ("_printPanel", "_printKeyValueTable", "_printServiceStatusTable", "_printSuccess"):
+        monkeypatch.setattr(runtimeModule, name, lambda *args, **kwargs: None)
+
+    runtimeModule.stopCommand("api")
+
+    assert stoppedPaths == ["api.pid"]
 
 
 def test_PluginWorkerRecyclesChildAfterEveryTask():

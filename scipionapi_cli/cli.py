@@ -44,12 +44,26 @@ from scipionapi_cli.release import (
 from scipionapi_cli.update import updateCommand
 from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
 from scipionapi_cli.runtime import (
+    VALID_ROLES,
     logsCommand,
     restartCommand,
     startCommand,
     statusCommand,
     stopCommand,
 )
+
+
+def _validateRole(role: str) -> str:
+    # validateRoleOption
+    value = (role or "").strip().lower()
+
+    if value not in VALID_ROLES:
+        raise typer.BadParameter(
+            f"Unsupported role: {role!r}. Expected one of: {', '.join(VALID_ROLES)}.",
+            param_hint="--role",
+        )
+
+    return value
 
 
 def _resolveCliVersion() -> str:
@@ -568,49 +582,91 @@ def release(
     )
 
 
+_ROLE_HELP = (
+    "Which services to manage on this node: 'all' (default, single-node), "
+    "'api', 'plugins' (plugin Celery worker), or 'protocols' (protocol Celery worker). "
+    "Use a non-'all' role to run only part of the stack on a given node in a multi-node deployment."
+)
+
+
 @app.command(
     "start",
-    help="Start uvicorn and the celery worker as detached processes using PID files under .run/.",
+    help="Start uvicorn and the celery worker(s) as detached processes using PID files under .run/.",
 )
-def start() -> None:
+def start(
+    role: str = typer.Option(
+        "all",
+        "--role",
+        help=_ROLE_HELP,
+        show_default=True,
+    ),
+) -> None:
     # startRuntimeServices
-    startCommand()
+    startCommand(_validateRole(role))
 
 
 @app.command(
     "stop",
-    help="Stop uvicorn and the celery worker using the PID files stored under .run/.",
+    help="Stop uvicorn and the celery worker(s) using the PID files stored under .run/.",
 )
-def stop() -> None:
+def stop(
+    role: str = typer.Option(
+        "all",
+        "--role",
+        help=_ROLE_HELP,
+        show_default=True,
+    ),
+) -> None:
     # stopRuntimeServices
-    stopCommand()
+    stopCommand(_validateRole(role))
 
 
 @app.command(
     "restart",
-    help="Restart uvicorn and the celery worker.",
+    help="Restart uvicorn and the celery worker(s).",
 )
-def restart() -> None:
+def restart(
+    role: str = typer.Option(
+        "all",
+        "--role",
+        help=_ROLE_HELP,
+        show_default=True,
+    ),
+) -> None:
     # restartRuntimeServices
-    restartCommand()
+    restartCommand(_validateRole(role))
 
 
 @app.command(
     "status",
-    help="Show runtime status for uvicorn and the celery worker, including health checks and log locations.",
+    help="Show runtime status for uvicorn and the celery worker(s), including health checks and log locations.",
 )
-def status() -> None:
+def status(
+    role: str = typer.Option(
+        "all",
+        "--role",
+        help=_ROLE_HELP,
+        show_default=True,
+    ),
+) -> None:
     # showRuntimeStatus
-    statusCommand()
+    statusCommand(_validateRole(role))
 
 
 @app.command(
     "logs",
     help="Follow the application and celery log files.",
 )
-def logs() -> None:
+def logs(
+    role: str = typer.Option(
+        "all",
+        "--role",
+        help=_ROLE_HELP,
+        show_default=True,
+    ),
+) -> None:
     # followRuntimeLogs
-    logsCommand()
+    logsCommand(_validateRole(role))
 
 
 @app.command(
