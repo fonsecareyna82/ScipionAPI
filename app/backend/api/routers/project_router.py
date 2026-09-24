@@ -21,7 +21,7 @@ from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse, FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt, StrictStr
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.schemas.protocols_schema import (
@@ -4124,7 +4124,7 @@ def renderMetadataImageCell(
 
 
 class MetadataImageBatchItem(BaseModel):
-    rowId: Optional[Union[int, str]] = None
+    rowId: Optional[Union[StrictInt, StrictStr]] = None
     rowIndex: Optional[int] = Field(None, ge=0)
     columnName: str
 
