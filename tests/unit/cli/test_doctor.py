@@ -423,6 +423,146 @@ def test_ValkeySlowPingWarns(monkeypatch):
     assert "PING=150.0 ms" in latencyRow[2]
 
 
+def test_DeploymentModeDefaultsToSingleNode(monkeypatch):
+    monkeypatch.delenv("SCIPIONAPI_DEPLOYMENT_MODE", raising=False)
+
+    mode, warning = doctor._resolveDeploymentMode({})
+
+    assert mode == "single-node"
+    assert warning is None
+
+
+def test_DeploymentModeReadsMultiNode(monkeypatch):
+    monkeypatch.delenv("SCIPIONAPI_DEPLOYMENT_MODE", raising=False)
+
+    mode, warning = doctor._resolveDeploymentMode(
+        {"SCIPIONAPI_DEPLOYMENT_MODE": "multi-node"}
+    )
+
+    assert mode == "multi-node"
+    assert warning is None
+
+
+def test_DeploymentModeWarnsOnUnrecognizedValue(monkeypatch):
+    monkeypatch.delenv("SCIPIONAPI_DEPLOYMENT_MODE", raising=False)
+
+    mode, warning = doctor._resolveDeploymentMode(
+        {"SCIPIONAPI_DEPLOYMENT_MODE": "cluster"}
+    )
+
+    assert mode == "single-node"
+    assert warning is not None
+    assert warning[1] == "WARN"
+    assert "cluster" in warning[2]
+
+
+def test_SharedEndpointWarnsOnLoopbackForSingleNode():
+    row = doctor._checkSharedEndpoint(
+        "redis://localhost:6379/0",
+        "BROKER_URL",
+        "Broker reachability",
+        "single-node",
+    )
+
+    assert row[1] == "WARN"
+    assert "localhost" in row[2]
+
+
+def test_SharedEndpointFailsOnLoopbackForMultiNode():
+    row = doctor._checkSharedEndpoint(
+        "postgresql://user:pass@127.0.0.1/db",
+        "DATABASE_URL",
+        "Database reachability",
+        "multi-node",
+    )
+
+    assert row[1] == "FAIL"
+    assert "127.0.0.1" in row[2]
+
+
+def test_SharedEndpointOkOnRoutableHost():
+    row = doctor._checkSharedEndpoint(
+        "redis://redis.internal.example.com:6379/0",
+        "BROKER_URL",
+        "Broker reachability",
+        "multi-node",
+    )
+
+    assert row[1] == "OK"
+    assert "redis.internal.example.com" in row[2]
+
+
+def test_SharedEndpointSkippedWhenUrlMissing():
+    row = doctor._checkSharedEndpoint(
+        "",
+        "BROKER_URL",
+        "Broker reachability",
+        "multi-node",
+    )
+
+    assert row is None
+
+
+def test_SharedProjectsFilesystemOkOnNetworkFsForMultiNode(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_readMountFsType", lambda path: "nfs4")
+
+    row = doctor._checkSharedProjectsFilesystem(tmp_path, "multi-node")
+
+    assert row[1] == "OK"
+    assert "nfs4" in row[2]
+
+
+def test_SharedProjectsFilesystemFailsOnLocalFsForMultiNode(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_readMountFsType", lambda path: "ext4")
+
+    row = doctor._checkSharedProjectsFilesystem(tmp_path, "multi-node")
+
+    assert row[1] == "FAIL"
+    assert "ext4" in row[2]
+
+
+def test_SharedProjectsFilesystemOkOnLocalFsForSingleNode(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_readMountFsType", lambda path: "ext4")
+
+    row = doctor._checkSharedProjectsFilesystem(tmp_path, "single-node")
+
+    assert row[1] == "OK"
+
+
+def test_SharedProjectsFilesystemWarnsWhenFsTypeUnknown(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_readMountFsType", lambda path: None)
+
+    row = doctor._checkSharedProjectsFilesystem(tmp_path, "multi-node")
+
+    assert row[1] == "WARN"
+
+
+def test_MultiNodeReadinessAggregatesRows(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "_readMountFsType", lambda path: "nfs")
+
+    rows = doctor._checkMultiNodeReadiness(
+        {
+            "SCIPIONAPI_DEPLOYMENT_MODE": "multi-node",
+            "BROKER_URL": "redis://localhost:6379/0",
+            "DATABASE_URL": "postgresql://user:pass@db.internal:5432/db",
+            "PROJECTS_PATH": str(tmp_path),
+        },
+        tmp_path,
+    )
+
+    names = {row[0] for row in rows}
+    assert "Deployment mode" in names
+    assert "Broker reachability" in names
+    assert "Database reachability" in names
+    assert "Projects filesystem" in names
+
+    brokerRow = next(row for row in rows if row[0] == "Broker reachability")
+    databaseRow = next(row for row in rows if row[0] == "Database reachability")
+
+    assert brokerRow[1] == "FAIL"
+    assert databaseRow[1] == "OK"
+
+
 def test_ScipionCoreVersionsAreReported(monkeypatch):
     versions = {
         "scipionapi": "4.0.0",

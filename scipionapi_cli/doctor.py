@@ -1036,6 +1036,190 @@ def _checkDiskSpace(path: Path, label: str) -> StatusRow:
     return _ok(label, detail)
 
 
+_LOOPBACK_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1", "::"}
+
+_NETWORK_FILESYSTEM_TYPES = {
+    "nfs", "nfs4", "cifs", "smb3", "smbfs", "9p",
+    "glusterfs", "ceph", "cephfs", "lustre", "afs", "davfs",
+}
+
+_LOCAL_ONLY_FILESYSTEM_TYPES = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs",
+    "overlay", "tmpfs", "vfat", "exfat", "ntfs", "ntfs3", "f2fs",
+}
+
+
+def _resolveDeploymentMode(env: Dict[str, str]) -> Tuple[str, Optional[StatusRow]]:
+    # Resolve the declared deployment mode, defaulting to single-node so
+    # existing single-machine setups keep passing doctor unchanged.
+    raw = (
+        os.environ.get("SCIPIONAPI_DEPLOYMENT_MODE")
+        or env.get("SCIPIONAPI_DEPLOYMENT_MODE")
+        or "single-node"
+    ).strip().lower()
+
+    if raw in ("single-node", "multi-node"):
+        return raw, None
+
+    return (
+        "single-node",
+        _warn(
+            "Deployment mode",
+            f"Unrecognized SCIPIONAPI_DEPLOYMENT_MODE={raw!r}; "
+            "expected single-node or multi-node. Treating as single-node.",
+        ),
+    )
+
+
+def _checkDeploymentMode(deploymentMode: str) -> StatusRow:
+    if deploymentMode == "multi-node":
+        return _ok(
+            "Deployment mode",
+            "multi-node · shared broker/database/filesystem checks are enforced as failures",
+        )
+
+    return _ok(
+        "Deployment mode",
+        "single-node (default) · set SCIPIONAPI_DEPLOYMENT_MODE=multi-node "
+        "on every node once you deploy across more than one host",
+    )
+
+
+def _isLoopbackHost(host: str) -> bool:
+    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+
+
+def _checkSharedEndpoint(url: str, envKey: str, label: str, deploymentMode: str) -> Optional[StatusRow]:
+    # Check that a broker/database endpoint is not bound to loopback,
+    # which other nodes in a multi-node deployment could never reach.
+    if not url:
+        return None
+
+    host = (urlparse(url).hostname or "").strip()
+
+    if not _isLoopbackHost(host):
+        return _ok(label, f"{envKey} points to a routable host: {host}")
+
+    detail = (
+        f"{envKey} points to {host or 'an empty host'}, which is only reachable "
+        "from this machine. Other nodes would not be able to connect."
+    )
+
+    if deploymentMode == "multi-node":
+        return _fail(label, detail)
+
+    return _warn(
+        label,
+        detail + " This is fine for single-node, but must change before adding another node.",
+    )
+
+
+def _readMountFsType(path: Path) -> Optional[str]:
+    # Best-effort lookup of the filesystem type backing `path`, by
+    # matching the longest mount-point prefix in /proc/mounts.
+    mountsPath = Path("/proc/mounts")
+
+    if not mountsPath.exists():
+        return None
+
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    bestMatch = ""
+    bestFsType: Optional[str] = None
+
+    try:
+        for line in mountsPath.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+
+            mountPoint, fsType = parts[1], parts[2]
+
+            try:
+                resolvedIsRelative = str(resolved).startswith(mountPoint)
+            except Exception:
+                continue
+
+            if resolvedIsRelative and len(mountPoint) >= len(bestMatch):
+                bestMatch = mountPoint
+                bestFsType = fsType
+    except OSError:
+        return None
+
+    return bestFsType
+
+
+def _checkSharedProjectsFilesystem(projectsPath: Path, deploymentMode: str) -> StatusRow:
+    # Check whether the shared projects directory looks like a network
+    # filesystem, which multi-node deployments require so every node
+    # sees the same project/run files.
+    label = "Projects filesystem"
+
+    if not projectsPath.exists():
+        return _warn(label, f"Cannot check filesystem type; path not found: {projectsPath}")
+
+    fsType = _readMountFsType(projectsPath)
+
+    if fsType is None:
+        return _warn(label, f"Could not determine filesystem type for {projectsPath}")
+
+    if fsType in _NETWORK_FILESYSTEM_TYPES or fsType.startswith("fuse."):
+        return _ok(label, f"{fsType} · looks shareable across nodes · {projectsPath}")
+
+    detail = f"{fsType} · does not look like a shared network filesystem · {projectsPath}"
+
+    if deploymentMode == "multi-node" and fsType in _LOCAL_ONLY_FILESYSTEM_TYPES:
+        return _fail(
+            label,
+            detail + ". PROJECTS_PATH must be a shared filesystem reachable "
+            "with the same content from every node.",
+        )
+
+    if deploymentMode == "multi-node":
+        return _warn(label, detail + ". Could not confirm it is shared; verify manually.")
+
+    return _ok(label, f"{fsType} · {projectsPath} (single-node, sharing not required)")
+
+
+def _checkMultiNodeReadiness(env: Dict[str, str], scipionHome: Path) -> List[StatusRow]:
+    # Check configuration that must be routable/shared once more than
+    # one node participates in the same deployment.
+    deploymentMode, modeWarning = _resolveDeploymentMode(env)
+
+    rows: List[StatusRow] = []
+
+    if modeWarning is not None:
+        rows.append(modeWarning)
+
+    rows.append(_checkDeploymentMode(deploymentMode))
+
+    brokerRow = _checkSharedEndpoint(
+        (env.get("BROKER_URL") or "").strip(),
+        "BROKER_URL",
+        "Broker reachability",
+        deploymentMode,
+    )
+    if brokerRow is not None:
+        rows.append(brokerRow)
+
+    databaseRow = _checkSharedEndpoint(
+        (env.get("DATABASE_URL") or "").strip(),
+        "DATABASE_URL",
+        "Database reachability",
+        deploymentMode,
+    )
+    if databaseRow is not None:
+        rows.append(databaseRow)
+
+    projectsPath = Path(env.get("PROJECTS_PATH") or (scipionHome / "projects")).expanduser()
+    rows.append(_checkSharedProjectsFilesystem(projectsPath, deploymentMode))
+
+    return rows
+
+
 def _checkFilesystem(env: Dict[str, str], scipionHome: Path, repoRoot: Path) -> List[StatusRow]:
     # Check core filesystem paths, permissions, and available space.
     configPath = scipionHome / "config"
@@ -1093,6 +1277,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     rows.append(_pathExists(envPath, ".env file", required=False))
 
     rows.extend(_checkFilesystem(env, scipionHome, repoRoot))
+    rows.extend(_checkMultiNodeReadiness(env, scipionHome))
     rows.extend(_checkScipionConfig(scipionHome))
     rows.append(_checkJavaRuntime(scipionHome))
     rows.extend(_checkGpuDiagnostics())
