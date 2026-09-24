@@ -592,3 +592,55 @@ def test_MarkProtocolLaunchedResumeAfterTerminalKeepsAccumulatedElapsed(
         == 55.0
     )
 
+
+def test_StaleCoordinatorCannotWriteIdentityAfterConcurrentRelaunch():
+    import pytest
+    from app.backend.runtime.protocol_status_sync_service import StaleCoordinatorRunError
+
+    service = RuntimeProtocolStatusSyncService()
+    currentMetadata = {
+        "coordinatorRunId": "new-run",
+        "hostname": "node-new",
+        "pid": 9900,
+        "jobIds": [],
+    }
+
+    class RacingMapper(FakeMapper):
+        def __init__(self):
+            super().__init__()
+            self.row["params"] = {
+                service.RUNTIME_METADATA_KEY: {"coordinatorRunId": "old-run"},
+            }
+            self.relaunched = False
+
+        def relaunch(self):
+            if not self.relaunched:
+                self.relaunched = True
+                self.row["params"] = {
+                    service.RUNTIME_METADATA_KEY: dict(currentMetadata),
+                }
+
+        def updateProtocol(self, values):
+            self.relaunch()
+            super().updateProtocol(values)
+
+        def updateProtocolParamsIfCoordinatorRunId(self, protocolDbId, expectedRunId, params):
+            assert protocolDbId == self.row["id"]
+            self.relaunch()
+            current = service.normalizeParams(self.row["params"])
+            runId = current[service.RUNTIME_METADATA_KEY]["coordinatorRunId"]
+            if runId != expectedRunId:
+                return False
+            self.row["params"] = params
+            return True
+
+    mapper = RacingMapper()
+    with pytest.raises(StaleCoordinatorRunError):
+        service.persistProtocolProcessIdentity(
+            mapper=mapper, projectId=1, protocolId=10,
+            protocol=FakeActiveRuntimeProtocol(),
+            hostname="node-old", coordinatorRunId="old-run",
+        )
+
+    params = service.normalizeParams(mapper.row["params"])
+    assert params[service.RUNTIME_METADATA_KEY] == currentMetadata

@@ -302,8 +302,8 @@ class RuntimeProtocolStatusSyncService:
             protocol
         )
 
+        storedRunId = str(runtimeMetadata.get("coordinatorRunId") or "").strip()
         if hostname is not None or coordinatorRunId is not None:
-            storedRunId = str(runtimeMetadata.get("coordinatorRunId") or "").strip()
             if storedRunId and storedRunId != str(coordinatorRunId or "").strip():
                 raise StaleCoordinatorRunError(
                     "Stale coordinator cannot register process identity. "
@@ -321,13 +321,18 @@ class RuntimeProtocolStatusSyncService:
             self.RUNTIME_METADATA_KEY
         ] = runtimeMetadata
 
-        mapper.updateProtocol({
-            "id": row["id"],
-            "params": json.dumps(
-                params,
-                ensure_ascii=False,
-            ),
-        })
+        serializedParams = json.dumps(params, ensure_ascii=False)
+        if coordinatorRunId is not None and storedRunId:
+            updated = mapper.updateProtocolParamsIfCoordinatorRunId(
+                protocolDbId=row["id"], expectedRunId=storedRunId, params=serializedParams,
+            )
+            if not updated:
+                raise StaleCoordinatorRunError(
+                    "Coordinator ownership changed before process identity was saved. "
+                    "projectId=%s protocolId=%s" % (projectId, protocolId)
+                )
+        else:
+            mapper.updateProtocol({"id": row["id"], "params": serializedParams})
 
         return {
             "protocolId": str(
