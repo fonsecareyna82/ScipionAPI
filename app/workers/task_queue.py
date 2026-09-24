@@ -13,6 +13,7 @@ load_dotenv(dotEnvPath, override=False)
 
 from celery import Celery, Task
 from celery.exceptions import Ignore
+from celery.worker.control import control_command
 
 from app.backend.api.services.environment import prepareEnvironment
 from app.backend.api.services.scipion_domain_refresh_service import (
@@ -747,3 +748,47 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
                 originalCwd,
                 exc_info=True,
             )
+
+@control_command()
+def stop_postgresql_coordinator(state, project_id, protocol_id, pid, owner_hostname):
+    """Stop one coordinator only on the host that currently owns its stored PID."""
+    import socket
+
+    from app.backend.database import getMapper
+    from app.backend.runtime.protocol_stop_service import RuntimeProtocolStopService
+
+    mapper = None
+    try:
+        project_id = int(project_id)
+        protocol_id = int(protocol_id)
+        pid = int(pid)
+        if pid <= 0 or owner_hostname != socket.gethostname():
+            raise RuntimeError("Coordinator Stop reached a different host or invalid PID")
+
+        mapper = getMapper()
+        row = mapper.getProjectProtocolByProtocolId(
+            projectId=project_id, protocolId=protocol_id,
+        )
+        if not row:
+            raise RuntimeError("Protocol row was not found")
+        metadata = RuntimeProtocolStopService._getStoredRuntimeMetadata(row)
+        if (
+            str(row.get("status") or "").strip().lower() not in {"scheduled", "launched", "running"}
+            or metadata.get("hostname") != owner_hostname
+            or metadata.get("pid") != pid
+        ):
+            raise RuntimeError("Coordinator ownership changed before remote Stop")
+
+        report = RuntimeProtocolStopService()._killProcessGroup(
+            pid=pid, projectId=project_id, protocolId=protocol_id,
+        )
+        return {**report, "hostname": socket.gethostname()}
+    except Exception as error:
+        logger.exception(
+            "Remote coordinator Stop failed: projectId=%s protocolId=%s pid=%s",
+            project_id, protocol_id, pid,
+        )
+        return {"error": str(error)}
+    finally:
+        if mapper is not None:
+            mapper.db.close()

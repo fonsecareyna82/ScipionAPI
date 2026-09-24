@@ -1053,6 +1053,41 @@ class RuntimeProtocolStopService:
 
         return runtimeMapper
 
+    def _stopRemoteCoordinator(self, *, ownerHostname, pid, projectId, protocolId):
+        from app.workers.task_queue import celeryApp
+
+        destination = "protocols@%s" % ownerHostname
+        replies = celeryApp.control.broadcast(
+            "stop_postgresql_coordinator",
+            arguments={
+                "owner_hostname": ownerHostname,
+                "pid": pid,
+                "project_id": projectId,
+                "protocol_id": protocolId,
+            },
+            destination=[destination],
+            reply=True,
+            timeout=15.0,
+            limit=1,
+        ) or []
+
+        if len(replies) != 1 or set(replies[0]) != {destination}:
+            raise RuntimeError("No unambiguous Stop reply from %s" % destination)
+
+        report = replies[0][destination]
+        if not isinstance(report, dict) or report.get("error"):
+            raise RuntimeError("Remote Stop failed on %s: %s" % (destination, report))
+
+        if (
+            report.get("hostname") != ownerHostname
+            or report.get("pid") != pid
+            or report.get("terminated") is not True
+            or not (report.get("verified") or report.get("alreadyStopped"))
+        ):
+            raise RuntimeError("Remote Stop was not confirmed by %s: %s" % (destination, report))
+
+        return report
+
     def _stopPostgresqlProtocols(
             self,
             *,
@@ -1075,6 +1110,7 @@ class RuntimeProtocolStopService:
         stopped = []
         skipped = []
         localStopped = []
+        remoteStopped = []
         queueStopped = []
         stepReports = []
         outputReports = []
@@ -1178,19 +1214,12 @@ class RuntimeProtocolStopService:
                 or ""
             ).strip()
 
-            if (
-                    pid
-                    and ownerHostname
-                    and ownerHostname != socket.gethostname()
-            ):
+            isRemoteCoordinator = bool(pid and ownerHostname and ownerHostname != socket.gethostname())
+
+            if isRemoteCoordinator and runtimeMetadata.get("pid") != pid:
                 raise RuntimeError(
-                    "Cannot stop PostgreSQL protocol %s "
-                    "locally because its coordinator is "
-                    "owned by host %s"
-                    % (
-                        protocolId,
-                        ownerHostname,
-                    )
+                    "Cannot route Stop for protocol %s: stored PID does not match coordinator %s"
+                    % (protocolId, pid)
                 )
 
             jobIds = (
@@ -1251,23 +1280,40 @@ class RuntimeProtocolStopService:
             # A scheduled protocol may also have a coordinator
             # PID before it submits the actual queue job.
             if pid:
-                processReport = (
-                    self._killProcessGroup(
+                if isRemoteCoordinator:
+                    processReport = self._stopRemoteCoordinator(
+                        ownerHostname=ownerHostname,
                         pid=pid,
                         projectId=projectId,
                         protocolId=protocolId,
                     )
-                )
-
-                localStopped.append({
-                    "protocolId": str(
-                        protocolId
-                    ),
-                    "protocolDbId": (
-                        protocolDbId
-                    ),
-                    **processReport,
-                })
+                    currentRow = mapper.getProjectProtocolByProtocolId(
+                        projectId=projectId, protocolId=protocolId,
+                    )
+                    currentMetadata = self._getStoredRuntimeMetadata(currentRow or {})
+                    if (
+                        currentMetadata.get("hostname") != ownerHostname
+                        or currentMetadata.get("pid") != pid
+                    ):
+                        raise RuntimeError(
+                            "Coordinator ownership changed while stopping protocol %s" % protocolId
+                        )
+                    remoteStopped.append({
+                        "protocolId": str(protocolId),
+                        "protocolDbId": protocolDbId,
+                        **processReport,
+                    })
+                else:
+                    processReport = self._killProcessGroup(
+                        pid=pid,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                    localStopped.append({
+                        "protocolId": str(protocolId),
+                        "protocolDbId": protocolDbId,
+                        **processReport,
+                    })
 
             processTerminationConfirmed = bool(
                 processReport and processReport.get("terminated")
@@ -1404,6 +1450,7 @@ class RuntimeProtocolStopService:
                 stopped=stopped,
                 skipped=skipped,
                 localStopped=localStopped,
+                remoteStopped=remoteStopped,
                 queueStopped=queueStopped,
                 postgresqlRuntimeStatus=(
                     statusReports

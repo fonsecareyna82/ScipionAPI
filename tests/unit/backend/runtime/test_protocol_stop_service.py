@@ -1059,3 +1059,184 @@ def test_PostgresqlStopDoesNotKillCoordinatorOwnedByAnotherHost(monkeypatch):
 
     assert killCalls == []
 
+
+def test_PostgresqlStopRoutesRemoteCoordinatorAndWaitsForConfirmation(monkeypatch):
+    import socket
+
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=1234)
+    service = RuntimeProtocolStopService()
+    remoteHostname = "%s-remote" % socket.gethostname()
+    events = []
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {"_scipionWebRuntime": {"hostname": remoteHostname, "pid": 1234}},
+        },
+    )
+
+    def confirmRemoteStop(**kwargs):
+        events.append(("remote-confirmed", kwargs))
+        assert currentProject.runtimeMapper.stored == []
+        assert protocol.getStatus() == "running"
+        return {
+            "hostname": remoteHostname,
+            "pid": 1234,
+            "terminated": True,
+            "verified": True,
+            "signal": "SIGTERM",
+        }
+
+    def rejectLocalKill(**kwargs):
+        raise AssertionError("The API host must not kill a remote coordinator PID")
+
+    originalStore = currentProject.runtimeMapper.store
+
+    def recordStore(value):
+        events.append(("persist-abort", None))
+        originalStore(value)
+
+    monkeypatch.setattr(service, "_stopRemoteCoordinator", confirmRemoteStop, raising=False)
+    monkeypatch.setattr(service, "_killProcessGroup", rejectLocalKill)
+    monkeypatch.setattr(currentProject.runtimeMapper, "store", recordStore)
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["status"] == 0
+    assert result["protocolsCount"] == 1
+    assert result["localStopped"] == []
+    assert result["stopped"][0]["process"]["terminated"] is True
+    assert result["stopped"][0]["process"]["verified"] is True
+    assert events == [
+        ("remote-confirmed", {
+            "ownerHostname": remoteHostname,
+            "pid": 1234,
+            "projectId": 1,
+            "protocolId": 10,
+        }),
+        ("persist-abort", None),
+    ]
+    assert protocol.getStatus() == STATUS_ABORTED
+
+
+def test_RemoteStopBroadcastTargetsOwnerAndRequiresConfirmedReply(monkeypatch):
+    import app.workers.task_queue as taskQueue
+
+    hostname = "owner-node-03"
+    destination = "protocols@%s" % hostname
+    sent = []
+    replies = [{
+        destination: {
+            "hostname": hostname,
+            "pid": 1234,
+            "terminated": True,
+            "verified": True,
+        },
+    }]
+
+    def broadcast(command, **kwargs):
+        sent.append((command, kwargs))
+        return replies
+
+    monkeypatch.setattr(
+        taskQueue,
+        "celeryApp",
+        SimpleNamespace(control=SimpleNamespace(broadcast=broadcast)),
+    )
+
+    service = RuntimeProtocolStopService()
+    report = service._stopRemoteCoordinator(
+        ownerHostname=hostname, pid=1234, projectId=1, protocolId=10,
+    )
+
+    assert report["terminated"] is True
+    assert sent == [(
+        "stop_postgresql_coordinator",
+        {
+            "arguments": {
+                "owner_hostname": hostname,
+                "pid": 1234,
+                "project_id": 1,
+                "protocol_id": 10,
+            },
+            "destination": [destination],
+            "reply": True,
+            "timeout": 15.0,
+            "limit": 1,
+        },
+    )]
+
+    replies.clear()
+    with pytest.raises(RuntimeError, match="No unambiguous Stop reply"):
+        service._stopRemoteCoordinator(
+            ownerHostname=hostname, pid=1234, projectId=1, protocolId=10,
+        )
+
+
+@pytest.mark.parametrize("storedPid", [1234, 9999])
+def test_RemoteStopCommandChecksDatabaseOwnershipBeforeKilling(monkeypatch, storedPid):
+    import socket
+    import sys
+    import app.workers.task_queue as taskQueue
+
+    hostname = socket.gethostname()
+    mapper = FakeMapper()
+    calls = []
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda **kwargs: {
+            "id": 50,
+            "status": "running",
+            "params": {"_scipionWebRuntime": {"hostname": hostname, "pid": storedPid}},
+        },
+    )
+    monkeypatch.setattr(mapper.db, "close", lambda: None, raising=False)
+    monkeypatch.setitem(
+        sys.modules, "app.backend.database",
+        SimpleNamespace(getMapper=lambda: mapper),
+    )
+    monkeypatch.setattr(
+        RuntimeProtocolStopService,
+        "_killProcessGroup",
+        lambda self, **kwargs: calls.append(kwargs) or {
+            "pid": kwargs["pid"],
+            "terminated": True,
+            "verified": True,
+        },
+    )
+
+    wrongHost = taskQueue.stop_postgresql_coordinator(
+        None, project_id=1, protocol_id=10, pid=1234,
+        owner_hostname=hostname + "-other",
+    )
+    assert "error" in wrongHost
+    assert calls == []
+
+    report = taskQueue.stop_postgresql_coordinator(
+        None, project_id=1, protocol_id=10, pid=1234,
+        owner_hostname=hostname,
+    )
+    if storedPid != 1234:
+        assert "error" in report
+        assert calls == []
+    else:
+        assert report["hostname"] == hostname
+        assert report["terminated"] is True
+        assert calls == [{"pid": 1234, "projectId": 1, "protocolId": 10}]
