@@ -716,34 +716,58 @@ class RuntimeProtocolStatusSyncService:
             or ""
         ).strip()
 
-        if (
-                resetElapsed
-                or not elapsedSessionId
-        ):
-            elapsedSessionId = (
-                uuid4().hex
+        previousUpdate = self.toSeconds(
+            runtimeMetadata.get(
+                self.ELAPSED_UPDATED_AT_KEY
             )
-
-        runtimeMetadata[
-            self.ELAPSED_SESSION_ID_KEY
-        ] = elapsedSessionId
-
-        runtimeMetadata.pop(
-            self.ELAPSED_UPDATED_AT_KEY,
-            None,
         )
 
-        elapsedSeconds = (
-            0.0
-            if resetElapsed
-            else max(
+        activeElapsedSession = bool(
+            elapsedSessionId
+            and previousUpdate is not None
+        )
+
+        if activeElapsedSession:
+            elapsedSeconds = max(
                 0.0,
                 float(
-                    baseElapsedTimeSeconds
+                    self.toSeconds(
+                        runtimeMetadata.get(
+                            "elapsedTimeSeconds"
+                        )
+                    )
                     or 0.0
                 ),
             )
-        )
+
+        else:
+            if (
+                    resetElapsed
+                    or not elapsedSessionId
+            ):
+                elapsedSessionId = (
+                    uuid4().hex
+                )
+
+            runtimeMetadata[
+                self.ELAPSED_SESSION_ID_KEY
+            ] = elapsedSessionId
+
+            runtimeMetadata[
+                self.ELAPSED_UPDATED_AT_KEY
+            ] = time.time()
+
+            elapsedSeconds = (
+                0.0
+                if resetElapsed
+                else max(
+                    0.0,
+                    float(
+                        baseElapsedTimeSeconds
+                        or 0.0
+                    ),
+                )
+            )
 
         runtimeMetadata[
             "elapsedTimeSeconds"

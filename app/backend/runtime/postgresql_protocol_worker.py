@@ -3597,6 +3597,43 @@ class RuntimePostgresqlProtocolWorker:
         # persist the terminal protocol state.
         self.rollbackPostgresqlTransaction()
 
+        # A failure can happen after the elapsed session has
+        # started but before execute() reaches its run/finally
+        # block. Freeze managed elapsed metadata here as well.
+        try:
+            elapsedStatusService = (
+                RuntimeProtocolStatusSyncService()
+            )
+
+            elapsedSnapshot = (
+                elapsedStatusService
+                .captureProtocolElapsedState(
+                    mapper=self.mapper,
+                    projectId=self.projectId,
+                    protocolId=self.protocolId,
+                )
+            )
+
+            elapsedStatusService.finalizeProtocolElapsedTime(
+                mapper=self.mapper,
+                projectId=self.projectId,
+                protocolId=self.protocolId,
+                elapsedSnapshot=elapsedSnapshot,
+                stoppedAtEpochSeconds=time.time(),
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not finalize failed protocol elapsed time. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+            )
+
+            # Keep failure persistence usable even if elapsed
+            # finalization itself left PostgreSQL in error.
+            self.rollbackPostgresqlTransaction()
+
         self.protocol.setFailed(
             str(error)
         )

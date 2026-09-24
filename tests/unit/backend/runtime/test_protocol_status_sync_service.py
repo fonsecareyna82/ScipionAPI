@@ -379,4 +379,216 @@ def test_PersistProtocolExecutionUserStoresExecutionId():
         "executionId": "execution-123",
     }
 
+def test_MarkProtocolLaunchedStartsElapsedCheckpointImmediately(
+        monkeypatch,
+):
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+
+    monkeypatch.setattr(
+        "app.backend.runtime.protocol_status_sync_service.time.time",
+        lambda: 100.0,
+    )
+
+    service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        resetElapsed=True,
+    )
+
+    params = service.normalizeParams(
+        mapper.row["params"]
+    )
+
+    metadata = params[
+        service.RUNTIME_METADATA_KEY
+    ]
+
+    assert metadata[
+        service.ELAPSED_UPDATED_AT_KEY
+    ] == 100.0
+
+    assert (
+        service.getEffectiveElapsedTimeSeconds(
+            runtimeMetadata=metadata,
+            statusValue="launched",
+            nowEpochSeconds=115.0,
+        )
+        == 15.0
+    )
+
+def test_MarkProtocolLaunchedIsIdempotentForActiveElapsedSession(
+        monkeypatch,
+):
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+
+    currentTime = {
+        "value": 100.0,
+    }
+
+    monkeypatch.setattr(
+        "app.backend.runtime.protocol_status_sync_service.time.time",
+        lambda: currentTime["value"],
+    )
+
+    firstReport = service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        resetElapsed=True,
+    )
+
+    currentTime["value"] = 130.0
+
+    secondReport = service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        resetElapsed=True,
+    )
+
+    params = service.normalizeParams(
+        mapper.row["params"]
+    )
+
+    metadata = params[
+        service.RUNTIME_METADATA_KEY
+    ]
+
+    assert (
+        secondReport["elapsedSessionId"]
+        == firstReport["elapsedSessionId"]
+    )
+
+    assert metadata[
+        "elapsedTimeSeconds"
+    ] == 0.0
+
+    assert metadata[
+        service.ELAPSED_UPDATED_AT_KEY
+    ] == 100.0
+
+    assert (
+        service.getEffectiveElapsedTimeSeconds(
+            runtimeMetadata=metadata,
+            statusValue="launched",
+            nowEpochSeconds=145.0,
+        )
+        == 45.0
+    )
+
+def test_MarkProtocolLaunchedRestartAfterTerminalCreatesNewElapsedSession(
+        monkeypatch,
+):
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {
+            "elapsedTimeSeconds": 40.0,
+            service.ELAPSED_SESSION_ID_KEY: "old-session",
+        },
+    }
+
+    monkeypatch.setattr(
+        "app.backend.runtime.protocol_status_sync_service.time.time",
+        lambda: 200.0,
+    )
+
+    report = service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        baseElapsedTimeSeconds=40.0,
+        resetElapsed=True,
+    )
+
+    params = service.normalizeParams(
+        mapper.row["params"]
+    )
+
+    metadata = params[
+        service.RUNTIME_METADATA_KEY
+    ]
+
+    assert (
+        report["elapsedSessionId"]
+        != "old-session"
+    )
+
+    assert metadata[
+        "elapsedTimeSeconds"
+    ] == 0.0
+
+    assert metadata[
+        service.ELAPSED_UPDATED_AT_KEY
+    ] == 200.0
+
+    assert (
+        service.getEffectiveElapsedTimeSeconds(
+            runtimeMetadata=metadata,
+            statusValue="launched",
+            nowEpochSeconds=215.0,
+        )
+        == 15.0
+    )
+
+
+def test_MarkProtocolLaunchedResumeAfterTerminalKeepsAccumulatedElapsed(
+        monkeypatch,
+):
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+
+    mapper.row["params"] = {
+        service.RUNTIME_METADATA_KEY: {
+            "elapsedTimeSeconds": 40.0,
+            service.ELAPSED_SESSION_ID_KEY: "resume-session",
+        },
+    }
+
+    monkeypatch.setattr(
+        "app.backend.runtime.protocol_status_sync_service.time.time",
+        lambda: 200.0,
+    )
+
+    report = service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        baseElapsedTimeSeconds=40.0,
+        resetElapsed=False,
+    )
+
+    params = service.normalizeParams(
+        mapper.row["params"]
+    )
+
+    metadata = params[
+        service.RUNTIME_METADATA_KEY
+    ]
+
+    assert (
+        report["elapsedSessionId"]
+        == "resume-session"
+    )
+
+    assert metadata[
+        "elapsedTimeSeconds"
+    ] == 40.0
+
+    assert metadata[
+        service.ELAPSED_UPDATED_AT_KEY
+    ] == 200.0
+
+    assert (
+        service.getEffectiveElapsedTimeSeconds(
+            runtimeMetadata=metadata,
+            statusValue="launched",
+            nowEpochSeconds=215.0,
+        )
+        == 55.0
+    )
 
