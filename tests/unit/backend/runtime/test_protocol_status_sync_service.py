@@ -379,4 +379,42 @@ def test_PersistProtocolExecutionUserStoresExecutionId():
         "executionId": "execution-123",
     }
 
+def test_MarkProtocolLaunchedStartsElapsedCheckpointImmediately(
+        monkeypatch,
+):
+    service = RuntimeProtocolStatusSyncService()
+    mapper = FakeMapper()
+
+    monkeypatch.setattr(
+        "app.backend.runtime.protocol_status_sync_service.time.time",
+        lambda: 100.0,
+    )
+
+    service.markProtocolLaunched(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        resetElapsed=True,
+    )
+
+    params = service.normalizeParams(
+        mapper.row["params"]
+    )
+
+    metadata = params[
+        service.RUNTIME_METADATA_KEY
+    ]
+
+    assert metadata[
+        service.ELAPSED_UPDATED_AT_KEY
+    ] == 100.0
+
+    assert (
+        service.getEffectiveElapsedTimeSeconds(
+            runtimeMetadata=metadata,
+            statusValue="launched",
+            nowEpochSeconds=115.0,
+        )
+        == 15.0
+    )
 

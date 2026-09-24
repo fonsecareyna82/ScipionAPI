@@ -728,10 +728,9 @@ class RuntimeProtocolStatusSyncService:
             self.ELAPSED_SESSION_ID_KEY
         ] = elapsedSessionId
 
-        runtimeMetadata.pop(
-            self.ELAPSED_UPDATED_AT_KEY,
-            None,
-        )
+        runtimeMetadata[
+            self.ELAPSED_UPDATED_AT_KEY
+        ] = time.time()
 
         elapsedSeconds = (
             0.0
