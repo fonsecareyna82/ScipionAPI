@@ -90,6 +90,11 @@ class JobMonitoringService:
         )
 
     @staticmethod
+    def _workerNameFromHostname(hostname) -> Optional[str]:
+        hostname = str(hostname or "").strip()
+        return ("protocols@%s" % hostname) if hostname else None
+
+    @staticmethod
     def _optionalFloat(value) -> Optional[float]:
         try:
             return float(value)
@@ -945,7 +950,19 @@ class JobMonitoringService:
                 "celeryState": None,
                 "step": None,
                 "protocolStatus": protocolStatus,
-                "worker": None,
+                # Not seen in Celery's own inspect().active() snapshot (it
+                # may be running as a local coordinator subprocess rather
+                # than a Celery task, or its worker just hasn't reported
+                # in this poll) -- but PostgreSQL runtime metadata already
+                # knows which host registered as its coordinator, so
+                # surface that instead of leaving this blank. Matches the
+                # "protocols@<hostname>" naming Celery workers use
+                # themselves (see stop_postgresql_coordinator's broadcast
+                # destination in task_queue.py) for a consistent shape
+                # regardless of which branch populated it.
+                "worker": self._workerNameFromHostname(
+                    runtimeMetadata.get("hostname")
+                ),
                 "queue": None,
                 "workerPid": None,
                 "protocolPid": self._optionalInt(

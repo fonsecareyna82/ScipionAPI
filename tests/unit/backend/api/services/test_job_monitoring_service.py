@@ -590,3 +590,101 @@ def test_JobMonitoringProjectsElapsedTimeForRunningPostgresqlProtocol(
     ] == 25.0
 
 
+def test_JobMonitoringSurfacesCoordinatorHostnameAsWorkerWhenNotSeenByCelery(
+        monkeypatch,
+):
+    # A protocol coordinated on a remote host (or a local subprocess
+    # coordinator not visible in Celery's own inspect().active() snapshot)
+    # used to always show worker=None here, even though PostgreSQL runtime
+    # metadata already recorded which host registered as its coordinator.
+    mapper = MapperStub(
+        recentRows=[],
+        activeRows=[
+            {
+                "projectId": 2,
+                "projectName": "/projects/TestRemoteNode",
+                "protocolId": "512",
+                "protocolClassName": "ProtImportParticles",
+                "status": "running",
+                "createdAt": None,
+                "updatedAt": None,
+                "runtimeMetadata": {
+                    "pid": 55555,
+                    "hostname": "node-07",
+                    "jobIds": [],
+                },
+            },
+        ],
+    )
+
+    service = JobMonitoringService(celeryAppInstance=object())
+
+    monkeypatch.setattr(jobMonitoringModule.time, "time", lambda: 1025.0)
+    monkeypatch.setattr(
+        service,
+        "_getCelerySnapshot",
+        lambda: {
+            "available": True,
+            "error": None,
+            "stats": {},
+            "active": {},
+            "reserved": {},
+        },
+    )
+
+    result = service.getOverview(mapper=mapper, recentLimit=10)
+
+    assert len(result["activeJobs"]) == 1
+    activeJob = result["activeJobs"][0]
+
+    assert activeJob["protocolId"] == "512"
+    # Matches the "protocols@<hostname>" naming Celery workers use
+    # themselves, so this reads consistently regardless of which branch
+    # populated it (see stop_postgresql_coordinator's broadcast
+    # destination in task_queue.py for the same convention).
+    assert activeJob["worker"] == "protocols@node-07"
+
+
+def test_JobMonitoringLeavesWorkerNoneWithoutAnyRecordedHostname(
+        monkeypatch,
+):
+    # No coordinator has registered a hostname yet (e.g. still scheduled,
+    # or predates this feature) -- must stay None rather than fabricate
+    # a value like "protocols@" with nothing after the @.
+    mapper = MapperStub(
+        recentRows=[],
+        activeRows=[
+            {
+                "projectId": 2,
+                "projectName": "/projects/TestScheduled",
+                "protocolId": "513",
+                "protocolClassName": "ProtImportParticles",
+                "status": "scheduled",
+                "createdAt": None,
+                "updatedAt": None,
+                "runtimeMetadata": {"pid": None, "jobIds": []},
+            },
+        ],
+    )
+
+    service = JobMonitoringService(celeryAppInstance=object())
+
+    monkeypatch.setattr(jobMonitoringModule.time, "time", lambda: 1025.0)
+    monkeypatch.setattr(
+        service,
+        "_getCelerySnapshot",
+        lambda: {
+            "available": True,
+            "error": None,
+            "stats": {},
+            "active": {},
+            "reserved": {},
+        },
+    )
+
+    result = service.getOverview(mapper=mapper, recentLimit=10)
+
+    assert len(result["activeJobs"]) == 1
+    assert result["activeJobs"][0]["worker"] is None
+
+
