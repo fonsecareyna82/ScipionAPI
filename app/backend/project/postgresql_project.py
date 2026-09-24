@@ -423,7 +423,7 @@ class PostgresqlProject(ScipionProject):
             protocolId,
         )
 
-    def _startPostgresqlProtocolWorker(self, protocol, runMode: str, wait: bool = False):
+    def _startPostgresqlProtocolWorker(self, protocol, runMode: str, wait: bool = False, coordinatorRunId=None):
         from app.backend.runtime.postgresql_protocol_worker import buildPostgresqlWorkerCommand
         from app.backend.runtime.protocol_status_sync_service import (
             RuntimeProtocolStatusSyncService,
@@ -476,6 +476,8 @@ class PostgresqlProject(ScipionProject):
             commandArgs["queueName"] = queueName
             commandArgs["queueParams"] = queueParams
 
+        if coordinatorRunId is not None:
+            commandArgs["coordinatorRunId"] = coordinatorRunId
         command = buildPostgresqlWorkerCommand(**commandArgs)
         with open(scheduleLogPath, "a", encoding="utf-8") as scheduleLog:
             process = subprocess.Popen(command, cwd=moduleRoot, env=workerEnv, stdin=subprocess.DEVNULL, stdout=scheduleLog, stderr=scheduleLog, start_new_session=True)
@@ -490,6 +492,7 @@ class PostgresqlProject(ScipionProject):
                 projectId=self.postgresqlProjectId,
                 protocolId=protocolId,
                 protocol=protocol,
+                coordinatorRunId=coordinatorRunId,
             )
         )
         logger.info("Started PostgreSQL protocol worker. projectId=%s protocolId=%s runMode=%s pid=%s", self.postgresqlProjectId, protocolId, runMode, process.pid)
@@ -502,6 +505,7 @@ class PostgresqlProject(ScipionProject):
             wait: bool = False,
     ):
         from app.workers.task_queue import executeProtocolTask
+        from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
 
         protocolId = getattr(
             protocol,
@@ -514,12 +518,12 @@ class PostgresqlProject(ScipionProject):
                 "Cannot enqueue PostgreSQL protocol without protocol id"
             )
 
+        coordinatorRunId = RuntimeProtocolStatusSyncService().startCoordinatorRun(
+            mapper=self.postgresqlFlatMapper, projectId=self.postgresqlProjectId,
+            protocolId=int(protocolId),
+        )
         taskResult = executeProtocolTask.apply_async(
-            args=[
-                self.postgresqlProjectId,
-                int(protocolId),
-                runMode,
-            ]
+            args=[self.postgresqlProjectId, int(protocolId), runMode, coordinatorRunId]
         )
 
         logger.info(

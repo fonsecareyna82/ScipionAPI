@@ -285,3 +285,64 @@ def test_StartPostgresqlProtocolWorkerForwardsTransientQueueOverride(
             "JOB_MEMORY": "64000",
         },
     }
+
+
+def test_EnqueueProtocolMintsUniqueCoordinatorRunIdAndForwardsToCelery(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    protocol = FakeProtocol(41, "Runs/000041_FakeProtocol/logs/schedule.log")
+    project = PostgresqlProject.__new__(PostgresqlProject)
+    project.postgresqlProjectId = 344
+
+    class Mapper:
+        def __init__(self):
+            self.row = {
+                "id": 91,
+                "status": "scheduled",
+                "params": {
+                    "inputImages": "preserved",
+                    "_scipionWebRuntime": {"executionId": "shared-workflow"},
+                },
+            }
+
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert (projectId, protocolId) == (344, 41)
+            return dict(self.row)
+
+        def updateProtocol(self, values):
+            assert values["id"] == 91
+            self.row.update(values)
+
+    project.postgresqlFlatMapper = Mapper()
+    dispatches = []
+
+    def applyAsync(*, args):
+        dispatches.append(list(args))
+        return SimpleNamespace(id="celery-task-%s" % len(dispatches))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app.workers.task_queue",
+        SimpleNamespace(executeProtocolTask=SimpleNamespace(apply_async=applyAsync)),
+    )
+
+    runIds = []
+    for _ in range(2):
+        project._enqueuePostgresqlProtocolTask(
+            protocol=protocol, runMode="resume", wait=False,
+        )
+        params = project.postgresqlFlatMapper.row["params"]
+        if isinstance(params, str):
+            params = json.loads(params)
+        metadata = params["_scipionWebRuntime"]
+        assert params["inputImages"] == "preserved"
+        assert metadata["executionId"] == "shared-workflow"
+        assert len(dispatches[-1]) == 4
+        assert dispatches[-1][:3] == [344, 41, "resume"]
+        assert dispatches[-1][3] == metadata["coordinatorRunId"]
+        runIds.append(metadata["coordinatorRunId"])
+
+    assert runIds[0]
+    assert runIds[0] != runIds[1]
+    assert project.postgresqlFlatMapper.row["status"] == "scheduled"

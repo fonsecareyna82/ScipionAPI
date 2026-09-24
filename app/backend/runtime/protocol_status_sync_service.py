@@ -37,6 +37,10 @@ from app.backend.runtime.postgresql_runtime_event_service import (
 logger = logging.getLogger(__name__)
 
 
+class StaleCoordinatorRunError(RuntimeError):
+    """A worker belongs to a previous protocol launch."""
+
+
 class RuntimeProtocolStatusSyncService:
     """Manage PostgreSQL runtime protocol status, timing and process metadata."""
     RUNTIME_METADATA_KEY = "_scipionWebRuntime"
@@ -215,6 +219,24 @@ class RuntimeProtocolStatusSyncService:
             "jobIds": self.getProtocolJobIds(protocol),
         }
 
+    def startCoordinatorRun(self, mapper, projectId: int, protocolId) -> str:
+        """Give each accepted dispatch its own identity, separate from workflow executionId."""
+        row = mapper.getProjectProtocolByProtocolId(projectId=projectId, protocolId=protocolId)
+        if not row or str(row.get("status") or "").strip().lower() != "scheduled":
+            raise RuntimeError("Cannot start coordinator run for unscheduled protocol %s" % protocolId)
+
+        params = self.normalizeParams(row.get("params"))
+        metadata = params.get(self.RUNTIME_METADATA_KEY) or {}
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        runId = uuid4().hex
+        metadata["coordinatorRunId"] = runId
+        metadata.pop("hostname", None)
+        metadata["pid"] = None
+        metadata["jobIds"] = []
+        params[self.RUNTIME_METADATA_KEY] = metadata
+        mapper.updateProtocol({"id": row["id"], "params": json.dumps(params, ensure_ascii=False)})
+        return runId
+
     def persistProtocolProcessIdentity(
             self,
             mapper,
@@ -222,6 +244,7 @@ class RuntimeProtocolStatusSyncService:
             protocolId,
             protocol,
             hostname=None,
+            coordinatorRunId=None,
     ) -> Dict[str, Any]:
         """
         Persist only the active process and queue identity.
@@ -279,6 +302,13 @@ class RuntimeProtocolStatusSyncService:
             protocol
         )
 
+        if hostname is not None or coordinatorRunId is not None:
+            storedRunId = str(runtimeMetadata.get("coordinatorRunId") or "").strip()
+            if storedRunId and storedRunId != str(coordinatorRunId or "").strip():
+                raise StaleCoordinatorRunError(
+                    "Stale coordinator cannot register process identity. "
+                    "projectId=%s protocolId=%s" % (projectId, protocolId)
+                )
         if hostname is not None:
             runtimeMetadata["hostname"] = hostname
 

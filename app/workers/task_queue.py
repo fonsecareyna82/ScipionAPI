@@ -613,7 +613,8 @@ def uninstallPluginBinaryTask(
         )
 
 @celeryApp.task(bind=True, name="app.tasks.executeProtocolTask")
-def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str = "resume"):
+def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str = "resume", coordinator_run_id=None):
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
     from app.backend.runtime.postgresql_protocol_worker import (
         RuntimePostgresqlProtocolWorker,
         normalizePostgresqlRunMode,
@@ -651,11 +652,10 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
                 protocolId,
             )
 
-        runtimeWorker = RuntimePostgresqlProtocolWorker(
-            projectId=projectId,
-            protocolId=protocolId,
-            runMode=runMode,
-        )
+        workerArgs = dict(projectId=projectId, protocolId=protocolId, runMode=runMode)
+        if coordinator_run_id is not None:
+            workerArgs["coordinatorRunId"] = coordinator_run_id
+        runtimeWorker = RuntimePostgresqlProtocolWorker(**workerArgs)
 
         runtimeWorker.load(
             configureLogging=False
@@ -666,6 +666,17 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
             projectId,
             protocolId,
         )
+
+        storedRow = runtimeWorker.mapper.getProjectProtocolByProtocolId(
+            projectId=projectId, protocolId=protocolId,
+        ) or {}
+        params = RuntimeProtocolStatusSyncService().normalizeParams(storedRow.get("params"))
+        metadata = params.get(RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY) or {}
+        storedRunId = str(metadata.get("coordinatorRunId") or "").strip() if isinstance(metadata, dict) else ""
+        if (storedRunId or coordinator_run_id) and storedRunId != str(coordinator_run_id or "").strip():
+            logger.info("Skipping stale PostgreSQL protocol dispatch. projectId=%s protocolId=%s", projectId, protocolId)
+            return {"projectId": projectId, "protocolId": protocolId, "runMode": runMode,
+                    "protocolStatus": protocolStatus, "coordinatorPid": None, "dispatched": False}
 
         if protocolStatus != "scheduled":
             logger.info(
@@ -702,6 +713,7 @@ def executeProtocolTask(self, project_id: int, protocol_id: int, run_mode: str =
                 protocol=runtimeWorker.protocol,
                 runMode=runMode,
                 wait=False,
+                **({"coordinatorRunId": coordinator_run_id} if coordinator_run_id is not None else {}),
             )
         )
 

@@ -89,6 +89,7 @@ from app.backend.runtime.protocol_identity import (
 )
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
+    StaleCoordinatorRunError,
 )
 from app.backend.runtime.protocol_step_persistence_service import (
     RuntimeProtocolStepPersistenceService,
@@ -177,6 +178,7 @@ def buildPostgresqlWorkerCommand(
         runMode: str = POSTGRESQL_RUN_MODE_RESTART,
         queueName=None,
         queueParams=None,
+        coordinatorRunId=None,
 ) -> List[str]:
     normalizedRunMode = (
         normalizePostgresqlRunMode(
@@ -201,6 +203,9 @@ def buildPostgresqlWorkerCommand(
             "--run-mode",
             normalizedRunMode,
         ])
+
+    if coordinatorRunId is not None:
+        command.extend(["--coordinator-run-id", str(coordinatorRunId)])
 
     if queueParams is not None:
         if not isinstance(queueParams, dict):
@@ -771,6 +776,7 @@ class RuntimePostgresqlProtocolWorker:
             runMode: str = POSTGRESQL_RUN_MODE_RESTART,
             queueName=None,
             queueParams=None,
+        coordinatorRunId=None,
     ):
         self.projectId = int(projectId)
         self.protocolId = int(protocolId)
@@ -783,6 +789,7 @@ class RuntimePostgresqlProtocolWorker:
         self._queueLaunchOverride = None if queueParams is None else (str(queueName or ""), dict(queueParams))
 
         self.mapper = None
+        self.coordinatorRunId = str(coordinatorRunId or "").strip() or None
         self.project = None
         self.protocol = None
         self.runtimeMapper = None
@@ -3531,6 +3538,14 @@ class RuntimePostgresqlProtocolWorker:
 
         return str((row or {}).get("status") or "").strip().lower()
 
+    def getStoredCoordinatorRunId(self) -> str:
+        row = self.mapper.getProjectProtocolByProtocolId(
+            projectId=self.projectId, protocolId=self.protocolId,
+        ) or {}
+        params = RuntimeProtocolStatusSyncService().normalizeParams(row.get("params"))
+        metadata = params.get(RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY) or {}
+        return str(metadata.get("coordinatorRunId") or "").strip() if isinstance(metadata, dict) else ""
+
     def registerCoordinatorProcess(self) -> None:
         """
         Register the real PostgreSQL worker before waiting
@@ -3548,6 +3563,7 @@ class RuntimePostgresqlProtocolWorker:
             protocolId=self.protocolId,
             protocol=self.protocol,
             hostname=socket.gethostname(),
+            coordinatorRunId=self.coordinatorRunId,
         )
 
     def rollbackPostgresqlTransaction(
@@ -3738,14 +3754,13 @@ class RuntimePostgresqlProtocolWorker:
     def submitToQueue(self) -> int:
         queueName, queueParams = self._ensureQueueLaunchParams()
 
-        command = buildPostgresqlWorkerCommand(
-            projectId=self.projectId,
-            protocolId=self.protocolId,
-            execute=True,
-            runMode=self.runMode,
-            queueName=queueName,
-            queueParams=queueParams,
+        commandArgs = dict(
+            projectId=self.projectId, protocolId=self.protocolId, execute=True,
+            runMode=self.runMode, queueName=queueName, queueParams=queueParams,
         )
+        if self.coordinatorRunId:
+            commandArgs["coordinatorRunId"] = self.coordinatorRunId
+        command = buildPostgresqlWorkerCommand(**commandArgs)
 
         hostConfig = self.protocol.getHostConfig()
         submitDict = self.protocol.getSubmitDict()
@@ -3955,6 +3970,10 @@ class RuntimePostgresqlProtocolWorker:
         self.load()
 
         try:
+            storedRunId = self.getStoredCoordinatorRunId() if self.mapper is not None else ""
+            if (storedRunId or self.coordinatorRunId) and storedRunId != (self.coordinatorRunId or ""):
+                logger.info("Skipping stale PostgreSQL worker. projectId=%s protocolId=%s", self.projectId, self.protocolId)
+                return 0
             if not execute:
                 if self.getStoredProtocolStatus() != str(STATUS_SCHEDULED).strip().lower():
                     logger.info(
@@ -3989,6 +4008,9 @@ class RuntimePostgresqlProtocolWorker:
 
             return self.execute()
 
+        except StaleCoordinatorRunError:
+            logger.info("Coordinator run was superseded during registration. projectId=%s protocolId=%s", self.projectId, self.protocolId)
+            return 0
         except Exception as error:
             self.markFailed(error)
             return 1
@@ -4023,6 +4045,8 @@ def main() -> int:
             POSTGRESQL_RUN_MODE_RESTART
         ),
     )
+
+    parser.add_argument("--coordinator-run-id", default=None)
 
     parser.add_argument(
         "--queue-name",
@@ -4068,6 +4092,7 @@ def main() -> int:
         runMode=args.run_mode,
         queueName=args.queue_name,
         queueParams=queueParams,
+        coordinatorRunId=args.coordinator_run_id,
     )
 
     return worker.run(

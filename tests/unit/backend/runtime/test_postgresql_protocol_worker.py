@@ -3175,3 +3175,69 @@ def test_RegisterCoordinatorProcessPersistsOwnerHostname(monkeypatch, previousHo
     assert metadata["executionId"] == "workflow-execution"
     assert metadata["elapsedTimeSeconds"] == 18.5
     assert metadata.get("hostname") == coordinatorHostname
+
+
+def test_StaleCoordinatorCannotOverwriteNewRunOwnership(monkeypatch):
+    import socket
+    from app.backend.runtime.protocol_status_sync_service import RuntimeProtocolStatusSyncService
+
+    oldRunId = "coordinator-run-old"
+    currentRunId = "coordinator-run-new"
+    currentHostname = "node-current"
+    currentPid = 34567
+    staleHostname = "node-stale"
+    stalePid = 23456
+    metadata = {
+        "executionId": "shared-workflow-execution",
+        "coordinatorRunId": currentRunId,
+        "hostname": currentHostname,
+        "pid": currentPid,
+        "jobIds": [],
+    }
+    row = {
+        "id": 50,
+        "status": "scheduled",
+        "params": {"_scipionWebRuntime": dict(metadata)},
+    }
+    updates = []
+
+    class CoordinatorProtocol:
+        def __init__(self):
+            self.pid = 0
+
+        def setPid(self, pid):
+            self.pid = pid
+
+        def getPid(self):
+            return self.pid
+
+        def getJobIds(self):
+            return []
+
+    class CoordinatorMapper:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            assert projectId == 1
+            assert str(protocolId) == "30"
+            return dict(row)
+
+        def updateProtocol(self, values):
+            updates.append(dict(values))
+            row.update(values)
+
+    monkeypatch.setattr(postgresqlProtocolWorkerModule.os, "getpid", lambda: stalePid)
+    monkeypatch.setattr(socket, "gethostname", lambda: staleHostname)
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = CoordinatorMapper()
+    worker.protocol = CoordinatorProtocol()
+    worker.coordinatorRunId = oldRunId
+
+    try:
+        worker.registerCoordinatorProcess()
+    except RuntimeError:
+        pass
+
+    storedParams = RuntimeProtocolStatusSyncService().normalizeParams(row["params"])
+    assert updates == [], "An old coordinator must not overwrite the current run"
+    assert storedParams["_scipionWebRuntime"] == metadata
+    assert row["status"] == "scheduled"
