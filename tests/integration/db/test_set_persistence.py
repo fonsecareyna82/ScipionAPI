@@ -453,6 +453,179 @@ def test_SetAndItemsPersistAndHydrateAcrossPostgresqlConnections(
             )
 
 
+def test_PostgresqlRuntimeSetReflectsUpstreamOpenStreamAcrossConnections(
+        postgresqlIntegrationDb,
+        postgresqlMigratedEnv,
+):
+    """
+    Regression test for a bug where a freshly-built PostgreSQL runtime
+    Set always reported isStreamClosed()==True, regardless of the
+    persisted stream state, because the persisted "streamState"
+    property key (no leading underscore) never matched the real
+    "_streamState" pyworkflow attribute during hydration. This made
+    any streaming child protocol believe its still-running parent had
+    already finished, causing it to publish its output and finish
+    prematurely - invisible with a handful of items (the parent
+    finishes for real before the child ever notices), but immediately
+    visible with many streamed batches.
+    """
+    writerMapper = PostgresqlFlatMapper(
+        postgresqlIntegrationDb
+    )
+
+    suffix = uuid4().hex
+
+    userId = None
+    projectId = None
+    readerDb = None
+    runtimeSet = None
+    closedReaderDb = None
+    closedRuntimeSet = None
+
+    try:
+        userId = writerMapper.insertUser(
+            email="postgresql-open-stream-%s@example.com" % suffix,
+            hashedPassword="integration-test",
+            firstName="PostgreSQL",
+            lastName="Open Stream",
+            institution=None,
+            role="user",
+            isActive=True,
+            isVerified=True,
+            verificationCode="integration-test",
+        )
+
+        projectId = writerMapper.insertProject(
+            ownerId=userId,
+            name="PostgreSQL open stream %s" % suffix,
+            description="Runtime PostgreSQL open-stream hydration regression test.",
+            status="active",
+        )
+
+        protocolId = 2
+
+        protocolDbId = writerMapper.saveProtocol({
+            "info": {
+                "protocolId": protocolId,
+                "projectId": projectId,
+                "protocolClassName": "IntegrationOpenStreamProtocol",
+                "status": "running",
+            },
+            "values": {},
+            "parentIds": [],
+            "childIds": [],
+        })
+
+        sourceSet = SourceOutputSetStub([
+            _buildItem(itemId=1, score=0.25, code="ITEM_01"),
+        ])
+        sourceSet.setObjId(1_000_005)
+        sourceSet.setStreamState(Set.STREAM_OPEN)
+
+        setMapper = ScipionSetPostgresqlMapper(
+            postgresqlIntegrationDb
+        )
+
+        storeResult = setMapper.storeSet(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName="outputOpenStreamItems",
+            scipionSet=sourceSet,
+        )
+
+        readerDb = _openPostgresqlIntegrationDb(
+            postgresqlMigratedEnv
+        )
+
+        readerSetMapper = ScipionSetPostgresqlMapper(
+            readerDb
+        )
+
+        outputInfo = _loadRuntimeOutputInfo(
+            setMapper=readerSetMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName="outputOpenStreamItems",
+        )
+
+        runtimeSet = PostgresqlRuntimeSetFactory().build(
+            db=readerDb,
+            parent=ParentProtocolStub(protocolId),
+            outputName="outputOpenStreamItems",
+            outputInfo=outputInfo,
+            classes={"OutputSetStub": OutputSetStub, "ItemStub": ItemStub},
+            cache=False,
+        )
+
+        # This is the exact assertion the bug violated: a freshly built
+        # runtime Set for a parent output that is still streaming must
+        # not report itself as closed.
+        assert runtimeSet.isStreamClosed() is False
+        assert runtimeSet.isStreamOpen() is True
+
+        # Closing the upstream stream must still be observable from a
+        # brand new connection/build, so the fix does not simply make
+        # everything look permanently open.
+        sourceSet.setStreamState(Set.STREAM_CLOSED)
+        setMapper.storeSet(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName="outputOpenStreamItems",
+            scipionSet=sourceSet,
+        )
+
+        closedReaderDb = _openPostgresqlIntegrationDb(
+            postgresqlMigratedEnv
+        )
+
+        closedReaderSetMapper = ScipionSetPostgresqlMapper(
+            closedReaderDb
+        )
+
+        closedOutputInfo = _loadRuntimeOutputInfo(
+            setMapper=closedReaderSetMapper,
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName="outputOpenStreamItems",
+        )
+
+        closedRuntimeSet = PostgresqlRuntimeSetFactory().build(
+            db=closedReaderDb,
+            parent=ParentProtocolStub(protocolId),
+            outputName="outputOpenStreamItems",
+            outputInfo=closedOutputInfo,
+            classes={"OutputSetStub": OutputSetStub, "ItemStub": ItemStub},
+            cache=False,
+        )
+
+        assert closedRuntimeSet.isStreamClosed() is True
+
+    finally:
+        if runtimeSet is not None:
+            runtimeSet.close()
+
+        if closedRuntimeSet is not None:
+            closedRuntimeSet.close()
+
+        if readerDb is not None:
+            readerDb.close()
+
+        if closedReaderDb is not None:
+            closedReaderDb.close()
+
+        if projectId is not None and userId is not None:
+            writerMapper.deleteProject(
+                projectId=projectId,
+                ownerId=userId,
+            )
+
+        if userId is not None:
+            postgresqlIntegrationDb.execute(
+                "DELETE FROM users WHERE id = %s",
+                (userId,),
+            )
+
+
 def test_PostgresqlRuntimeSetAppendPersistsAcrossConnections(
         postgresqlIntegrationDb,
         postgresqlMigratedEnv,

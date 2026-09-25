@@ -56,6 +56,70 @@ from app.backend.runtime.protocol_graph_repository import (
 logger = logging.getLogger(__name__)
 
 
+def _getExistingSetAttribute(
+        runtimeSet,
+        path: str,
+):
+    parts = [
+        part
+        for part in path.split(".")
+        if part
+    ]
+
+    if not parts:
+        return None
+
+    current = runtimeSet
+
+    for part in parts:
+        current = getattr(
+            current,
+            part,
+            None,
+        )
+
+        if current is None:
+            return None
+
+    return current
+
+
+SKIPPED_PROPERTY_PATHS = {
+    "_mapperPath",
+    "_size",
+}
+
+
+def _resolvePersistedSetPropertyPath(
+        runtimeSet,
+        path: str,
+) -> Optional[str]:
+    """
+    Resolve the runtimeSet attribute path to hydrate for a persisted
+    property key.
+
+    Some bookkeeping keys (for example "streamState", written by
+    ScipionSetPostgresqlMapper._getSetProperties) are persisted
+    without the leading underscore that the corresponding pyworkflow
+    Object attribute actually uses ("_streamState"). Recognize that
+    alias instead of silently discarding the value, which otherwise
+    leaves _streamState frozen at its class default
+    (Set.STREAM_CLOSED) forever.
+    """
+    if path.startswith("_"):
+        return path
+
+    aliasPath = "_" + path
+
+    if _getExistingSetAttribute(
+            runtimeSet=runtimeSet,
+            path=aliasPath,
+    ) is not None:
+        return aliasPath
+
+    return None
+
+
 class PostgresqlRuntimeSetMixin:
     """
     Runtime behavior added to native Scipion SetOf... classes.
@@ -165,6 +229,37 @@ class PostgresqlRuntimeSetMixin:
 
         return self
 
+    def _loadPersistedSetProperties(
+            self,
+            mapper,
+    ) -> Dict[str, Any]:
+        # Best-effort read of the authoritative scipion_sets.properties
+        # JSON blob (written by ScipionSetPostgresqlMapper.storeSet()/
+        # _getSetProperties()) for this set. This is a separate, older
+        # storage mechanism from mapper.getPropertyKeys()/getProperty()
+        # below (backed by the scipion_set_properties key/value table),
+        # which is not populated for root-level sets.
+        db = getattr(mapper, "db", None)
+        setId = getattr(mapper, "setId", None)
+
+        if db is None or setId is None:
+            return {}
+
+        try:
+            row = db.fetchOne(
+                'SELECT "properties" FROM scipion_sets WHERE id = %s',
+                (setId,),
+            )
+        except Exception:
+            return {}
+
+        if not row:
+            return {}
+
+        properties = row.get("properties")
+
+        return properties if isinstance(properties, dict) else {}
+
     def _refreshPostgresqlRuntimeProperties(
             self,
             mapper,
@@ -172,6 +267,20 @@ class PostgresqlRuntimeSetMixin:
         runtimeProperties = (
             self.getPostgresqlRuntimeProperties()
         )
+
+        for path, value in self._loadPersistedSetProperties(mapper).items():
+            resolvedPath = _resolvePersistedSetPropertyPath(
+                runtimeSet=self,
+                path=str(path),
+            )
+
+            if (
+                    resolvedPath is None
+                    or resolvedPath in SKIPPED_PROPERTY_PATHS
+            ):
+                continue
+
+            runtimeProperties[resolvedPath] = value
 
         getPropertyKeys = getattr(
             mapper,
@@ -1402,10 +1511,7 @@ class PostgresqlRuntimeSetFactory:
     Build native Scipion SetOf... instances backed by PostgreSQL.
     """
 
-    SKIPPED_PROPERTY_PATHS = {
-        "_mapperPath",
-        "_size",
-    }
+    SKIPPED_PROPERTY_PATHS = SKIPPED_PROPERTY_PATHS
 
     _runtimeClassCache: Dict[Type, Type] = {}
 
@@ -4021,8 +4127,15 @@ class PostgresqlRuntimeSetFactory:
         for path, value in properties.items():
             path = str(path)
 
-            if not path.startswith("_"):
+            resolvedPath = _resolvePersistedSetPropertyPath(
+                runtimeSet=runtimeSet,
+                path=path,
+            )
+
+            if resolvedPath is None:
                 continue
+
+            path = resolvedPath
 
             if path in self.SKIPPED_PROPERTY_PATHS:
                 continue
@@ -4073,28 +4186,10 @@ class PostgresqlRuntimeSetFactory:
             runtimeSet,
             path: str,
     ):
-        parts = [
-            part
-            for part in path.split(".")
-            if part
-        ]
-
-        if not parts:
-            return None
-
-        current = runtimeSet
-
-        for part in parts:
-            current = getattr(
-                current,
-                part,
-                None,
-            )
-
-            if current is None:
-                return None
-
-        return current
+        return _getExistingSetAttribute(
+            runtimeSet=runtimeSet,
+            path=path,
+        )
 
     def _hydrateRuntimePointer(
             self,
