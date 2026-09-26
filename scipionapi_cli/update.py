@@ -621,8 +621,106 @@ def _runPipInstall(repoRoot: Path, args: List[str]) -> None:
         raise RuntimeError(f"pip install failed: {' '.join(command)}")
 
 
+def _loadScipionCoreRequirements(repoRoot: Path) -> List[str]:
+    # loadScipionCoreRequirementsFromPyproject
+    pyprojectPath = repoRoot / "pyproject.toml"
+    lines = pyprojectPath.read_text(encoding="utf-8").splitlines()
+
+    inProject = False
+    inDependencies = False
+    dependencies: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if inDependencies:
+                break
+            inProject = stripped == "[project]"
+            continue
+
+        if not inProject:
+            continue
+
+        if not inDependencies:
+            if stripped.startswith("dependencies") and "=" in stripped:
+                rhs = stripped.split("=", 1)[1].strip()
+                if rhs != "[":
+                    raise RuntimeError(
+                        "Expected [project].dependencies to start with '['."
+                    )
+                inDependencies = True
+            continue
+
+        if stripped == "]":
+            break
+
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if stripped.endswith(","):
+            stripped = stripped[:-1].rstrip()
+
+        if (
+            len(stripped) < 2
+            or stripped[0] not in ("\"", "'")
+            or stripped[-1] != stripped[0]
+        ):
+            raise RuntimeError(
+                "Unsupported dependency entry in pyproject.toml: "
+                f"{line}"
+            )
+
+        dependencies.append(stripped[1:-1])
+
+    if not inDependencies:
+        raise RuntimeError(
+            "Could not read [project].dependencies from pyproject.toml."
+        )
+
+    coreNames = (
+        "scipion-pyworkflow",
+        "scipion-em",
+        "scipion-app",
+    )
+    requirements: List[str] = []
+
+    for coreName in coreNames:
+        prefix = f"{coreName} @"
+        matches = [
+            requirement.strip()
+            for requirement in dependencies
+            if requirement.strip().startswith(prefix)
+        ]
+
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected exactly one direct dependency for {coreName} "
+                "in pyproject.toml."
+            )
+
+        requirements.append(matches[0])
+
+    return requirements
+
+
 def _installUpdatedApi(repoRoot: Path) -> None:
     # installUpdatedApi
+    _printStep(
+        "Refreshing Scipion core packages",
+        str(repoRoot / "pyproject.toml"),
+    )
+    coreRequirements = _loadScipionCoreRequirements(repoRoot)
+    _runPipInstall(
+        repoRoot,
+        [
+            "--upgrade",
+            "--force-reinstall",
+            "--no-deps",
+            *coreRequirements,
+        ],
+    )
+
     _printStep(
         "Installing updated ScipionAPI and Python dependencies",
         str(repoRoot),
