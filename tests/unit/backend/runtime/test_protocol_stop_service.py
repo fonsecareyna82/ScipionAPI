@@ -1485,3 +1485,85 @@ def test_RemoteStopCommandChecksDatabaseOwnershipBeforeKilling(monkeypatch, stor
         assert report["hostname"] == hostname
         assert report["terminated"] is True
         assert calls == [{"pid": 1234, "projectId": 1, "protocolId": 10}]
+
+def test_StopUsesPersistedRuntimePidWhenReconstructedProtocolHasNoPid(
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        stopModule,
+        "RuntimeProtocolStatusSyncService",
+        FakeStatusService,
+    )
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+
+    protocol = FakeProtocol(
+        protocolId=10,
+        protocolStatus="running",
+        pid=0,
+    )
+
+    service = RuntimeProtocolStopService()
+
+    monkeypatch.setattr(
+        mapper,
+        "getProjectProtocolByProtocolId",
+        lambda projectId, protocolId: {
+            "id": 50,
+            "projectId": projectId,
+            "protocolId": str(protocolId),
+            "status": "running",
+            "params": {
+                "_scipionWebRuntime": {
+                    "hostname": "",
+                    "pid": 4321,
+                    "coordinatorRunId": "run-1",
+                },
+            },
+        },
+    )
+
+    killCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_killProcessGroup",
+        lambda **kwargs: (
+            killCalls.append(kwargs)
+            or {
+                "pid": 4321,
+                "processGroupId": 4321,
+                "terminated": True,
+                "alreadyStopped": True,
+                "signal": None,
+                "verified": False,
+                "reason": "stored_pid_not_alive",
+            }
+        ),
+    )
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=(
+            lambda **kwargs: protocol
+        ),
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["status"] == 0
+    assert result["protocolsCount"] == 1
+
+    assert killCalls == [
+        {
+            "pid": 4321,
+            "projectId": 1,
+            "protocolId": 10,
+        },
+    ]
+
+    assert protocol.getStatus() == STATUS_ABORTED
+    assert protocol.getPid() == 0

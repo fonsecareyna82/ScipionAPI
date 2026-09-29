@@ -1216,14 +1216,38 @@ class RuntimeProtocolStopService:
                 time.time()
             )
 
-            pid = self._getProtocolPid(
-                protocol
-            )
-
             runtimeMetadata = (
                 self._getStoredRuntimeMetadata(
                     storedRow
                 )
+            )
+
+            protocolPid = self._getProtocolPid(
+                protocol
+            )
+
+            runtimePid = runtimeMetadata.get(
+                "pid"
+            )
+
+            try:
+                runtimePid = int(
+                    runtimePid
+                )
+
+                if runtimePid <= 0:
+                    runtimePid = None
+
+            except (
+                    TypeError,
+                    ValueError,
+            ):
+                runtimePid = None
+
+            pid = (
+                runtimePid
+                if runtimePid is not None
+                else protocolPid
             )
 
             ownerHostname = str(
