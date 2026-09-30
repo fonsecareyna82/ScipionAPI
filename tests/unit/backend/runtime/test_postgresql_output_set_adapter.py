@@ -1484,10 +1484,105 @@ def test_ManagedCompatibilitySqliteRefreshesBeforeNativeLoad(
 
         adapter.uninstall()
 
+def test_DefineOutputsKeepsCanonicalPostgresqlSetOnProtocol(
+        tmp_path,
+):
+    class DefineOutputsProtocolStub(
+            ProtocolStub
+    ):
+        _possibleOutputs = {
+            "outputParticles": OutputSetStub,
+        }
 
+        def __init__(self):
+            super().__init__()
+            self._outputs = []
 
+        def getWorkingDir(self):
+            return str(
+                tmp_path
+            )
 
+        def hasAttribute(self, name):
+            return hasattr(self, name)
 
+        def _storeAttributes(
+                self,
+                attrList,
+                attrDict,
+        ):
+            for key, value in attrDict.items():
+                if key not in attrList:
+                    attrList.append(key)
+                setattr(self, key, value)
 
+        def _defineOutputs(self, **kwargs):
+            for key, value in kwargs.items():
+                if hasattr(self, key):
+                    self._deleteChild(
+                        key,
+                        value,
+                    )
 
+                self._insertChild(
+                    key,
+                    value,
+                )
 
+            self._storeAttributes(
+                self._outputs,
+                kwargs,
+            )
+
+    protocol = DefineOutputsProtocolStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    adapter = RuntimePostgresqlOutputSetAdapter(
+        runtimeMapper=runtimeMapper,
+        projectId=4,
+        protocol=protocol,
+    )
+
+    adapter.install()
+
+    try:
+        storagePath = (
+            tmp_path
+            / "particles.sqlite"
+        )
+
+        outputAlias = OutputSetStub(
+            filename=str(storagePath)
+        )
+
+        assert len(runtimeMapper.created) == 1
+
+        canonicalSet = (
+            runtimeMapper.created[0][
+                "runtimeSet"
+            ]
+        )
+
+        assert outputAlias is not canonicalSet
+
+        protocol._defineOutputs(
+            outputParticles=outputAlias,
+        )
+
+        assert (
+            protocol.outputParticles
+            is canonicalSet
+        )
+
+        assert (
+            adapter
+            ._finalizedSetsByOutputName[
+                "outputParticles"
+            ]
+            is canonicalSet
+        )
+
+        assert runtimeMapper.replaced == []
+
+    finally:
+        adapter.uninstall()

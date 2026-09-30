@@ -73,6 +73,10 @@ class RuntimePostgresqlOutputSetAdapter:
         "_insertChild"
     )
 
+    DEFINE_OUTPUTS_ATTRIBUTE = (
+        "_defineOutputs"
+    )
+
     def __init__(
             self,
             runtimeMapper,
@@ -140,6 +144,7 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchDeclaredOutputClassCreators()
         self._patchDeleteChild()
         self._patchInsertChild()
+        self._patchDefineOutputs()
         self._patchDirectSetLoad()
         logger.info(
             "Installed PostgreSQL output Set adapter. "
@@ -941,6 +946,51 @@ class RuntimePostgresqlOutputSetAdapter:
         self._patchMethod(
             self.INSERT_CHILD_ATTRIBUTE,
             insertChild,
+        )
+
+    def _patchDefineOutputs(self) -> None:
+        originalDefineOutputs = getattr(
+            self.protocol,
+            self.DEFINE_OUTPUTS_ATTRIBUTE,
+            None,
+        )
+
+        if not callable(originalDefineOutputs):
+            return
+
+        adapter = self
+
+        def defineOutputs(
+                protocolSelf,
+                **kwargs,
+        ):
+            result = originalDefineOutputs(
+                **kwargs
+            )
+
+            for outputName in kwargs:
+                canonicalSet = (
+                    adapter
+                    ._finalizedSetsByOutputName
+                    .get(
+                        str(outputName)
+                    )
+                )
+
+                if canonicalSet is None:
+                    continue
+
+                setattr(
+                    protocolSelf,
+                    outputName,
+                    canonicalSet,
+                )
+
+            return result
+
+        self._patchMethod(
+            self.DEFINE_OUTPUTS_ATTRIBUTE,
+            defineOutputs,
         )
 
     @staticmethod
