@@ -1393,6 +1393,72 @@ def test_CleanupCurrentWorkerDirectoryRemovesOnlyCurrentWorkerSnapshots(
     )
 
 
+def test_CleanupStaleWorkerDirectoriesRemovesOnlyDeadWorkers(
+        tmp_path,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        tempfile,
+        "gettempdir",
+        lambda: str(tmp_path),
+    )
+
+    managedRoot = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getManagedRootDirectory()
+    )
+
+    liveWorkerDirectory = Path(
+        PostgresqlRuntimeSetSqliteMaterializer._getCurrentWorkerDirectory()
+    )
+
+    staleWorkerDirectory = (
+        managedRoot
+        / "worker-999999999"
+    )
+
+    liveWorkerDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    staleWorkerDirectory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    liveSnapshot = (
+        liveWorkerDirectory
+        / "live.sqlite"
+    )
+
+    staleSnapshot = (
+        staleWorkerDirectory
+        / "stale.sqlite"
+    )
+
+    liveSnapshot.write_bytes(
+        b"live"
+    )
+
+    staleSnapshot.write_bytes(
+        b"stale"
+    )
+
+    report = (
+        PostgresqlRuntimeSetSqliteMaterializer
+        .cleanupStaleWorkerDirectories()
+    )
+
+    assert liveSnapshot.read_bytes() == b"live"
+    assert not staleWorkerDirectory.exists()
+
+    assert report["removedCount"] == 1
+    assert report["removedDirectories"] == [
+        str(
+            staleWorkerDirectory
+        )
+    ]
+
 def test_ReleaseRuntimeSetRemovesOnlyOwnedSnapshot(
         tmp_path,
         monkeypatch,

@@ -2095,6 +2095,58 @@ def test_MarkFailedRollsBackBeforeStoringProtocol(
     ]
 
 
+def test_RunCleansStaleCompatibilitySqliteWorkersBeforeLoad():
+    events = []
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.cleanupStaleCompatibilitySqliteSnapshots = (
+        lambda: events.append(
+            "stale-cleanup"
+        )
+    )
+
+    worker.load = lambda: events.append(
+        "load"
+    )
+
+    worker.waitUntilReady = lambda: events.append(
+        "wait"
+    )
+
+    worker.execute = (
+        lambda: events.append(
+            "execute"
+        )
+        or 0
+    )
+
+    worker.close = lambda: events.append(
+        "close"
+    )
+
+    worker.cleanupCompatibilitySqliteSnapshots = (
+        lambda: events.append(
+            "cleanup"
+        )
+    )
+
+    assert worker.run(
+        execute=True
+    ) == 0
+
+    assert events == [
+        "stale-cleanup",
+        "load",
+        "wait",
+        "execute",
+        "close",
+        "cleanup",
+    ]
+
 def test_RunClosesWorkerBeforeCleaningCompatibilitySqliteSnapshots():
     events = []
 

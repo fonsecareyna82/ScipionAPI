@@ -1111,6 +1111,53 @@ class RuntimePostgresqlProtocolWorker:
                 exc_info=True,
             )
 
+    def cleanupStaleCompatibilitySqliteSnapshots(
+            self,
+    ) -> Dict[str, Any]:
+        try:
+            report = (
+                PostgresqlRuntimeSetSqliteMaterializer
+                .cleanupStaleWorkerDirectories()
+            )
+
+        except Exception as error:
+            logger.warning(
+                "Could not clean stale PostgreSQL SQLite "
+                "compatibility worker directories. "
+                "projectId=%s protocolId=%s error=%s",
+                self.projectId,
+                self.protocolId,
+                error,
+                exc_info=True,
+            )
+
+            return {
+                "managedRoot": None,
+                "removedDirectories": [],
+                "removedCount": 0,
+                "error": str(error),
+            }
+
+        if report.get(
+                "removedCount"
+        ):
+            logger.debug(
+                "Cleaned stale PostgreSQL SQLite "
+                "compatibility worker directories. "
+                "projectId=%s protocolId=%s "
+                "managedRoot=%s removedCount=%s",
+                self.projectId,
+                self.protocolId,
+                report.get(
+                    "managedRoot"
+                ),
+                report.get(
+                    "removedCount"
+                ),
+            )
+
+        return report
+
     def cleanupCompatibilitySqliteSnapshots(self) -> Dict[str, Any]:
         try:
             report = PostgresqlRuntimeSetSqliteMaterializer.cleanupCurrentWorkerDirectory()
@@ -4070,6 +4117,7 @@ class RuntimePostgresqlProtocolWorker:
             self,
             execute: bool = False,
     ) -> int:
+        self.cleanupStaleCompatibilitySqliteSnapshots()
         self.load()
 
         try:

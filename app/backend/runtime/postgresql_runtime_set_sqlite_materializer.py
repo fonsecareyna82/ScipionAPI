@@ -234,6 +234,102 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             "registryEntriesRemoved": len(managedPaths),
         }
 
+    @classmethod
+    def cleanupStaleWorkerDirectories(
+            cls,
+    ) -> Dict[str, Any]:
+        managedRoot = (
+            cls._getManagedRootDirectory()
+        )
+
+        if not os.path.isdir(
+                managedRoot
+        ):
+            return {
+                "managedRoot": managedRoot,
+                "removedDirectories": [],
+                "removedCount": 0,
+            }
+
+        currentPid = os.getpid()
+        workerPattern = re.compile(
+            r"^worker-(\d+)$"
+        )
+
+        removedDirectories = []
+
+        for entryName in sorted(
+                os.listdir(
+                    managedRoot
+                )
+        ):
+            match = workerPattern.match(
+                entryName
+            )
+
+            if match is None:
+                continue
+
+            workerPid = int(
+                match.group(1)
+            )
+
+            if workerPid == currentPid:
+                continue
+
+            workerDirectory = os.path.join(
+                managedRoot,
+                entryName,
+            )
+
+            if os.path.islink(
+                    workerDirectory
+            ):
+                continue
+
+            if not os.path.isdir(
+                    workerDirectory
+            ):
+                continue
+
+            processIsAlive = True
+
+            try:
+                os.kill(
+                    workerPid,
+                    0,
+                )
+
+            except ProcessLookupError:
+                processIsAlive = False
+
+            except PermissionError:
+                processIsAlive = True
+
+            except OSError:
+                processIsAlive = True
+
+            if processIsAlive:
+                continue
+
+            shutil.rmtree(
+                workerDirectory
+            )
+
+            removedDirectories.append(
+                workerDirectory
+            )
+
+        return {
+            "managedRoot": managedRoot,
+            "removedDirectories": (
+                removedDirectories
+            ),
+            "removedCount": len(
+                removedDirectories
+            ),
+        }
+
     def releaseRuntimeSet(
             self,
             runtimeSet: ScipionSet,
