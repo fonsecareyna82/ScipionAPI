@@ -44,6 +44,7 @@ from app.backend.mapper.scipion_set_mapper import (
 from app.backend.runtime.postgresql_runtime_set_factory import (
     PostgresqlRuntimeSetFactory,
     PostgresqlRuntimeSetMixin,
+    _getExistingSetAttribute,
 )
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     getPostgresqlRuntimeParent,
@@ -69,6 +70,35 @@ class ExampleSet(Set):
 
     def hasAlignment(self):
         return False
+
+
+class ExampleAcquisition(Object):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._dosePerFrame = Float()
+
+    def getDosePerFrame(self):
+        return self._dosePerFrame.get()
+
+
+class ExampleSetWithAcquisition(Set):
+    """ Mirrors pwem's SetOfImages: _acquisition is a typed nested
+    Object, normally initialized in __init__ (like pwem's own
+    SetOfImages.__init__ does), so a test can simulate the real-world
+    gap by nulling it out on one specific instance after construction.
+    """
+    ITEM_TYPE = ExampleItem
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._samplingRate = Float()
+        self._acquisition = ExampleAcquisition()
+
+    def getSamplingRate(self):
+        return self._samplingRate.get()
+
+    def getAcquisition(self):
+        return self._acquisition
 
 
 class ExampleAppendItem(Object):
@@ -1102,6 +1132,108 @@ def test_RefreshRuntimePropertiesSkipsCallableAliases():
         "fileName": "/legacy/output.sqlite",
         "hasAlignment": True,
     }
+
+
+def buildRuntimeSetWithAcquisition(extraPath=None):
+    parent = FakeParent(
+        extraPath=extraPath
+    )
+    parent.setObjId(5)
+
+    runtimeSet = PostgresqlRuntimeSetFactory().build(
+        db=FakeDb(),
+        parent=parent,
+        outputName="outputMicrographs",
+        outputInfo={
+            "setId": 31,
+            "objectId": 900,
+            "runtimeObjectId": 44,
+            "className": "ExampleSetWithAcquisition",
+            "itemClassName": "ExampleItem",
+            "itemsCount": 1,
+            "properties": {
+                "_samplingRate": 1.5,
+                "_streamState": Set.STREAM_CLOSED,
+                "_mapperPath": [
+                    "/legacy/output.sqlite",
+                    "",
+                ],
+                "fileName": "/legacy/output.sqlite",
+            },
+        },
+        classes={
+            "ExampleSetWithAcquisition": ExampleSetWithAcquisition,
+            "ExampleItem": ExampleItem,
+        },
+    )
+
+    return parent, runtimeSet
+
+
+def test_RefreshRuntimePropertiesHydratesMissingNestedIntermediateAttribute():
+    # Regression test: a persisted Set-level property with a nested/
+    # dotted path (e.g. "_acquisition._dosePerFrame") used to be
+    # silently dropped - no warning, no error logged anywhere - the
+    # moment an intermediate object in the path (here, _acquisition)
+    # was not yet initialized (None) on this particular reconstructed
+    # instance: the property-application loop just navigated into
+    # None and `break`-ed out, then found no .set() method to call and
+    # `continue`d past it entirely. This is a general gap, not
+    # specific to Acquisition - ANY nested/typed sub-object property
+    # (CTF, FramesRange, etc.) crossing a not-yet-initialized
+    # intermediate is at risk the same way. A fresh, properly
+    # __init__-ed instance of the intermediate's own class always
+    # produces the same default the owning class would have built, so
+    # borrowing that default instead of giving up is both safe and
+    # general - it needs no per-property special-casing (unlike the
+    # existing _samplingRate-only fallback above).
+    _, runtimeSet = buildRuntimeSetWithAcquisition()
+
+    # Simulate the real-world gap: this specific reconstructed
+    # instance never got its _acquisition initialized.
+    runtimeSet._acquisition = None
+
+    class FakePropertyMapper:
+        def getPropertyKeys(self):
+            return [
+                "_acquisition._dosePerFrame",
+            ]
+
+        def getProperty(self, propertyName):
+            return {
+                "_acquisition._dosePerFrame": 0.74,
+            }[propertyName]
+
+    runtimeSet._refreshPostgresqlRuntimeProperties(
+        FakePropertyMapper()
+    )
+
+    assert runtimeSet._acquisition is not None
+    assert runtimeSet._acquisition.getDosePerFrame() == 0.74
+
+
+def test_GetExistingSetAttributeHydratesMissingNestedIntermediateAttribute():
+    # Regression test: _getExistingSetAttribute is a SEPARATE, duplicate
+    # dotted-path navigation implementation from
+    # _refreshPostgresqlRuntimeProperties above - it is the one
+    # exercised during a Set's INITIAL construction
+    # (build() -> _hydrateSetProperties()), not just on later
+    # refreshes. It had the identical bug: plain getattr() navigation
+    # that silently returns None (dropping the property with no
+    # warning) the moment an intermediate object (e.g. Acquisition) is
+    # not yet initialized on this particular instance. Fixing only the
+    # refresh path left the initial-construction path exercising the
+    # exact same failure mode.
+    runtimeSet = ExampleSetWithAcquisition()
+    runtimeSet._acquisition = None
+
+    resolved = _getExistingSetAttribute(
+        runtimeSet=runtimeSet,
+        path="_acquisition._dosePerFrame",
+    )
+
+    assert resolved is not None
+    assert runtimeSet._acquisition is not None
 
 
 def test_IterItemsReturnsNativeScipionItems():

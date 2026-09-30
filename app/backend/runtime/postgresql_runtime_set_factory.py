@@ -71,10 +71,17 @@ def _getExistingSetAttribute(
     current = runtimeSet
 
     for part in parts:
-        current = getattr(
+        # This is the same nested-attribute-hydration gap fixed in
+        # _refreshPostgresqlRuntimeProperties below - this function is
+        # the one exercised during a Set's INITIAL construction
+        # (build() -> _hydrateSetProperties()), a separate, duplicate
+        # navigation implementation that had the identical bug: an
+        # intermediate object (e.g. Acquisition) not yet initialized
+        # on this particular instance silently dropped the whole
+        # property instead of being hydrated.
+        current = _resolveOrInitializeNestedAttribute(
             current,
             part,
-            None,
         )
 
         if current is None:
@@ -117,6 +124,64 @@ def _resolvePersistedSetPropertyPath(
         return aliasPath
 
     return None
+
+
+def _resolveOrInitializeNestedAttribute(
+        currentAttribute,
+        attributeName: str,
+):
+    """
+    Get attributeName off currentAttribute, initializing the attribute
+    first (by borrowing a freshly __init__-ed default from
+    currentAttribute's own class) if it is still None on this
+    particular instance.
+
+    A persisted Set-level property whose path crosses a nested/typed
+    sub-object (for example "_acquisition._dosePerFrame") must not be
+    silently dropped just because that intermediate object (here,
+    _acquisition) was not yet constructed on this specific
+    reconstructed runtime instance - a freshly __init__-ed instance of
+    currentAttribute's own class produces exactly the same default
+    sub-object pyworkflow's own __init__ would have built, so
+    borrowing that default and attaching it in place is safe. This is
+    deliberately general (it needs no per-property special-casing like
+    the existing _samplingRate-only fallback below), so it also covers
+    CTF, FramesRange, or any other typed nested attribute affected the
+    same way, at any depth.
+    """
+    nextAttribute = getattr(
+        currentAttribute,
+        attributeName,
+        None,
+    )
+
+    if nextAttribute is not None:
+        return nextAttribute
+
+    try:
+        template = type(currentAttribute)()
+    except Exception:
+        return None
+
+    defaultValue = getattr(
+        template,
+        attributeName,
+        None,
+    )
+
+    if defaultValue is None:
+        return None
+
+    try:
+        setattr(
+            currentAttribute,
+            attributeName,
+            defaultValue,
+        )
+    except Exception:
+        return None
+
+    return defaultValue
 
 
 class PostgresqlRuntimeSetMixin:
@@ -355,10 +420,9 @@ class PostgresqlRuntimeSetMixin:
             currentAttribute = self
 
             for attributeName in propertyName.split("."):
-                currentAttribute = getattr(
+                currentAttribute = _resolveOrInitializeNestedAttribute(
                     currentAttribute,
                     attributeName,
-                    None,
                 )
 
                 if currentAttribute is None:
