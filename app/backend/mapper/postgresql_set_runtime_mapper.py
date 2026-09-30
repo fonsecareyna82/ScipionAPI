@@ -25,7 +25,6 @@
 # ******************************************************************************
 import json
 import re
-import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
@@ -940,16 +939,11 @@ class PostgresqlSetRuntimeMapper:
         if not self._pendingAppendItems:
             return False
 
-        flushStarted = time.perf_counter()
         pendingItems = list(
             self._pendingAppendItems
         )
-        chunks = 0
-        bulkSeconds = 0.0
-        counterSeconds = 0.0
 
         with self.db.transaction():
-            bulkStarted = time.perf_counter()
             for offset in range(
                     0,
                     len(pendingItems),
@@ -961,18 +955,13 @@ class PostgresqlSetRuntimeMapper:
                         offset + self.BULK_APPEND_SIZE
                     ]
                 )
-                chunks += 1
-            bulkSeconds = time.perf_counter() - bulkStarted
 
-            counterStarted = time.perf_counter()
             self._refreshSetCounters()
-            counterSeconds = time.perf_counter() - counterStarted
 
         del self._pendingAppendItems[
             :len(pendingItems)
         ]
 
-        print("PERF_PGSET flush_total=%.6f items=%d chunks=%d bulk=%.6f counters=%.6f" % (time.perf_counter() - flushStarted, len(pendingItems), chunks, bulkSeconds, counterSeconds))
         return True
 
     def _bulkUpsertSerializedItems(
@@ -1396,15 +1385,12 @@ class PostgresqlSetRuntimeMapper:
         )
 
     def commit(self) -> None:
-        commitStarted = time.perf_counter()
         self._requireWritable()
 
         if self._flushPendingAppends():
-            print("PERF_PGSET commit_total=%.6f buffered=1" % (time.perf_counter() - commitStarted))
             return
 
         self.db.conn.commit()
-        print("PERF_PGSET commit_total=%.6f buffered=0" % (time.perf_counter() - commitStarted))
 
     def close(self) -> None:
         """
@@ -1889,7 +1875,6 @@ class PostgresqlSetRuntimeMapper:
     def _refreshSetCounters(
             self,
     ) -> None:
-        countersStarted = time.perf_counter()
         query = """
             SELECT
                 COUNT(*) AS "itemsCount",
@@ -1987,7 +1972,6 @@ class PostgresqlSetRuntimeMapper:
                 commit=False,
             )
 
-            print("PERF_PGSET refresh_counters=%.6f scope=root items=%d max_id=%s" % (time.perf_counter() - countersStarted, itemsCount, normalizedMaxItemId))
             return
 
         self.db.execute(
@@ -2023,7 +2007,6 @@ class PostgresqlSetRuntimeMapper:
             "maxItemId": normalizedMaxItemId,
             "incremental": True,
         })
-        print("PERF_PGSET refresh_counters=%.6f scope=logical items=%d max_id=%s" % (time.perf_counter() - countersStarted, itemsCount, normalizedMaxItemId))
 
     # ------------------------------------------------------------------
     # Set properties
