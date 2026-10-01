@@ -3916,3 +3916,71 @@ def test_NestedSynchronizerFlushesWritableMapperBeforeResync(monkeypatch):
         "ensure",
         "close",
     ]
+
+def test_RefreshRuntimePropertiesFillsMissingSetAcquisitionFromFirstItem():
+    _, runtimeSet = buildRuntimeSetWithAcquisition()
+
+    class AcquisitionStub:
+        def __init__(
+                self,
+                voltage=None,
+                sphericalAberration=None,
+                amplitudeContrast=None,
+        ):
+            self._voltageValue = voltage
+            self._sphericalAberrationValue = sphericalAberration
+            self._amplitudeContrastValue = amplitudeContrast
+
+        def getVoltage(self):
+            return self._voltageValue
+
+        def setVoltage(self, value):
+            self._voltageValue = value
+
+        def getSphericalAberration(self):
+            return self._sphericalAberrationValue
+
+        def setSphericalAberration(self, value):
+            self._sphericalAberrationValue = value
+
+        def getAmplitudeContrast(self):
+            return self._amplitudeContrastValue
+
+        def setAmplitudeContrast(self, value):
+            self._amplitudeContrastValue = value
+
+    runtimeSet._acquisition = AcquisitionStub(
+        voltage=300.0,
+        sphericalAberration=None,
+        amplitudeContrast=None,
+    )
+
+    firstMovieAcquisition = AcquisitionStub(
+        voltage=200.0,
+        sphericalAberration=2.7,
+        amplitudeContrast=0.1,
+    )
+
+    class FirstMovieStub:
+        def hasAcquisition(self):
+            return True
+
+        def getAcquisition(self):
+            return firstMovieAcquisition
+
+    class FakePropertyMapper:
+        def getPropertyKeys(self):
+            return []
+
+        def selectFirst(self):
+            return FirstMovieStub()
+
+    runtimeSet._refreshPostgresqlRuntimeProperties(
+        FakePropertyMapper()
+    )
+
+    acquisition = runtimeSet.getAcquisition()
+
+    assert acquisition.getVoltage() == 300.0
+    assert acquisition.getSphericalAberration() == 2.7
+    assert acquisition.getAmplitudeContrast() == 0.1

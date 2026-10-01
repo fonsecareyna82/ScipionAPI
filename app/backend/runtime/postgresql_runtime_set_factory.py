@@ -465,9 +465,136 @@ class PostgresqlRuntimeSetMixin:
                     unresolvedPointerProperties
                 )
 
+        self._fillMissingAcquisitionFromFirstItem(
+            mapper
+        )
+
         self._postgresqlRuntimeProperties = (
             runtimeProperties
         )
+
+    def _fillMissingAcquisitionFromFirstItem(
+            self,
+            mapper,
+    ) -> None:
+        """Fill missing shared microscope metadata from the first item.
+
+        PostgreSQL item hydration can preserve Acquisition on each image/movie
+        even when the same shared Acquisition values are absent from the Set
+        properties. Native Scipion consumers expect these common values on
+        the Set itself, so repair only missing fields without overwriting
+        authoritative Set-level metadata.
+        """
+        getAcquisition = getattr(
+            self,
+            "getAcquisition",
+            None,
+        )
+
+        selectFirst = getattr(
+            mapper,
+            "selectFirst",
+            None,
+        )
+
+        if (
+                not callable(getAcquisition)
+                or not callable(selectFirst)
+        ):
+            return
+
+        try:
+            setAcquisition = getAcquisition()
+            firstItem = selectFirst()
+        except Exception:
+            return
+
+        if setAcquisition is None or firstItem is None:
+            return
+
+        hasAcquisition = getattr(
+            firstItem,
+            "hasAcquisition",
+            None,
+        )
+
+        if callable(hasAcquisition):
+            try:
+                if not hasAcquisition():
+                    return
+            except Exception:
+                return
+
+        getItemAcquisition = getattr(
+            firstItem,
+            "getAcquisition",
+            None,
+        )
+
+        if not callable(getItemAcquisition):
+            return
+
+        try:
+            itemAcquisition = getItemAcquisition()
+        except Exception:
+            return
+
+        if itemAcquisition is None:
+            return
+
+        for fieldName in (
+                "Voltage",
+                "SphericalAberration",
+                "AmplitudeContrast",
+        ):
+            setGetter = getattr(
+                setAcquisition,
+                "get%s" % fieldName,
+                None,
+            )
+
+            setSetter = getattr(
+                setAcquisition,
+                "set%s" % fieldName,
+                None,
+            )
+
+            itemGetter = getattr(
+                itemAcquisition,
+                "get%s" % fieldName,
+                None,
+            )
+
+            if (
+                    not callable(setGetter)
+                    or not callable(setSetter)
+                    or not callable(itemGetter)
+            ):
+                continue
+
+            try:
+                if setGetter() is not None:
+                    continue
+
+                itemValue = itemGetter()
+            except Exception:
+                continue
+
+            if itemValue is None:
+                continue
+
+            try:
+                setSetter(itemValue)
+            except Exception:
+                logger.debug(
+                    "Could not repair PostgreSQL runtime Set "
+                    "acquisition metadata from first item. "
+                    "className=%s objectId=%s field=%s",
+                    self.getClassName(),
+                    self.getObjId(),
+                    fieldName,
+                    exc_info=True,
+                )
 
     def _getPostgresqlRuntimePropertyAttribute(
             self,
