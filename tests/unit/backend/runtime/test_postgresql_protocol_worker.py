@@ -3442,3 +3442,52 @@ def test_CoordinatorHeartbeatThreadStopsPromptlyOnRequest(monkeypatch):
     assert not thread.is_alive()
     assert worker._heartbeatStopEvent is None
     assert worker._heartbeatThread is None
+
+def test_FailedQueuedProtocolExecutionCancelsQueueJobAfterWorkerCleanup():
+    events = []
+
+    class QueueProtocolStub:
+        def useQueueForProtocol(self):
+            return True
+
+        def getStatus(self):
+            return "failed"
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+    worker.protocol = QueueProtocolStub()
+    worker.mapper = object()
+
+    worker.cleanupStaleCompatibilitySqliteSnapshots = (
+        lambda: events.append("cleanup-stale")
+    )
+    worker.load = lambda: events.append("load")
+    worker.getStoredCoordinatorRunId = lambda: ""
+    worker.waitUntilReady = lambda: events.append("wait")
+    worker.execute = lambda: events.append("execute") or 1
+    worker.close = lambda: events.append("close")
+    worker.cleanupCompatibilitySqliteSnapshots = (
+        lambda: events.append("cleanup")
+    )
+
+    # New lifecycle hook under test. It must run after the worker
+    # has closed its normal resources because cancelling the scheduler
+    # job may terminate the current queued worker immediately.
+    worker.cancelFailedQueuedProtocolExecution = (
+        lambda: events.append("cancel")
+    )
+
+    result = worker.run(execute=True)
+
+    assert result == 1
+    assert events == [
+        "cleanup-stale",
+        "load",
+        "wait",
+        "execute",
+        "close",
+        "cleanup",
+        "cancel",
+    ]

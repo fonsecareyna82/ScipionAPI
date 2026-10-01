@@ -4113,6 +4113,124 @@ class RuntimePostgresqlProtocolWorker:
             else 1
         )
 
+    def cancelFailedQueuedProtocolExecution(
+            self,
+    ) -> None:
+        """Best-effort cancellation of a failed protocol-level queue job.
+
+        A protocol submitted with useQueueForProtocol() executes this worker
+        inside the scheduler allocation itself. Scipion may finish
+        protocol.run() with STATUS_FAILED without raising an exception, so
+        returning a non-zero worker code alone is not enough to release the
+        external scheduler job.
+
+        Cancellation runs only after normal worker cleanup (see run()) and
+        never changes FAILED into ABORTED. A stale coordinator is fenced out
+        so it cannot cancel a newer relaunch.
+        """
+        protocol = self.protocol
+
+        if protocol is None:
+            return
+
+        try:
+            useQueueForProtocol = bool(
+                protocol.useQueueForProtocol()
+            )
+        except Exception:
+            useQueueForProtocol = False
+
+        if not useQueueForProtocol:
+            return
+
+        try:
+            protocolStatus = str(
+                protocol.getStatus()
+                or ""
+            ).strip().lower()
+        except Exception:
+            return
+
+        failedStatuses = {
+            str(STATUS_FAILED).strip().lower(),
+            "failed",
+        }
+
+        if protocolStatus not in failedStatuses:
+            return
+
+        if callable(
+                getattr(
+                    self.mapper,
+                    "getProjectProtocolByProtocolId",
+                    None,
+                )
+        ):
+            try:
+                storedRunId = (
+                    self.getStoredCoordinatorRunId()
+                )
+            except Exception:
+                logger.warning(
+                    "Could not verify coordinator ownership before "
+                    "cancelling failed queued protocol. "
+                    "projectId=%s protocolId=%s",
+                    self.projectId,
+                    self.protocolId,
+                    exc_info=True,
+                )
+                return
+
+            currentRunId = str(
+                self.coordinatorRunId
+                or ""
+            ).strip()
+
+            if (
+                    (storedRunId or currentRunId)
+                    and storedRunId != currentRunId
+            ):
+                logger.info(
+                    "Skipping queue cancellation from superseded "
+                    "PostgreSQL coordinator. projectId=%s protocolId=%s",
+                    self.projectId,
+                    self.protocolId,
+                )
+                return
+
+        try:
+            from app.backend.runtime.protocol_stop_service import (
+                RuntimeProtocolStopService,
+            )
+
+            reports = (
+                RuntimeProtocolStopService()
+                ._cancelQueueJobs(
+                    protocol
+                )
+            )
+
+            if reports:
+                logger.info(
+                    "Cancelled failed queued PostgreSQL protocol jobs. "
+                    "projectId=%s protocolId=%s jobIds=%s",
+                    self.projectId,
+                    self.protocolId,
+                    [
+                        report.get("jobId")
+                        for report in reports
+                    ],
+                )
+
+        except Exception:
+            logger.warning(
+                "Could not cancel failed queued PostgreSQL protocol job. "
+                "projectId=%s protocolId=%s",
+                self.projectId,
+                self.protocolId,
+                exc_info=True,
+            )
+
     def run(
             self,
             execute: bool = False,
@@ -4169,7 +4287,11 @@ class RuntimePostgresqlProtocolWorker:
             try:
                 self.close()
             finally:
-                self.cleanupCompatibilitySqliteSnapshots()
+                try:
+                    self.cleanupCompatibilitySqliteSnapshots()
+                finally:
+                    if execute:
+                        self.cancelFailedQueuedProtocolExecution()
 
 
 def main() -> int:
