@@ -3491,3 +3491,181 @@ def test_FailedQueuedProtocolExecutionCancelsQueueJobAfterWorkerCleanup():
         "cleanup",
         "cancel",
     ]
+
+def test_FailedQueuedProtocolVerifiesOwnershipBeforeClosingDatabase(
+        monkeypatch,
+):
+    from app.backend.runtime.protocol_status_sync_service import (
+        RuntimeProtocolStatusSyncService,
+    )
+    from app.backend.runtime.protocol_stop_service import (
+        RuntimeProtocolStopService,
+    )
+
+    events = []
+    databaseState = {
+        "closed": False,
+    }
+
+    class QueueProtocolStub:
+        def useQueueForProtocol(self):
+            return True
+
+        def getStatus(self):
+            return "failed"
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            if databaseState["closed"]:
+                events.append(
+                    "ownership-lookup-after-close"
+                )
+                raise RuntimeError(
+                    "PostgreSQL database is closed"
+                )
+
+            events.append(
+                "ownership-lookup-open"
+            )
+
+            return {
+                "id": 71,
+                "projectId": projectId,
+                "protocolId": str(
+                    protocolId
+                ),
+                "params": {
+                    RuntimeProtocolStatusSyncService.RUNTIME_METADATA_KEY: {
+                        "coordinatorRunId": "run-1",
+                    },
+                },
+            }
+
+    def cancelQueueJobs(
+            self,
+            protocol,
+    ):
+        events.append(
+            "cancel"
+        )
+        return [{
+            "jobId": "12345",
+        }]
+
+    monkeypatch.setattr(
+        RuntimeProtocolStopService,
+        "_cancelQueueJobs",
+        cancelQueueJobs,
+    )
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+        coordinatorRunId="run-1",
+    )
+
+    worker.protocol = QueueProtocolStub()
+    worker.mapper = MapperStub()
+
+    worker.cleanupStaleCompatibilitySqliteSnapshots = (
+        lambda: events.append(
+            "cleanup-stale"
+        )
+    )
+
+    worker.load = lambda: events.append(
+        "load"
+    )
+
+    worker.waitUntilReady = (
+        lambda: events.append(
+            "wait"
+        )
+    )
+
+    worker.execute = (
+        lambda:
+        events.append(
+            "execute"
+        )
+        or 1
+    )
+
+    def close():
+        events.append(
+            "close"
+        )
+        databaseState[
+            "closed"
+        ] = True
+
+    worker.close = close
+
+    worker.cleanupCompatibilitySqliteSnapshots = (
+        lambda: events.append(
+            "cleanup"
+        )
+    )
+
+    result = worker.run(
+        execute=True
+    )
+
+    assert result == 1
+
+    ownershipLookupsBeforeClose = [
+        index
+        for index, event
+        in enumerate(events)
+        if event
+        == "ownership-lookup-open"
+    ]
+
+    assert len(
+        ownershipLookupsBeforeClose
+    ) >= 2
+
+    executeIndex = events.index(
+        "execute"
+    )
+
+    closeIndex = events.index(
+        "close"
+    )
+
+    cancellationOwnershipIndex = (
+        ownershipLookupsBeforeClose[-1]
+    )
+
+    assert (
+        executeIndex
+        <
+        cancellationOwnershipIndex
+        <
+        closeIndex
+    )
+
+    assert (
+        "ownership-lookup-after-close"
+        not in events
+    )
+
+    cleanupIndex = events.index(
+        "cleanup"
+    )
+
+    cancelIndex = events.index(
+        "cancel"
+    )
+
+    assert (
+        closeIndex
+        <
+        cleanupIndex
+        <
+        cancelIndex
+    )

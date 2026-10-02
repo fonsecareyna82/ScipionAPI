@@ -800,6 +800,7 @@ class RuntimePostgresqlProtocolWorker:
         self._executionInputSetsByRuntimeObjectId = {}
         self._executionInputObjectsByRuntimeObjectId = {}
         self._executionInputObjectIdsResolving = set()
+        self._failedQueuedProtocolCancellationAuthorized = None
 
     @staticmethod
     def _allowsScalarPointers(param) -> bool:
@@ -4113,25 +4114,19 @@ class RuntimePostgresqlProtocolWorker:
             else 1
         )
 
-    def cancelFailedQueuedProtocolExecution(
+    def prepareFailedQueuedProtocolCancellation(
             self,
-    ) -> None:
-        """Best-effort cancellation of a failed protocol-level queue job.
+    ) -> bool:
+        # Verify everything that needs PostgreSQL while the connection
+        # is still open. The actual scheduler cancellation remains after
+        # close/cleanup because cancelling the current allocation may
+        # terminate this worker process immediately.
+        self._failedQueuedProtocolCancellationAuthorized = False
 
-        A protocol submitted with useQueueForProtocol() executes this worker
-        inside the scheduler allocation itself. Scipion may finish
-        protocol.run() with STATUS_FAILED without raising an exception, so
-        returning a non-zero worker code alone is not enough to release the
-        external scheduler job.
-
-        Cancellation runs only after normal worker cleanup (see run()) and
-        never changes FAILED into ABORTED. A stale coordinator is fenced out
-        so it cannot cancel a newer relaunch.
-        """
         protocol = self.protocol
 
         if protocol is None:
-            return
+            return False
 
         try:
             useQueueForProtocol = bool(
@@ -4141,7 +4136,7 @@ class RuntimePostgresqlProtocolWorker:
             useQueueForProtocol = False
 
         if not useQueueForProtocol:
-            return
+            return False
 
         try:
             protocolStatus = str(
@@ -4149,7 +4144,7 @@ class RuntimePostgresqlProtocolWorker:
                 or ""
             ).strip().lower()
         except Exception:
-            return
+            return False
 
         failedStatuses = {
             str(STATUS_FAILED).strip().lower(),
@@ -4157,7 +4152,7 @@ class RuntimePostgresqlProtocolWorker:
         }
 
         if protocolStatus not in failedStatuses:
-            return
+            return False
 
         if callable(
                 getattr(
@@ -4179,7 +4174,7 @@ class RuntimePostgresqlProtocolWorker:
                     self.protocolId,
                     exc_info=True,
                 )
-                return
+                return False
 
             currentRunId = str(
                 self.coordinatorRunId
@@ -4196,7 +4191,27 @@ class RuntimePostgresqlProtocolWorker:
                     self.projectId,
                     self.protocolId,
                 )
-                return
+                return False
+
+        self._failedQueuedProtocolCancellationAuthorized = True
+        return True
+
+    def cancelFailedQueuedProtocolExecution(
+            self,
+    ) -> None:
+        # No PostgreSQL reads are allowed here. Ownership/fencing was
+        # verified by prepareFailedQueuedProtocolCancellation() before
+        # close() released the database connection.
+        if (
+                self._failedQueuedProtocolCancellationAuthorized
+                is not True
+        ):
+            return
+
+        protocol = self.protocol
+
+        if protocol is None:
+            return
 
         try:
             from app.backend.runtime.protocol_stop_service import (
@@ -4284,6 +4299,18 @@ class RuntimePostgresqlProtocolWorker:
             self.markFailed(error)
             return 1
         finally:
+            if execute:
+                try:
+                    self.prepareFailedQueuedProtocolCancellation()
+                except Exception:
+                    logger.warning(
+                        "Could not prepare failed queued protocol cancellation. "
+                        "projectId=%s protocolId=%s",
+                        self.projectId,
+                        self.protocolId,
+                        exc_info=True,
+                    )
+
             try:
                 self.close()
             finally:
