@@ -454,6 +454,134 @@ def test_WorkerAppliesMandatoryQueueRequirement(
     assert protocol.useQueue() is expectedUseQueue
 
 
+
+def test_MandatoryQueueRequirementDoesNotPersistUseQueueSelection():
+    class ValueStub:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class HostConfigStub:
+        def isQueueMandatory(self):
+            return 1
+
+    class QueueProtocolStub:
+        def __init__(self):
+            self._useQueue = ValueStub(False)
+            self.numberOfMpi = ValueStub(1)
+            self.numberOfThreads = ValueStub(1)
+
+        def getHostConfig(self):
+            return HostConfigStub()
+
+        def useQueue(self):
+            return bool(
+                self._useQueue.get()
+            )
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = protocol
+
+    assert (
+        worker
+        ._applyMandatoryQueueRequirement()
+        is True
+    )
+
+    # Host policy must affect this execution only.
+    # The persisted user choice remains untouched.
+    assert protocol._useQueue.get() is False
+
+    # Runtime behavior still sees the effective host policy.
+    assert protocol.useQueue() is True
+
+
+def test_QueuedWorkerKeepsTransientQueueExecutionAfterHostPolicyChanges():
+    class ValueStub:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class HostConfigStub:
+        def isQueueMandatory(self):
+            return 0
+
+    class QueueProtocolStub:
+        def __init__(self):
+            self._useQueue = ValueStub(False)
+            self.numberOfMpi = ValueStub(1)
+            self.numberOfThreads = ValueStub(1)
+            self.queueParams = None
+
+        def getHostConfig(self):
+            return HostConfigStub()
+
+        def useQueue(self):
+            return bool(
+                self._useQueue.get()
+            )
+
+        def setQueueParams(
+                self,
+                queueParams,
+        ):
+            self.queueParams = queueParams
+
+    protocol = QueueProtocolStub()
+
+    # queueParams are passed only to the worker already launched inside
+    # the scheduler allocation. The host policy may have changed since
+    # the original submission, but this execution is still queued.
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+        queueName="gpu",
+        queueParams={
+            "JOB_TIME": "72",
+        },
+    )
+
+    worker.protocol = protocol
+
+    assert (
+        worker
+        ._applyMandatoryQueueRequirement()
+        is False
+    )
+
+    assert (
+        worker
+        ._applyQueueLaunchOverride()
+        is True
+    )
+
+    assert protocol._useQueue.get() is False
+    assert protocol.useQueue() is True
+
+    assert protocol.queueParams == [
+        "gpu",
+        {
+            "JOB_TIME": "72",
+        },
+    ]
+
+
 def test_WorkerMandatoryQueueAllowsQueueLaunchOverride():
     class ValueStub:
         def __init__(self, value):
@@ -2839,6 +2967,69 @@ def test_EffectiveQueueLaunchParamsFallsBackToFirstConfiguredQueue(monkeypatch):
     assert queueParams == {
         "JOB_TIME": "72",
     }
+
+
+
+def test_EnsureQueueLaunchParamsIgnoresEmptyPersistedQueueSelection():
+    class QueueProtocolStub:
+        def __init__(self):
+            # This is the shape currently left by a protocol whose
+            # queue UI selection is empty.
+            self.queueParams = [
+                "",
+                {},
+            ]
+
+        def hasQueueParams(self):
+            return True
+
+        def getQueueParams(self):
+            return self.queueParams
+
+        def setQueueParams(
+                self,
+                queueParams,
+        ):
+            self.queueParams = queueParams
+
+    protocol = QueueProtocolStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.protocol = protocol
+
+    worker._getEffectiveQueueLaunchParams = lambda: (
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    )
+
+    queueName, queueParams = (
+        worker._ensureQueueLaunchParams()
+    )
+
+    # Empty persisted queue metadata is not a usable queue
+    # selection. Mandatory runtime queue execution must fall
+    # back to the effective host/instance queue configuration.
+    assert queueName == "gpu"
+
+    assert queueParams == {
+        "JOB_TIME": "72",
+        "JOB_MEMORY": "64000",
+    }
+
+    assert protocol.queueParams == [
+        "gpu",
+        {
+            "JOB_TIME": "72",
+            "JOB_MEMORY": "64000",
+        },
+    ]
 
 
 def test_EnsureQueueLaunchParamsUsesEffectiveSettingsWhenOverrideIsMissing():

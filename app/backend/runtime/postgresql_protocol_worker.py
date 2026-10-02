@@ -801,6 +801,8 @@ class RuntimePostgresqlProtocolWorker:
         self._executionInputObjectsByRuntimeObjectId = {}
         self._executionInputObjectIdsResolving = set()
         self._failedQueuedProtocolCancellationAuthorized = None
+        self._runtimeQueueExecutionRequired = False
+        self._protocolUseQueueOriginal = None
 
     @staticmethod
     def _allowsScalarPointers(param) -> bool:
@@ -815,6 +817,38 @@ class RuntimePostgresqlProtocolWorker:
             ),
         )
         )
+
+    def _enableTransientQueueExecution(self) -> bool:
+        protocol = self.protocol
+
+        if protocol is None:
+            return False
+
+        if self._runtimeQueueExecutionRequired:
+            return False
+
+        originalUseQueue = protocol.useQueue
+
+        if self._protocolUseQueueOriginal is None:
+            self._protocolUseQueueOriginal = originalUseQueue
+
+        worker = self
+
+        def useQueue(protocolSelf):
+            if worker._runtimeQueueExecutionRequired:
+                return True
+
+            return bool(
+                worker._protocolUseQueueOriginal()
+            )
+
+        protocol.useQueue = MethodType(
+            useQueue,
+            protocol,
+        )
+
+        self._runtimeQueueExecutionRequired = True
+        return True
 
     def _applyMandatoryQueueRequirement(self) -> bool:
         if self.protocol is None:
@@ -833,10 +867,14 @@ class RuntimePostgresqlProtocolWorker:
         if cores < mandatoryCores or self.protocol.useQueue():
             return False
 
-        self.protocol._useQueue.set(True)
+        applied = self._enableTransientQueueExecution()
+
+        if not applied:
+            return False
 
         logger.info(
-            "Enforcing mandatory queue execution. "
+            "Enforcing mandatory queue execution without changing "
+            "the persisted protocol queue selection. "
             "projectId=%s protocolId=%s cores=%s mandatoryCores=%s",
             self.projectId,
             self.protocolId,
@@ -850,8 +888,10 @@ class RuntimePostgresqlProtocolWorker:
         if self._queueLaunchOverride is None or self.protocol is None:
             return False
 
-        if not self.protocol.useQueue():
-            return False
+        # queueParams are carried only by the worker that was already
+        # submitted to the scheduler. Preserve that execution decision even
+        # if the host Queue required policy changed while the job was waiting.
+        self._enableTransientQueueExecution()
 
         queueName, queueParams = self._queueLaunchOverride
         self.protocol.setQueueParams([queueName, dict(queueParams)])
@@ -3881,16 +3921,40 @@ class RuntimePostgresqlProtocolWorker:
 
     def _ensureQueueLaunchParams(self):
         if self.protocol.hasQueueParams():
-            queueName, queueParams = self.protocol.getQueueParams()
+            queueName, queueParams = (
+                self.protocol.getQueueParams()
+            )
 
-            if not isinstance(queueParams, dict):
+            if not isinstance(
+                    queueParams,
+                    dict,
+            ):
                 raise RuntimeError(
-                    "Protocol queue launch params must be a dictionary."
+                    "Protocol queue launch params "
+                    "must be a dictionary."
                 )
 
-            return str(queueName or ""), dict(queueParams)
+            normalizedQueueName = str(
+                queueName
+                or ""
+            ).strip()
 
-        queueName, queueParams = self._getEffectiveQueueLaunchParams()
+            normalizedQueueParams = dict(
+                queueParams
+            )
+
+            if (
+                    normalizedQueueName
+                    or normalizedQueueParams
+            ):
+                return (
+                    normalizedQueueName,
+                    normalizedQueueParams,
+                )
+
+        queueName, queueParams = (
+            self._getEffectiveQueueLaunchParams()
+        )
 
         self.protocol.setQueueParams([
             queueName,
