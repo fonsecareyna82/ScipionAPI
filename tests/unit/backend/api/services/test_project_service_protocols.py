@@ -4700,4 +4700,193 @@ def test_LaunchExternalViewerRejectsUnavailableViewer(
     assert error.value.status_code == 409
     assert error.value.detail == "Program not installed"
 
+def test_ApplyParamsToProtocolUsesDetachedPostgresqlOutputForFormPointers(
+        monkeypatch,
+):
+    import importlib
+    from types import SimpleNamespace
 
+    projectServiceModule = importlib.import_module(
+        "app.backend.api.services.project_service"
+    )
+
+    saveServiceModule = importlib.import_module(
+        "app.backend.runtime.protocol_save_service"
+    )
+
+    class FakePointerParam:
+        def __init__(self):
+            self.label = SimpleNamespace(
+                get=lambda: "Input coordinates"
+            )
+            self.default = SimpleNamespace(
+                set=lambda value: None
+            )
+
+    class FakeMultiPointerParam:
+        pass
+
+    class FakeRelationParam:
+        pass
+
+    class FakePointer:
+        def __init__(
+                self,
+                value=None,
+                extended=None,
+        ):
+            self.value = value
+            self.extended = extended
+
+        def set(self, value):
+            self.value = value
+
+        def setExtended(self, value):
+            self.extended = value
+
+        def getExtended(self):
+            return self.extended
+
+        def getObjValue(self):
+            return self.value
+
+        def get(self):
+            if not self.extended:
+                return self.value
+
+            return getattr(
+                self.value,
+                self.extended,
+                None,
+            )
+
+    monkeypatch.setattr(
+        saveServiceModule,
+        "PointerParam",
+        FakePointerParam,
+    )
+
+    monkeypatch.setattr(
+        saveServiceModule,
+        "MultiPointerParam",
+        FakeMultiPointerParam,
+    )
+
+    monkeypatch.setattr(
+        saveServiceModule,
+        "RelationParam",
+        FakeRelationParam,
+    )
+
+    monkeypatch.setattr(
+        saveServiceModule,
+        "Pointer",
+        FakePointer,
+    )
+
+    inputCoordinatesParam = FakePointerParam()
+
+    class ProtocolStub:
+        def getParam(self, name):
+            if name == "inputCoordinates":
+                return inputCoordinatesParam
+
+            return None
+
+    protocol = ProtocolStub()
+
+    parentProtocol = SimpleNamespace(
+        getObjId=lambda: 3170,
+    )
+
+    runtimeCoordinates = object()
+
+    service = object.__new__(
+        projectServiceModule.ProjectService
+    )
+
+    service._getParentProtocolForPointer = (
+        lambda **kwargs: (
+            3170,
+            parentProtocol,
+        )
+    )
+
+    service._resolveParentOutputForRuntimePointer = (
+        lambda **kwargs: {
+            "exists": True,
+            "source": "postgresql",
+            "hasRuntimeAttribute": False,
+            "parentProtocolReadOnly": True,
+            "outputInfo": {
+                "exists": True,
+                "kind": "set",
+                "setId": 81,
+                "runtimeObjectId": 901,
+                "outputName": "outputCoordinates_Full",
+                "className": "SetOfCoordinates",
+            },
+        }
+    )
+
+    resolvedRuntimeIds = []
+
+    def resolveRuntimeInputObject(runtimeObjectId):
+        resolvedRuntimeIds.append(
+            runtimeObjectId
+        )
+        return runtimeCoordinates
+
+    service._resolvePostgresqlRuntimeInputObject = (
+        resolveRuntimeInputObject
+    )
+
+    class MapperStub:
+        db = object()
+
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            assert projectId == 12
+            assert str(protocolId) == "3170"
+
+            return {
+                "id": 77,
+                "protocolId": "3170",
+            }
+
+    errors = service.applyParamsToProtocol(
+        mapper=MapperStub(),
+        projectId=12,
+        protocol=protocol,
+        params={
+            "inputCoordinates":
+                "3170.outputCoordinates_Full",
+        },
+    )
+
+    assert errors == []
+
+    assert resolvedRuntimeIds == [
+        901,
+    ]
+
+    assert hasattr(
+        protocol,
+        "inputCoordinates",
+    )
+
+    assert (
+        protocol.inputCoordinates.get()
+        is runtimeCoordinates
+    )
+
+    assert (
+        protocol.inputCoordinates.getExtended()
+        in (
+            None,
+            "",
+        )
+    )

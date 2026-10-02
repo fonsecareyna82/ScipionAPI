@@ -153,6 +153,35 @@ class ProtocolRelationService:
             ):
                 continue
 
+            if (
+                    bool(
+                        getattr(
+                            param,
+                            "allowsPointers",
+                            False,
+                        )
+                    )
+                    and isinstance(
+                        value,
+                        dict,
+                    )
+                    and "pointerMode" in value
+            ):
+                if value.get(
+                        "pointerMode"
+                ) is True:
+                    # Leave real scalar pointers untouched.
+                    # RuntimeProtocolSaveService will resolve them
+                    # together with PointerParam/RelationParam values.
+                    continue
+
+                # ScipionWeb serializes scalar parameters that
+                # support pointers with the same envelope even
+                # while they are in literal mode.
+                value = value.get(
+                    "value"
+                )
+
             try:
                 castedValue = (
                     castProtocolParamValue(
@@ -201,14 +230,15 @@ class ProtocolRelationService:
                     + str(error)
                 )
 
-        errors.extend(
-            self.projectService
-            .applyParamsToProtocol(
-                mapper=mapper,
-                projectId=projectId,
-                protocol=protocol,
-                params=params,
-            )
+        # RelationParam discovery mirrors the native Scipion form:
+        # pointer restoration is best effort here. Invalid or stale
+        # unrelated pointers must not prevent opening the relation chooser.
+        # Save/Execute keeps its normal strict pointer validation.
+        self.projectService.applyParamsToProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocol=protocol,
+            params=params,
         )
 
         if errors:
@@ -369,6 +399,137 @@ class ProtocolRelationService:
             f"{persistedOutputName}"
         )
 
+    def _loadPostgresqlRelationReferences(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            relationName: str,
+            sourceObject,
+    ) -> List[str]:
+        try:
+            runtimeObjectId = (
+                sourceObject.getObjId()
+            )
+        except Exception:
+            runtimeObjectId = None
+
+        runtimeObjectId = (
+            self._toOptionalInt(
+                runtimeObjectId
+            )
+        )
+
+        if runtimeObjectId is None:
+            return []
+
+        repository = (
+            ProtocolGraphRepository()
+        )
+
+        persistedSource = (
+            repository
+            .getPersistedOutputObjectByRuntimeId(
+                mapper=mapper,
+                projectId=projectId,
+                runtimeObjectId=runtimeObjectId,
+                extended=None,
+            )
+        )
+
+        if not persistedSource:
+            return []
+
+        sourceProtocolDbId = (
+            self._toOptionalInt(
+                persistedSource.get(
+                    "protocolDbId"
+                )
+            )
+        )
+
+        sourceOutputName = (
+            self._normalizeOutputName(
+                persistedSource.get(
+                    "outputName"
+                )
+            )
+        )
+
+        if (
+                sourceProtocolDbId is None
+                or not sourceOutputName
+        ):
+            return []
+
+        loadRelations = getattr(
+            repository,
+            "loadRuntimeOutputRelations",
+            None,
+        )
+
+        if not callable(
+                loadRelations
+        ):
+            return []
+
+        relationRows = (
+            loadRelations(
+                mapper=mapper,
+                projectId=projectId,
+                sourceProtocolDbId=(
+                    sourceProtocolDbId
+                ),
+                sourceOutputName=(
+                    sourceOutputName
+                ),
+            )
+            or []
+        )
+
+        values: List[str] = []
+
+        for relation in relationRows:
+            if (
+                    str(
+                        relation.get(
+                            "relationName"
+                        )
+                        or ""
+                    ).strip()
+                    != relationName
+            ):
+                continue
+
+            targetProtocolId = (
+                self._toOptionalInt(
+                    relation.get(
+                        "targetProtocolId"
+                    )
+                )
+            )
+
+            targetOutputName = (
+                self._normalizeOutputName(
+                    relation.get(
+                        "targetPersistedOutputName"
+                    )
+                )
+            )
+
+            if (
+                    targetProtocolId is None
+                    or not targetOutputName
+            ):
+                continue
+
+            values.append(
+                f"{targetProtocolId}."
+                f"{targetOutputName}"
+            )
+
+        return values
+
     def resolveRelationCandidates(
             self,
             *,
@@ -490,6 +651,16 @@ class ProtocolRelationService:
             or []
         )
 
+        postgresqlValues = (
+            self
+            ._loadPostgresqlRelationReferences(
+                mapper=mapper,
+                projectId=projectId,
+                relationName=relationName,
+                sourceObject=sourceObject,
+            )
+        )
+
         values: List[str] = []
         seen = set()
 
@@ -503,6 +674,21 @@ class ProtocolRelationService:
                 )
             )
 
+            if (
+                    not value
+                    or value in seen
+            ):
+                continue
+
+            seen.add(
+                value
+            )
+
+            values.append(
+                value
+            )
+
+        for value in postgresqlValues:
             if (
                     not value
                     or value in seen

@@ -5648,6 +5648,9 @@ class ProjectService:
             params=params or {},
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
+            resolveRuntimeInputObjectCallback=(
+                self._resolvePostgresqlRuntimeInputObject
+            ),
         )
 
     def _restorePostgresqlPointerInputsBeforeCopy(
@@ -5954,7 +5957,6 @@ class ProjectService:
                 "parentProtocolReadOnly": True,
                 "outputInfo": outputInfo,
             }
-
         return {
             "exists": False,
             "source": None,

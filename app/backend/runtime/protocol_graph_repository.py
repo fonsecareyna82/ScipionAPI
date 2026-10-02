@@ -725,6 +725,10 @@ class ProtocolGraphRepository:
                 r.name AS "relationName",
                 r."parentExtended" AS "sourceOutputName",
                 r."childExtended" AS "targetOutputName",
+                source_set."outputName"
+                    AS "sourcePersistedOutputName",
+                target_set."outputName"
+                    AS "targetPersistedOutputName",
                 r.metadata,
                 source_set.id AS "sourceSetId",
                 source_set."protocolDbId" AS "sourceProtocolDbId",

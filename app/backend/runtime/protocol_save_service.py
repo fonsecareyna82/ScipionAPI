@@ -25,7 +25,7 @@
 # ******************************************************************************
 import logging
 import re
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
@@ -432,6 +432,9 @@ class RuntimeProtocolSaveService:
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
             allowMissingParentOutputs: bool = False,
+            resolveRuntimeInputObjectCallback: Optional[
+                Callable
+            ] = None,
     ) -> List[str]:
         errorList: List[str] = []
         pointerResolver = RuntimePointerResolver()
@@ -490,6 +493,9 @@ class RuntimeProtocolSaveService:
                         resolvePointerParentProtocolCallback=resolvePointerParentProtocolCallback,
                         resolveParentOutputCallback=resolveParentOutputCallback,
                         allowMissingParentOutputs=allowMissingParentOutputs,
+                        resolveRuntimeInputObjectCallback=(
+                            resolveRuntimeInputObjectCallback
+                        ),
                     )
                 )
 
@@ -832,6 +838,9 @@ class RuntimeProtocolSaveService:
             resolvePointerParentProtocolCallback: Callable,
             resolveParentOutputCallback: Callable,
             allowMissingParentOutputs: bool = False,
+            resolveRuntimeInputObjectCallback: Optional[
+                Callable
+            ] = None,
     ) -> List[str]:
         errorList: List[str] = []
 
@@ -889,7 +898,143 @@ class RuntimeProtocolSaveService:
         )
         pointer = getattr(protocol, inputName, None)
 
-        if not isinstance(
+        directOutputPointer = None
+
+        if (
+                outputName
+                and callable(
+                    resolveRuntimeInputObjectCallback
+                )
+                and resolvedOutput.get(
+                    "source"
+                ) == "postgresql"
+                and not resolvedOutput.get(
+                    "hasRuntimeAttribute"
+                )
+        ):
+            outputInfo = (
+                resolvedOutput.get(
+                    "outputInfo"
+                )
+                or {}
+            )
+
+            runtimeObjectId = (
+                outputInfo.get(
+                    "runtimeObjectId"
+                )
+            )
+
+            if runtimeObjectId not in (
+                    None,
+                    "",
+            ):
+                try:
+                    runtimeOutputObject = (
+                        resolveRuntimeInputObjectCallback(
+                            int(
+                                runtimeObjectId
+                            )
+                        )
+                    )
+                except Exception as error:
+                    errorList.append(
+                        "**"
+                        + param.label.get()
+                        + "** could not reconstruct PostgreSQL output "
+                        + str(
+                            value
+                        )
+                        + ": "
+                        + str(
+                            error
+                        )
+                    )
+                    return errorList
+
+                if runtimeOutputObject is None:
+                    errorList.append(
+                        "**"
+                        + param.label.get()
+                        + "** could not reconstruct PostgreSQL output "
+                        + str(
+                            value
+                        )
+                        + "."
+                    )
+                    return errorList
+
+                directOutputPointer = (
+                    Pointer(
+                        runtimeOutputObject
+                    )
+                )
+
+                outputParts = [
+                    part
+                    for part in (
+                        str(
+                            outputName
+                        ).split(
+                            "."
+                        )
+                    )
+                    if part
+                ]
+
+                if len(
+                        outputParts
+                ) > 1:
+                    nestedParts = (
+                        outputParts[
+                            1:
+                        ]
+                    )
+
+                    setExtendedParts = getattr(
+                        directOutputPointer,
+                        "setExtendedParts",
+                        None,
+                    )
+
+                    if callable(
+                            setExtendedParts
+                    ):
+                        setExtendedParts(
+                            nestedParts
+                        )
+                    else:
+                        directOutputPointer.setExtended(
+                            ".".join(
+                                nestedParts
+                            )
+                        )
+
+                logger.debug(
+                    "Using direct PostgreSQL output pointer for form/runtime "
+                    "parameter. childProtocol=%s inputName=%s "
+                    "parentProtocol=%s output=%s runtimeObjectId=%s",
+                    getattr(
+                        protocol,
+                        "getObjId",
+                        lambda: None,
+                    )(),
+                    inputName,
+                    parentScipionProtocolId,
+                    outputName,
+                    runtimeObjectId,
+                )
+
+        if directOutputPointer is not None:
+            pointer = directOutputPointer
+
+            setattr(
+                protocol,
+                inputName,
+                pointer,
+            )
+
+        elif not isinstance(
                 pointer,
                 Pointer,
         ):
