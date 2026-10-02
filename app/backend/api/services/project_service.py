@@ -1597,6 +1597,7 @@ class ProjectService:
                             (
                                     PointerParam,
                                     MultiPointerParam,
+                                    RelationParam,
                             ),
                         )
                         or (

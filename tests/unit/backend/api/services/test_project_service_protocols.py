@@ -30,7 +30,11 @@ import json
 import pytest
 from fastapi import HTTPException
 from pyworkflow.object import Object as ScipionObject
-from pyworkflow.protocol.params import MultiPointerParam, PointerParam
+from pyworkflow.protocol.params import (
+    MultiPointerParam,
+    PointerParam,
+    RelationParam,
+)
 from pyworkflow.object import Integer, Object, Pointer
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
@@ -3984,6 +3988,60 @@ def test_PreserveRuntimePointerParamsInProtocolContext(
         "300002.outputVolume",
         "300003.outputVolume",
     ]
+
+
+def test_PreserveRuntimeRelationParamInProtocolContext(
+        service,
+):
+    class FakeProtocol:
+        def __init__(self):
+            self.params = {
+                "ctfRelations":
+                    object.__new__(
+                        RelationParam
+                    ),
+            }
+
+        def getParam(
+                self,
+                paramName,
+        ):
+            return self.params.get(
+                paramName
+            )
+
+    protocolContext = {
+        "info": {
+            "protocolId": 3171,
+        },
+        "values": {
+            "ctfRelations":
+                "2640.outputCTF",
+        },
+    }
+
+    storedRow = {
+        "params": {
+            "ctfRelations":
+                "1000001",
+        },
+    }
+
+    result = (
+        service
+        ._preserveStoredProtocolParamsInRuntimeContext(
+            protocolContext=protocolContext,
+            storedRow=storedRow,
+            protocol=FakeProtocol(),
+        )
+    )
+
+    assert (
+        result["values"][
+            "ctfRelations"
+        ]
+        == "2640.outputCTF"
+    )
 
 
 def test_SyncPostgresqlRuntimeProtocolReadOnlyPreservesStoredStatus(
