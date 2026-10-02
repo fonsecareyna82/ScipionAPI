@@ -238,6 +238,7 @@ class ProtocolService:
         syncResult = syncPostgresqlRuntimeProtocolCallback(mapper=mapper,
                                                            projectId=projectId,
                                                            protocolId=protocolId,
+                                                           protocolIdIsScipionId=True,
                                                            registerOutputs=False,
                                                            syncRelations=False,
                                                            returnProtocolContext=True,

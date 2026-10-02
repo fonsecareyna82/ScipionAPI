@@ -1692,6 +1692,7 @@ class ProjectService:
             mapper: PostgresqlFlatMapper,
             projectId: int,
             protocolId,
+            protocolIdIsScipionId: bool = False,
             registerOutputs: bool = True,
             syncRelations: bool = True,
             returnProtocolContext: bool = False,
@@ -1707,11 +1708,23 @@ class ProjectService:
         synchronization is enabled, only relations created by this protocol are written.
         Parent protocols and their outputs remain read-only relation targets.
         """
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            scipionProtocolId = ProtocolIdentityResolver.toOptionalInt(
+                protocolId
+            )
+
+            if scipionProtocolId is None:
+                raise RuntimeError(
+                    "Invalid Scipion protocol id: %s"
+                    % protocolId
+                )
+
+        else:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         if protocol is None:
             protocol = self._getScipionProtocolByRuntimeId(scipionProtocolId)

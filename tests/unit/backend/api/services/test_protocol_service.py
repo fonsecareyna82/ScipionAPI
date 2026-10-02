@@ -239,6 +239,43 @@ def test_ProtocolContextStackHasNoLegacyRuntimeSwitch(
     assert "syncPostgresqlRuntimeProtocolCallback" in getProtocolParamsSource
 
 
+def test_GetProtocolParamsTreatsRouteIdAsScipionProtocolId(
+        authTestEnv,
+):
+    protocolServiceModule = importlib.import_module(
+        "app.backend.api.services.protocol_service"
+    )
+
+    syncCalls = []
+
+    def fakeSyncPostgresqlRuntimeProtocol(**kwargs):
+        syncCalls.append(kwargs)
+
+        return {
+            "protocolContext": {
+                "info": {
+                    "projectId": 344,
+                    "protocolId": 11,
+                },
+                "form": {
+                    "sections": [],
+                },
+                "values": {},
+            },
+        }
+
+    protocolServiceModule.ProtocolService().getProtocolParams(
+        mapper="mapper",
+        projectId=344,
+        protocolId=11,
+        syncPostgresqlRuntimeProtocolCallback=fakeSyncPostgresqlRuntimeProtocol,
+    )
+
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocolId"] == 11
+    assert syncCalls[0]["protocolIdIsScipionId"] is True
+
+
 def test_GetProtocolParamsReturnsPostgresqlRuntimeContext(
         authTestEnv,
 ):
@@ -277,6 +314,7 @@ def test_GetProtocolParamsReturnsPostgresqlRuntimeContext(
     assert syncCalls == [{"mapper": "mapper",
                           "projectId": 344,
                           "protocolId": 500,
+                          "protocolIdIsScipionId": True,
                           "registerOutputs": False,
                           "syncRelations": False,
                           "returnProtocolContext": True,
