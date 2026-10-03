@@ -3421,7 +3421,19 @@ class ProjectService:
             statusValue = row.get("status")
             status = str(statusValue) if statusValue is not None else ""
 
-            protocolClassName = str(row.get("protocolClassName") or "")
+            protocolClassName = str(
+                row.get(
+                    "protocolClassName"
+                )
+                or ""
+            ).strip()
+
+            protocolClassHierarchy = (
+                ScipionClassHierarchyResolver
+                .getPersistedProtocolClassHierarchy(
+                    protocolClassName
+                )
+            )
 
             params = row.get("params") or {}
             if isinstance(params, str):
@@ -3633,9 +3645,29 @@ class ProjectService:
                             inputItem["info"] = ""
 
                         try:
-                            parentId = attr.getObjValue().getObjId()
-                            inputItem["value"] = "%s.%s" % (str(parentId), attr.getExtended())
-                            inputItem["parentId"] = parentId
+                            parentId = (
+                                attr
+                                .getObjValue()
+                                .getObjId()
+                            )
+
+                            extended = (
+                                attr.getExtended()
+                            )
+
+                            inputItem["value"] = (
+                                "%s.%s" % (
+                                    str(parentId),
+                                    str(extended),
+                                )
+                                if extended
+                                else str(parentId)
+                            )
+
+                            inputItem[
+                                "parentId"
+                            ] = parentId
+
                         except Exception:
                             inputItem["value"] = ""
                             inputItem["parentId"] = None
@@ -3799,6 +3831,12 @@ class ProjectService:
 
             graphData[nodeId] = {
                 "protocolId": nodeId,
+                "protocolClassName": (
+                    protocolClassName
+                ),
+                "protocolClassHierarchy": (
+                    protocolClassHierarchy
+                ),
                 "children": childrenIds,
                 "parents": parentIds,
                 "label": label,

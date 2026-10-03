@@ -1664,7 +1664,163 @@ def test_GetProtocolRuntimeSummariesWorksForProtocolWithoutOutputsYet(
     assert summaries[0]["status"] == "running"
     assert summaries[0]["outputs"] == []
 
+def test_BuildProtocolsGraphExposesProtocolClassHierarchyForPointers(
+        service,
+        projectServiceModule,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        projectServiceModule.ScipionClassHierarchyResolver,
+        "getPersistedProtocolClassHierarchy",
+        lambda protocolClassName: [
+            protocolClassName,
+            "ProtProcessParticles",
+            "EMProtocol",
+            "Protocol",
+            "Object",
+        ],
+        raising=False,
+    )
 
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "21",
+                "protocolClassName": (
+                    "XmippProtShiftParticles"
+                ),
+                "status": "finished",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
 
+    protocol = graph["21"]
 
+    assert (
+        protocol["protocolClassName"]
+        == "XmippProtShiftParticles"
+    )
+
+    assert protocol[
+        "protocolClassHierarchy"
+    ] == [
+        "XmippProtShiftParticles",
+        "ProtProcessParticles",
+        "EMProtocol",
+        "Protocol",
+        "Object",
+    ]
+
+def test_BuildProtocolsGraphPreservesRuntimeDirectProtocolPointer(
+        service,
+):
+    class ParentProtocolStub:
+        def getObjId(self):
+            return 21
+
+        def getClassName(self):
+            return "XmippProtShiftParticles"
+
+        def __str__(self):
+            return "Shift particles"
+
+    class DirectProtocolPointerStub:
+        def __init__(self, parentProtocol):
+            self.parentProtocol = (
+                parentProtocol
+            )
+
+        def get(self):
+            return self.parentProtocol
+
+        def getObjValue(self):
+            return self.parentProtocol
+
+        def getExtended(self):
+            return None
+
+    class ChildProtocolStub:
+        runName = None
+        numberOfSteps = 0
+        stepsDone = 0
+
+        def __init__(self):
+            parentProtocol = (
+                ParentProtocolStub()
+            )
+
+            self.inputProtocol = (
+                DirectProtocolPointerStub(
+                    parentProtocol
+                )
+            )
+
+        def __str__(self):
+            return "Shift volume"
+
+        def getObjId(self):
+            return 22
+
+        def getStatus(self):
+            return "saved"
+
+        def isInteractive(self):
+            return False
+
+        def iterInputAttributes(self):
+            return [
+                (
+                    "inputProtocol",
+                    self.inputProtocol,
+                ),
+            ]
+
+        def iterOutputAttributes(self):
+            return []
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "22",
+                "protocolClassName": (
+                    "XmippProtShiftVolume"
+                ),
+                "status": "saved",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={
+            "22": ChildProtocolStub(),
+        },
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
+
+    assert len(
+        graph["22"]["inputs"]
+    ) == 1
+
+    inputItem = (
+        graph["22"]["inputs"][0]
+    )
+
+    assert inputItem[
+        "name"
+    ] == "inputProtocol"
+
+    assert inputItem[
+        "parentId"
+    ] == 21
+
+    assert inputItem[
+        "value"
+    ] == "21"
 

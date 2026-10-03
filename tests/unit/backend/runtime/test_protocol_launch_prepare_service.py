@@ -508,3 +508,95 @@ def test_PreparedPointerCanBeUsedDuringProtocolValidation(
     )
 
     assert movieSampling == 1.35
+
+def test_PreparePointersAcceptsDirectProtocolPointer(
+        monkeypatch,
+):
+    class DirectProtocolGraphRepository:
+        def loadInputRefsForProtocol(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 1
+            assert protocolDbId == 106
+
+            return [
+                {
+                    "inputName": "inputProtocol",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 105,
+                    "parentProtocolId": "5",
+                    "parentOutputName": None,
+                    "objectClassName": "ExampleProtocol",
+                    "objectId": "5",
+                },
+            ]
+
+        def getPostgresqlRuntimeOutputInfo(self, **kwargs):
+            raise AssertionError(
+                "Direct Protocol pointers must not resolve a parent output."
+            )
+
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolGraphRepository",
+        DirectProtocolGraphRepository,
+    )
+
+    childProtocol = ChildProtocol()
+    childProtocol.paramsByName["inputProtocol"] = object()
+    childProtocol.setObjId(6)
+
+    parentProtocol = ExampleProtocol()
+    parentProtocol.setObjId(5)
+    parentStateBefore = dict(parentProtocol.__dict__)
+
+    parentLoadCalls = []
+    resolvedRuntimeIds = []
+
+    def getParentProtocol(
+            mapper,
+            projectId,
+            parentId,
+    ):
+        assert projectId == 1
+        parentLoadCalls.append(int(parentId))
+        return 5, parentProtocol
+
+    report = (
+        RuntimeProtocolLaunchPrepareService()
+        .preparePointerOutputsForLaunch(
+            mapper=object(),
+            projectId=1,
+            protocol=childProtocol,
+            getProtocolIdCallback=lambda protocol: protocol.getObjId(),
+            getParentProtocolCallback=getParentProtocol,
+            resolveRuntimeInputObjectCallback=(
+                lambda runtimeObjectId:
+                resolvedRuntimeIds.append(int(runtimeObjectId))
+            ),
+        )
+    )
+
+    assert report["errors"] == []
+    assert report["prepared"] == 1
+    assert parentLoadCalls == [5]
+    assert resolvedRuntimeIds == []
+
+    assert isinstance(
+        childProtocol.inputProtocol,
+        Pointer,
+    )
+    assert childProtocol.inputProtocol.getObjValue() is parentProtocol
+    assert childProtocol.inputProtocol.get() is parentProtocol
+    assert childProtocol.inputProtocol.getExtended() in (None, "")
+
+    assert report["items"][0]["directProtocolPointer"] is True
+    assert parentProtocol.__dict__ == parentStateBefore

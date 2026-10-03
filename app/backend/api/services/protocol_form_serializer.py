@@ -619,7 +619,11 @@ class ProtocolFormSerializer:
                                 parentId is not None
                                 and extended
                             )
-                            else ""
+                            else (
+                                str(parentId)
+                                if parentId is not None
+                                else ""
+                            )
                         )
 
                     elif objValue is not None:
@@ -637,7 +641,11 @@ class ProtocolFormSerializer:
                                 parentId is not None
                                 and extended
                             )
-                            else ""
+                            else (
+                                str(parentId)
+                                if parentId is not None
+                                else ""
+                            )
                         )
 
                     else:
@@ -1182,7 +1190,6 @@ class ProtocolFormSerializer:
                 if (
                         not inputName
                         or parentProtocolId in (None, "")
-                        or not parentOutputName
                 ):
                     continue
 
@@ -1193,9 +1200,15 @@ class ProtocolFormSerializer:
                 except Exception:
                     normalizedParentId = parentProtocolId
 
-                pointerValue = "%s.%s" % (
-                    normalizedParentId,
-                    parentOutputName,
+                pointerValue = (
+                    "%s.%s" % (
+                        normalizedParentId,
+                        parentOutputName,
+                    )
+                    if parentOutputName
+                    else str(
+                        normalizedParentId
+                    )
                 )
 
                 inputs.append({
@@ -1308,6 +1321,14 @@ class ProtocolFormSerializer:
                     inputData["value"] = "%s.%s" % (
                         str(inputData["parentId"]),
                         str(extended),
+                    )
+
+                elif (
+                        inputData["parentId"]
+                        is not None
+                ):
+                    inputData["value"] = str(
+                        inputData["parentId"]
                     )
 
                 elif isinstance(targetObj, str):

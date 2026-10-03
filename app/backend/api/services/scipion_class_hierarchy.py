@@ -139,6 +139,69 @@ class ScipionClassHierarchyResolver:
 
         return classes
 
+    @staticmethod
+    def loadScipionProtocolClasses(
+    ) -> Dict[str, type]:
+        classes = {}
+
+        try:
+            from pwem import Domain
+
+            classes.update(
+                Domain.getProtocols()
+                or {}
+            )
+
+        except Exception:
+            logger.debug(
+                "Could not load Scipion Domain protocols "
+                "while resolving protocol class hierarchy.",
+                exc_info=True,
+            )
+
+        return classes
+
+    @classmethod
+    def getPersistedProtocolClassHierarchy(
+            cls,
+            className,
+            classRegistry=None,
+    ) -> List[str]:
+        normalizedClassName = str(
+            className
+            or ""
+        ).strip()
+
+        if not normalizedClassName:
+            return []
+
+        if classRegistry is None:
+            classRegistry = (
+                cls
+                .loadScipionProtocolClasses()
+            )
+
+        protocolClass = (
+            classRegistry.get(
+                normalizedClassName
+            )
+        )
+
+        if isinstance(
+                protocolClass,
+                type,
+        ):
+            return (
+                cls
+                .getClassHierarchyNames(
+                    protocolClass
+                )
+            )
+
+        return [
+            normalizedClassName
+        ]
+
     @classmethod
     def getPersistedClassHierarchy(
             cls,

@@ -177,8 +177,7 @@ class RuntimeProtocolLaunchPrepareService:
                 continue
 
             if (
-                    not parentOutputName
-                    or parentProtocolId
+                    parentProtocolId
                     in (
                     None,
                     "",
@@ -278,22 +277,54 @@ class RuntimeProtocolLaunchPrepareService:
                     "parentProtocolDbId"
                 ] = resolvedParentProtocolDbId
 
-                outputInfo = (
-                    protocolGraphRepository
-                    .getPostgresqlRuntimeOutputInfo(
-                        mapper=mapper,
-                        projectId=projectId,
-                        parentProtocolDbId=(
-                            resolvedParentProtocolDbId
-                        ),
-                        outputName=rootOutputName,
-                    )
-                )
-
                 pointer = None
 
-                if outputInfo.get(
-                        "exists"
+                if not parentOutputName:
+                    parentScipionProtocolId, (
+                        parentProtocol
+                    ) = resolveParentProtocol(
+                        parentProtocolId
+                    )
+
+                    if parentProtocol is None:
+                        raise ValueError(
+                            "Parent protocol %s "
+                            "could not be loaded"
+                            % parentScipionProtocolId
+                        )
+
+                    pointer = Pointer(
+                        parentProtocol
+                    )
+
+                    itemReport.update({
+                        "directProtocolPointer": True,
+                        "pointerResolved": True,
+                        "objectClassName": (
+                            parentProtocol
+                            .__class__
+                            .__name__
+                        ),
+                    })
+
+                else:
+                    outputInfo = (
+                        protocolGraphRepository
+                        .getPostgresqlRuntimeOutputInfo(
+                            mapper=mapper,
+                            projectId=projectId,
+                            parentProtocolDbId=(
+                                resolvedParentProtocolDbId
+                            ),
+                            outputName=rootOutputName,
+                        )
+                    )
+
+                if (
+                        parentOutputName
+                        and outputInfo.get(
+                            "exists"
+                        )
                 ):
                     runtimeObjectId = (
                         outputInfo.get(
@@ -409,7 +440,10 @@ class RuntimeProtocolLaunchPrepareService:
                         "pointerResolved": True,
                     })
 
-                elif allowMissingParentOutputs:
+                elif (
+                        parentOutputName
+                        and allowMissingParentOutputs
+                ):
                     parentScipionProtocolId, (
                         parentProtocol
                     ) = resolveParentProtocol(
@@ -442,7 +476,7 @@ class RuntimeProtocolLaunchPrepareService:
                         "pointerResolved": False,
                     })
 
-                else:
+                elif parentOutputName:
                     raise ValueError(
                         "Parent output %s.%s was "
                         "not found in PostgreSQL"
@@ -567,9 +601,15 @@ class RuntimeProtocolLaunchPrepareService:
                         pointer,
                     )
 
-                pointerValue = "%s.%s" % (
-                    parentScipionProtocolId,
-                    parentOutputName,
+                pointerValue = (
+                    "%s.%s" % (
+                        parentScipionProtocolId,
+                        parentOutputName,
+                    )
+                    if parentOutputName
+                    else str(
+                        parentScipionProtocolId
+                    )
                 )
 
                 itemReport.update({

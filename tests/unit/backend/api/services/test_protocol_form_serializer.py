@@ -32,6 +32,8 @@ from pyworkflow.object import (
     String,
 )
 
+from pyworkflow.protocol.protocol import Protocol
+
 from pyworkflow.protocol.params import (
     BooleanParam,
     EnumParam,
@@ -44,6 +46,8 @@ from pyworkflow.protocol.params import (
     PointerParam,
     RelationParam,
 )
+
+import app.backend.api.services.protocol_form_serializer as serializerModule
 
 from app.backend.api.services.protocol_form_serializer import (
     ProtocolFormSerializer,
@@ -600,10 +604,171 @@ def test_persisted_protocol_outputs_restore_class_hierarchy():
         ]
     )
 
+def test_protocol_inputs_preserve_persisted_direct_protocol_pointer(
+        monkeypatch,
+):
+    class ProtocolGraphRepositoryStub:
+        def loadInputRefsForProtocolCopy(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 1
+            assert protocolDbId == 106
+
+            return [
+                {
+                    "inputName": "inputProtocol",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 105,
+                    "parentProtocolId": "5",
+                    "parentOutputName": None,
+                    "objectClassName": "ExampleProtocol",
+                    "objectId": "5",
+                },
+            ]
+
+    class ChildProtocolStub:
+        def getObjId(self):
+            return 6
+
+        def iterInputAttributes(self):
+            raise AssertionError(
+                "PostgreSQL input refs are authoritative."
+            )
+
+    monkeypatch.setattr(
+        serializerModule,
+        "ProtocolGraphRepository",
+        ProtocolGraphRepositoryStub,
+    )
+
+    inputs = (
+        ProtocolFormSerializer()
+        .serializeProtocolInputs(
+            protocol=ChildProtocolStub(),
+            mapper=object(),
+            projectId=1,
+            getScipionObjectIdCallback=lambda protocol: protocol.getObjId(),
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: 106,
+            splitPointerValueCallback=(
+                lambda value:
+                str(value).split(".", 1)
+                if "." in str(value)
+                else (str(value), "")
+            ),
+        )
+    )
+
+    assert inputs == [
+        {
+            "inputName": "inputProtocol",
+            "paramClass": "PointerParam",
+            "pointerClass": "ExampleProtocol",
+            "info": "5",
+            "value": "5",
+            "parentId": 5,
+        },
+    ]
 
 
+def test_pointer_param_preserves_runtime_direct_protocol_pointer():
+    class DirectParentProtocol(Protocol):
+        def _defineParams(self, form):
+            pass
 
+    parentProtocol = DirectParentProtocol()
+    parentProtocol.setObjId(5)
 
+    param = PointerParam(
+        label="Input protocol",
+        pointerClass=DirectParentProtocol,
+    )
+    pointer = Pointer(parentProtocol)
 
+    paramDict, paramValue = (
+        ProtocolFormSerializer()
+        .serializeParam(
+            param=param,
+            paramName="inputProtocol",
+            wizards={},
+            viewerDict=None,
+            visualize=0,
+            protVar=pointer,
+            mapper=None,
+            projectId=None,
+            protocol=None,
+            getScipionObjectIdCallback=(
+                lambda obj:
+                getattr(obj, "getObjId", lambda: None)()
+            ),
+            resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+            splitPointerValueCallback=(
+                lambda value:
+                str(value).split(".", 1)
+                if "." in str(value)
+                else (str(value), "")
+            ),
+        )
+    )
 
+    assert paramDict["parentId"] == 5
+    assert paramValue == "5"
+
+def test_protocol_inputs_preserve_runtime_direct_protocol_pointer():
+    class ParentProtocol(Object):
+        pass
+
+    class ChildProtocol:
+        def __init__(self, pointer):
+            self.pointer = pointer
+
+        def iterInputAttributes(self):
+            return [
+                (
+                    "inputProtocol",
+                    self.pointer,
+                ),
+            ]
+
+    parentProtocol = ParentProtocol()
+    parentProtocol.setObjId(21)
+
+    inputs = (
+        ProtocolFormSerializer()
+        .serializeProtocolInputs(
+            protocol=ChildProtocol(
+                Pointer(parentProtocol)
+            ),
+            mapper=None,
+            projectId=None,
+            getScipionObjectIdCallback=(
+                lambda obj: None
+            ),
+            resolvePostgresqlProtocolDbIdCallback=(
+                lambda **kwargs: None
+            ),
+            splitPointerValueCallback=(
+                lambda value:
+                str(value).split(".", 1)
+                if "." in str(value)
+                else (str(value), "")
+            ),
+        )
+    )
+
+    assert len(inputs) == 1
+
+    assert inputs[0][
+        "inputName"
+    ] == "inputProtocol"
+
+    assert inputs[0][
+        "parentId"
+    ] == 21
+
+    assert inputs[0][
+        "value"
+    ] == "21"
 
