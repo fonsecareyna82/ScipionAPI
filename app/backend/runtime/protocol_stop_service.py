@@ -1443,7 +1443,29 @@ class RuntimeProtocolStopService:
             if pid is None and not jobIds and not scheduledBeforeDispatch:
                 localWorkerPids = self._findLocalProtocolWorkerPids(projectId=projectId, protocolId=protocolId)
                 localOwner = not ownerHostname or ownerHostname == socket.gethostname()
-                missingWorkerIdentityRecovered = localOwner and not localWorkerPids
+
+                if localOwner and len(localWorkerPids) == 1:
+                    discoveredPid = localWorkerPids[0]
+                    processReport = self._killProcessGroup(
+                        pid=discoveredPid,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                    processReport = dict(processReport)
+                    processReport["discovered"] = True
+                    processTerminationConfirmed = bool(processReport.get("terminated"))
+                    localStopped.append({
+                        "protocolId": str(protocolId),
+                        "protocolDbId": protocolDbId,
+                        **processReport,
+                    })
+                elif localOwner and len(localWorkerPids) > 1:
+                    raise RuntimeError(
+                        "Cannot safely stop PostgreSQL protocol %s because multiple matching local workers were found: %s"
+                        % (protocolId, localWorkerPids)
+                    )
+                else:
+                    missingWorkerIdentityRecovered = localOwner and not localWorkerPids
 
                 if missingWorkerIdentityRecovered:
                     logger.warning(

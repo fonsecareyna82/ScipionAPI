@@ -1592,3 +1592,62 @@ def test_PostgresqlStopRecoversRunningProtocolWhenWorkerIdentityIsAlreadyGone(mo
     assert protocol.getJobIds() == []
     assert currentProject.runtimeMapper.stored == [protocol]
     assert currentProject.runtimeMapper.commits == 1
+
+def test_PostgresqlStopUsesDiscoveredLocalWorkerWhenStoredPidIsMissing(monkeypatch):
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=0, jobIds=[])
+    service = RuntimeProtocolStopService()
+
+    monkeypatch.setattr(service, "_findLocalProtocolWorkerPids", lambda **kwargs: [4321])
+
+    killCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_killProcessGroup",
+        lambda **kwargs: (
+            killCalls.append(kwargs)
+            or {
+                "pid": 4321,
+                "processGroupId": 4321,
+                "terminated": True,
+                "alreadyStopped": False,
+                "signal": "SIGTERM",
+                "verified": True,
+            }
+        ),
+    )
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["status"] == 0
+    assert result["protocolsCount"] == 1
+    assert killCalls == [{
+        "pid": 4321,
+        "projectId": 1,
+        "protocolId": 10,
+    }]
+    assert result["localStopped"] == [{
+        "protocolId": "10",
+        "protocolDbId": 50,
+        "pid": 4321,
+        "processGroupId": 4321,
+        "terminated": True,
+        "alreadyStopped": False,
+        "signal": "SIGTERM",
+        "verified": True,
+        "discovered": True,
+    }]
+    assert protocol.getStatus() == STATUS_ABORTED
+    assert protocol.getPid() == 0
+    assert protocol.getJobIds() == []
