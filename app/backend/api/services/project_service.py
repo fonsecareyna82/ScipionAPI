@@ -1185,15 +1185,25 @@ class ProjectService:
             return protocolId
 
         if protocolIdIsScipionId:
-            return (
+            protocolDbId = (
                 self
                 ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
                     mapper=mapper,
                     projectId=projectId,
                     protocolId=protocolId,
                 )
-                or protocolId
             )
+
+            if protocolDbId is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        "Protocol '%s' was not found in PostgreSQL"
+                        % protocolId
+                    ),
+                )
+
+            return protocolDbId
 
         return self._resolvePostgresqlProtocolDbId(
             mapper=mapper,
@@ -9783,6 +9793,7 @@ class ProjectService:
                         ),
                         outputName=outputName,
                         mapper=mapper,
+                        protocolIdIsScipionId=True,
                     )
                 )
 
@@ -19052,6 +19063,13 @@ class ProjectService:
                     outputName=outputName,
                     mapper=backgroundMapper,
                     projectId=projectId,
+                    **(
+                        {
+                            "protocolIdIsScipionId": True,
+                        }
+                        if protocolIdIsScipionId
+                        else {}
+                    ),
                 )
             )
 

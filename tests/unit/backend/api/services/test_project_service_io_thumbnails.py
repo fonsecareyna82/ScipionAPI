@@ -1504,3 +1504,96 @@ def test_BuildProtocolThumbnailUsesScipionIdWhenRouteIdentityIsExplicit(
         "outputName": "outputA",
     }
     assert mapper.db.fetchCalls == []
+
+def test_PostgresqlSetOutputPreviewKeepsNormalizedScipionIdentity(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    protocol = FakeProtocol(
+        protocolId=10,
+    )
+
+    service.currentProject = FakeCurrentProject(
+        protocols={
+            10: protocol,
+        },
+    )
+
+    objectManager = object()
+    metadataCalls = []
+
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlOutputForPreview",
+        lambda **kwargs: (
+            object(),
+            {
+                "exists": True,
+                "kind": "set",
+            },
+        ),
+    )
+
+    def getMetadataObjectManager(
+            **kwargs,
+    ):
+        metadataCalls.append(
+            dict(kwargs)
+        )
+        return objectManager
+
+    monkeypatch.setattr(
+        service,
+        "_getMetadataObjectManagerForOutput",
+        getMetadataObjectManager,
+    )
+
+    class FakeSetPreview:
+        def __init__(
+                self,
+                currentProject,
+                protocol,
+                output,
+                requestHeaders=None,
+                colormapOverride=None,
+        ):
+            pass
+
+        def getPreviewOutput(
+                self,
+                receivedObjectManager,
+        ):
+            assert (
+                receivedObjectManager
+                is objectManager
+            )
+            return {
+                "preview": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "OutputsPreview",
+        FakeSetPreview,
+    )
+
+    result = service.outputPreview(
+        protocolId=10,
+        outputName="outputSet",
+        mapper=object(),
+        projectId=1,
+        protocolIdIsScipionId=True,
+    )
+
+    assert result == {
+        "preview": True,
+    }
+
+    assert metadataCalls == [{
+        "projectId": 1,
+        "protocolId": 10,
+        "outputName": "outputSet",
+        "mapper": metadataCalls[0]["mapper"],
+        "protocolIdIsScipionId": True,
+    }]

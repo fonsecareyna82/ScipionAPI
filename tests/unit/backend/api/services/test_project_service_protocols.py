@@ -5532,3 +5532,116 @@ def test_ResolveRuntimeProtocolsForExportUsesScipionIdWhenRouteIdentityIsExplici
 
     assert resolved == [selectedProtocol]
     assert resolved != [collidingProtocol]
+
+def test_PostgresqlReaderStrictScipionIdDoesNotFallbackToDatabaseId(
+        service,
+        monkeypatch,
+):
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlProtocolDbIdFromScipionProtocolId",
+        lambda **kwargs: None,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        service._resolvePostgresqlReaderProtocolId(
+            mapper=object(),
+            projectId=1,
+            protocolId=10,
+            protocolIdIsScipionId=True,
+        )
+
+    assert error.value.status_code == 404
+
+
+def test_PostgresqlExternalViewerBackgroundPreservesScipionIdentity(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    databaseModule = importlib.import_module(
+        "app.backend.database"
+    )
+
+    calls = []
+
+    class FakeDb:
+        def close(self):
+            pass
+
+    class FakeMapper:
+        db = FakeDb()
+
+    class FakeProject:
+        def closeMapper(self):
+            pass
+
+    class FakeBackgroundService:
+        def __init__(self):
+            self.currentProject = FakeProject()
+
+        def _loadPostgresqlRuntimeProject(
+                self,
+                **kwargs,
+        ):
+            calls.append({
+                "load": dict(kwargs),
+            })
+
+        def _getProtocolOutputObject(
+                self,
+                **kwargs,
+        ):
+            calls.append({
+                "output": dict(kwargs),
+            })
+            return object(), object()
+
+        def _resolveExternalViewerTargetObject(
+                self,
+                **kwargs,
+        ):
+            return object()
+
+        def _runExternalViewer(
+                self,
+                **kwargs,
+        ):
+            calls.append({
+                "run": dict(kwargs),
+            })
+
+    monkeypatch.setattr(
+        databaseModule,
+        "getMapper",
+        lambda: FakeMapper(),
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProjectService",
+        FakeBackgroundService,
+    )
+
+    service._safeRunPostgresqlExternalViewer(
+        viewerClass=object(),
+        protocolId=10,
+        outputName="outputVolumes",
+        objectId=None,
+        objectKind=None,
+        projectId=1,
+        projectPath="/tmp/project",
+        descriptor={
+            "id": "viewer",
+            "className": "Viewer",
+        },
+        protocolIdIsScipionId=True,
+    )
+
+    outputCall = next(
+        item["output"]
+        for item in calls
+        if "output" in item
+    )
+
+    assert outputCall["protocolId"] == 10
+    assert outputCall["protocolIdIsScipionId"] is True
