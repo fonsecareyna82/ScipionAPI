@@ -98,7 +98,8 @@ class FakeTomogramReviewService:
             projectId,
             protocolId,
             outputName,
-    ):
+            protocolIdIsScipionId=False,
+):
         self.lastContextCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -116,7 +117,8 @@ class FakeTomogramReviewService:
             scipionItemId,
             payload,
             reviewedByUserId,
-    ):
+            protocolIdIsScipionId=False,
+):
         self.lastSaveCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -140,7 +142,8 @@ class FakeTomogramReviewService:
             outputName,
             payload,
             createdByUserId,
-    ):
+            protocolIdIsScipionId=False,
+):
         self.lastSchemaCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -163,7 +166,8 @@ class FakeTomogramReviewService:
             outputName,
             reviewFilter,
             reviewCriteria=None,
-    ):
+            protocolIdIsScipionId=False,
+):
         self.lastSubsetCall = {
             "mapper": mapper,
             "projectId": projectId,
