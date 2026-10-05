@@ -5344,12 +5344,29 @@ class PostgresqlRuntimeMapper(Mapper):
             report
         )
 
-        runtimeSet._postgresqlRuntimeProperties = dict(
+        runtimeProperties = dict(
             report.get(
                 "properties"
             )
             or {}
         )
+
+        runtimeSet._postgresqlRuntimeProperties = (
+            runtimeProperties
+        )
+
+        propertyHydrator = getattr(
+            runtimeSet,
+            "_postgresqlRuntimePropertyHydrator",
+            None,
+        )
+
+        if callable(
+                propertyHydrator
+        ):
+            propertyHydrator(
+                runtimeProperties
+            )
 
         if persistenceSet is not runtimeSet:
             runtimeSize = getattr(

@@ -452,6 +452,82 @@ def test_FinalizePostgresqlOutputSetFlushesMetadataAliasBeforeFinalizing():
     assert canonicalSet._idCount == 10
 
 
+
+def test_FinalizePostgresqlOutputSetHydratesCanonicalMetadataFromAlias():
+    events = []
+
+    class ProtocolStub:
+        def getObjId(self):
+            return 17
+
+    persistedProperties = {
+        "_samplingRate": 0.83,
+        "_acquisition._voltage": 300.0,
+        "_acquisition._sphericalAberration": 2.7,
+        "_acquisition._amplitudeContrast": 0.1,
+        "itemsCount": 0,
+    }
+
+    class SetMapperStub:
+        def finalizeRuntimeSetOutput(self, **kwargs):
+            events.append("finalize")
+            return {
+                "setId": 501,
+                "rootTableId": 601,
+                "runtimeObjectId": 91,
+                "outputName": kwargs["outputName"],
+                "properties": dict(persistedProperties),
+            }
+
+    class RuntimeSetFactoryStub:
+        def _cacheRuntimeSet(self, runtimeSet):
+            events.append("cache")
+
+    mapper = object.__new__(PostgresqlRuntimeMapper)
+    mapper.projectId = 31
+    mapper.setMapper = SetMapperStub()
+    mapper.runtimeSetFactory = RuntimeSetFactoryStub()
+    mapper._resolveProtocolDbIdFromObject = lambda protocol: 700
+
+    canonicalSet = SnapshotSet()
+    canonicalSet.setObjId(91)
+    canonicalSet._postgresqlRuntimeInfo = {
+        "outputName": "__postgresql_runtime_output_test",
+    }
+
+    hydrated = {}
+
+    def hydrateCanonical(properties):
+        events.append("hydrate")
+        hydrated.update(properties)
+
+    canonicalSet._postgresqlRuntimePropertyHydrator = hydrateCanonical
+
+    runtimeAlias = SnapshotSet()
+    runtimeAlias.setObjId(91)
+    runtimeAlias.write = lambda properties=True: events.append("alias-write")
+
+    mapper.finalizePostgresqlOutputSet(
+        protocol=ProtocolStub(),
+        outputName="movies",
+        runtimeSet=canonicalSet,
+        metadataSource=runtimeAlias,
+    )
+
+    assert canonicalSet._postgresqlRuntimeProperties["_samplingRate"] == 0.83
+    assert hydrated["_samplingRate"] == 0.83
+    assert hydrated["_acquisition._voltage"] == 300.0
+    assert hydrated["_acquisition._sphericalAberration"] == 2.7
+    assert hydrated["_acquisition._amplitudeContrast"] == 0.1
+
+    assert events == [
+        "alias-write",
+        "finalize",
+        "hydrate",
+        "cache",
+    ]
+
+
 def test_BindPostgresqlOutputSetAliasPreservesCanonicalStorage():
     class ProtocolStub:
         def getObjId(self):
