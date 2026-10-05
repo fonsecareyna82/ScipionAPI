@@ -1567,3 +1567,28 @@ def test_StopUsesPersistedRuntimePidWhenReconstructedProtocolHasNoPid(
 
     assert protocol.getStatus() == STATUS_ABORTED
     assert protocol.getPid() == 0
+
+def test_PostgresqlStopRecoversRunningProtocolWhenWorkerIdentityIsAlreadyGone(monkeypatch):
+    monkeypatch.setattr(stopModule, "RuntimeProtocolStatusSyncService", FakeStatusService)
+
+    mapper = FakeMapper()
+    currentProject = FakeCurrentProject()
+    protocol = FakeProtocol(protocolId=10, protocolStatus="running", pid=0, jobIds=[])
+    service = RuntimeProtocolStopService()
+
+    result = service.stopProtocols(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=["10"],
+        currentProject=currentProject,
+        getScipionProtocolForRuntimeCallback=lambda **kwargs: protocol,
+        buildProtocolMutationResultCallback=buildResult,
+    )
+
+    assert result["status"] == 0
+    assert result["protocolsCount"] == 1
+    assert protocol.getStatus() == STATUS_ABORTED
+    assert protocol.getPid() == 0
+    assert protocol.getJobIds() == []
+    assert currentProject.runtimeMapper.stored == [protocol]
+    assert currentProject.runtimeMapper.commits == 1

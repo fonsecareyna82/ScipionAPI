@@ -605,6 +605,40 @@ class RuntimeProtocolStopService:
         }
 
     @staticmethod
+    def _findLocalProtocolWorkerPids(*, projectId: int, protocolId: int) -> List[int]:
+        expectedModule = "app.backend.runtime.postgresql_protocol_worker"
+        expectedProjectId = str(projectId)
+        expectedProtocolId = str(protocolId)
+        matchingPids = []
+
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                commandLine = list(process.info.get("cmdline") or [])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+            if expectedModule not in commandLine:
+                continue
+
+            projectMatches = any(
+                token == "--project-id"
+                and index + 1 < len(commandLine)
+                and commandLine[index + 1] == expectedProjectId
+                for index, token in enumerate(commandLine)
+            )
+            protocolMatches = any(
+                token == "--protocol-id"
+                and index + 1 < len(commandLine)
+                and commandLine[index + 1] == expectedProtocolId
+                for index, token in enumerate(commandLine)
+            )
+
+            if projectMatches and protocolMatches:
+                matchingPids.append(int(process.pid))
+
+        return matchingPids
+
+    @staticmethod
     def _buildAlreadyStoppedProcessReport(*, pid: int, processGroupId=None, reason: str) -> Dict[str, Any]:
         resolvedProcessGroupId = pid if processGroupId is None else processGroupId
 
@@ -1401,33 +1435,26 @@ class RuntimeProtocolStopService:
                         **processReport,
                     })
 
-            processTerminationConfirmed = bool(
-                processReport and processReport.get("terminated")
-            )
-
+            processTerminationConfirmed = bool(processReport and processReport.get("terminated"))
             queueTerminationConfirmed = bool(queueReports)
+            scheduledBeforeDispatch = protocolStatus == str(STATUS_SCHEDULED).strip().lower() and pid is None and not jobIds
+            missingWorkerIdentityRecovered = False
 
-            scheduledBeforeDispatch = (
-                    protocolStatus == str(STATUS_SCHEDULED).strip().lower()
-                    and pid is None
-                    and not jobIds
-            )
+            if pid is None and not jobIds and not scheduledBeforeDispatch:
+                localWorkerPids = self._findLocalProtocolWorkerPids(projectId=projectId, protocolId=protocolId)
+                localOwner = not ownerHostname or ownerHostname == socket.gethostname()
+                missingWorkerIdentityRecovered = localOwner and not localWorkerPids
 
-            if not (
-                    processTerminationConfirmed
-                    or queueTerminationConfirmed
-                    or scheduledBeforeDispatch
-            ):
-                raise RuntimeError(
-                    "Cannot mark PostgreSQL protocol %s "
-                    "as aborted because no local process "
-                    "or queue job termination was confirmed. "
-                    "pid=%s jobIds=%s"
-                    % (
-                        protocolId,
-                        pid,
-                        jobIds,
+                if missingWorkerIdentityRecovered:
+                    logger.warning(
+                        "Recovering PostgreSQL protocol projectId=%s protocolId=%s because it is active in storage but no PID, queue job or matching local worker exists.",
+                        projectId, protocolId,
                     )
+
+            if not (processTerminationConfirmed or queueTerminationConfirmed or scheduledBeforeDispatch or missingWorkerIdentityRecovered):
+                raise RuntimeError(
+                    "Cannot mark PostgreSQL protocol %s as aborted because no local process or queue job termination was confirmed. pid=%s jobIds=%s"
+                    % (protocolId, pid, jobIds)
                 )
 
             self._markProtocolAbortedInMemory(
