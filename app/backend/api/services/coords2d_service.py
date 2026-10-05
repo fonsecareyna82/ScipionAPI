@@ -65,6 +65,7 @@ class Coords2dService:
             currentUser: Any,
             protocolId: int,
             outputName: str,
+            protocolIdIsScipionId=False,
     ) -> Tuple[Any, Any]:
         project = self.projectService.loadPostgresqlRuntimeProjectForMutation(
             mapper=mapper,
@@ -78,11 +79,20 @@ class Coords2dService:
                 detail="Project not found",
             )
 
+        resolveKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            resolveKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         return self._resolveCoordinatesOutput(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **resolveKwargs
         )
 
     def _resolveCoordinatesOutput(
@@ -91,8 +101,15 @@ class Coords2dService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            protocolIdIsScipionId=False,
     ) -> Tuple[Any, Any]:
-        protocol = self.projectService._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self.projectService._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self.projectService._getScipionProtocolForRuntime
+        )
+
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -105,11 +122,21 @@ class Coords2dService:
             )
 
         if mapper is not None:
-            protocolDbId = self.projectService._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                protocolDbId = (
+                    self.projectService
+                    ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+            else:
+                protocolDbId = self.projectService._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
 
             outputInfo = self.projectService._getPostgresqlRuntimeOutputInfo(
                 mapper=mapper,
@@ -355,6 +382,7 @@ class Coords2dService:
             projectId: int,
             protocolId: int,
             outputName: str,
+            protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -362,11 +390,21 @@ class Coords2dService:
         try:
             from app.backend.viewers.postgresql_coords2d_reader import PostgresqlCoords2dReader
 
-            readerProtocolId = self.projectService._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = (
+                    self.projectService
+                    ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                        mapper=mapper,
+                        projectId=projectId,
+                        protocolId=protocolId,
+                    )
+                )
+            else:
+                readerProtocolId = self.projectService._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
 
             reader = PostgresqlCoords2dReader(
                 db=mapper.db,
@@ -395,12 +433,16 @@ class Coords2dService:
         currentUser: Any,
         protocolId: int,
         outputName: str,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         if pgReader is not None:
@@ -425,6 +467,9 @@ class Coords2dService:
             currentUser,
             protocolId,
             outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         micrographMap = self._buildMicrographMap(coordinatesSet)
@@ -480,12 +525,16 @@ class Coords2dService:
             protocolId: int,
             outputName: str,
             micId: str,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         if pgReader is not None:
@@ -510,6 +559,9 @@ class Coords2dService:
             currentUser,
             protocolId,
             outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         self._findMicrograph(coordinatesSet, micId)
@@ -623,6 +675,7 @@ class Coords2dService:
             protocolId: int,
             outputName: str,
             payload: Dict[str, Any],
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         payload = payload or {}
 
@@ -632,6 +685,9 @@ class Coords2dService:
             currentUser,
             protocolId,
             outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         try:
@@ -720,6 +776,9 @@ class Coords2dService:
                 protocol=protocol,
                 outputName=nextOutputName,
                 sourceSet=coordinatesSet,
+                protocolIdIsScipionId=(
+                    protocolIdIsScipionId
+                ),
             )
             coordSet = generatedSetContext["outputSet"]
         except HTTPException:
@@ -1013,12 +1072,16 @@ class Coords2dService:
         size: int = 2200,
         fmt: str = "png",
         ifNoneMatch: Optional[str] = None,
+            protocolIdIsScipionId=False,
     ) -> Response:
         pgReader = self._getPostgresqlCoords2dReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         if pgReader is None:
@@ -1060,6 +1123,7 @@ class Coords2dService:
         protocolId: int,
         outputName: str,
         payload: Dict[str, Any],
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         """
         Render several micrograph thumbnails in one request, e.g. to
@@ -1097,6 +1161,9 @@ class Coords2dService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         if pgReader is None:

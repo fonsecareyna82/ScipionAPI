@@ -82,7 +82,14 @@ class FakeProtocolStepsProjectService:
         }
         return self.projectByIdResult
 
-    def listProtocolStepsService(self, mapper, projectId, protocolId):
+    def listProtocolStepsService(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            protocolIdIsScipionId=False,
+    ):
+        self.lastListProtocolStepsIdIsScipionId = protocolIdIsScipionId
         self.lastListProtocolStepsCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -105,7 +112,11 @@ class FakeProtocolStepsProjectService:
             protocolId,
             stepIndex,
             stepStatus,
+            protocolIdIsScipionId=False,
     ):
+        self.lastUpdateProtocolStepStatusIdIsScipionId = (
+            protocolIdIsScipionId
+        )
         self.lastUpdateProtocolStepStatusCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -169,6 +180,7 @@ def test_ListProtocolStepsDelegatesToService(
 
     assert response.status_code == 200
     assert response.json() == fakeProtocolStepsProjectService.protocolStepsResult
+    assert fakeProtocolStepsProjectService.lastListProtocolStepsIdIsScipionId is True
     assert fakeProtocolStepsProjectService.lastListProtocolStepsCall == {
         "mapper": fakeProjectMapper,
         "projectId": 1,
@@ -222,6 +234,7 @@ def test_UpdateProtocolStepStatusDelegatesToService(
 
     assert response.status_code == 200
     assert response.json() == fakeProtocolStepsProjectService.updateProtocolStepStatusResult
+    assert fakeProtocolStepsProjectService.lastUpdateProtocolStepStatusIdIsScipionId is True
     assert fakeProtocolStepsProjectService.lastUpdateProtocolStepStatusCall == {
         "mapper": fakeProjectMapper,
         "projectId": 1,

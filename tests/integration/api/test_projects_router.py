@@ -377,6 +377,7 @@ def test_PollProtocolLogsNormalizesOffsetsAndIncludesDynamicChannels(projectClie
 
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastPollLogsIdIsScipionId is True
     assert fakeProjectService.lastPollLogsCall == {
         "projectId": 1,
         "protocolId": 22,
@@ -1329,6 +1330,7 @@ def resolveAnalyzeViewerDecision(
         protocolId,
         ctx,
         mapper=None,
+            protocolIdIsScipionId=False,
 ):
     self.lastResolveAnalyzeViewerDecisionCall = {
         "projectId": projectId,
@@ -1678,6 +1680,7 @@ def test_ListProtocolLogChannelsUsesProjectDbRow(
     }
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastListProtocolLogChannelsIdIsScipionId is True
     assert fakeProjectService.lastListProtocolLogChannelsCall == {
         "projectId": 1,
         "protocolId": 2,
@@ -1717,6 +1720,7 @@ def test_PollProtocolLogsUsesProjectDbRow(
     }
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
+    assert fakeProjectService.lastPollLogsIdIsScipionId is True
     assert fakeProjectService.lastPollLogsCall == {
         "projectId": 1,
         "protocolId": 2,
@@ -1783,6 +1787,3 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
         "email": "user@example.com",
         "role": "user",
     }
-
-
-

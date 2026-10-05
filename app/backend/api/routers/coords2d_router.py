@@ -81,6 +81,7 @@ def listCoords2dMicrographs(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -104,6 +105,7 @@ def getCoords2dMicrographCoordinates(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
         micId=micId,
     )
 
@@ -131,6 +133,7 @@ def getCoords2dMicrographImage(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
         micId=micId,
         size=size,
         fmt=format,
@@ -161,6 +164,7 @@ def getCoords2dMicrographThumbnail(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
         micId=micId,
         size=size,
         fmt=format,
@@ -188,6 +192,7 @@ def getCoords2dMicrographsThumbnailBatch(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
         payload=payload,
     )
 
@@ -211,5 +216,6 @@ def createCoords2dCoordinatesOutput(
         currentUser=currentUser,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
         payload=payload.dict(),
     )

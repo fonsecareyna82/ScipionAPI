@@ -39,7 +39,9 @@ class FakeProjectService:
             projectId,
             currentUser,
             payload,
+            protocolIdIsScipionId=False,
     ):
+        self.protocolIdIsScipionId = protocolIdIsScipionId
         self.executeProtocolWizardCalls.append({
             "mapper": mapper,
             "projectId": projectId,
@@ -86,6 +88,7 @@ def test_ExecuteProtocolWizardRouteDelegatesWithoutLegacyProjectLoad(authTestEnv
         "message": "Wizard executed successfully",
     }
 
+    assert service.protocolIdIsScipionId is True
     assert service.executeProtocolWizardCalls == [
         {
             "mapper": mapper,

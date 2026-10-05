@@ -956,4 +956,38 @@ def test_PostgresqlProtocolLogsDoNotFallbackToRuntimeWhenFilesAreMissing(
     assert exc.value.detail == "No logs found"
 
 
+def test_ListProtocolLogChannelsUsesScipionIdWhenRouteIdentityIsExplicit(
+        service,
+        tmp_path,
+):
+    selectedStdout = tmp_path / "selected-stdout.log"
+    collidingStdout = tmp_path / "colliding-stdout.log"
+    selectedStdout.write_text("selected\n", encoding="utf-8")
+    collidingStdout.write_text("colliding\n", encoding="utf-8")
 
+    service.currentProject.protocols[10] = FakeProtocol(
+        stdoutLog=str(selectedStdout),
+    )
+    service.currentProject.protocols[99] = FakeProtocol(
+        stdoutLog=str(collidingStdout),
+    )
+
+    mapper = FakeMapper(
+        runtimeProtocolIdByDbId={
+            10: 99,
+            500: 10,
+        },
+    )
+
+    result = service.listProtocolLogChannelsService(
+        projectId=1,
+        protocolId=10,
+        mapper=mapper,
+        protocolIdIsScipionId=True,
+    )
+
+    assert result["protocolId"] == 10
+    assert all(
+        call["params"] != (1, 10)
+        for call in mapper.db.fetchCalls
+    )

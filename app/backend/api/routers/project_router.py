@@ -572,7 +572,12 @@ def listProtocolSteps(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    return service.listProtocolStepsService(mapper, projectId, protocolId)
+    return service.listProtocolStepsService(
+        mapper,
+        projectId,
+        protocolId,
+        protocolIdIsScipionId=True,
+    )
 
 
 @router.patch(
@@ -614,6 +619,7 @@ def updateProtocolStepStatus(
             protocolId=protocolId,
             stepIndex=stepIndex,
             stepStatus=payload.status,
+            protocolIdIsScipionId=True,
         )
     )
 
@@ -692,6 +698,7 @@ def launchProtocol(
             params=request.getParams(),
             executeMode=request.getMode(),
             currentUserId=currentUser["id"],
+            protocolIdIsScipionId=True,
         ) or {}
 
         response = {
@@ -762,6 +769,7 @@ def saveProtocol(
             protocolId=protocolId,
             protocolClassName=protocolClassName,
             params=params,
+            protocolIdIsScipionId=True,
         )
         errors = errors or []
 
@@ -828,6 +836,7 @@ def suggestionProtocol(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
+            protocolIdIsScipionId=True,
         )
     except HTTPException as e:
         return JSONResponse(
@@ -948,6 +957,7 @@ def renameProtocol(
                 newComment=str(
                     newComment or ""
                 ).strip(),
+                protocolIdIsScipionId=True,
             )
             or {}
         )
@@ -1032,7 +1042,12 @@ def duplicateProtocol(
                          "workflow": []},
             )
 
-        result = service.duplicateProtocol(mapper, projectId, items) or {}
+        result = service.duplicateProtocol(
+            mapper,
+            projectId,
+            items,
+            protocolIdIsScipionId=True,
+        ) or {}
         workflow = []
 
         refreshedProject = service.getProjectById(
@@ -1100,7 +1115,12 @@ def deleteProtocol(
                          "workflow": []},
             )
 
-        result = service.deleteProtocol(mapper, projectId, protocolIds) or {}
+        result = service.deleteProtocol(
+            mapper,
+            projectId,
+            protocolIds,
+            protocolIdIsScipionId=True,
+        ) or {}
         workflow = []
 
         refreshedProject = service.getProjectById(
@@ -1402,6 +1422,7 @@ def stopProtocol(
             mapper,
             projectId,
             protocolIds,
+            protocolIdIsScipionId=True,
         )
 
         workflow = []
@@ -1542,6 +1563,7 @@ def listProtocolLogChannels(
             protocolId=protocolId,
             mapper=mapper,
             currentUser=currentUser,
+            protocolIdIsScipionId=True,
         )
 
         # normalizeChannels
@@ -1607,6 +1629,7 @@ def pollProtocolLogs(
             maxLines=maxLines,
             mapper=mapper,
             currentUser=currentUser,
+            protocolIdIsScipionId=True,
         )
 
         # normalizePollResponse
@@ -1723,6 +1746,7 @@ def getProtocolPath(
         protocolId=protocolId,
         mapper=mapper,
         projectId=projectId,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -1748,6 +1772,7 @@ def listProtocolDir(
         path=path,
         mapper=mapper,
         projectId=projectId,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -1766,6 +1791,7 @@ def previewProtocolText(
         path=path,
         mapper=mapper,
         projectId=projectId,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -1792,6 +1818,7 @@ def previewRemoteEntry(
         path=path,
         mapper=mapper,
         projectId=projectId,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -1812,6 +1839,7 @@ def previewProtocolImageFile(
         inline=inline,
         mapper=mapper,
         projectId=projectId,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -1847,6 +1875,7 @@ def exportProtocols(
             projectId=projectId,
             currentUser=currentUser,
             payload=payload,
+            protocolIdIsScipionId=True,
         )
     except HTTPException:
         raise
@@ -1890,6 +1919,7 @@ def exportWorkflowProtocols(
             projectId=projectId,
             currentUser=currentUser,
             payload=payload,
+            protocolIdIsScipionId=True,
         )
     except HTTPException:
         raise
@@ -1973,6 +2003,7 @@ def writeRemoteFile(
             payload=payload,
             mapper=mapper,
             projectId=projectId,
+            protocolIdIsScipionId=True,
         )
     except HTTPException:
         raise
@@ -2042,6 +2073,7 @@ async def previewOutput(
         protocolId=protocolId,
         outputName=outputName,
         currentUser=currentUser,
+        protocolIdIsScipionId=True,
     )
 
     fastPathMs = (
@@ -2122,6 +2154,7 @@ async def previewOutput(
             cmapHeader
             or cmapQuery
         ),
+        protocolIdIsScipionId=True,
     )
 
 
@@ -2159,6 +2192,7 @@ def resolveAnalyzeViewer(
             protocolId=protocolId,
             ctx=payload,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
         return decision or {"handled": False}
     except Exception as e:
@@ -2190,7 +2224,8 @@ def listOutputVolumes(
     items = service.listOutputVolumesService(projectId,
                                              protocolId,
                                              outputName,
-                                             mapper=mapper)
+                                             mapper=mapper,
+                                             protocolIdIsScipionId=True)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(items)
@@ -2223,7 +2258,8 @@ def getVolumeInfo(
                                         protocolId,
                                         outputName,
                                         volumeId,
-                                        mapper=mapper,)
+                                        mapper=mapper,
+                                        protocolIdIsScipionId=True)
     from fastapi.responses import JSONResponse
 
     resp = JSONResponse(info)
@@ -2267,6 +2303,7 @@ def getVolumeHistogram(
         volumeId=volumeId,
         bins=bins,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -2332,6 +2369,7 @@ def renderVolumeSlice(
         quality=quality,
         mapper=mapper,
         ifNoneMatch=ifNoneMatch,
+        protocolIdIsScipionId=True,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -2399,6 +2437,7 @@ def renderVolumeSlicesBatch(
         quality=payload.quality,
         inline=payload.inline,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     resp = JSONResponse(result)
@@ -2439,6 +2478,7 @@ def getVolumeData3d(
         method=method,
         mapper=mapper,
         ifNoneMatch=ifNoneMatch,
+        protocolIdIsScipionId=True,
     )
 
 @router.get(
@@ -2491,7 +2531,8 @@ def getVolumeSurfaceMesh(
                                             smoothingIterations=smoothingIterations,
                                             currentUser=currentUser,
                                             mapper=mapper,
-                                            ifNoneMatch=ifNoneMatch,)
+                                            ifNoneMatch=ifNoneMatch,
+                                            protocolIdIsScipionId=True)
 
     except HTTPException:
         raise
@@ -2538,6 +2579,7 @@ def listOutputTiltSeries(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -2577,6 +2619,7 @@ def getTiltSeriesFrames(
             outputName=outputName,
             tiltSeriesId=tiltSeriesId,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         from fastapi.responses import JSONResponse
@@ -2650,6 +2693,7 @@ def renderTiltSeriesImage(
             applyTransform=applyTransform,
             inline=inline,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         resp.headers["X-Debug-Auth"] = "ok"
@@ -2697,7 +2741,8 @@ def renderTiltSeriesImagesBatch(
             fmt=payload.fmt,
             applyTransform=payload.applyTransform,
             inline=payload.inline,
-            mapper=mapper
+            mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         resp = JSONResponse(result or {})
@@ -2749,6 +2794,7 @@ def createNewSetOfTiltSeries(
             exclusions=payload.exclusions,
             restack=payload.restack,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         from fastapi.responses import JSONResponse
@@ -2803,6 +2849,7 @@ def listCtfModels(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -2856,6 +2903,7 @@ def renderCtfPsdImage(
         inline=inline,
         quality=quality,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -2909,6 +2957,7 @@ def renderCtfMicrographImage(
         inline=inline,
         quality=quality,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -2950,6 +2999,7 @@ def listCtftomoSeries(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -2979,6 +3029,7 @@ def getCtftomoSeriesViews(
         outputName=outputName,
         tiltSeriesId=tiltSeriesId,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -3017,6 +3068,7 @@ def createNewSetOfCtftomoSeries(
             exclusions=payload.exclusions,
             restack=payload.restack,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         from fastapi.responses import JSONResponse
@@ -3092,6 +3144,7 @@ def renderCtftomoPsdImage(
             applyTransform=applyTransform,
             inline=inline,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
         resp.headers["X-Debug-Auth"] = "ok"
         resp.headers["X-Debug-UserId"] = str(
@@ -3138,6 +3191,7 @@ def listCoordinates3dTomograms(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -3178,6 +3232,7 @@ def getCoordinates3dPoints(
         outputName=outputName,
         tomogramId=tomogramId,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -3272,6 +3327,7 @@ def renderCoords3dTomogramSlice(
         quality=quality,
         mapper=mapper,
         ifNoneMatch=ifNoneMatch,
+        protocolIdIsScipionId=True,
     )
 
     resp.headers["X-Debug-Auth"] = "ok"
@@ -3311,6 +3367,7 @@ def renderCoords3dTomogramGallery(
         tomogramId=tomogramId,
         payload=payload,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     response = JSONResponse(result)
@@ -3375,6 +3432,7 @@ def createCoords3dOutputFromPoints(projectId: int,
             outputName=outputName,
             payload=payload,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         response = JSONResponse(result or {"success": True})
@@ -3425,6 +3483,7 @@ def getIntegratedAnalyzeContext(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     resp = JSONResponse(payload)
@@ -3478,6 +3537,7 @@ def getTomogramReviewContext(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -3522,6 +3582,7 @@ def putTomogramReviewSchema(
             outputName=outputName,
             payload=payload.dict(),
             createdByUserId=createdByUserId,
+            protocolIdIsScipionId=True,
         )
     except TomogramReviewSchemaRevisionConflict as error:
         raise HTTPException(
@@ -3576,6 +3637,7 @@ def patchTomogramReview(
             scipionItemId=scipionItemId,
             payload=payload.dict(),
             reviewedByUserId=reviewedByUserId,
+            protocolIdIsScipionId=True,
         )
     except TomogramReviewRevisionConflict as error:
         raise HTTPException(
@@ -3629,6 +3691,7 @@ def createTomogramReviewSubset(
             outputName=outputName,
             reviewFilter=payload.filter,
             reviewCriteria=payload.criteria.dict() if payload.criteria is not None else None,
+            protocolIdIsScipionId=True,
         )
     except HTTPException:
         raise
@@ -3691,6 +3754,7 @@ def getFscRows(
             outputName=outputName,
             mapper=mapper,
             currentUser=currentUser,
+            protocolIdIsScipionId=True,
         )
 
         resp = JSONResponse(payload or {"curves": [], "threshold": 0.143})
@@ -3750,6 +3814,7 @@ def listOutputMetadataTables(
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -3788,6 +3853,7 @@ def getMetadataTableSchema(
         outputName=outputName,
         tableName=tableName,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -3844,6 +3910,7 @@ def runMetadataTableAction(
             ids=rowIds,
             currentUser=currentUser,
             mapper=mapper,
+            protocolIdIsScipionId=True,
         )
 
         # normalizeServiceResult
@@ -3924,6 +3991,7 @@ def getMetadataTablePage(
         asc=asc,
         selectionOnly=selectionOnly,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -3991,6 +4059,7 @@ def exportMetadataTable(
         selectionOnly=selectionOnly,
         ids=idList,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -4034,6 +4103,7 @@ def getMetadataRowPosition(
         sortBy=sortBy,
         asc=asc,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -4116,6 +4186,7 @@ def renderMetadataImageCell(
         asc=asc,
         mapper=mapper,
         ifNoneMatch=ifNoneMatch,
+        protocolIdIsScipionId=True,
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -4176,6 +4247,7 @@ def renderMetadataImageCellsBatch(
         sortBy=payload.sortBy,
         asc=payload.asc,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     resp = JSONResponse(result)
@@ -4239,6 +4311,7 @@ def getMetadataTableWindow(
         sortBy=sortBy,
         asc=asc,
         mapper=mapper,
+        protocolIdIsScipionId=True,
     )
 
     from fastapi.responses import JSONResponse
@@ -4286,6 +4359,7 @@ def listExternalViewers(
             objectKind=objectKind,
             mapper=mapper,
             projectId=projectId,
+            protocolIdIsScipionId=True,
         )
 
         return {"viewers": viewers or []}
@@ -4338,6 +4412,7 @@ def launchExternalViewer(
             params=payload.params or {},
             mapper=mapper,
             projectId=projectId,
+            protocolIdIsScipionId=True,
         )
 
     except HTTPException:
@@ -4473,6 +4548,7 @@ def listProtocolTags(
         projectId=projectId,
         protocolId=protocolId,
         currentUser=currentUser,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -4500,6 +4576,7 @@ def setProtocolTags(
         protocolId=protocolId,
         tagIds=payload.tagIds or [],
         currentUser=currentUser,
+        protocolIdIsScipionId=True,
     )
 
 
@@ -4741,6 +4818,7 @@ def getProtocolThumbnail(
                     size=size,
                     mapper=mapper,
                     projectId=projectId,
+                    protocolIdIsScipionId=True,
                 )
 
             return service.buildProtocolThumbnail(
@@ -4749,6 +4827,7 @@ def getProtocolThumbnail(
                 size=size,
                 mapper=mapper,
                 projectId=projectId,
+                protocolIdIsScipionId=True,
             )
 
         result = _runThumbnailProjectJob(
@@ -4805,6 +4884,7 @@ def rebuildProtocolThumbnail(
                     size=size,
                     mapper=mapper,
                     projectId=projectId,
+                    protocolIdIsScipionId=True,
                 )
 
             return service.buildProtocolThumbnail(
@@ -4813,6 +4893,7 @@ def rebuildProtocolThumbnail(
                 size=size,
                 mapper=mapper,
                 projectId=projectId,
+                protocolIdIsScipionId=True,
             )
 
         result = _runThumbnailProjectJob(
@@ -5033,6 +5114,7 @@ async def getProtocolOutputThumbnailsBatch(
                 payload.inlineImages
             ),
             outputs=requestedOutputs,
+            protocolIdIsScipionId=True,
         )
     )
 
@@ -5086,4 +5168,5 @@ def executeProtocolWizardRoute(
         projectId=projectId,
         currentUser=currentUser,
         payload=payload,
+        protocolIdIsScipionId=True,
     )

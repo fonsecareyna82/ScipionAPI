@@ -175,6 +175,9 @@ def _runOutputPreviewJob(
         colormap=job.get("colormap"),
         mapper=mapper,
         projectId=int(job["projectId"]),
+        protocolIdIsScipionId=bool(
+            job.get("protocolIdIsScipionId")
+        ),
     )
 
 
@@ -270,6 +273,9 @@ def _runOutputThumbnailsBatchJob(
                 size=size,
                 mapper=mapper,
                 projectId=projectId,
+                protocolIdIsScipionId=bool(
+                    job.get("protocolIdIsScipionId")
+                ),
             )
 
             item["outputClassName"] = result.get(
@@ -487,6 +493,7 @@ async def runOutputPreviewInProcess(
     userId: int,
     requestHeaders: Dict[str, str],
     colormap=None,
+    protocolIdIsScipionId=False,
 ):
     loop = asyncio.get_running_loop()
 
@@ -501,6 +508,9 @@ async def runOutputPreviewInProcess(
             "userId": int(userId),
             "requestHeaders": requestHeaders,
             "colormap": colormap,
+            "protocolIdIsScipionId": bool(
+                protocolIdIsScipionId
+            ),
         },
     )
 
@@ -516,6 +526,7 @@ async def runOutputThumbnailsBatchInProcess(
     size: int,
     inlineImages: bool,
     outputs,
+    protocolIdIsScipionId=False,
 ):
     loop = asyncio.get_running_loop()
 
@@ -532,6 +543,9 @@ async def runOutputThumbnailsBatchInProcess(
                 inlineImages
             ),
             "outputs": list(outputs),
+            "protocolIdIsScipionId": bool(
+                protocolIdIsScipionId
+            ),
         },
     )
 

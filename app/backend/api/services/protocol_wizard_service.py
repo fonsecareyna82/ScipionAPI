@@ -408,9 +408,16 @@ class ProtocolWizardService:
             formValues: Dict[str, Any],
             mapper=None,
             projectId: Optional[int] = None,
+            protocolIdIsScipionId=False,
     ):
         if protocolId:
-            protocol = self.projectService._getScipionProtocolForRuntime(
+            protocolLoader = (
+                self.projectService._getScipionProtocolByScipionId
+                if protocolIdIsScipionId
+                else self.projectService._getScipionProtocolForRuntime
+            )
+
+            protocol = protocolLoader(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
@@ -488,6 +495,7 @@ class ProtocolWizardService:
         projectId: int,
         currentUser: dict,
         payload,
+        protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         if self.projectService is None:
             raise RuntimeError("projectService is required to execute protocol wizards")
@@ -523,6 +531,9 @@ class ProtocolWizardService:
             formValues=getattr(payload, "formValues", {}) or {},
             mapper=mapper,
             projectId=projectId,
+            protocolIdIsScipionId=(
+                protocolIdIsScipionId
+            ),
         )
 
         paramName = str(getattr(payload, "paramName", "")).strip()

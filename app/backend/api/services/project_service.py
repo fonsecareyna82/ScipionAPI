@@ -1045,7 +1045,9 @@ class ProjectService:
             protocolId=protocolId,
         )
 
-        return self._getScipionProtocolByRuntimeId(scipionProtocolId)
+        return self._getScipionProtocolByRuntimeId(
+            scipionProtocolId
+        )
 
     def _tryGetScipionProtocolForRuntime(
             self,
@@ -1067,6 +1069,63 @@ class ProjectService:
 
         except Exception:
             return None
+
+    def _getScipionProtocolByScipionId(
+            self,
+            protocolId: Union[int, str],
+            mapper=None,
+            projectId: Optional[int] = None,
+    ):
+        scipionProtocolId = (
+            ProtocolIdentityResolver
+            .toOptionalInt(
+                protocolId
+            )
+        )
+
+        if scipionProtocolId is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    "Invalid Scipion protocol id: %s"
+                    % protocolId
+                ),
+            )
+
+        return self._getScipionProtocolByRuntimeId(
+            scipionProtocolId
+        )
+
+    def _resolveScipionProtocolIdStrict(
+            self,
+            mapper,
+            projectId: Optional[int],
+            protocolId: Union[int, str],
+    ) -> Optional[int]:
+        return (
+            ProtocolIdentityResolver
+            .toOptionalInt(
+                protocolId
+            )
+        )
+
+    def _resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+            self,
+            mapper,
+            projectId: int,
+            protocolId,
+    ) -> Optional[int]:
+        protocolIdentityResolver = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+
+        return (
+            protocolIdentityResolver
+            .resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                protocolId
+            )
+        )
 
     def _resolvePostgresqlProtocolDbId(
             self,
@@ -1120,9 +1179,21 @@ class ProjectService:
             mapper,
             projectId: Optional[int],
             protocolId: Union[int, str],
+                protocolIdIsScipionId=False,
     ) -> Union[int, str]:
         if mapper is None:
             return protocolId
+
+        if protocolIdIsScipionId:
+            return (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+                or protocolId
+            )
 
         return self._resolvePostgresqlProtocolDbId(
             mapper=mapper,
@@ -1137,6 +1208,8 @@ class ProjectService:
             protocolId: Union[int, str],
             protocol,
             outputPrefix: str,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         if mapper is None:
             return {
@@ -1145,11 +1218,26 @@ class ProjectService:
                 "protocolDbId": None,
             }
 
-        protocolIdentityResolver = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        )
-        protocolDbId = protocolIdentityResolver.resolvePostgresqlProtocolDbId(protocolId)
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+        else:
+            protocolIdentityResolver = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+            )
+            protocolDbId = (
+                protocolIdentityResolver
+                .resolvePostgresqlProtocolDbId(
+                    protocolId
+                )
+            )
 
         if protocolDbId is None:
             raise HTTPException(
@@ -1191,6 +1279,7 @@ class ProjectService:
             protocol,
             outputName: str,
             sourceSet,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         if mapper is None:
             raise RuntimeError(
@@ -1204,10 +1293,20 @@ class ProjectService:
                 "Generated Sets require a PostgreSQL database"
             )
 
-        protocolDbId = ProtocolIdentityResolver(
-            mapper=mapper,
-            projectId=projectId,
-        ).resolvePostgresqlProtocolDbId(protocolId)
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+        else:
+            protocolDbId = ProtocolIdentityResolver(
+                mapper=mapper,
+                projectId=projectId,
+            ).resolvePostgresqlProtocolDbId(protocolId)
 
         if protocolDbId is None:
             raise HTTPException(
@@ -4795,6 +4894,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ) -> Optional[Dict[str, Any]]:
         if mapper is None:
             return None
@@ -4802,11 +4902,20 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_integrated_context_reader import PostgresqlIntegratedContextReader
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlIntegratedContextReader(
                 db=mapper.db,
@@ -4832,13 +4941,23 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
 
+        contextKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            contextKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgContext = self._getPostgresqlIntegratedAnalyzeContextIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **contextKwargs
         )
 
         if pgContext is not None:
@@ -5330,12 +5449,21 @@ class ProjectService:
             size: int = 320,
             mapper=None,
             projectId: Optional[int] = None,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            scipionProtocolId = (
+                ProtocolIdentityResolver
+                .toOptionalInt(
+                    protocolId
+                )
+            )
+        else:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         return self._getThumbnailService().buildProtocolOutputThumbnail(protocolId=scipionProtocolId,
                                                                         outputName=outputName,
@@ -5651,15 +5779,22 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolId: int,
+            protocolIdIsScipionId=False,
     ):
         protocolSuggestionsService = ProtocolSuggestionsService()
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
 
         return protocolSuggestionsService.getNextProtocolSuggestions(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             currentProject=self.currentProject,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
         )
 
     def _getParentProtocolForPointer(
@@ -5677,7 +5812,10 @@ class ProjectService:
         if parentScipionProtocolId is None:
             return None, None
 
-        parentProtocol = self._getScipionProtocolByRuntimeId(parentScipionProtocolId)
+        parentProtocol = self._getScipionProtocolByRuntimeId(
+            parentScipionProtocolId
+        )
+
         return parentScipionProtocolId, parentProtocol
 
     def _splitPointerValue(self, value):
@@ -6027,8 +6165,15 @@ class ProjectService:
                      params,
                      setToSave=True,
                      validateParams=True,
-                     allowMissingParentOutputs=False):
+                     allowMissingParentOutputs=False,
+                     protocolIdIsScipionId=False):
         runtimeProtocolSaveService = RuntimeProtocolSaveService()
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
 
         result = runtimeProtocolSaveService.saveProtocol(
             mapper=mapper,
@@ -6038,7 +6183,7 @@ class ProjectService:
             params=params,
             setToSave=setToSave,
             currentProject=self.currentProject,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
             resolvePointerParentProtocolCallback=self._getParentProtocolForPointer,
             resolveParentOutputCallback=self._resolveParentOutputForRuntimePointer,
             syncPostgresqlRuntimeProtocolInputsAndDependenciesCallback=self.syncPostgresqlRuntimeProtocolInputsAndDependencies,
@@ -6059,9 +6204,16 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolId: int,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolStepStatusService = (
             RuntimeProtocolStepStatusService()
+        )
+
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
         )
 
         return (
@@ -6071,7 +6223,7 @@ class ProjectService:
                 projectId=projectId,
                 protocolId=protocolId,
                 resolveScipionProtocolIdCallback=(
-                    self._resolveScipionProtocolId
+                    protocolIdResolver
                 ),
             )
         )
@@ -6083,9 +6235,16 @@ class ProjectService:
             protocolId: int,
             stepIndex: int,
             stepStatus: str,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolStepStatusService = (
             RuntimeProtocolStepStatusService()
+        )
+
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
         )
 
         result = (
@@ -6097,7 +6256,7 @@ class ProjectService:
                 stepIndex=stepIndex,
                 stepStatus=stepStatus,
                 resolveScipionProtocolIdCallback=(
-                    self._resolveScipionProtocolId
+                    protocolIdResolver
                 ),
             )
         )
@@ -6221,6 +6380,7 @@ class ProjectService:
             executeMode,
             currentUserId=None,
             executionId=None,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolLaunchService = RuntimeProtocolLaunchService()
 
@@ -6239,8 +6399,30 @@ class ProjectService:
                 params=params,
                 executeMode=executeMode,
                 currentProject=self.currentProject,
-                saveProtocolCallback=self.saveProtocol,
-                stopProtocolCallback=self.stopProtocol,
+                saveProtocolCallback=(
+                    (
+                        lambda *args, **kwargs:
+                        self.saveProtocol(
+                            *args,
+                            **kwargs,
+                            protocolIdIsScipionId=True,
+                        )
+                    )
+                    if protocolIdIsScipionId
+                    else self.saveProtocol
+                ),
+                stopProtocolCallback=(
+                    (
+                        lambda *args, **kwargs:
+                        self.stopProtocol(
+                            *args,
+                            **kwargs,
+                            protocolIdIsScipionId=True,
+                        )
+                    )
+                    if protocolIdIsScipionId
+                    else self.stopProtocol
+                ),
                 preparePostgresqlRuntimePointerOutputsForLaunchCallback=(
                     self._preparePostgresqlRuntimePointerOutputsForLaunch
                 ),
@@ -6529,14 +6711,21 @@ class ProjectService:
             protocolId: int,
             mapper=None,
             currentUser: Optional[dict] = None,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
+        )
 
         return runtimeProtocolLogService.listProtocolLogChannels(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolveScipionProtocolIdCallback=protocolIdResolver,
             resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
@@ -6550,8 +6739,15 @@ class ProjectService:
             maxLines: Optional[int] = 2000,
             mapper=None,
             currentUser: Optional[dict] = None,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
+        )
 
         return runtimeProtocolLogService.pollProtocolLogs(
             mapper=mapper,
@@ -6560,7 +6756,7 @@ class ProjectService:
             offsets=offsets,
             maxBytes=maxBytes,
             maxLines=maxLines,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolveScipionProtocolIdCallback=protocolIdResolver,
             resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
@@ -6573,8 +6769,15 @@ class ProjectService:
             errOffset: int = 0,
             scheduleOffset: int = 0,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolLogService = RuntimeProtocolLogService()
+
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
+        )
 
         return runtimeProtocolLogService.getProtocolLogs(
             mapper=mapper,
@@ -6583,7 +6786,7 @@ class ProjectService:
             offset=offset,
             errOffset=errOffset,
             scheduleOffset=scheduleOffset,
-            resolveScipionProtocolIdCallback=self._resolveScipionProtocolId,
+            resolveScipionProtocolIdCallback=protocolIdResolver,
             resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
@@ -6610,9 +6813,16 @@ class ProjectService:
             protocolId,
             newName,
             newComment,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolRenameService = (
             RuntimeProtocolRenameService()
+        )
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
         )
 
         result = runtimeProtocolRenameService.renameProtocol(
@@ -6621,7 +6831,7 @@ class ProjectService:
             protocolId=protocolId,
             newName=newName,
             newComment=newComment,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         ) or {}
@@ -6634,14 +6844,26 @@ class ProjectService:
 
         return result
 
-    def duplicateProtocol(self, mapper, projectId, protocols):
+    def duplicateProtocol(
+            self,
+            mapper,
+            projectId,
+            protocols,
+            protocolIdIsScipionId=False,
+    ):
         runtimeProtocolDuplicateService = RuntimeProtocolDuplicateService()
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
 
         result = runtimeProtocolDuplicateService.duplicatePostgresqlRuntimeProtocols(
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
             getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
             getScipionObjectIdCallback=self._getScipionObjectId,
             saveProtocolCallback=self.saveProtocol,
@@ -6925,14 +7147,26 @@ class ProjectService:
             "errors": errors,
         }
 
-    def deleteProtocol(self, mapper, projectId, protocols: Any):
+    def deleteProtocol(
+            self,
+            mapper,
+            projectId,
+            protocols: Any,
+            protocolIdIsScipionId=False,
+    ):
         runtimeProtocolDeleteService = RuntimeProtocolDeleteService()
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
 
         result = runtimeProtocolDeleteService.deleteProtocols(
             mapper=mapper,
             projectId=projectId,
             protocols=protocols,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
             cleanupPostgresqlRuntimeDeleteCallback=self._cleanupPostgresqlRuntimeProtocolDelete,
         ) or {}
 
@@ -7045,9 +7279,7 @@ class ProjectService:
             scipionProtocolId = row.get("protocolId")
             level = int(row.get("level") or 0)
 
-            protocol = self._getScipionProtocolForRuntime(
-                mapper=mapper,
-                projectId=projectId,
+            protocol = self._getScipionProtocolByScipionId(
                 protocolId=scipionProtocolId,
             )
 
@@ -7625,15 +7857,22 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolIds,
+            protocolIdIsScipionId=False,
     ):
         runtimeProtocolStopService = RuntimeProtocolStopService()
+
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
 
         result = runtimeProtocolStopService.stopProtocols(
             mapper=mapper,
             projectId=projectId,
             protocolIds=protocolIds,
             currentProject=self.currentProject,
-            getScipionProtocolForRuntimeCallback=self._getScipionProtocolForRuntime,
+            getScipionProtocolForRuntimeCallback=protocolLoader,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
         ) or {}
 
@@ -8286,13 +8525,20 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolIds: List[Union[int, str]],
+            protocolIdIsScipionId=False,
     ) -> List[Any]:
         protocolList = []
         missing = []
 
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+
         for protocolId in protocolIds or []:
             try:
-                protocol = self._getScipionProtocolForRuntime(
+                protocol = protocolLoader(
                     mapper=mapper,
                     projectId=projectId,
                     protocolId=protocolId,
@@ -8324,6 +8570,7 @@ class ProjectService:
             mapper,
             projectId: int,
             protocolIds: List[Union[int, str]],
+            protocolIdIsScipionId=False,
     ) -> List[Any]:
         """
         Load runtime protocols and restore their PostgreSQL-backed pointer
@@ -8332,12 +8579,21 @@ class ProjectService:
         This operation only modifies the in-memory protocol instances.
         It does not persist protocols, inputs, dependencies or outputs.
         """
+        resolveKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
+
+        if protocolIdIsScipionId:
+            resolveKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         protocolList = (
             self
             ._resolveRuntimeProtocolsForExport(
-                mapper=mapper,
-                projectId=projectId,
-                protocolIds=protocolIds,
+                **resolveKwargs
             )
         )
 
@@ -8415,11 +8671,14 @@ class ProjectService:
             protocolId: Union[int, str],
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Path:
         pathInfo = self.getProtocolPath(
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         rootAbs = str((pathInfo or {}).get("rootAbs") or "").strip()
         if not rootAbs:
@@ -8462,6 +8721,7 @@ class ProjectService:
             protocolId,
             mapper=None,
             projectId: Optional[int] = None,
+                protocolIdIsScipionId=False,
     ):
         if self._isGlobalFsBrowserMode(protocolId):
             root = self._getGlobalFsBrowserRoot()
@@ -8474,7 +8734,16 @@ class ProjectService:
             rootAbsPath = str(self._getGlobalFsBrowserRoot())
             protocolAbsPath = rootAbsPath
         else:
-            protocol = self._getScipionProtocolForRuntime(mapper=mapper, projectId=projectId, protocolId=protocolId)
+            protocolLoader = (
+                self._getScipionProtocolByScipionId
+                if protocolIdIsScipionId
+                else self._getScipionProtocolForRuntime
+            )
+            protocol = protocolLoader(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
             protocolAbsPath = os.path.abspath(protocol.getPath())
             rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
 
@@ -8562,6 +8831,8 @@ class ProjectService:
             protocolId: Union[int, str],
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> str:
         if self._isGlobalFsBrowserMode(protocolId):
             return str(protocolId)
@@ -8569,7 +8840,18 @@ class ProjectService:
         if self._isUnpersistedFsBrowserMode(protocolId):
             return self._UNSAVED_FS_PROTOCOL_ID
 
-        scipionProtocolId = self._resolveScipionProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
+        if protocolIdIsScipionId:
+            scipionProtocolId = self._resolveScipionProtocolIdStrict(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
+        else:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         return str(scipionProtocolId)
 
@@ -8579,6 +8861,8 @@ class ProjectService:
             path: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """Return the directory file list."""
         fileHandlers = FileHandlers(self.currentProject)
@@ -8591,6 +8875,7 @@ class ProjectService:
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         return fileHandlers.listProtocolDir(runtimeProtocolId, path)
@@ -8601,6 +8886,8 @@ class ProjectService:
             path: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return a lightweight preview for a file inside a protocol workspace.
@@ -8615,6 +8902,7 @@ class ProjectService:
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         return fileHandlers.previewProtocolTextFile(runtimeProtocolId, path)
@@ -8625,6 +8913,8 @@ class ProjectService:
             path: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return a preview.
@@ -8643,6 +8933,7 @@ class ProjectService:
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         return fileHandlers.previewProtocolRemoteEntry(
@@ -8658,6 +8949,8 @@ class ProjectService:
             inline: bool,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         inline == False:
@@ -8678,6 +8971,7 @@ class ProjectService:
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         return fileHandlers.previewProtocolImageFile(runtimeProtocolId, path, inline)
@@ -8709,7 +9003,7 @@ class ProjectService:
 
         protocolDbId = (
             self
-            ._resolvePostgresqlProtocolDbId(
+            ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
@@ -8842,6 +9136,7 @@ class ProjectService:
             currentUser,
             size: int = 400,
             fmt: str = "webp",
+            protocolIdIsScipionId=False,
     ) -> Optional[Response]:
         from concurrent.futures import (
             ThreadPoolExecutor,
@@ -8864,14 +9159,24 @@ class ProjectService:
                 detail="Project not found",
             )
 
-        protocolDbId = (
-            self
-            ._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
             )
-        )
+        else:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
 
         if protocolDbId is None:
             return None
@@ -9319,14 +9624,24 @@ class ProjectService:
             colormap: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
+            protocolIdIsScipionId=False,
     ):
+        runtimeKwargs = {
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "requestHeaders": requestHeaders,
+            "colormap": colormap,
+            "mapper": mapper,
+            "projectId": projectId,
+        }
+
+        if protocolIdIsScipionId:
+            runtimeKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         return self._outputPreviewRuntime(
-            protocolId=protocolId,
-            outputName=outputName,
-            requestHeaders=requestHeaders,
-            colormap=colormap,
-            mapper=mapper,
-            projectId=projectId,
+            **runtimeKwargs
         )
 
     def _outputPreviewRuntime(
@@ -9342,15 +9657,24 @@ class ProjectService:
             colormap: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
+            protocolIdIsScipionId=False,
     ):
-        scipionProtocolId = (
-            self
-            ._resolveScipionProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
+        if protocolIdIsScipionId:
+            scipionProtocolId = (
+                ProtocolIdentityResolver
+                .toOptionalInt(
+                    protocolId
+                )
             )
-        )
+        else:
+            scipionProtocolId = (
+                self
+                ._resolveScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
 
         if self.currentProject is None:
             raise HTTPException(
@@ -9539,12 +9863,21 @@ class ProjectService:
             outputName: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
-        scipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            scipionProtocolId = (
+                ProtocolIdentityResolver
+                .toOptionalInt(
+                    protocolId
+                )
+            )
+        else:
+            scipionProtocolId = self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         return self._getThumbnailService().buildProtocolThumbnail(protocolId=scipionProtocolId,
                                                                   force=force,
@@ -9568,6 +9901,7 @@ class ProjectService:
             projectId: int,
             currentUser: dict,
             payload: Any,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         protocolIds = self._normalizeProtocolIdsForExport(
             getattr(payload, "protocolIds", None),
@@ -9590,12 +9924,21 @@ class ProjectService:
         )
 
         try:
+            prepareKwargs = {
+                "mapper": mapper,
+                "projectId": projectId,
+                "protocolIds": protocolIds,
+            }
+
+            if protocolIdIsScipionId:
+                prepareKwargs[
+                    "protocolIdIsScipionId"
+                ] = True
+
             protocolList = (
                 self
                 ._prepareRuntimeProtocolsForExport(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolIds=protocolIds,
+                    **prepareKwargs
                 )
             )
 
@@ -9937,6 +10280,7 @@ class ProjectService:
             projectId: int,
             currentUser: dict,
             payload: Any,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         if bool(getattr(payload, "includeUpstream", False)):
             raise HTTPException(
@@ -9953,12 +10297,21 @@ class ProjectService:
                 detail="Missing protocolIds",
             )
 
+        prepareKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolIds": protocolIds,
+        }
+
+        if protocolIdIsScipionId:
+            prepareKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         protocolList = (
             self
             ._prepareRuntimeProtocolsForExport(
-                mapper=mapper,
-                projectId=projectId,
-                protocolIds=protocolIds,
+                **prepareKwargs
             )
         )
 
@@ -10187,11 +10540,14 @@ class ProjectService:
             payload: Any,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         rootPath = self._resolveFsRootForWrite(
             protocolId=protocolId,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         targetPath = self._guardFsPathWithinRootForWrite(
             rootPath,
@@ -10228,6 +10584,8 @@ class ProjectService:
             outputName: str,
             projectId: Optional[int] = None,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Resolve a protocol and its SetOfTiltSeries output.
@@ -10235,7 +10593,12 @@ class ProjectService:
         PostgreSQL outputs are reconstructed as independent runtime proxies.
         The owner protocol and its existing outputs remain unchanged.
         """
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -10246,6 +10609,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             outputInfo = self._getPostgresqlRuntimeOutputInfo(
@@ -10306,6 +10670,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -10313,11 +10678,20 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_tiltseries_reader import PostgresqlTiltSeriesReader
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlTiltSeriesReader(
                 db=mapper.db,
@@ -10376,6 +10750,8 @@ class ProjectService:
             protocolId: int,
             ctx: Dict[str, Any],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # This resolver is reserved for external developer-provided viewers.
         # Built-in React viewers are selected on the frontend side.
@@ -10391,6 +10767,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -10400,11 +10777,20 @@ class ProjectService:
                 PostgresqlCtfReader,
             )
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlCtfReader(
                 db=mapper.db,
@@ -10433,12 +10819,22 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlCtfReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -10546,12 +10942,15 @@ class ProjectService:
             inline: bool = True,
             quality: int = 75,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         pgReader = self._getPostgresqlCtfReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -10602,12 +11001,15 @@ class ProjectService:
             inline: bool = True,
             quality: int = 75,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         pgReader = self._getPostgresqlCtfReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -10655,6 +11057,8 @@ class ProjectService:
             outputName: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Resolve a protocol and its SetOfCTFTomoSeries output.
@@ -10662,7 +11066,12 @@ class ProjectService:
         PostgreSQL outputs are reconstructed as independent runtime proxies.
         The owner protocol and its existing outputs remain unchanged.
         """
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -10673,6 +11082,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             outputInfo = self._getPostgresqlRuntimeOutputInfo(
@@ -10819,6 +11229,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ):
         """
         List all CTFTomoSeries in a CTFTomo output.
@@ -10836,11 +11247,20 @@ class ProjectService:
           ...
         ]
         """
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlCtftomoReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -10860,6 +11280,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         seriesList: List[Dict[str, Any]] = []
@@ -10881,6 +11302,8 @@ class ProjectService:
             outputName: str,
             tiltSeriesId: Union[int, str],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return all CTF measurements for one tilt series inside a CTFTomo output.
@@ -10919,6 +11342,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -10950,6 +11374,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         targetKey = str(tiltSeriesId)
@@ -10994,6 +11419,8 @@ class ProjectService:
             rot=None,
             shifts=None,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         """
             Render a single CTFtomo PSD image using the OutputsPreview pipeline.
@@ -11063,6 +11490,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         if protocol is None:
             raise HTTPException(
@@ -11144,6 +11572,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -11151,11 +11580,20 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_ctftomo_reader import PostgresqlCtftomoReader
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlCtftomoReader(
                 db=mapper.db,
@@ -11187,8 +11625,15 @@ class ProjectService:
             outputName: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -11199,6 +11644,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
             outputInfo = self._getPostgresqlRuntimeOutputInfo(
                 mapper=mapper,
@@ -11265,15 +11711,25 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
 
-        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocolIdIsScipionId=True,
+            )
+        else:
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+            )
 
         try:
             from app.backend.viewers.postgresql_coords3d_tomogram_volume_reader import \
@@ -11327,12 +11783,22 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ):
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -11362,6 +11828,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.listOutputVolumes()
@@ -11372,17 +11839,27 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ) -> int:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
             TomogramReviewTargetNotFound,
         )
 
-        protocolDbId = self._resolvePostgresqlReaderProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocolIdIsScipionId=True,
+            )
+        else:
+            protocolDbId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+            )
 
         reviewMapper = TomogramReviewPostgresqlMapper(
             mapper.db
@@ -11406,17 +11883,27 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
             TomogramReviewTargetNotFound,
         )
 
+        setIdKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            setIdKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         setId = self._resolveTomogramReviewSetId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **setIdKwargs
         )
 
         try:
@@ -11440,6 +11927,8 @@ class ProjectService:
             outputName: str,
             payload: Dict[str, Any],
             createdByUserId: Optional[int],
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
@@ -11451,6 +11940,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         try:
@@ -11485,6 +11975,8 @@ class ProjectService:
             scipionItemId: int,
             payload: Dict[str, Any],
             reviewedByUserId: Optional[int],
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
@@ -11496,6 +11988,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         try:
@@ -11532,6 +12025,8 @@ class ProjectService:
             outputName: str,
             reviewFilter: str,
             reviewCriteria: Optional[Dict[str, Any]] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         from app.backend.mapper.tomogram_review_mapper import (
             TomogramReviewPostgresqlMapper,
@@ -11562,12 +12057,14 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         setId = self._resolveTomogramReviewSetId(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         selectedItemIds = set(
             TomogramReviewPostgresqlMapper(
@@ -11586,6 +12083,7 @@ class ProjectService:
             protocolId=protocolId,
             protocol=protocol,
             outputPrefix="filteredTomograms" if hasAdvancedCriteria else outputPrefixes[normalizedFilter],
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         newOutputName = outputIdentity["outputName"]
 
@@ -11607,6 +12105,7 @@ class ProjectService:
             protocol=protocol,
             outputName=newOutputName,
             sourceSet=inputSet,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         outputSet = generatedSetContext["outputSet"]
         finalized = False
@@ -11682,12 +12181,15 @@ class ProjectService:
             outputName: str,
             volumeId: Union[int, str],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -11719,6 +12221,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.getVolumeInfo(volumeId)
@@ -11731,12 +12234,15 @@ class ProjectService:
             volumeId: Union[int, str],
             bins: int = 128,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -11771,6 +12277,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         op = OutputsPreview(self.currentProject, protocol, output)
 
@@ -12084,12 +12591,15 @@ class ProjectService:
             windowMax: Optional[float] = None,
             mapper=None,
             ifNoneMatch: Optional[str] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -12195,6 +12705,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         op = OutputsPreview(self.currentProject, protocol, output)
         return op.renderVolumeSlice(
@@ -12231,6 +12742,8 @@ class ProjectService:
             quality: int = 75,
             inline: bool = True,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # renderVolumeSlicesBatchService -- reuses renderVolumeSliceService
         # (and its existing per-slice cache) for each item, so this only
@@ -12284,6 +12797,7 @@ class ProjectService:
                     fast=fast,
                     quality=quality,
                     mapper=mapper,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                 )
 
                 body = getattr(response, "body", None) or b""
@@ -12392,12 +12906,15 @@ class ProjectService:
             mapper=None,
             binary: bool = False,
             ifNoneMatch: Optional[str] = None,
+
+            protocolIdIsScipionId=False,
     ):
         pgReader = self._getPostgresqlVolumeReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -12469,6 +12986,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
@@ -12720,6 +13238,8 @@ class ProjectService:
             minComponentTriangles=0,
             smoothingIterations=0,
             ifNoneMatch: Optional[str] = None,
+
+            protocolIdIsScipionId=False,
     ):
         effectiveMaxTriangles = min(
             _VOLUME_SURFACE_MAX_TRIANGLES,
@@ -12741,6 +13261,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -12831,6 +13352,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         volumePath = self._getVolumePathFromOutput(output, volumeId)
 
@@ -12911,6 +13433,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ):
         """
         List all tilt series in a SetOfTiltSeries-like output.
@@ -12928,11 +13451,20 @@ class ProjectService:
           ...
         ]
         """
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -12952,6 +13484,7 @@ class ProjectService:
             outputName=outputName,
             projectId=projectId,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         seriesList: List[Dict[str, Any]] = []
@@ -12971,6 +13504,8 @@ class ProjectService:
             outputName: str,
             tiltSeriesId: Union[int, str],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return metadata for all tilt images in a given tilt series.
@@ -13002,6 +13537,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -13024,6 +13560,7 @@ class ProjectService:
             outputName=outputName,
             projectId=projectId,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         targetKey = str(tiltSeriesId)
         selectedSummary: Optional[Dict[str, Any]] = None
@@ -13129,12 +13666,15 @@ class ProjectService:
         exclusions: Dict[str, Any],
         restack: bool,
         mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         protocol, inputSet = self._resolveOutputForCtftomoSeries(
             protocolId=protocolId,
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         normalizedExclusions: Dict[str, Dict[str, Any]] = {}
@@ -13148,6 +13688,7 @@ class ProjectService:
             protocolId=protocolId,
             protocol=protocol,
             outputPrefix="CTFTomoSeries",
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         newOutputName = outputIdentity["outputName"]
 
@@ -13158,6 +13699,7 @@ class ProjectService:
             protocol=protocol,
             outputName=newOutputName,
             sourceSet=inputSet,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         outputSet = generatedSetContext["outputSet"]
         finalized = False
@@ -13432,6 +13974,8 @@ class ProjectService:
             inline: bool = True,
             requestHeaders: Optional[Dict[str, str]] = None,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
 
         pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
@@ -13439,6 +13983,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -13562,6 +14107,7 @@ class ProjectService:
             outputName=outputName,
             projectId=projectId,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
 
@@ -13639,6 +14185,8 @@ class ProjectService:
             inline: bool = True,
             requestHeaders: Optional[Dict[str, str]] = None,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # renderTiltSeriesImagesBatchService
         cleanIndices: List[int] = []
@@ -13676,6 +14224,7 @@ class ProjectService:
                     inline=inline,
                     requestHeaders=requestHeaders,
                     mapper=mapper,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                 )
 
                 body = getattr(response, "body", None) or b""
@@ -13724,7 +14273,9 @@ class ProjectService:
         outputName: str,
         exclusions: Dict[str, Any],
         restack: bool,
-        mapper=None
+        mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         """
         Create a new SetOfTiltSeries applying per-tilt-series and per-tilt exclusions.
@@ -13746,6 +14297,7 @@ class ProjectService:
             outputName=outputName,
             projectId=projectId,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         hasOddEven = inputSet.hasOddEven()
 
@@ -13760,6 +14312,7 @@ class ProjectService:
             protocolId=protocolId,
             protocol=protocol,
             outputPrefix="TiltSeries_",
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         newOutputName = outputIdentity["outputName"]
         outputPath = os.path.join(
@@ -13778,6 +14331,7 @@ class ProjectService:
                 protocol=protocol,
                 outputName=newOutputName,
                 sourceSet=inputSet,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
         )
         outputSet = generatedSetContext["outputSet"]
@@ -14026,6 +14580,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -14033,11 +14588,20 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_coords3d_reader import PostgresqlCoords3dReader
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlCoords3dReader(
                 db=mapper.db,
@@ -14065,8 +14629,15 @@ class ProjectService:
             outputName: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -14083,6 +14654,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             outputInfo = self._getPostgresqlRuntimeOutputInfo(
@@ -14169,6 +14741,7 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ):
         """
         Return a list of tomograms referenced by the SetOfCoordinates3D output.
@@ -14179,11 +14752,20 @@ class ProjectService:
           ...
         ]
         """
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -14211,6 +14793,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         self.tomoList = {}
         tomogramList: List[Dict[str, Any]] = []
@@ -14266,6 +14849,8 @@ class ProjectService:
             outputName: str,
             tomogramId: Union[int, str],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return a flat list of 3D points for one tomogram.
@@ -14294,6 +14879,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -14324,6 +14910,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         try:
@@ -14528,12 +15115,15 @@ class ProjectService:
             outputName: str,
             tomogramId: Union[int, str],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> str:
         pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -14559,6 +15149,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         tomogram = None
@@ -14715,6 +15306,8 @@ class ProjectService:
             tomogramId: Union[int, str],
             payload: Dict[str, Any],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         payload = payload or {}
         points = payload.get("points") or []
@@ -14752,6 +15345,7 @@ class ProjectService:
             outputName=outputName,
             tomogramId=tomogramId,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         try:
@@ -14833,6 +15427,8 @@ class ProjectService:
             quality: int = 75,
             mapper=None,
             ifNoneMatch: Optional[str] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         """
         Render a 2D slice from a tomogram referenced by a SetOfCoordinates3D.
@@ -14853,6 +15449,7 @@ class ProjectService:
             projectId=projectId,
             protocolId=protocolId,
             outputName=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         if pgReader is not None:
@@ -14937,6 +15534,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         try:
@@ -15192,6 +15790,8 @@ class ProjectService:
             outputName: str,
             payload: Any,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         if mapper is None:
             raise HTTPException(
@@ -15228,6 +15828,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         sourceTomograms = list(self._iterCoordinates3dTomograms(srcSet))
@@ -15269,6 +15870,7 @@ class ProjectService:
             protocolId=protocolId,
             protocol=protocol,
             outputPrefix=outputName,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         newOutputName = outputIdentity["outputName"]
 
@@ -15279,6 +15881,7 @@ class ProjectService:
             protocol=protocol,
             outputName=newOutputName,
             sourceSet=srcSet,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         dstSet = generatedSetContext["outputSet"]
 
@@ -15448,6 +16051,7 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             outputName: str,
+                protocolIdIsScipionId=False,
     ):
         if mapper is None:
             return None
@@ -15455,11 +16059,20 @@ class ProjectService:
         try:
             from app.backend.viewers.postgresql_fsc_reader import PostgresqlFscReader
 
-            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
+            if protocolIdIsScipionId:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    protocolIdIsScipionId=True,
+                )
+            else:
+                readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                )
 
             reader = PostgresqlFscReader(
                 db=mapper.db,
@@ -15488,15 +16101,25 @@ class ProjectService:
             outputName: str,
             mapper=None,
             currentUser: Optional[dict] = None,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         """
         Return FSC curves for a SetOfFSCs-like output.
         """
+        readerKwargs = {
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+        }
+
+        if protocolIdIsScipionId:
+            readerKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgReader = self._getPostgresqlFscReaderIfAvailable(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
+            **readerKwargs
         )
 
         if pgReader is not None:
@@ -15521,7 +16144,12 @@ class ProjectService:
                 reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
             )
 
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -15657,6 +16285,8 @@ class ProjectService:
             outputName: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Resolve protocol and output object for metadata operations.
@@ -15666,7 +16296,12 @@ class ProjectService:
           project-relative.
         - Raises 404 if the final path does not exist on disk.
         """
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -15754,17 +16389,27 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ):
         from app.backend.viewers.postgresql_dao import PostgresqlDAO
 
         if mapper is None:
             return None
 
-        readerProtocolId = self._resolvePostgresqlReaderProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                protocolIdIsScipionId=True,
+            )
+        else:
+            readerProtocolId = self._resolvePostgresqlReaderProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+            )
 
         dao = PostgresqlDAO(
             db=mapper.db,
@@ -15784,12 +16429,22 @@ class ProjectService:
             protocolId: int,
             outputName: str,
             mapper=None,
+                protocolIdIsScipionId=False,
     ) -> ObjectManager:
+        daoKwargs = {
+            "projectId": projectId,
+            "protocolId": protocolId,
+            "outputName": outputName,
+            "mapper": mapper,
+        }
+
+        if protocolIdIsScipionId:
+            daoKwargs[
+                "protocolIdIsScipionId"
+            ] = True
+
         pgDao = self._getPostgresqlDAOIfAvailable(
-            projectId=projectId,
-            protocolId=protocolId,
-            outputName=outputName,
-            mapper=mapper,
+            **daoKwargs
         )
 
         if pgDao is not None:
@@ -15818,6 +16473,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         return self._getMetadataObjectManager(metaPath)
 
@@ -15828,6 +16484,8 @@ class ProjectService:
             outputName: str,
             tableName: str,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Resolve (ObjectManager, Table) for a given output + tableName.
@@ -15840,6 +16498,7 @@ class ProjectService:
             protocolId=protocolId,
             outputName=outputName,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         table = objMgr.getTable(tableName)
@@ -15953,16 +16612,25 @@ class ProjectService:
     def listOutputMetadataTablesService(self, projectId: int,
                                         protocolId: int,
                                         outputName: str,
-                                        mapper=None):
+                                        mapper=None, protocolIdIsScipionId=False):
         """
         List logical metadata tables associated with an output.
         """
         with _metadataLock:
+            managerKwargs = {
+                "projectId": projectId,
+                "protocolId": protocolId,
+                "outputName": outputName,
+                "mapper": mapper,
+            }
+
+            if protocolIdIsScipionId:
+                managerKwargs[
+                    "protocolIdIsScipionId"
+                ] = True
+
             objMgr = self._getMetadataObjectManagerForOutput(
-                projectId=projectId,
-                protocolId=protocolId,
-                outputName=outputName,
-                mapper=mapper,
+                **managerKwargs
             )
 
             tables = objMgr.getTables() or {}
@@ -15993,7 +16661,9 @@ class ProjectService:
                                       protocolId: int,
                                       outputName: str,
                                       tableName: str,
-                                      mapper=None):
+                                      mapper=None,
+            protocolIdIsScipionId=False,
+    ):
         """
         Return logical schema for one metadata table: columns, renderers, flags.
         """
@@ -16004,6 +16674,7 @@ class ProjectService:
                 outputName,
                 tableName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             visibleLabels = []
@@ -16224,9 +16895,10 @@ class ProjectService:
             detail=f"Could not resolve output class for action '{actionName}'",
         )
 
-    def _resolveMetadataActionInputContext(self, mapper, projectId: int, protocolId: int, outputName: str):
+    def _resolveMetadataActionInputContext(self, mapper, projectId: int, protocolId: int, outputName: str, protocolIdIsScipionId=False):
         protocolDbId = self._resolvePostgresqlReaderProtocolId(mapper=mapper, projectId=projectId,
-                                                               protocolId=protocolId)
+                                                               protocolId=protocolId,
+                                                               **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}))
 
         protocolIdentityResolver = ProtocolIdentityResolver(mapper=mapper, projectId=projectId)
         protocolRow = protocolIdentityResolver.getProtocolRowByDbId(protocolDbId)
@@ -16277,10 +16949,12 @@ class ProjectService:
             ids: List[int],
             currentUser: Any,
             mapper: Any,
+
+            protocolIdIsScipionId=False,
     ) -> Any:
         selectionIds = self._normalizeMetadataSelectionIds(ids)
 
-        inputContext = self._resolveMetadataActionInputContext(mapper=mapper, projectId=projectId, protocolId=protocolId, outputName=outputName)
+        inputContext = self._resolveMetadataActionInputContext(mapper=mapper, projectId=projectId, protocolId=protocolId, outputName=outputName, **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}))
         output = inputContext["output"]
         parentProtocolId = int(inputContext["parentProtocolId"])
 
@@ -16291,6 +16965,7 @@ class ProjectService:
                 outputName=outputName,
                 tableName=tableName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             dao = objMgr.getDAO()
@@ -16465,6 +17140,8 @@ class ProjectService:
             asc: bool,
             selectionOnly: bool,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return one logical page of rows for a metadata table.
@@ -16477,6 +17154,7 @@ class ProjectService:
                 outputName,
                 tableName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
             columns = list(table.getColumns())
             table.setSortingColumn(sortBy)
@@ -16558,6 +17236,8 @@ class ProjectService:
             selectionOnly: bool,
             ids: Optional[List[int]],
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         """
         Export metadata table as CSV or XLSX.
@@ -16575,6 +17255,7 @@ class ProjectService:
                 outputName,
                 tableName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
             columns = list(table.getColumns())
             colNames = [c.getName() for c in columns]
@@ -16762,6 +17443,8 @@ class ProjectService:
             sortBy: str = "id",
             asc: bool = True,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         try:
             logicalId = int(rowId)
@@ -16783,6 +17466,7 @@ class ProjectService:
                 protocolId=protocolId,
                 outputName=outputName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             lookupPosition = getattr(
@@ -16915,6 +17599,8 @@ class ProjectService:
             sortBy: str = "id",
             asc: bool = True,
             ifNoneMatch: Optional[str] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         """
         Thin ETag/cache wrapper around renderMetadataImageCellService --
@@ -16971,6 +17657,7 @@ class ProjectService:
             mapper=mapper,
             sortBy=sortBy,
             asc=asc,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         response = self._storeCachedMetadataImageResponse(cacheKey, response)
@@ -16995,6 +17682,8 @@ class ProjectService:
             mapper=None,
             sortBy: str = "id",
             asc: bool = True,
+
+            protocolIdIsScipionId=False,
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
@@ -17015,6 +17704,7 @@ class ProjectService:
             outputName,
             tableName,
             mapper=mapper,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
         columns = list(table.getColumns())
         table.setSortingColumn(sortBy)
@@ -17032,7 +17722,7 @@ class ProjectService:
 
         if not objMgrFileName.startswith("postgresql://"):
             try:
-                _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName)
+                _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName, **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}))
                 metaDir = LocalPath(metaPath).parent
             except Exception:
                 metaDir = None
@@ -17388,6 +18078,8 @@ class ProjectService:
             sortBy: str = "id",
             asc: bool = True,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # renderMetadataImageCellsBatchService -- reuses
         # renderMetadataImageCellCachedService (and its existing per-cell
@@ -17445,6 +18137,7 @@ class ProjectService:
                     mapper=mapper,
                     sortBy=sortBy,
                     asc=asc,
+                    **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                 )
 
                 body = getattr(response, "body", None) or b""
@@ -17501,6 +18194,8 @@ class ProjectService:
             sortBy: str,
             asc: bool,
             mapper=None,
+
+            protocolIdIsScipionId=False,
     ):
         """
         Return a window of rows for a metadata table using offset + limit.
@@ -17521,6 +18216,7 @@ class ProjectService:
                 outputName,
                 tableName,
                 mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
             columns = list(table.getColumns())
             table.setSortingColumn(sortBy)
@@ -17848,8 +18544,15 @@ class ProjectService:
             outputName: str,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Tuple[Any, Any]:
-        protocol = self._getScipionProtocolForRuntime(
+        protocolLoader = (
+            self._getScipionProtocolByScipionId
+            if protocolIdIsScipionId
+            else self._getScipionProtocolForRuntime
+        )
+        protocol = protocolLoader(
             mapper=mapper,
             projectId=projectId,
             protocolId=protocolId,
@@ -17860,6 +18563,7 @@ class ProjectService:
                 mapper=mapper,
                 projectId=projectId,
                 protocolId=protocolId,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
             )
 
             outputInfo = self._getPostgresqlRuntimeOutputInfo(
@@ -18089,6 +18793,8 @@ class ProjectService:
             objectKind: Optional[str] = None,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> List[Dict[str, Any]]:
 
         protocol, outputObj = self._getProtocolOutputObject(
@@ -18096,6 +18802,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         targetObj = self._resolveExternalViewerTargetObject(
@@ -18243,6 +18950,8 @@ class ProjectService:
             params: Optional[Dict[str, Any]] = None,
             mapper=None,
             projectId: Optional[int] = None,
+
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
 
         protocol, outputObj = self._getProtocolOutputObject(
@@ -18250,6 +18959,7 @@ class ProjectService:
             outputName=outputName,
             mapper=mapper,
             projectId=projectId,
+            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
         targetObj = self._resolveExternalViewerTargetObject(
@@ -18285,6 +18995,7 @@ class ProjectService:
                     int(projectId),
                     projectPath,
                     descriptor,
+                    protocolIdIsScipionId,
                 ),
                 daemon=True,
             )
@@ -18318,6 +19029,8 @@ class ProjectService:
             projectId: int,
             projectPath: str,
             descriptor: Dict[str, Any],
+
+            protocolIdIsScipionId=False,
     ):
         backgroundMapper = None
         backgroundService = None
@@ -18573,13 +19286,24 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             currentUser: dict,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # listProtocolTags
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+        else:
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         if protocolDbId is None:
             raise HTTPException(
@@ -18611,13 +19335,24 @@ class ProjectService:
             protocolId: int,
             tagIds: List[str],
             currentUser: dict,
+                protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # setProtocolTags
-        protocolDbId = self._resolvePostgresqlProtocolDbId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=protocolId,
-        )
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                self
+                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper,
+                    projectId=projectId,
+                    protocolId=protocolId,
+                )
+            )
+        else:
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+            )
 
         if protocolDbId is None:
             raise HTTPException(

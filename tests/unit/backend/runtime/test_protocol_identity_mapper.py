@@ -357,3 +357,61 @@ def test_ProtocolIdentityResolverSupportsPartialMapperWithDatabaseOnly():
 
     assert "FROM protocols" in protocolIdCall["query"]
     assert 'AND "protocolId" = %s' in protocolIdCall["query"]
+
+def test_ProtocolIdentityResolverKeepsDbIdCompatibilityWhenNumericIdsCollide():
+    class CollidingIdentityMapper:
+        def __init__(self):
+            self.db = ForbiddenDatabase()
+            self.calls = []
+
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            self.calls.append({
+                "method": "getProjectProtocolByProtocolId",
+                "projectId": projectId,
+                "protocolId": str(protocolId),
+            })
+
+            if str(protocolId) != "10":
+                return None
+
+            return {
+                "id": 500,
+                "protocolId": "10",
+            }
+
+        def getProjectProtocolByDbId(
+                self,
+                projectId,
+                protocolDbId,
+        ):
+            self.calls.append({
+                "method": "getProjectProtocolByDbId",
+                "projectId": projectId,
+                "protocolDbId": int(protocolDbId),
+            })
+
+            if int(protocolDbId) != 10:
+                return None
+
+            return {
+                "id": 10,
+                "protocolId": "99",
+            }
+
+    mapper = CollidingIdentityMapper()
+
+    resolver = ProtocolIdentityResolver(
+        mapper=mapper,
+        projectId=7,
+    )
+
+    assert resolver.resolveScipionProtocolId(10) == 99
+    assert mapper.calls[0] == {
+        "method": "getProjectProtocolByDbId",
+        "projectId": 7,
+        "protocolDbId": 10,
+    }

@@ -29,7 +29,17 @@ from fastapi import HTTPException
 
 def patchRenameProtocolFake(fakeProjectService):
     # patchRenameProtocolFake
-    def renameProtocol(mapper, projectId, protocolId, newName, newComment=""):
+    def renameProtocol(
+            mapper,
+            projectId,
+            protocolId,
+            newName,
+            newComment="",
+            protocolIdIsScipionId=False,
+    ):
+        fakeProjectService.lastRenameProtocolIdIsScipionId = (
+            protocolIdIsScipionId
+        )
         fakeProjectService.lastRenameProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -319,6 +329,7 @@ def test_LaunchProtocolDelegatesToService(projectClient, fakeProjectService):
         "executeMode": "resume",
         "currentUserId": 1,
     }
+    assert fakeProjectService.lastLaunchProtocolIdIsScipionId is True
 
 
 def test_LaunchProtocolDefaultsMissingModeToLaunch(projectClient, fakeProjectService):
@@ -354,6 +365,7 @@ def test_LaunchProtocolReturnsSyncCounts(
             params,
             executeMode,
             currentUserId=None,
+            protocolIdIsScipionId=False,
     ):
         fakeProjectService.lastLaunchProtocolCall = {
             "mapper": mapper,
@@ -425,6 +437,7 @@ def test_LaunchProtocolWrapsUnexpectedException(
             params,
             executeMode,
             currentUserId=None,
+            protocolIdIsScipionId=False,
     ):
         raise RuntimeError("boom")
 
@@ -474,6 +487,7 @@ def test_SaveProtocolReturnsSuccessWhenNoErrors(projectClient, fakeProjectServic
         "protocolClassName": "ProtClass",
         "params": {"a": 1},
     }
+    assert fakeProjectService.lastSaveProtocolIdIsScipionId is True
 
 
 def test_SaveProtocolReturns404EnvelopeWhenProjectMissing(
@@ -556,6 +570,7 @@ def test_SaveProtocolWrapsUnexpectedException(
         protocolId,
         protocolClassName,
         params,
+        protocolIdIsScipionId=False,
     ):
         raise RuntimeError("boom")
 
@@ -602,6 +617,7 @@ def test_SuggestionProtocolReturnsSuggestions(projectClient, fakeProjectService)
         "mapper": fakeProjectService.lastGetNextProtocolSuggestionsCall["mapper"],
         "projectId": 1,
     }
+    assert fakeProjectService.lastGetNextProtocolSuggestionsIdIsScipionId is True
 
 
 def test_SuggestionProtocolWrapsHttpException(projectClient, fakeProjectService):
@@ -625,7 +641,12 @@ def test_SuggestionProtocolWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeGetNextProtocolSuggestions(mapper, projectId, protocolId):
+    def fakeGetNextProtocolSuggestions(
+            mapper,
+            projectId,
+            protocolId,
+            protocolIdIsScipionId=False,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -685,6 +706,7 @@ def test_RenameProtocolDelegatesToService(projectClient, fakeProjectService):
         "newName": "Renamed protocol",
         "newComment": "Updated comment",
     }
+    assert fakeProjectService.lastRenameProtocolIdIsScipionId is True
     assert (
             fakeProjectService
             .lastLoadPostgresqlRuntimeProjectForMutationCall
@@ -724,6 +746,7 @@ def test_RenameProtocolWrapsUnexpectedException(
         protocolId,
         newName,
         newComment,
+        protocolIdIsScipionId=False,
     ):
         raise RuntimeError("boom")
 
@@ -806,6 +829,7 @@ def test_DuplicateProtocolDelegatesToService(projectClient, fakeProjectService):
 
     items = fakeProjectService.lastDuplicateProtocolCall["items"]
     assert fakeProjectService.lastDuplicateProtocolCall["projectId"] == 1
+    assert fakeProjectService.lastDuplicateProtocolIdIsScipionId is True
     assert len(items) == 2
     assert items[0].id == "10"
     assert items[0].name == "Copy 1"
@@ -873,7 +897,12 @@ def test_DuplicateProtocolWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeDuplicateProtocol(mapper, projectId, items):
+    def fakeDuplicateProtocol(
+            mapper,
+            projectId,
+            items,
+            protocolIdIsScipionId=False,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -931,6 +960,7 @@ def test_DeleteProtocolDelegatesToService(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
+    assert fakeProjectService.lastDeleteProtocolIdIsScipionId is True
 
 
 def test_DeleteProtocolWrapsHttpException(projectClient, fakeProjectService):
@@ -957,7 +987,12 @@ def test_DeleteProtocolWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeDeleteProtocol(mapper, projectId, protocolIds):
+    def fakeDeleteProtocol(
+            mapper,
+            projectId,
+            protocolIds,
+            protocolIdIsScipionId=False,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -1245,7 +1280,12 @@ def test_StopProtocolWrapsUnexpectedException(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeStopProtocol(mapper, projectId, protocolIds):
+    def fakeStopProtocol(
+            mapper,
+            projectId,
+            protocolIds,
+            protocolIdIsScipionId=False,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
@@ -1301,6 +1341,7 @@ def test_StopProtocolDelegatesToService(projectClient, fakeProjectService):
         "projectId": 1,
         "protocolIds": ["10", "11"],
     }
+    assert fakeProjectService.lastStopProtocolIdIsScipionId is True
 
 
 def test_DeleteProtocolReturnsErrorsWhenServiceRaisesHttpException(
@@ -1336,7 +1377,13 @@ def test_DeleteProtocolReturnsSyncCounts(
     fakeProjectService,
     monkeypatch,
 ):
-    def fakeDeleteProtocol(mapper, projectId, protocolIds):
+    def fakeDeleteProtocol(
+            mapper,
+            projectId,
+            protocolIds,
+            protocolIdIsScipionId=False,
+    ):
+        fakeProjectService.lastDeleteProtocolIdIsScipionId = protocolIdIsScipionId
         fakeProjectService.lastDeleteProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1420,4 +1467,3 @@ def test_ExecuteProtocolWorkflowPassesCurrentUserId(
             "currentUserId": 1,
         }
     )
-

@@ -138,6 +138,7 @@ class FakeProjectService:
         self.castParamValueCalls = []
         self.applyParamsToProtocolCalls = []
         self.loadPostgresqlRuntimeProjectCalls = []
+        self.strictRuntimeCalls = []
         self.projectRow = {"id": 1}
 
     def _getScipionProtocolForRuntime(self, mapper, projectId, protocolId):
@@ -149,6 +150,20 @@ class FakeProjectService:
 
         runtimeProtocolId = self.runtimeProtocolIdByDbId.get(int(protocolId), int(protocolId))
         return self.currentProject.protocols[int(runtimeProtocolId)]
+
+    def _getScipionProtocolByScipionId(
+            self,
+            protocolId,
+            mapper=None,
+            projectId=None,
+    ):
+        self.strictRuntimeCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+
+        return self.currentProject.protocols[int(protocolId)]
 
     def castParamValue(self, param, value):
         self.castParamValueCalls.append({
@@ -545,5 +560,53 @@ def test_ExecuteProtocolWizardFailsWhenRuntimeProjectWasNotLoaded(
             "mapper": mapper,
             "projectId": 1,
             "currentUser": {"id": 1},
+        }
+    ]
+
+
+def test_BuildWizardReadyProtocolUsesScipionIdWhenRouteIdentityIsExplicit(
+        wizardService,
+        currentProject,
+        projectService,
+        mapper,
+):
+    selectedProtocol = FakeProtocol(
+        objId=10,
+        className="ProtWizardTarget",
+    )
+    collidingProtocol = FakeProtocol(
+        objId=99,
+        className="ProtWizardTarget",
+    )
+
+    selectedIterations = FakeParam(label="Iterations")
+    collidingIterations = FakeParam(label="Iterations")
+    selectedProtocol.addParam("iterations", selectedIterations)
+    collidingProtocol.addParam("iterations", collidingIterations)
+
+    currentProject.protocols[10] = selectedProtocol
+    currentProject.protocols[99] = collidingProtocol
+    projectService.runtimeProtocolIdByDbId[10] = 99
+    projectService.runtimeProtocolIdByDbId[500] = 10
+
+    resolved = wizardService._buildWizardReadyProtocol(
+        protocolId=10,
+        protocolClassName="ProtWizardTarget",
+        formValues={
+            "iterations": 7,
+        },
+        mapper=mapper,
+        projectId=1,
+        protocolIdIsScipionId=True,
+    )
+
+    assert resolved is selectedProtocol
+    assert selectedIterations.get() == 7
+    assert collidingIterations.get() is None
+    assert projectService.strictRuntimeCalls == [
+        {
+            "mapper": mapper,
+            "projectId": 1,
+            "protocolId": 10,
         }
     ]

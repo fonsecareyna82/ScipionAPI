@@ -904,7 +904,11 @@ class FakeProjectService:
             protocolId,
             mapper=None,
             currentUser=None,
+            protocolIdIsScipionId=False,
     ):
+        self.lastListProtocolLogChannelsIdIsScipionId = (
+            protocolIdIsScipionId
+        )
         self.lastListProtocolLogChannelsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
@@ -922,7 +926,9 @@ class FakeProjectService:
             maxLines,
             mapper=None,
             currentUser=None,
+            protocolIdIsScipionId=False,
     ):
+        self.lastPollLogsIdIsScipionId = protocolIdIsScipionId
         self.lastPollLogsCall = {
             "projectId": projectId,
             "protocolId": protocolId,
@@ -940,6 +946,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastListOutputMetadataTablesCall = {
             "projectId": projectId,
@@ -956,6 +963,7 @@ class FakeProjectService:
             outputName,
             tableName,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetMetadataTableSchemaCall = {
             "projectId": projectId,
@@ -978,6 +986,7 @@ class FakeProjectService:
             asc,
             selectionOnly,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetMetadataTablePageCall = {
             "projectId": projectId,
@@ -1005,6 +1014,7 @@ class FakeProjectService:
             sortBy,
             asc,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetMetadataTableWindowCall = {
             "projectId": projectId,
@@ -1037,6 +1047,7 @@ class FakeProjectService:
             asc,
             mapper,
             ifNoneMatch=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderMetadataImageCellCall = {
             "projectId": projectId,
@@ -1071,6 +1082,7 @@ class FakeProjectService:
             sortBy="id",
             asc=True,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderMetadataImageCellsBatchCall = {
             "projectId": projectId,
@@ -1099,6 +1111,7 @@ class FakeProjectService:
             ids,
             currentUser,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastRunMetadataTableActionCall = {
             "projectId": projectId,
@@ -1123,6 +1136,7 @@ class FakeProjectService:
             selectionOnly,
             ids,
             mapper,
+            protocolIdIsScipionId=False,
     ):
         self.lastExportMetadataTableCall = {
             "projectId": projectId,
@@ -1245,7 +1259,9 @@ class FakeProjectService:
             params,
             executeMode,
             currentUserId=None,
+            protocolIdIsScipionId=False,
     ):
+        self.lastLaunchProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastLaunchProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1286,7 +1302,16 @@ class FakeProjectService:
 
         return self.executeProtocolWorkflowResult
 
-    def saveProtocol(self, mapper, projectId, protocolId, protocolClassName, params):
+    def saveProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            protocolClassName,
+            params,
+            protocolIdIsScipionId=False,
+    ):
+        self.lastSaveProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastSaveProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1298,7 +1323,16 @@ class FakeProjectService:
             raise self.saveProtocolError
         return self.saveProtocolResult
 
-    def getNextProtocolSuggestions(self, protocolId, mapper=None, projectId=None):
+    def getNextProtocolSuggestions(
+            self,
+            protocolId,
+            mapper=None,
+            projectId=None,
+            protocolIdIsScipionId=False,
+    ):
+        self.lastGetNextProtocolSuggestionsIdIsScipionId = (
+            protocolIdIsScipionId
+        )
         self.lastGetNextProtocolSuggestionsCall = {
             "protocolId": protocolId,
             "mapper": mapper,
@@ -1308,7 +1342,16 @@ class FakeProjectService:
             raise self.nextProtocolSuggestionsError
         return self.nextProtocolSuggestionsResult
 
-    def renameProtocol(self, mapper, projectId, protocolId, newName, newComment=""):
+    def renameProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolId,
+            newName,
+            newComment="",
+            protocolIdIsScipionId=False,
+    ):
+        self.lastRenameProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastRenameProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1319,7 +1362,14 @@ class FakeProjectService:
         if self.renameProtocolError is not None:
             raise self.renameProtocolError
 
-    def duplicateProtocol(self, mapper, projectId, items):
+    def duplicateProtocol(
+            self,
+            mapper,
+            projectId,
+            items,
+            protocolIdIsScipionId=False,
+    ):
+        self.lastDuplicateProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastDuplicateProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1329,7 +1379,14 @@ class FakeProjectService:
             raise self.duplicateProtocolError
         return self.duplicateProtocolResult
 
-    def deleteProtocol(self, mapper, projectId, protocolIds):
+    def deleteProtocol(
+            self,
+            mapper,
+            projectId,
+            protocolIds,
+            protocolIdIsScipionId=False,
+    ):
+        self.lastDeleteProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastDeleteProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1402,7 +1459,9 @@ class FakeProjectService:
             mapper,
             projectId,
             protocolIds,
+            protocolIdIsScipionId=False,
     ):
+        self.lastStopProtocolIdIsScipionId = protocolIdIsScipionId
         self.lastStopProtocolCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1420,6 +1479,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastListOutputVolumesCall = {
             "projectId": projectId,
@@ -1436,6 +1496,7 @@ class FakeProjectService:
             outputName,
             volumeId,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetVolumeInfoCall = {
             "projectId": projectId,
@@ -1454,6 +1515,7 @@ class FakeProjectService:
             volumeId,
             bins=128,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetVolumeHistogramCall = {
             "projectId": projectId,
@@ -1471,6 +1533,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastListOutputTiltSeriesCall = {
             "projectId": projectId,
@@ -1487,6 +1550,7 @@ class FakeProjectService:
             outputName,
             tiltSeriesId,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetTiltSeriesFramesCall = {
             "projectId": projectId,
@@ -1505,6 +1569,7 @@ class FakeProjectService:
             exclusions,
             restack,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastCreateNewSetOfTiltSeriesCall = {
             "projectId": projectId,
@@ -1522,6 +1587,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastListOutputCtftomoSeriesCall = {
             "projectId": projectId,
@@ -1538,6 +1604,7 @@ class FakeProjectService:
             outputName,
             tiltSeriesId,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetCtftomoSeriesViewsCall = {
             "projectId": projectId,
@@ -1556,6 +1623,7 @@ class FakeProjectService:
             exclusions,
             restack,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastCreateNewSetOfCtftomoSeriesCall = {
             "projectId": projectId,
@@ -1573,6 +1641,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastListCoordinates3dTomogramsCall = {
             "projectId": projectId,
@@ -1589,6 +1658,7 @@ class FakeProjectService:
             outputName,
             tomogramId,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetCoordinates3dPointsCall = {
             "projectId": projectId,
@@ -1605,6 +1675,7 @@ class FakeProjectService:
             protocolId,
             outputName,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetIntegratedAnalyzeContextCall = {
             "projectId": projectId,
@@ -1650,7 +1721,7 @@ class FakeProjectService:
         }
         return self.deleteProjectTagResult
 
-    def listProtocolTags(self, mapper, projectId, protocolId, currentUser):
+    def listProtocolTags(self, mapper, projectId, protocolId, currentUser, protocolIdIsScipionId=False):
         self.lastListProtocolTagsCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1659,7 +1730,7 @@ class FakeProjectService:
         }
         return self.protocolTagsResult
 
-    def setProtocolTags(self, mapper, projectId, protocolId, tagIds, currentUser):
+    def setProtocolTags(self, mapper, projectId, protocolId, tagIds, currentUser, protocolIdIsScipionId=False):
         self.lastSetProtocolTagsCall = {
             "mapper": mapper,
             "projectId": projectId,
@@ -1680,6 +1751,7 @@ class FakeProjectService:
             outputName,
             mapper=None,
             currentUser=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetFscRowsCall = {
             "projectId": projectId,
@@ -1716,6 +1788,7 @@ class FakeProjectService:
             quality=75,
             mapper=None,
             ifNoneMatch=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderCoords3dTomogramSliceCall = {
             "projectId": projectId,
@@ -1742,6 +1815,7 @@ class FakeProjectService:
             protocolId,
             ctx,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         call = {
             "projectId": projectId,
@@ -1778,6 +1852,7 @@ class FakeProjectService:
             windowMin=None,
             windowMax=None,
             ifNoneMatch=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderVolumeSliceCall = {
             "projectId": projectId,
@@ -1811,6 +1886,7 @@ class FakeProjectService:
             mapper=None,
             binary=False,
             ifNoneMatch=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetVolumeData3dCall = {
             "projectId": projectId,
@@ -1839,6 +1915,7 @@ class FakeProjectService:
             minComponentTriangles=0,
             smoothingIterations=0,
             ifNoneMatch=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastGetVolumeSurfaceMeshCall = {
             "projectId": projectId,
@@ -1908,6 +1985,7 @@ class FakeProjectService:
             inline=True,
             requestHeaders=None,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderTiltSeriesImageCall = {
             "projectId": projectId,
@@ -1937,6 +2015,7 @@ class FakeProjectService:
             inline=True,
             requestHeaders=None,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderTiltSeriesImagesBatchCall = {
             "projectId": projectId,
@@ -1968,6 +2047,7 @@ class FakeProjectService:
             rot=None,
             shifts=None,
             mapper=None,
+            protocolIdIsScipionId=False,
     ):
         self.lastRenderCtfTomoPsdImageCall = {
             "projectId": projectId,
@@ -2247,4 +2327,3 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         yield client
 
     app.dependency_overrides.clear()
-

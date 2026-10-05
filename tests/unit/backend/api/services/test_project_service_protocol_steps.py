@@ -318,3 +318,60 @@ def test_UpdateProtocolStepStatusUpdatesPostgresqlOnly(
         "stepIndex": 2,
         "stepStatus": "finished",
     }]
+
+
+def test_ListProtocolStepsUsesScipionIdWhenRouteIdentityIsExplicit(
+        service,
+        mapper,
+):
+    mapper.db.runtimeProtocolIdByDbId[10] = 99
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.listProtocolStepsResult = [
+        {
+            "index": 1,
+            "name": "selectedStep",
+            "status": "finished",
+        },
+    ]
+
+    result = service.listProtocolStepsService(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        protocolIdIsScipionId=True,
+    )
+
+    assert result == mapper.listProtocolStepsResult
+    assert mapper.listProtocolStepsCalls == [
+        {
+            "projectId": 1,
+            "protocolId": 10,
+        }
+    ]
+    assert mapper.db.fetchOneCalls == []
+
+
+def test_UpdateProtocolStepStatusUsesScipionIdWhenRouteIdentityIsExplicit(
+        service,
+        mapper,
+):
+    mapper.db.runtimeProtocolIdByDbId[10] = 99
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+    mapper.updateProtocolStepStatusResult = {
+        "index": 2,
+        "name": "selectedStep",
+        "status": "finished",
+    }
+
+    result = service.updateProtocolStepStatusService(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        stepIndex=2,
+        stepStatus="finished",
+        protocolIdIsScipionId=True,
+    )
+
+    assert result == mapper.updateProtocolStepStatusResult
+    assert mapper.updateProtocolStepStatusCalls[0]["protocolId"] == 10
+    assert mapper.db.fetchOneCalls == []

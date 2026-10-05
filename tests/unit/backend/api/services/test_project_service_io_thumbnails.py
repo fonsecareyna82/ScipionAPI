@@ -936,6 +936,7 @@ async def test_GetProtocolOutputThumbnailsBatchDelegatesToPreviewProcess(
             "protocolId": 500,
             "outputName": "outputVol",
         }],
+        "protocolIdIsScipionId": True,
     }]
 
     assert json.loads(
@@ -1371,6 +1372,7 @@ async def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
         "currentUser": {
             "id": 7,
         },
+        "protocolIdIsScipionId": True,
     }]
 
     assert (
@@ -1388,3 +1390,117 @@ async def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
     )
 
 
+def test_OutputPreviewUsesScipionIdWhenRouteIdentityIsExplicit(
+        projectServiceModule,
+        service,
+        monkeypatch,
+        tmp_path,
+):
+    FakeOutputsPreview.instances = []
+
+    selectedFile = tmp_path / "selected.sqlite"
+    collidingFile = tmp_path / "colliding.sqlite"
+    selectedFile.write_text("selected", encoding="utf-8")
+    collidingFile.write_text("colliding", encoding="utf-8")
+
+    selectedOutput = FakeOutput(str(selectedFile))
+    collidingOutput = FakeOutput(str(collidingFile))
+
+    selectedProtocol = FakeProtocol(
+        protocolId=10,
+        outputName="outputMetadata",
+        output=selectedOutput,
+    )
+    collidingProtocol = FakeProtocol(
+        protocolId=99,
+        outputName="outputMetadata",
+        output=collidingOutput,
+    )
+
+    service.currentProject = FakeCurrentProject(
+        protocols={
+            10: selectedProtocol,
+            99: collidingProtocol,
+        },
+    )
+
+    mapper = FakeMapper(
+        runtimeProtocolIdByDbId={
+            10: 99,
+            500: 10,
+        },
+    )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "OutputsPreview",
+        FakeOutputsPreview,
+    )
+    monkeypatch.setattr(
+        service,
+        "_createObjectManager",
+        lambda: {
+            "manager": "fresh",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolvePostgresqlOutputForPreview",
+        lambda **kwargs: (
+            selectedOutput,
+            {
+                "exists": True,
+                "kind": "tree",
+            },
+        ),
+    )
+
+    result = service.outputPreview(
+        protocolId=10,
+        outputName="outputMetadata",
+        mapper=mapper,
+        projectId=1,
+        protocolIdIsScipionId=True,
+    )
+
+    assert result["protocolId"] == 10
+    assert result["outputPath"] == str(selectedFile)
+    assert mapper.db.fetchCalls == []
+
+
+def test_BuildProtocolThumbnailUsesScipionIdWhenRouteIdentityIsExplicit(
+        projectServiceModule,
+        service,
+        monkeypatch,
+):
+    FakeThumbnailService.instances = []
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ThumbnailService",
+        FakeThumbnailService,
+    )
+
+    mapper = FakeMapper(
+        runtimeProtocolIdByDbId={
+            10: 99,
+            500: 10,
+        },
+    )
+
+    result = service.buildProtocolThumbnail(
+        protocolId=10,
+        force=True,
+        size=400,
+        outputName="outputA",
+        mapper=mapper,
+        projectId=1,
+        protocolIdIsScipionId=True,
+    )
+
+    assert result == {
+        "kind": "protocol",
+        "protocolId": 10,
+        "outputName": "outputA",
+    }
+    assert mapper.db.fetchCalls == []

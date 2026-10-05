@@ -58,6 +58,7 @@ class FakeProjectService:
         self.getProjectDbRowCalls = []
         self.loadProjectForThumbnailsCalls = []
         self.runtimeCalls = []
+        self.strictRuntimeCalls = []
 
     def getProjectDbRow(
         self,
@@ -121,6 +122,20 @@ class FakeProjectService:
             int(protocolId),
         )
         return self.currentProject.protocols[int(runtimeProtocolId)]
+
+    def _getScipionProtocolByScipionId(
+            self,
+            protocolId,
+            mapper=None,
+            projectId=None,
+    ):
+        self.strictRuntimeCalls.append({
+            "mapper": mapper,
+            "projectId": projectId,
+            "protocolId": protocolId,
+        })
+
+        return self.currentProject.protocols[int(protocolId)]
 
     def _resolvePostgresqlReaderProtocolId(
             self,
@@ -556,3 +571,39 @@ def test_LoadCoordinatesOutputRaisesWhenOutputIsNotCoordinatesSet(
     ]
 
 
+def test_ResolveCoordinatesOutputUsesScipionIdWhenRouteIdentityIsExplicit(
+        service,
+        currentProject,
+        projectService,
+):
+    selectedProtocol = FakeProtocol(objId=10)
+    collidingProtocol = FakeProtocol(objId=99)
+
+    selectedOutput = buildCoordinatesOutput()
+    collidingOutput = buildCoordinatesOutput()
+
+    selectedProtocol.outputCoordinates = selectedOutput
+    collidingProtocol.outputCoordinates = collidingOutput
+
+    currentProject.protocols[10] = selectedProtocol
+    currentProject.protocols[99] = collidingProtocol
+    projectService.runtimeProtocolIdByDbId[10] = 99
+    projectService.runtimeProtocolIdByDbId[500] = 10
+
+    protocol, output = service._resolveCoordinatesOutput(
+        mapper=None,
+        projectId=1,
+        protocolId=10,
+        outputName="outputCoordinates",
+        protocolIdIsScipionId=True,
+    )
+
+    assert protocol is selectedProtocol
+    assert output is selectedOutput
+    assert projectService.strictRuntimeCalls == [
+        {
+            "mapper": None,
+            "projectId": 1,
+            "protocolId": 10,
+        }
+    ]

@@ -4948,3 +4948,587 @@ def test_ApplyParamsToProtocolUsesDetachedPostgresqlOutputForFormPointers(
             "",
         )
     )
+
+def _configureNumericProtocolIdCollision(service, mapper):
+    selectedProtocol = FakeProtocol(
+        objId=10,
+        className="ProtClass",
+    )
+    collidingProtocol = FakeProtocol(
+        objId=99,
+        className="ProtClass",
+    )
+
+    selectedProtocol.addParam(
+        "iterations",
+        FakeIntParam(
+            label="Iterations",
+        ),
+    )
+    collidingProtocol.addParam(
+        "iterations",
+        FakeIntParam(
+            label="Iterations",
+        ),
+    )
+
+    service.currentProject.protocols[10] = selectedProtocol
+    service.currentProject.protocols[99] = collidingProtocol
+
+    # Numeric collision:
+    # - PostgreSQL row id=10 belongs to Scipion protocolId=99.
+    # - The graph/UI protocolId=10 belongs to PostgreSQL row id=500.
+    mapper.db.runtimeProtocolIdByDbId[10] = 99
+    mapper.db.runtimeProtocolIdByDbId[500] = 10
+
+    return selectedProtocol, collidingProtocol
+
+
+def _patchCollisionSubworkflowRepository(
+        projectServiceModule,
+        monkeypatch,
+        expectedRootProtocolDbId=500,
+):
+    calls = []
+
+    class CollisionProtocolGraphRepository:
+        def loadSubworkflowRows(
+                self,
+                mapper,
+                projectId,
+                rootProtocolDbId,
+        ):
+            calls.append({
+                "mapper": mapper,
+                "projectId": projectId,
+                "rootProtocolDbId": rootProtocolDbId,
+            })
+
+            assert rootProtocolDbId == expectedRootProtocolDbId
+
+            return [
+                {
+                    "protocolId": "10",
+                    "level": 0,
+                },
+            ]
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolGraphRepository",
+        CollisionProtocolGraphRepository,
+    )
+
+    return calls
+
+
+def test_SaveProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        service,
+        mapper,
+        monkeypatch,
+):
+    patchRuntimeParamCasting(
+        monkeypatch
+    )
+
+    patchPostgresqlSaveRuntime(
+        monkeypatch,
+        service,
+    )
+
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    savedProtocol, errors = service.saveProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        protocolClassName="ProtClass",
+        params={
+            "iterations": "7",
+        },
+        setToSave=False,
+        validateParams=False,
+        protocolIdIsScipionId=True,
+    )
+
+    assert errors == []
+    assert savedProtocol is selectedProtocol
+    assert selectedProtocol.attributeValues["iterations"] == 7
+    assert "iterations" not in collidingProtocol.attributeValues
+
+
+def test_RenameProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        service,
+        mapper,
+):
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    service.renameProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        newName="Selected protocol",
+        newComment="selected",
+        protocolIdIsScipionId=True,
+    )
+
+    assert selectedProtocol.runName.get() == "Selected protocol"
+    assert selectedProtocol._objComment == "selected"
+    assert collidingProtocol.runName.get() == ""
+    assert collidingProtocol._objComment.get() == ""
+
+
+def test_DuplicateProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    class CollisionDuplicateService:
+        def duplicatePostgresqlRuntimeProtocols(
+                self,
+                **kwargs,
+        ):
+            resolved = kwargs[
+                "getScipionProtocolForRuntimeCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=10,
+            )
+
+            assert resolved is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+                "duplicated": [],
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolDuplicateService",
+        CollisionDuplicateService,
+    )
+
+    result = service.duplicateProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocols=[
+            type(
+                "DuplicateItem",
+                (),
+                {
+                    "id": 10,
+                },
+            )(),
+        ],
+        protocolIdIsScipionId=True,
+    )
+
+    assert result["status"] == 0
+    assert result["errors"] == []
+
+
+def test_DeleteProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    class CollisionDeleteService:
+        def deleteProtocols(
+                self,
+                **kwargs,
+        ):
+            resolved = kwargs[
+                "getScipionProtocolForRuntimeCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=10,
+            )
+
+            assert resolved is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolDeleteService",
+        CollisionDeleteService,
+    )
+
+    result = service.deleteProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocols=[
+            10,
+        ],
+        protocolIdIsScipionId=True,
+    )
+
+    assert result["status"] == 0
+    assert result["errors"] == []
+
+
+def test_StopProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    class CollisionStopService:
+        def stopProtocols(
+                self,
+                **kwargs,
+        ):
+            resolved = kwargs[
+                "getScipionProtocolForRuntimeCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=10,
+            )
+
+            assert resolved is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+                "postgresqlRuntimeStop": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolStopService",
+        CollisionStopService,
+    )
+
+    result = service.stopProtocol(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=[
+            10,
+        ],
+        protocolIdIsScipionId=True,
+    )
+
+    assert result["status"] == 0
+    assert result["errors"] == []
+
+
+def test_RestartProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    repositoryCalls = (
+        _patchCollisionSubworkflowRepository(
+            projectServiceModule,
+            monkeypatch,
+        )
+    )
+
+    class CollisionRestartService:
+        def restartProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            workflow = kwargs[
+                "getPostgresqlRuntimeSubworkflowCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=kwargs["protocolId"],
+            )
+
+            assert workflow["10"][0] is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+                "postgresqlRuntimeRestart": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolRestartService",
+        CollisionRestartService,
+    )
+
+    result = service.restartProtocolAll(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+    )
+
+    assert result["status"] == 0
+    assert repositoryCalls[0]["rootProtocolDbId"] == 500
+
+
+def test_ContinueProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    repositoryCalls = (
+        _patchCollisionSubworkflowRepository(
+            projectServiceModule,
+            monkeypatch,
+        )
+    )
+
+    class CollisionContinueService:
+        def continueProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            workflow = kwargs[
+                "getPostgresqlRuntimeSubworkflowCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=kwargs["protocolId"],
+            )
+
+            assert workflow["10"][0] is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+                "postgresqlRuntimeContinue": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolContinueService",
+        CollisionContinueService,
+    )
+
+    result = service.continueProtocolAll(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        currentUserId=1,
+    )
+
+    assert result["status"] == 0
+    assert repositoryCalls[0]["rootProtocolDbId"] == 500
+
+
+def test_ResetProtocolUsesSelectedScipionIdUnderNumericIdCollision(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, _ = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    repositoryCalls = (
+        _patchCollisionSubworkflowRepository(
+            projectServiceModule,
+            monkeypatch,
+        )
+    )
+
+    class CollisionResetService:
+        def resetProtocolSubworkflow(
+                self,
+                **kwargs,
+        ):
+            workflow = kwargs[
+                "getPostgresqlRuntimeSubworkflowCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=kwargs["protocolId"],
+            )
+
+            assert workflow["10"][0] is selectedProtocol
+
+            return {
+                "status": 0,
+                "errors": [],
+                "postgresqlRuntimeReset": True,
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolResetService",
+        CollisionResetService,
+    )
+
+    result = service.resetProtocolFrom(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+    )
+
+    assert result["status"] == 0
+    assert repositoryCalls[0]["rootProtocolDbId"] == 500
+
+def test_GetScipionProtocolForRuntimeKeepsDbIdCompatibilityUnderNumericIdCollision(
+        service,
+        mapper,
+):
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    resolved = (
+        service
+        ._getScipionProtocolForRuntime(
+            mapper=mapper,
+            projectId=1,
+            protocolId=10,
+        )
+    )
+
+    assert resolved is collidingProtocol
+    assert resolved is not selectedProtocol
+
+
+def test_GetScipionProtocolByScipionIdUsesSelectedProtocolUnderNumericIdCollision(
+        service,
+        mapper,
+):
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    resolved = (
+        service
+        ._getScipionProtocolByScipionId(
+            protocolId=10,
+        )
+    )
+
+    assert resolved is selectedProtocol
+    assert resolved is not collidingProtocol
+
+
+def test_GetNextProtocolSuggestionsUsesScipionIdWhenRouteIdentityIsExplicit(
+        projectServiceModule,
+        service,
+        mapper,
+        monkeypatch,
+):
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    class CollisionSuggestionsService:
+        def getNextProtocolSuggestions(
+                self,
+                **kwargs,
+        ):
+            return kwargs[
+                "getScipionProtocolForRuntimeCallback"
+            ](
+                mapper=kwargs["mapper"],
+                projectId=kwargs["projectId"],
+                protocolId=kwargs["protocolId"],
+            )
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "ProtocolSuggestionsService",
+        CollisionSuggestionsService,
+    )
+
+    resolved = service.getNextProtocolSuggestions(
+        mapper=mapper,
+        projectId=1,
+        protocolId=10,
+        protocolIdIsScipionId=True,
+    )
+
+    assert resolved is selectedProtocol
+    assert resolved is not collidingProtocol
+
+
+def test_ResolveRuntimeProtocolsForExportUsesScipionIdWhenRouteIdentityIsExplicit(
+        service,
+        mapper,
+):
+    selectedProtocol, collidingProtocol = (
+        _configureNumericProtocolIdCollision(
+            service,
+            mapper,
+        )
+    )
+
+    resolved = service._resolveRuntimeProtocolsForExport(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=[10],
+        protocolIdIsScipionId=True,
+    )
+
+    assert resolved == [selectedProtocol]
+    assert resolved != [collidingProtocol]
