@@ -509,6 +509,103 @@ def test_PreparedPointerCanBeUsedDuringProtocolValidation(
 
     assert movieSampling == 1.35
 
+def test_PrepareDirectProtocolPointerCanExposePersistedParentOutputs(
+        monkeypatch,
+):
+    class DirectProtocolGraphRepository:
+        def loadInputRefsForProtocol(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 1
+            assert protocolDbId == 106
+
+            return [
+                {
+                    "inputName": "inputProtocol",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 105,
+                    "parentProtocolId": "5",
+                    "parentOutputName": None,
+                    "objectClassName": "ExampleProtocol",
+                    "objectId": "5",
+                },
+            ]
+
+        def getPostgresqlRuntimeOutputInfo(self, **kwargs):
+            raise AssertionError(
+                "Direct protocol pointers must not resolve a concrete parent output."
+            )
+
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolIdentityResolver",
+        FakeProtocolIdentityResolver,
+    )
+    monkeypatch.setattr(
+        serviceModule,
+        "ProtocolGraphRepository",
+        DirectProtocolGraphRepository,
+    )
+
+    childProtocol = ChildProtocol()
+    childProtocol.paramsByName["inputProtocol"] = object()
+    childProtocol.setObjId(6)
+
+    bareParentProtocol = ExampleProtocol()
+    bareParentProtocol.setObjId(5)
+
+    hydratedParentProtocol = ExampleProtocol()
+    hydratedParentProtocol.setObjId(5)
+    hydratedParentProtocol.outputCoordinates = Object()
+
+    directParentCalls = []
+
+    def getParentProtocol(
+            mapper,
+            projectId,
+            parentId,
+    ):
+        return 5, bareParentProtocol
+
+    def getDirectProtocolPointerTarget(
+            mapper,
+            projectId,
+            parentId,
+    ):
+        directParentCalls.append(int(parentId))
+        return 5, hydratedParentProtocol
+
+    report = (
+        RuntimeProtocolLaunchPrepareService()
+        .preparePointerOutputsForLaunch(
+            mapper=object(),
+            projectId=1,
+            protocol=childProtocol,
+            getProtocolIdCallback=lambda protocol: protocol.getObjId(),
+            getParentProtocolCallback=getParentProtocol,
+            getDirectProtocolPointerTargetCallback=(
+                getDirectProtocolPointerTarget
+            ),
+            resolveRuntimeInputObjectCallback=lambda runtimeObjectId: None,
+        )
+    )
+
+    assert report["errors"] == []
+    assert report["prepared"] == 1
+    assert directParentCalls == [5]
+
+    pointedProtocol = childProtocol.inputProtocol.get()
+
+    assert pointedProtocol is hydratedParentProtocol
+    assert hasattr(
+        pointedProtocol,
+        "outputCoordinates",
+    )
+
+
 def test_PreparePointersAcceptsDirectProtocolPointer(
         monkeypatch,
 ):

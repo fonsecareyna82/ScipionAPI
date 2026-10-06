@@ -3480,6 +3480,7 @@ class PostgresqlRuntimeMapper(Mapper):
             self,
             protocolId: int,
             outputNames=None,
+            _restoreInputs: bool = True,
     ):
         protocolId = self._toOptionalInt(
             protocolId
@@ -3575,12 +3576,188 @@ class PostgresqlRuntimeMapper(Mapper):
                 outputName
             )
 
+        restoredInputs = []
+
+        protocolDbId = self._toOptionalInt(
+            row.get(
+                "id"
+            )
+        )
+
+        loadInputRefs = getattr(
+            self.protocolGraphRepository,
+            "loadInputRefsForProtocolCopy",
+            None,
+        )
+
+        if (
+                _restoreInputs
+                and protocolDbId is not None
+                and callable(loadInputRefs)
+        ):
+            inputRefs = (
+                loadInputRefs(
+                    mapper=self,
+                    projectId=self.projectId,
+                    protocolDbId=protocolDbId,
+                )
+                or []
+            )
+
+            refsByInputName = {}
+
+            for inputRef in inputRefs:
+                inputName = str(
+                    inputRef.get(
+                        "inputName"
+                    )
+                    or ""
+                ).strip()
+
+                parentProtocolId = self._toOptionalInt(
+                    inputRef.get(
+                        "parentProtocolId"
+                    )
+                )
+
+                if (
+                        not inputName
+                        or parentProtocolId is None
+                ):
+                    continue
+
+                refsByInputName.setdefault(
+                    inputName,
+                    [],
+                ).append(
+                    dict(inputRef)
+                )
+
+            for inputName, refs in refsByInputName.items():
+                existingAttribute = getattr(
+                    parentProtocol,
+                    inputName,
+                    None,
+                )
+
+                try:
+                    param = parentProtocol.getParam(
+                        inputName
+                    )
+                except Exception:
+                    param = None
+
+                isMultiPointer = (
+                        isinstance(
+                            param,
+                            MultiPointerParam,
+                        )
+                        or isinstance(
+                            existingAttribute,
+                            pwobject.PointerList,
+                        )
+                )
+
+                restoredPointers = []
+
+                for inputRef in sorted(
+                        refs,
+                        key=lambda item: int(
+                            item.get(
+                                "itemIndex"
+                            )
+                            or 0
+                        ),
+                ):
+                    inputParentProtocolId = (
+                        self._toOptionalInt(
+                            inputRef.get(
+                                "parentProtocolId"
+                            )
+                        )
+                    )
+
+                    if inputParentProtocolId is None:
+                        continue
+
+                    parentOutputName = str(
+                        inputRef.get(
+                            "parentOutputName"
+                        )
+                        or ""
+                    ).strip()
+
+                    requestedParentOutputs = None
+
+                    if parentOutputName:
+                        requestedParentOutputs = [
+                            parentOutputName.split(
+                                ".",
+                                1,
+                            )[0]
+                        ]
+
+                    inputParentProtocol = (
+                        self._buildDetachedProtocolParentView(
+                            inputParentProtocolId,
+                            outputNames=requestedParentOutputs,
+                            _restoreInputs=False,
+                        )
+                    )
+
+                    if inputParentProtocol is None:
+                        continue
+
+                    pointer = pwobject.Pointer(
+                        inputParentProtocol,
+                        extended=(
+                            parentOutputName
+                            if parentOutputName
+                            else None
+                        ),
+                    )
+
+                    restoredPointers.append(
+                        pointer
+                    )
+
+                if not restoredPointers:
+                    continue
+
+                if isMultiPointer:
+                    pointerList = (
+                        pwobject.PointerList()
+                    )
+
+                    for pointer in restoredPointers:
+                        pointerList.append(
+                            pointer
+                        )
+
+                    setattr(
+                        parentProtocol,
+                        inputName,
+                        pointerList,
+                    )
+
+                else:
+                    setattr(
+                        parentProtocol,
+                        inputName,
+                        restoredPointers[0],
+                    )
+
+                restoredInputs.append(
+                    inputName
+                )
+
         logger.debug(
             "Built detached PostgreSQL parent protocol view. "
-            "projectId=%s protocolId=%s outputs=%s",
+            "projectId=%s protocolId=%s outputs=%s inputs=%s",
             self.projectId,
             protocolId,
             restoredOutputs,
+            restoredInputs,
         )
 
         return parentProtocol

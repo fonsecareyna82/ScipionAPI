@@ -147,6 +147,12 @@ FINISHED_INPUT_PARENT_STATUSES = {
     "finished",
 }
 
+DIRECT_PROTOCOL_READY_PARENT_STATUSES = {
+    *FINISHED_INPUT_PARENT_STATUSES,
+    str(STATUS_INTERACTIVE).strip().lower(),
+    "interactive",
+}
+
 FAILED_INPUT_PARENT_STATUSES = {
     str(STATUS_FAILED).strip().lower(),
     str(STATUS_ABORTED).strip().lower(),
@@ -1885,7 +1891,11 @@ class RuntimePostgresqlProtocolWorker:
                     addFailed(parentRow)
                     continue
 
-                if parentStatus not in FINISHED_INPUT_PARENT_STATUSES:
+                if (
+                        parentStatus
+                        not in
+                        DIRECT_PROTOCOL_READY_PARENT_STATUSES
+                ):
                     addPending(
                         parentRow,
                         "input_parent_not_finished",
@@ -2533,11 +2543,30 @@ class RuntimePostgresqlProtocolWorker:
                     continue
 
                 try:
-                    parentProtocol = (
-                        self.project.getProtocol(
-                            int(parentProtocolId)
-                        )
+                    parentProtocol = None
+
+                    selectDetachedProtocolView = getattr(
+                        self.runtimeMapper,
+                        "selectDetachedProtocolViewById",
+                        None,
                     )
+
+                    if callable(
+                            selectDetachedProtocolView
+                    ):
+                        parentProtocol = (
+                            selectDetachedProtocolView(
+                                int(parentProtocolId)
+                            )
+                        )
+
+                    if parentProtocol is None:
+                        parentProtocol = (
+                            self.project.getProtocol(
+                                int(parentProtocolId)
+                            )
+                        )
+
                 except Exception as error:
                     errors.append({
                         **dict(ref),

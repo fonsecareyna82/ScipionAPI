@@ -687,6 +687,87 @@ def test_StepAdapterProtocolDbIdUsesStrictScipionIdentity():
     assert mapper.dbLookups == []
 
 
+def test_RestoreDirectProtocolPointerExposesPersistedParentOutputs():
+    bareParentProtocol = Object()
+    bareParentProtocol.setObjId(2)
+
+    hydratedParentProtocol = Object()
+    hydratedParentProtocol.setObjId(2)
+    hydratedParentProtocol.outputCoordinates = Object()
+
+    class ProjectStub:
+        def __init__(self):
+            self.getProtocolCalls = []
+
+        def getProtocol(self, protocolId):
+            self.getProtocolCalls.append(int(protocolId))
+            return bareParentProtocol
+
+    class RuntimeMapperStub:
+        def __init__(self):
+            self.detachedCalls = []
+
+        def selectDetachedProtocolViewById(
+                self,
+                protocolId,
+                outputNames=None,
+        ):
+            self.detachedCalls.append({
+                "protocolId": int(protocolId),
+                "outputNames": outputNames,
+            })
+            return hydratedParentProtocol
+
+    class InputProtocolStub:
+        def getParam(self, paramName):
+            assert paramName == "inputPickingProtocol"
+            return SimpleNamespace()
+
+    project = ProjectStub()
+    runtimeMapper = RuntimeMapperStub()
+
+    worker = RuntimePostgresqlProtocolWorker(
+        projectId=1,
+        protocolId=30,
+    )
+
+    worker.mapper = object()
+    worker.project = project
+    worker.runtimeMapper = runtimeMapper
+    worker.protocol = InputProtocolStub()
+    worker.getProtocolDbId = lambda: 30
+
+    report = worker.restoreExecutionInputs(
+        persistResolvedRefs=False,
+        inputRefs=[{
+            "inputName": "inputPickingProtocol",
+            "itemIndex": 0,
+            "parentProtocolDbId": 20,
+            "parentProtocolId": 2,
+            "parentOutputName": None,
+        }],
+    )
+
+    assert report["errors"] == []
+    assert report["restored"] == 1
+
+    pointedProtocol = (
+        worker.protocol
+        .inputPickingProtocol
+        .get()
+    )
+
+    assert pointedProtocol is hydratedParentProtocol
+    assert hasattr(
+        pointedProtocol,
+        "outputCoordinates",
+    )
+    assert runtimeMapper.detachedCalls == [{
+        "protocolId": 2,
+        "outputNames": None,
+    }]
+
+
 def test_RestoreExecutionInputsRefreshesDetachedSetWithoutMutatingParentOutput(
         monkeypatch,
 ):
@@ -1154,6 +1235,29 @@ def test_StreamingDirectProtocolInputFailsWhenParentFailed():
             "status": "failed",
         },
     ]
+    assert readiness["pendingParents"] == []
+    assert readiness["missingInputs"] == []
+    assert readiness["inputRestoreErrors"] == []
+    assert readiness["validationErrors"] == []
+
+
+def test_DirectProtocolInputStartsWhenParentIsInteractive():
+    worker = buildWorker(
+        streaming=False,
+        parentStatus="interactive",
+        parentOutputName=None,
+        validationErrors=[],
+    )
+
+    worker.getRuntimeOutputInfo = lambda inputRef: (
+        pytest.fail(
+            "Direct protocol pointers must not resolve a parent output"
+        )
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert readiness["failedParents"] == []
     assert readiness["pendingParents"] == []
     assert readiness["missingInputs"] == []
     assert readiness["inputRestoreErrors"] == []

@@ -64,6 +64,9 @@ class RuntimeProtocolLaunchPrepareService:
             getProtocolIdCallback: Callable,
             getParentProtocolCallback: Callable,
             resolveRuntimeInputObjectCallback: Callable,
+            getDirectProtocolPointerTargetCallback: Optional[
+                Callable
+            ] = None,
             allowMissingParentOutputs: bool = False,
             parentProtocolsById: Optional[
                 Dict[str, Any]
@@ -149,6 +152,41 @@ class RuntimeProtocolLaunchPrepareService:
                     resolvedParentProtocolsById[str(parentScipionProtocolId)] = parentProtocol
 
             return parentScipionProtocolId, parentProtocol
+
+        def resolveDirectProtocolPointerTarget(
+                parentProtocolId,
+        ):
+            if callable(
+                    getDirectProtocolPointerTargetCallback
+            ):
+                (
+                    parentScipionProtocolId,
+                    parentProtocol,
+                ) = (
+                    getDirectProtocolPointerTargetCallback(
+                        mapper=mapper,
+                        projectId=projectId,
+                        parentId=parentProtocolId,
+                    )
+                )
+
+                if parentProtocol is not None:
+                    resolvedParentProtocolsById[
+                        str(parentProtocolId)
+                    ] = parentProtocol
+
+                    resolvedParentProtocolsById[
+                        str(parentScipionProtocolId)
+                    ] = parentProtocol
+
+                return (
+                    parentScipionProtocolId,
+                    parentProtocol,
+                )
+
+            return resolveParentProtocol(
+                parentProtocolId
+            )
 
         for row in rows or []:
             inputName = str(
@@ -282,7 +320,7 @@ class RuntimeProtocolLaunchPrepareService:
                 if not parentOutputName:
                     parentScipionProtocolId, (
                         parentProtocol
-                    ) = resolveParentProtocol(
+                    ) = resolveDirectProtocolPointerTarget(
                         parentProtocolId
                     )
 

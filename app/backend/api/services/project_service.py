@@ -5841,6 +5841,70 @@ class ProjectService:
 
         return parentScipionProtocolId, parentProtocol
 
+    def _getDirectProtocolPointerTarget(
+            self,
+            mapper,
+            projectId: int,
+            parentId,
+    ):
+        parentScipionProtocolId = (
+            self._resolveScipionProtocolId(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=parentId,
+            )
+        )
+
+        if parentScipionProtocolId is None:
+            return None, None
+
+        currentProject = getattr(
+            self,
+            "currentProject",
+            None,
+        )
+
+        runtimeMapper = None
+
+        if currentProject is not None:
+            getRuntimeMapper = getattr(
+                currentProject,
+                "getPostgresqlRuntimeMapper",
+                None,
+            )
+
+            if callable(getRuntimeMapper):
+                runtimeMapper = getRuntimeMapper()
+
+        if runtimeMapper is not None:
+            selectDetachedProtocolView = getattr(
+                runtimeMapper,
+                "selectDetachedProtocolViewById",
+                None,
+            )
+
+            if callable(
+                    selectDetachedProtocolView
+            ):
+                parentProtocol = (
+                    selectDetachedProtocolView(
+                        parentScipionProtocolId
+                    )
+                )
+
+                if parentProtocol is not None:
+                    return (
+                        parentScipionProtocolId,
+                        parentProtocol,
+                    )
+
+        return (
+            parentScipionProtocolId,
+            self._getScipionProtocolByRuntimeId(
+                parentScipionProtocolId
+            ),
+        )
+
     def _splitPointerValue(self, value):
         pointerResolver = RuntimePointerResolver()
         return pointerResolver.splitPointerValue(value)
@@ -6096,6 +6160,9 @@ class ProjectService:
                 ),
                 getParentProtocolCallback=(
                     self._getParentProtocolForPointer
+                ),
+                getDirectProtocolPointerTargetCallback=(
+                    self._getDirectProtocolPointerTarget
                 ),
                 resolveRuntimeInputObjectCallback=(
                     self

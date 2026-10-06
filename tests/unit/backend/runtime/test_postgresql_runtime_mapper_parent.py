@@ -12,6 +12,8 @@
 # ******************************************************************************
 import pytest
 
+from pyworkflow.object import Pointer
+
 from app.backend.mapper.postgresql_runtime_mapper import (
     PostgresqlRuntimeMapper,
 )
@@ -363,6 +365,118 @@ def test_GetParentRestoresPersistedSetOutputs():
         call["cache"] is False
         for call
         in mapper.runtimeSetFactory.calls
+    )
+
+
+def test_SelectDetachedProtocolViewRestoresPersistedInputPointer():
+    mapper = PostgresqlRuntimeMapper.__new__(
+        PostgresqlRuntimeMapper
+    )
+
+    mapper.projectId = 4
+    mapper.db = object()
+    mapper.dictClasses = {}
+
+    consumerProtocol = FakeParentProtocol(
+        protocolId=100,
+    )
+    consumerProtocol.inputMicrographs = Pointer()
+
+    producerProtocol = FakeParentProtocol(
+        protocolId=50,
+    )
+
+    class FakeFlatMapper:
+        def getProjectProtocolByProtocolId(
+                self,
+                projectId,
+                protocolId,
+        ):
+            assert projectId == 4
+
+            return {
+                "id": (
+                    1000
+                    if int(protocolId) == 100
+                    else 500
+                ),
+                "protocolId": int(protocolId),
+                "protocolClassName": "FakeProducer",
+            }
+
+    class FakeRepository:
+        def listPersistedSetOutputRows(
+                self,
+                mapper,
+                projectId,
+                protocolId=None,
+                className=None,
+        ):
+            assert projectId == 4
+
+            if int(protocolId) == 50:
+                return [
+                    {
+                        "runtimeObjectId": 501,
+                        "outputName": "outputMicrographs",
+                        "className": "SetOfMicrographs",
+                        "itemClassName": "Micrograph",
+                        "setId": 10,
+                        "properties": {},
+                    },
+                ]
+
+            return []
+
+        def loadInputRefsForProtocolCopy(
+                self,
+                mapper,
+                projectId,
+                protocolDbId,
+        ):
+            assert projectId == 4
+
+            if int(protocolDbId) != 1000:
+                return []
+
+            return [
+                {
+                    "inputName": "inputMicrographs",
+                    "itemIndex": 0,
+                    "parentProtocolDbId": 500,
+                    "parentProtocolId": "50",
+                    "parentOutputName": "outputMicrographs",
+                },
+            ]
+
+    mapper.flatMapper = FakeFlatMapper()
+    mapper.protocolGraphRepository = FakeRepository()
+    mapper.runtimeSetFactory = FakeRuntimeSetFactory()
+
+    def buildProtocol(row):
+        if int(row["protocolId"]) == 100:
+            return consumerProtocol
+
+        if int(row["protocolId"]) == 50:
+            return producerProtocol
+
+        raise AssertionError(
+            "Unexpected protocol id: %s"
+            % row["protocolId"]
+        )
+
+    mapper._buildProtocolFromPostgresqlRow = buildProtocol
+
+    result = mapper.selectDetachedProtocolViewById(
+        100
+    )
+
+    inputMicrographs = result.inputMicrographs.get()
+
+    assert inputMicrographs is not None
+    assert (
+        inputMicrographs["outputName"]
+        == "outputMicrographs"
     )
 
 
