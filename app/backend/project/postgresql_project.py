@@ -32,7 +32,6 @@ from typing import Any, Dict, Optional
 
 import pyworkflow as pw
 from pyworkflow.project import Project as ScipionProject
-from pyworkflow.project.project import REGEX_NUMBER_ENDING
 from pyworkflow.protocol.constants import (
     MODE_RESTART,
     STATUS_SAVED,
@@ -156,41 +155,9 @@ class PostgresqlProject(ScipionProject):
     #               PROTOCOLS
     # --------------------------------------------------
     def _setPostgresqlProtocolLabel(self, protocol):
-        defaultLabel = protocol.getClassLabel()
-        maxSuffix = 0
-
-        for otherLabel in self.mapper.getPostgresqlProtocolLabels():
-            match = REGEX_NUMBER_ENDING.match(otherLabel)
-
-            if (
-                    match
-                    and match.group("prefix").strip() == defaultLabel
-            ):
-                suffix = match.group("number").strip("()")
-
-                try:
-                    maxSuffix = max(
-                        int(suffix),
-                        maxSuffix,
-                    )
-                except (TypeError, ValueError):
-                    logger.error(
-                        "Could not calculate protocol label suffix: %s",
-                        suffix,
-                    )
-
-            elif otherLabel == defaultLabel:
-                maxSuffix = max(1, maxSuffix)
-
-        if maxSuffix:
-            label = "%s (%d)" % (
-                defaultLabel,
-                maxSuffix + 1,
-            )
-        else:
-            label = defaultLabel
-
-        protocol.setObjLabel(label)
+        protocol.setObjLabel(
+            protocol.getClassLabel()
+        )
 
     def newProtocol(self, protocolClass, **kwargs):
         protocol = protocolClass(
@@ -198,8 +165,32 @@ class PostgresqlProject(ScipionProject):
             **kwargs,
         )
 
+        defaultLabel = protocol.getClassLabel()
+
         if not protocol.getObjLabel():
-            self._setPostgresqlProtocolLabel(protocol)
+            self._setPostgresqlProtocolLabel(
+                protocol
+            )
+
+        runName = getattr(
+            protocol,
+            "runName",
+            None,
+        )
+
+        if runName is not None:
+            try:
+                currentRunName = runName.get()
+            except Exception:
+                currentRunName = None
+
+            if not str(
+                    currentRunName
+                    or ""
+            ).strip():
+                runName.set(
+                    defaultLabel
+                )
 
         protocol.setMapper(self.mapper)
         protocol.setProject(self)

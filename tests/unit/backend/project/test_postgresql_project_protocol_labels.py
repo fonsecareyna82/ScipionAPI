@@ -38,6 +38,17 @@ class FakeRuntimeMapper:
         return list(self.labels)
 
 
+class FakeValueHolder:
+    def __init__(self, value=None):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
 class FakeProtocol:
     CLASS_LABEL = "Import movies"
 
@@ -45,10 +56,12 @@ class FakeProtocol:
             self,
             project=None,
             objLabel=None,
+            runName=None,
     ):
         self._project = project
         self._mapper = None
         self._objLabel = objLabel or ""
+        self.runName = FakeValueHolder(runName)
 
     def getClassLabel(self):
         return self.CLASS_LABEL
@@ -84,7 +97,7 @@ def buildProject(labels=None):
     return project
 
 
-def test_NewProtocolCalculatesLabelFromPostgresql():
+def test_NewProtocolKeepsClassLabelWhenOtherProtocolsShareIt():
     project = buildProject([
         "Import movies",
         "Import movies (2)",
@@ -97,7 +110,7 @@ def test_NewProtocolCalculatesLabelFromPostgresql():
     )
 
     assert protocol.getObjLabel() == (
-        "Import movies (5)"
+        "Import movies"
     )
 
     assert protocol.getMapper() is (
@@ -105,7 +118,7 @@ def test_NewProtocolCalculatesLabelFromPostgresql():
     )
 
     assert protocol.getProject() is project
-    assert project.mapper.labelCalls == 1
+    assert project.mapper.labelCalls == 0
 
 
 def test_NewProtocolUsesDefaultLabelWhenNoMatchingProtocolExists():
@@ -121,7 +134,7 @@ def test_NewProtocolUsesDefaultLabelWhenNoMatchingProtocolExists():
         "Import movies"
     )
 
-    assert project.mapper.labelCalls == 1
+    assert project.mapper.labelCalls == 0
 
 
 def test_NewProtocolPreservesExplicitLabel():
@@ -141,3 +154,19 @@ def test_NewProtocolPreservesExplicitLabel():
 
     # Existing explicit labels do not require reading other labels.
     assert project.mapper.labelCalls == 0
+
+
+def test_NewProtocolUsesClassLabelAsDefaultRunName():
+    project = buildProject()
+
+    protocol = project.newProtocol(
+        FakeProtocol
+    )
+
+    assert protocol.getObjLabel() == (
+        "Import movies"
+    )
+
+    assert protocol.runName.get() == (
+        "Import movies"
+    )

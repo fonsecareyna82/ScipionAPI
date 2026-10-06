@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from app.backend.api.services.scipion_class_hierarchy import ScipionClassHierarchyResolver
 
 
 class FakeCreatedProject:
@@ -1021,11 +1022,27 @@ def test_GetProjectSummaryFromPostgresqlKeepsSharedProjectFlags(
     assert result["thumbnailVersion"] == "2:2026-04-15T11:00:00:4:postgresql"
 
 
-def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
+def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(
+        service,
+        monkeypatch,
+):
     def failRuntimeLookup(protocolId):
         raise AssertionError("buildProtocolsGraph should not use runtime fallback")
 
     service._tryGetScipionProtocolByRuntimeId = failRuntimeLookup
+
+    class FakeImportMovies:
+        @classmethod
+        def getClassLabel(cls):
+            return "pwem - import movies"
+
+    monkeypatch.setattr(
+        ScipionClassHierarchyResolver,
+        "loadScipionProtocolClasses",
+        lambda: {
+            "ProtImportMovies": FakeImportMovies,
+        },
+    )
 
     graph = service.buildProtocolsGraph(
         projectId=1,
@@ -1059,7 +1076,7 @@ def test_BuildProtocolsGraphCanRunWithoutRuntimeFallback(service):
     assert graph["PROJECT"]["children"] == ["10"]
 
     assert graph["10"]["protocolId"] == "10"
-    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["label"] == "pwem - import movies"
     assert graph["10"]["status"] == "finished"
     assert graph["10"]["tags"] == ["import"]
     assert graph["10"]["extraTableColumns"] == {
@@ -1164,6 +1181,25 @@ def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     projectPath = tmp_path / "demo-project"
     projectPath.mkdir(parents=True, exist_ok=True)
 
+    class FakeImportMovies:
+        @classmethod
+        def getClassLabel(cls):
+            return "pwem - import movies"
+
+    class FakeMotionCorr:
+        @classmethod
+        def getClassLabel(cls):
+            return "motioncorr - movie alignment"
+
+    monkeypatch.setattr(
+        ScipionClassHierarchyResolver,
+        "loadScipionProtocolClasses",
+        lambda: {
+            "ProtImportMovies": FakeImportMovies,
+            "ProtMotionCorr": FakeMotionCorr,
+        },
+    )
+
     dbProj = {
         "id": 1,
         "name": str(projectPath),
@@ -1243,7 +1279,7 @@ def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     assert graph["10"]["protocolId"] == "10"
     assert graph["10"]["children"] == ["20"]
     assert graph["10"]["parents"] == []
-    assert graph["10"]["label"] == "ProtImportMovies"
+    assert graph["10"]["label"] == "pwem - import movies"
     assert graph["10"]["status"] == "finished"
     assert graph["10"]["tags"] == ["import"]
     assert graph["10"]["outputs"][0]["name"] == "outputMovies"
@@ -1252,7 +1288,7 @@ def test_LoadProjectFromPostgresqlBuildsWorkflowTreeWithoutRuntime(
     assert graph["20"]["protocolId"] == "20"
     assert graph["20"]["children"] == []
     assert graph["20"]["parents"] == ["10"]
-    assert graph["20"]["label"] == "ProtMotionCorr"
+    assert graph["20"]["label"] == "motioncorr - movie alignment"
     assert graph["20"]["status"] == "running"
 
 
@@ -1823,4 +1859,70 @@ def test_BuildProtocolsGraphPreservesRuntimeDirectProtocolPointer(
     assert inputItem[
         "value"
     ] == "21"
+
+def test_BuildProtocolsGraphKeepsPersistedLabelSeparateFromRunName(
+        service,
+):
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "2",
+                "protocolClassName": "ProtImportMovies",
+                "status": "saved",
+                "params": {
+                    "object.label": "pwem - import movies",
+                    "runName": "leon",
+                },
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["2"]["label"] == "pwem - import movies"
+    assert graph["2"]["runName"] == "leon"
+
+def test_BuildProtocolsGraphUsesClassLabelInsteadOfLegacyNumberedObjectLabel(
+        service,
+        monkeypatch,
+):
+    class FakeProtocolClass:
+        @classmethod
+        def getClassLabel(cls):
+            return "motioncorr - movie alignment"
+
+    monkeypatch.setattr(
+        ScipionClassHierarchyResolver,
+        "loadScipionProtocolClasses",
+        lambda: {
+            "ProtMotionCorr": FakeProtocolClass,
+        },
+    )
+
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "27",
+                "protocolClassName": "ProtMotionCorr",
+                "status": "saved",
+                "params": {
+                    "object.label": "motioncorr - movie alignment (27)",
+                    "runName": "motioncorr - movie alignment",
+                },
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={},
+        allowRuntimeFallback=False,
+    )
+
+    assert graph["27"]["label"] == "motioncorr - movie alignment"
+    assert graph["27"]["runName"] == "motioncorr - movie alignment"
 

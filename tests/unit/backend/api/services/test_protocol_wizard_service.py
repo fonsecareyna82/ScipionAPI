@@ -313,6 +313,7 @@ def test_BuildWizardReadyProtocolCreatesNewProtocolWhenProtocolIdIsMissing(
     mapper,
 ):
     protocol = FakeProtocol(objId=None, className="ProtNewWizardTarget")
+    protocol.label = "New wizard target"
     runNameParam = FakeParam(label="Run name")
     protocol.addParam("runName", runNameParam)
 
@@ -333,7 +334,7 @@ def test_BuildWizardReadyProtocolCreatesNewProtocolWhenProtocolIdIsMissing(
     assert currentProject.fixedProtocolParams == [protocol]
     assert runNameParam.get() == "New protocol"
     assert protocol.attributeValues["runName"] == "New protocol"
-    assert protocol.label == "New protocol"
+    assert protocol.label == "New wizard target"
     assert projectService.runtimeCalls == []
 
 

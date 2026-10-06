@@ -3465,6 +3465,8 @@ class ProjectService:
         runtimeProtocolStatusSyncService = RuntimeProtocolStatusSyncService()
         classRegistry = ScipionClassHierarchyResolver.loadScipionObjectClasses()
 
+        protocolClassRegistry = ScipionClassHierarchyResolver.loadScipionProtocolClasses()
+
         def sortKey(row: Dict[str, Any]):
             raw = str(row.get("protocolId") or "")
             try:
@@ -3537,6 +3539,15 @@ class ProjectService:
                 or ""
             ).strip()
 
+            protocolClass = protocolClassRegistry.get(protocolClassName)
+            classLabel = ""
+
+            if protocolClass is not None:
+                try:
+                    classLabel = str(protocolClass.getClassLabel() or "").strip()
+                except Exception:
+                    classLabel = ""
+
             protocolClassHierarchy = (
                 ScipionClassHierarchyResolver
                 .getPersistedProtocolClassHierarchy(
@@ -3595,6 +3606,7 @@ class ProjectService:
             )
 
             storedTitle = getParamValue(
+                "object.label",
                 "title",
                 "_title",
                 "objLabel",
@@ -3608,7 +3620,7 @@ class ProjectService:
                 "_comment",
             )
 
-            label = storedTitle or storedRunName or protocolClassName or nodeId
+            label = classLabel or storedTitle or storedRunName or protocolClassName or nodeId
 
             inputs = []
             outputs = []
@@ -3659,7 +3671,8 @@ class ProjectService:
                 try:
                     runtimeLabel = str(protocol) or ""
                     if runtimeLabel:
-                        label = runtimeLabel
+                        if not classLabel:
+                            label = runtimeLabel
                         if not title:
                             title = runtimeLabel
                 except Exception:

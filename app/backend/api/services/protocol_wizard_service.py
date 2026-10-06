@@ -386,9 +386,6 @@ class ProtocolWizardService:
                 param.set(castedValue)
                 protocol.setAttributeValue(key, castedValue)
 
-                if key == "runName":
-                    protocol.setObjLabel(castedValue)
-
             except Exception as e:
                 cleaned = re.sub(r"[^A-Za-z0-9\s+\-*/=<>\!&|^%()\[\]{}_,.;:]", "", str(e))
                 errorList.append("**" + param.label.get() + "** " + cleaned)
