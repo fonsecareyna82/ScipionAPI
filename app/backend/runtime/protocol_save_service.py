@@ -142,9 +142,12 @@ class RuntimeProtocolSaveService:
             params=params,
         )
 
-        errorList.extend(self._applyScalarParams(protocol=protocol,
-                                                 params=params,
-                                                 validateParams=validateParams))
+        errorList.extend(self._applyScalarParams(
+            protocol=protocol,
+            params=params,
+            validateParams=validateParams,
+            phase="beforePointers",
+        ))
 
         errorList.extend(
             self.applyPointerParamsToProtocol(
@@ -157,6 +160,15 @@ class RuntimeProtocolSaveService:
                 allowMissingParentOutputs=allowMissingParentOutputs,
             )
         )
+
+        # Conditions referring to pointer inputs must be evaluated after
+        # the selected pointers have been restored from PostgreSQL.
+        errorList.extend(self._applyScalarParams(
+            protocol=protocol,
+            params=params,
+            validateParams=validateParams,
+            phase="afterPointers",
+        ))
 
         if errorList and not setToSave:
             logger.warning(
@@ -289,138 +301,192 @@ class RuntimeProtocolSaveService:
             queueParams,
         ])
 
+    @staticmethod
+    def _orderedConditionalParamNames(protocol, names):
+        """Topologically order supplied fields using Scipion's own dependency metadata.
+
+        Do not parse or evaluate condition strings here. Form._analizeCondition
+        owns the set of referenced form fields; the native evaluator owns
+        the expression semantics and plugin constants.
+        """
+        selected = list(dict.fromkeys(names))
+        selectedSet = set(selected)
+        ordered = []
+        state = {}
+
+        def visit(name):
+            mark = state.get(name, 0)
+            if mark == 2:
+                return
+            if mark == 1:
+                raise ValueError("Cyclic protocol parameter condition involving %s" % name)
+            state[name] = 1
+            param = protocol.getParam(name)
+            for dependency in getattr(param, "_conditionParams", ()) or ():
+                if dependency in selectedSet and dependency != name:
+                    visit(dependency)
+                elif dependency == name:
+                    raise ValueError("Self-referential protocol parameter condition: %s" % name)
+            state[name] = 2
+            ordered.append(name)
+
+        for name in selected:
+            visit(name)
+        return ordered
+
+    @classmethod
+    def _conditionDependsOnPointer(cls, protocol, name, stack=None):
+        """Defer scalar fields whose native condition depends on a pointer.
+
+        The pointer must be restored between selector application and these
+        scalar fields; otherwise visibility is evaluated against stale input.
+        """
+        chain = set(stack or ())
+        if name in chain:
+            raise ValueError("Cyclic protocol parameter condition involving %s" % name)
+        chain.add(name)
+        param = protocol.getParam(name)
+        for dependency in getattr(param, "_conditionParams", ()) or ():
+            dependentParam = protocol.getParam(dependency)
+            if dependentParam is None:
+                continue
+            if isinstance(dependentParam, (PointerParam, MultiPointerParam, RelationParam)):
+                return True
+            if getattr(dependentParam, "allowsPointers", False):
+                # A scalar pointer may not be bound yet when this runs.
+                # Its condition-dependent scalars must always wait.
+                return True
+            if cls._conditionDependsOnPointer(protocol, dependency, chain):
+                return True
+        return False
+
+    @staticmethod
+    def _nativeParamConditionStatus(protocol, key, param):
+        """Return (active, error). An evaluation error never permits mutation."""
+        evaluator = getattr(protocol, "evalParamCondition", None)
+        if not callable(evaluator):
+            hasCondition = getattr(param, "hasCondition", None)
+            if callable(hasCondition) and hasCondition():
+                return False, "**%s** condition evaluator unavailable" % param.label.get()
+            # Non-Scipion stubs without conditional metadata remain compatible.
+            return True, None
+        try:
+            return bool(evaluator(key)), None
+        except Exception as error:
+            logger.warning(
+                "Could not evaluate native Scipion parameter condition: %s",
+                key,
+                exc_info=True,
+            )
+            return False, "**%s** condition evaluation failed (%s)" % (
+                param.label.get(), type(error).__name__,
+            )
+
     def _applyScalarParams(
             self,
             *,
             protocol,
             params: Dict[str, Any],
-            validateParams: bool = True
+            validateParams: bool = True,
+            phase: str = "all",
     ) -> List[str]:
-        errorList: List[str] = []
+        """Evaluate native form conditions before converting or updating values.
 
-        for key, value in params.items():
-            if key in self.nonFormParamNames:
+        Save orchestration runs 'beforePointers', restores active pointers,
+        then runs 'afterPointers'. Direct callers use 'all'. This preserves
+        dependency ordering regardless of JSON field order and preserves
+        every hidden field, including its previously stored valid value.
+        """
+        if phase not in ("all", "beforePointers", "afterPointers"):
+            raise ValueError("Unknown scalar application phase: %s" % phase)
+        errors = []
+        selected = {}
+        for name, value in (params or {}).items():
+            if name in self.nonFormParamNames:
                 continue
-
-            param = protocol.getParam(key)
-
+            param = protocol.getParam(name)
             if param is None:
-                logger.warning(
-                    "[WARN] Param not found: %s",
-                    key,
-                )
+                logger.warning("[WARN] Param not found: %s", name)
+                continue
+            if isinstance(param, (PointerParam, MultiPointerParam, RelationParam)):
+                continue
+            allowsScalarPointers = self._allowsScalarPointers(param)
+            if allowsScalarPointers and self._isScalarPointerPayload(value):
+                continue
+            selected[name] = (param, value, allowsScalarPointers)
+
+        try:
+            orderedNames = self._orderedConditionalParamNames(protocol, selected)
+        except ValueError as error:
+            return ["Protocol parameter condition error: %s" % error]
+
+        failed = set()
+        for name in orderedNames:
+            param, rawPayload, allowsScalarPointers = selected[name]
+            try:
+                dependsOnPointer = self._conditionDependsOnPointer(protocol, name)
+            except ValueError as error:
+                errors.append("**%s** condition error: %s" % (param.label.get(), error))
+                failed.add(name)
+                continue
+            if phase == "beforePointers" and dependsOnPointer:
+                continue
+            if phase == "afterPointers" and not dependsOnPointer:
                 continue
 
-            if isinstance(
-                    param,
-                    (
-                            PointerParam,
-                            MultiPointerParam,
-                            RelationParam,
-                    ),
-            ):
+            upstreamFailed = [
+                item for item in (getattr(param, "_conditionParams", ()) or ())
+                if item in failed
+            ]
+            if upstreamFailed:
+                errors.append("**%s** condition depends on invalid parameter %s" % (
+                    param.label.get(), ", ".join(upstreamFailed),
+                ))
+                failed.add(name)
                 continue
-
-            allowsScalarPointers = (
-                self._allowsScalarPointers(
-                    param
-                )
-            )
-
-            if (
-                    allowsScalarPointers
-                    and self._isScalarPointerPayload(
-                value
-            )
-            ):
+            active, conditionError = self._nativeParamConditionStatus(protocol, name, param)
+            if conditionError:
+                errors.append(conditionError)
+                failed.add(name)
                 continue
-
+            if not active:
+                # Do NOT cast, validate, clear scalar pointers, or overwrite.
+                continue
             try:
                 rawValue = (
-                    self._getScalarPayloadValue(
-                        value
-                    )
-                    if allowsScalarPointers
-                    else value
+                    self._getScalarPayloadValue(rawPayload)
+                    if allowsScalarPointers else rawPayload
                 )
-
-                castedValue = (
-                    castProtocolParamValue(
-                        param,
-                        rawValue,
-                    )
-                )
-
-                errors = (
-                    param.validate(
-                        castedValue
-                    )
-                    if (
-                            validateParams
-                            and hasattr(
-                        param,
-                        "validate",
-                    )
-                    )
-                    else []
-                )
-
-                if errors:
-                    errorList += [
-                        "**"
-                        + param.label.get()
-                        + "** "
-                        + error
-                        for error in errors
-                    ]
+                castedValue = castProtocolParamValue(param, rawValue)
+                if validateParams and hasattr(param, "validate"):
+                    validationErrors = param.validate(castedValue) or []
+                else:
+                    validationErrors = []
+                for error in validationErrors:
+                    errors.append("**%s** %s" % (param.label.get(), error))
+                if validationErrors:
+                    failed.add(name)
+                    # Invalid selector must not authorize dependent fields.
+                    continue
 
                 if allowsScalarPointers:
-                    protVar = getattr(
-                        protocol,
-                        key,
-                        None,
-                    )
-
-                    setPointer = getattr(
-                        protVar,
-                        "setPointer",
-                        None,
-                    )
-
+                    protVar = getattr(protocol, name, None)
+                    setPointer = getattr(protVar, "setPointer", None)
                     if callable(setPointer):
                         setPointer(None)
-
-                protocol.setAttributeValue(
-                    key,
-                    castedValue,
-                )
-
-                if key == "runName":
-                    protocol.runName.set(
-                        castedValue
-                    )
-
-                logger.info(
-                    "[INFO] Set param %s = %s",
-                    key,
-                    castedValue,
-                )
-
-            except Exception as e:
+                protocol.setAttributeValue(name, castedValue)
+                if name == "runName":
+                    protocol.runName.set(castedValue)
+                logger.info("[INFO] Set param %s = %s", name, castedValue)
+            except Exception as error:
                 cleaned = re.sub(
                     r"[^A-Za-z0-9\s+\-*/=<>!&|^%()\[\]{}_,.;:]",
                     "",
-                    str(e),
+                    str(error),
                 )
-
-                errorList.append(
-                    "**"
-                    + param.label.get()
-                    + "** "
-                    + cleaned
-                )
-
-        return errorList
+                errors.append("**%s** %s" % (param.label.get(), cleaned))
+                failed.add(name)
+        return errors
 
     def applyPointerParamsToProtocol(
             self,
@@ -439,9 +505,14 @@ class RuntimeProtocolSaveService:
         errorList: List[str] = []
         pointerResolver = RuntimePointerResolver()
 
-        for key, value in params.items():
+        # Use Scipion's parameter dependency ordering for conditional pointers.
+        try:
+            orderedKeys = self._orderedConditionalParamNames(protocol, params)
+        except ValueError as error:
+            return ["Protocol pointer condition error: %s" % error]
+        for key in orderedKeys:
+            value = params[key]
             param = protocol.getParam(key)
-
             if param is None:
                 continue
 
@@ -463,6 +534,17 @@ class RuntimeProtocolSaveService:
                     )
                     and not scalarPointer
             ):
+                continue
+
+            # A hidden pointer is not an input to resolve: preserve its
+            # previous value and do not create a false dependency/error.
+            active, conditionError = self._nativeParamConditionStatus(
+                protocol, key, param,
+            )
+            if conditionError:
+                errorList.append(conditionError)
+                continue
+            if not active:
                 continue
 
             if isinstance(param, MultiPointerParam):
