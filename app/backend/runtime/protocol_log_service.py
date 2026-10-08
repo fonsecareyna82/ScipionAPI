@@ -254,6 +254,55 @@ class RuntimeProtocolLogService:
         return normalized
 
     @staticmethod
+    def searchProtocolLogFile(
+            filePath: Optional[str],
+            query: str,
+            startOffset: int = 0,
+            maxMatches: int = 100,
+            maxScanBytes: int = 1024 * 1024,
+    ) -> Dict[str, Any]:
+        # Search independently of the browser window. All offsets are byte offsets.
+        needle = str(query or "").strip()
+        if not needle:
+            raise ValueError("Search query cannot be empty")
+        if len(needle) > 256:
+            raise ValueError("Search query is too long")
+        matchLimit = max(1, min(int(maxMatches), 200))
+        scanLimit = max(1, min(int(maxScanBytes), 4 * 1024 * 1024))
+        if not filePath or not os.path.isfile(filePath):
+            return {"matches": [], "nextOffset": 0, "sizeBytes": 0, "done": True}
+
+        size = os.path.getsize(filePath)
+        start = max(0, min(int(startOffset), size))
+        matches = []
+        position = start
+        scanned = 0
+        with open(filePath, "rb") as handle:
+            handle.seek(start)
+            # Never return a partially scanned line: keep the cursor stable.
+            while handle.tell() < size and scanned < scanLimit and len(matches) < matchLimit:
+                lineOffset = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
+                # Even if the last line exceeds the byte budget, consume it once
+                # so the next call begins at a complete line boundary.
+                scanned += len(line)
+                position = handle.tell()
+                decoded = line.decode("utf-8", errors="replace")
+                if needle.casefold() in decoded.casefold():
+                    matches.append({
+                        "offset": lineOffset,
+                        "text": decoded.rstrip("\r\n")[:500],
+                    })
+        return {
+            "matches": matches,
+            "nextOffset": position,
+            "sizeBytes": size,
+            "done": position >= size,
+        }
+
+    @staticmethod
     def readProtocolLogChunk(
             filePath: Optional[str],
             startOffset: int,
@@ -323,6 +372,34 @@ class RuntimeProtocolLogService:
         return {
             "content": "".join(contentParts),
             "offset": int(newOffset),
+        }
+
+    @staticmethod
+    def readProtocolLogWindow(
+            filePath: Optional[str],
+            endOffset: Optional[int] = None,
+            maxBytes: int = 65536,
+    ) -> Dict[str, Any]:
+        """Read a bounded historical byte window without scanning earlier content.
+
+        An omitted endOffset starts at the current end of the file. The caller
+        can page backwards by passing the previous response's startOffset.
+        """
+        if not filePath or not os.path.isfile(filePath):
+            return {"content": "", "startOffset": 0, "endOffset": 0, "sizeBytes": 0}
+
+        size = os.path.getsize(filePath)
+        end = size if endOffset is None else min(size, max(0, int(endOffset)))
+        start = max(0, end - max(1, int(maxBytes)))
+        with open(filePath, "rb") as handle:
+            handle.seek(start)
+            content = handle.read(end - start)
+
+        return {
+            "content": content.decode("utf-8", errors="replace"),
+            "startOffset": start,
+            "endOffset": end,
+            "sizeBytes": size,
         }
 
     def pollProtocolLogPaths(
@@ -413,6 +490,126 @@ class RuntimeProtocolLogService:
                 "stderr": stderrPath,
                 "schedule": schedulePath,
             },
+        )
+
+    def resolveProtocolLogPathForProtocol(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            channel: str,
+            resolveScipionProtocolIdCallback: Callable,
+            resolvePostgresqlProjectPathForFilesystemCallback: Callable,
+            getProtocolByRuntimeIdCallback: Callable,
+    ) -> Optional[str]:
+        """Resolve a protocol's allowlisted log, for classic or PostgreSQL mode."""
+        if channel not in ("stdout", "stderr", "schedule"):
+            raise HTTPException(status_code=422, detail="Invalid log channel")
+
+        if mapper is not None:
+            pgLogs = self.resolvePostgresqlProtocolLogPaths(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
+                resolvePostgresqlProjectPathForFilesystemCallback=resolvePostgresqlProjectPathForFilesystemCallback,
+            )
+            if pgLogs is None:
+                raise HTTPException(status_code=404, detail="Protocol logs are not available")
+            return pgLogs["paths"].get(channel)
+
+        scipionProtocolId = resolveScipionProtocolIdCallback(
+            mapper=mapper, projectId=projectId, protocolId=protocolId,
+        )
+        protocol = getProtocolByRuntimeIdCallback(scipionProtocolId)
+        getter = {
+            "stdout": "getStdoutLog",
+            "stderr": "getStderrLog",
+            "schedule": "getScheduleLog",
+        }[channel]
+        return getattr(protocol, getter)() if hasattr(protocol, getter) else None
+
+    def readProtocolLogWindowForProtocol(
+            self,
+            *,
+            mapper,
+            projectId: int,
+            protocolId: int,
+            channel: str,
+            endOffset: Optional[int],
+            maxBytes: int,
+            resolveScipionProtocolIdCallback: Callable,
+            resolvePostgresqlProjectPathForFilesystemCallback: Callable,
+            getProtocolByRuntimeIdCallback: Callable,
+    ) -> Dict[str, Any]:
+        if channel not in ("stdout", "stderr", "schedule"):
+            raise HTTPException(status_code=422, detail="Invalid log channel")
+
+        if mapper is not None:
+            pgLogs = self.resolvePostgresqlProtocolLogPaths(
+                mapper=mapper,
+                projectId=projectId,
+                protocolId=protocolId,
+                resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
+                resolvePostgresqlProjectPathForFilesystemCallback=resolvePostgresqlProjectPathForFilesystemCallback,
+            )
+            if pgLogs is None:
+                raise HTTPException(status_code=404, detail="Protocol logs are not available")
+            logPath = pgLogs["paths"].get(channel)
+        else:
+            scipionProtocolId = resolveScipionProtocolIdCallback(
+                mapper=mapper, projectId=projectId, protocolId=protocolId,
+            )
+            protocol = getProtocolByRuntimeIdCallback(scipionProtocolId)
+            getter = {
+                "stdout": "getStdoutLog",
+                "stderr": "getStderrLog",
+                "schedule": "getScheduleLog",
+            }[channel]
+            logPath = getattr(protocol, getter)() if hasattr(protocol, getter) else None
+
+        return {"channel": channel, **self.readProtocolLogWindow(
+            logPath, endOffset=endOffset, maxBytes=maxBytes,
+        )}
+
+    def searchProtocolLogs(
+            self, *,
+            mapper, projectId, protocolId, channel, query,
+            startOffset, maxMatches, maxScanBytes,
+            resolveScipionProtocolIdCallback,
+            resolvePostgresqlProjectPathForFilesystemCallback,
+            getProtocolByRuntimeIdCallback,
+    ):
+        # Resolve paths via the same backend-agnostic route as polling.
+        if channel not in ("stdout", "stderr", "schedule"):
+            raise ValueError("Invalid log channel")
+        if mapper is not None:
+            pgLogs = self.resolvePostgresqlProtocolLogPaths(
+                mapper=mapper, projectId=projectId, protocolId=protocolId,
+                resolveScipionProtocolIdCallback=resolveScipionProtocolIdCallback,
+                resolvePostgresqlProjectPathForFilesystemCallback=(
+                    resolvePostgresqlProjectPathForFilesystemCallback
+                ),
+            )
+            if pgLogs is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Protocol logs are not available in the PostgreSQL project workspace",
+                )
+            path = pgLogs["paths"].get(channel)
+        else:
+            scipionId = resolveScipionProtocolIdCallback(
+                mapper=mapper, projectId=projectId, protocolId=protocolId,
+            )
+            protocol = getProtocolByRuntimeIdCallback(scipionId)
+            getters = {"stdout": "getStdoutLog", "stderr": "getStderrLog",
+                       "schedule": "getScheduleLog"}
+            getter = getattr(protocol, getters[channel], None)
+            path = getter() if callable(getter) else None
+        return self.searchProtocolLogFile(
+            path, query, startOffset=startOffset,
+            maxMatches=maxMatches, maxScanBytes=maxScanBytes,
         )
 
     def pollProtocolLogs(

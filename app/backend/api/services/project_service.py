@@ -6851,6 +6851,81 @@ class ProjectService:
             getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
         )
 
+    def getProtocolLogPathService(
+            self,
+            projectId: int,
+            protocolId: int,
+            channel: str,
+            mapper=None,
+            currentUser: Optional[dict] = None,
+            protocolIdIsScipionId: bool = False,
+    ) -> Optional[str]:
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
+        )
+        return RuntimeProtocolLogService().resolveProtocolLogPathForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            channel=channel,
+            resolveScipionProtocolIdCallback=protocolIdResolver,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    def readProtocolLogWindowService(
+            self,
+            projectId: int,
+            protocolId: int,
+            channel: str,
+            endOffset: Optional[int] = None,
+            maxBytes: int = 65536,
+            mapper=None,
+            currentUser: Optional[dict] = None,
+            protocolIdIsScipionId: bool = False,
+    ):
+        protocolIdResolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId
+            else self._resolveScipionProtocolId
+        )
+        return RuntimeProtocolLogService().readProtocolLogWindowForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            channel=channel,
+            endOffset=endOffset,
+            maxBytes=maxBytes,
+            resolveScipionProtocolIdCallback=protocolIdResolver,
+            resolvePostgresqlProjectPathForFilesystemCallback=self._resolvePostgresqlProjectPathForFilesystem,
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
+    def searchProtocolLogsService(
+            self, projectId: int, protocolId: int, channel: str,
+            query: str, startOffset: int = 0, maxMatches: int = 100,
+            maxScanBytes: int = 1048576, mapper=None,
+            currentUser: Optional[dict] = None,
+            protocolIdIsScipionId=False,
+    ):
+        runtime = RuntimeProtocolLogService()
+        resolver = (
+            self._resolveScipionProtocolIdStrict
+            if protocolIdIsScipionId else self._resolveScipionProtocolId
+        )
+        return runtime.searchProtocolLogs(
+            mapper=mapper, projectId=projectId, protocolId=protocolId,
+            channel=channel, query=query, startOffset=startOffset,
+            maxMatches=maxMatches, maxScanBytes=maxScanBytes,
+            resolveScipionProtocolIdCallback=resolver,
+            resolvePostgresqlProjectPathForFilesystemCallback=(
+                self._resolvePostgresqlProjectPathForFilesystem
+            ),
+            getProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+        )
+
     def getProtocolLogs(
             self,
             projectId: int,

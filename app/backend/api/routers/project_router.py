@@ -18,7 +18,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from typing import List, Any, Union, Optional, Literal, Dict
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from pydantic import BaseModel, Field, StrictInt, StrictStr
@@ -1589,6 +1589,120 @@ def listProtocolLogChannels(
     except Exception as e:
         logger.exception("Error in listProtocolLogChannels: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to load log channels: {e}")
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/logs/raw",
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolLogRaw(
+    projectId: int,
+    protocolId: int,
+    channel: str = Query(..., pattern="^(stdout|stderr|schedule)$"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Stream every byte from one authorized protocol log channel.
+
+    Streaming avoids JSON window-boundary Unicode corruption and avoids
+    reading the entire (potentially enormous) log into Python memory.
+    """
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    path = service.getProtocolLogPathService(
+        projectId=projectId,
+        protocolId=protocolId,
+        channel=channel,
+        mapper=mapper,
+        currentUser=currentUser,
+        protocolIdIsScipionId=True,
+    )
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Protocol log not found")
+
+    # Capture a fixed length: the protocol may still be writing this file.
+    size = os.path.getsize(path)
+
+    def chunks():
+        remaining = size
+        with open(path, "rb") as handle:
+            while remaining > 0:
+                block = handle.read(min(262144, remaining))
+                if not block:
+                    break
+                remaining -= len(block)
+                yield block
+
+    return StreamingResponse(
+        chunks(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/logs/window",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def getProtocolLogWindow(
+    projectId: int,
+    protocolId: int,
+    channel: str = Query(..., pattern="^(stdout|stderr|schedule)$"),
+    endOffset: Optional[int] = Query(None, ge=0),
+    maxBytes: int = Query(65536, ge=1, le=1048576),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return service.readProtocolLogWindowService(
+        projectId=projectId,
+        protocolId=protocolId,
+        channel=channel,
+        endOffset=endOffset,
+        maxBytes=maxBytes,
+        mapper=mapper,
+        currentUser=currentUser,
+        protocolIdIsScipionId=True,
+    )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/logs/search",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def searchProtocolLogs(
+    projectId: int,
+    protocolId: int,
+    channel: str = Query(...),
+    query: str = Query(...),
+    startOffset: int = Query(0, ge=0),
+    maxMatches: int = Query(100, ge=1, le=200),
+    maxScanBytes: int = Query(1048576, ge=1, le=4194304),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if channel not in ("stdout", "stderr", "schedule"):
+        raise HTTPException(status_code=422, detail="Invalid log channel")
+    if not query.strip() or len(query) > 256:
+        raise HTTPException(status_code=422, detail="Invalid search query")
+    return service.searchProtocolLogsService(
+        projectId=projectId, protocolId=protocolId, channel=channel,
+        query=query, startOffset=startOffset, maxMatches=maxMatches,
+        maxScanBytes=maxScanBytes, mapper=mapper, currentUser=currentUser,
+        protocolIdIsScipionId=True,
+    )
 
 
 @router.post(
