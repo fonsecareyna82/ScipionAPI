@@ -292,6 +292,7 @@ class ProtocolContextService:
         except Exception:
             paramsValue = {}
 
+
         if protocol.hasQueueParams():
             queueName, queueParams = (
                 protocol.getQueueParams()

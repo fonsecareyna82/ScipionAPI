@@ -772,3 +772,28 @@ def test_protocol_inputs_preserve_runtime_direct_protocol_pointer():
         "value"
     ] == "21"
 
+
+def test_protocol_form_comment_uses_logical_object_getter():
+    class ProtocolWithLogicalComment(Object):
+        def getObjComment(self):
+            return "Persisted protocol comment"
+
+    protocol = ProtocolWithLogicalComment()
+    form = Form(protocol)
+    form.addSection("General")
+    protocol._definition = form
+
+    sections, values = ProtocolFormSerializer().serializeProtocolSections(
+        protocol=protocol,
+        wizards={},
+        mapper=None,
+        projectId=1,
+        headerParams=["_objComment"],
+        runName="",
+        getScipionObjectIdCallback=lambda obj: None,
+        resolvePostgresqlProtocolDbIdCallback=lambda **kwargs: None,
+        splitPointerValueCallback=lambda value: (None, None),
+    )
+
+    assert any(param["name"] == "_objComment" for section in sections for param in section["params"])
+    assert values["_objComment"] == "Persisted protocol comment"

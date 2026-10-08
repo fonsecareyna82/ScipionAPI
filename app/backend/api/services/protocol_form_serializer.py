@@ -990,7 +990,7 @@ class ProtocolFormSerializer:
                         sectionData["params"].append(
                             paramProcessed
                         )
-                        paramsValue[paramName] = paramValue
+                        paramsValue[paramName] = protocol.getObjComment() or ""
 
                     elif paramName == "_useQueue":
                         paramProcessed["label"] = "Use a queue engine?"
