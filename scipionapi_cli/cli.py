@@ -41,6 +41,7 @@ from scipionapi_cli.release import (
     DEFAULT_RELEASE_REMOTE_DIR,
     releaseCommand,
 )
+from scipionapi_cli.uninstall import uninstallWebCommand
 from scipionapi_cli.update import updateCommand
 from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
 from scipionapi_cli.runtime import (
@@ -712,6 +713,102 @@ def doctor(
 ) -> None:
     # runDoctorDiagnostics
     doctorCommand(strict=strict, full=full)
+
+
+@app.command(
+    "uninstall",
+    help=(
+        "Remove ScipionWeb/ScipionAPI runtime resources: services, database, "
+        "web dist and optionally SCIPION_HOME. Use the wrapper for --full."
+    ),
+)
+def uninstall(
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Run without interactive confirmation.",
+        show_default=True,
+    ),
+    dryRun: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the cleanup plan without removing anything.",
+        show_default=True,
+    ),
+    keepDatabase: bool = typer.Option(
+        False,
+        "--keep-database",
+        help="Do not drop the configured PostgreSQL database.",
+        show_default=True,
+    ),
+    keepDatabaseRole: bool = typer.Option(
+        False,
+        "--keep-database-role",
+        help="Drop the database but keep the configured role.",
+        show_default=True,
+    ),
+    keepWebDist: bool = typer.Option(
+        False,
+        "--keep-web-dist",
+        help="Do not remove the deployed web dist directory.",
+        show_default=True,
+    ),
+    removeScipionHome: bool = typer.Option(
+        False,
+        "--remove-scipion-home",
+        help="Remove SCIPION_HOME after stopping services and cleaning the database.",
+        show_default=True,
+    ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help=(
+            "Completely remove a guided installation. Only available through "
+            "./scripts/scipionapi, which can act from outside the conda env."
+        ),
+        show_default=True,
+    ),
+    removeCondaEnv: bool = typer.Option(
+        False,
+        "--remove-conda-env",
+        help=(
+            "Remove the conda env. Only available through ./scripts/scipionapi, "
+            "which can act from outside the conda env."
+        ),
+        show_default=True,
+    ),
+) -> None:
+    # rejectStepsThisProcessCannotPerform
+    #
+    # Removing the conda env, or the installation root that contains it,
+    # cannot be done from inside that env: this very interpreter lives
+    # there. The wrapper runs the Python cleanup first and only then
+    # removes them, from outside. Say so rather than half-finishing.
+    unsupported = [
+        name
+        for name, requested in (("--full", full),
+                                ("--remove-conda-env", removeCondaEnv))
+        if requested
+    ]
+
+    if unsupported:
+        raise typer.BadParameter(
+            "%s cannot run from inside the conda env. Use: "
+            "./scripts/scipionapi uninstall %s"
+            % (" and ".join(unsupported), " ".join(unsupported))
+        )
+
+    # runWebUninstall
+    uninstallWebCommand(
+        yes=yes,
+        dryRun=dryRun,
+        keepDatabase=keepDatabase,
+        keepDatabaseRole=keepDatabaseRole,
+        keepWebDist=keepWebDist,
+        removeScipionHome=removeScipionHome,
+        keepCondaEnv=True,
+    )
 
 
 @app.command(
