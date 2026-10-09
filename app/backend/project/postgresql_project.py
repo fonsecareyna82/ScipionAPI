@@ -531,7 +531,7 @@ class PostgresqlProject(ScipionProject):
 
         coordinatorRunId = RuntimeProtocolStatusSyncService().startCoordinatorRun(
             mapper=self.postgresqlFlatMapper, projectId=self.postgresqlProjectId,
-            protocolId=int(protocolId),
+            protocolId=int(protocolId), resetElapsed=(runMode == "restart"),
         )
 
         celeryQueue = self._resolveCeleryQueueForProtocol(protocol)

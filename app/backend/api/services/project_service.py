@@ -3635,6 +3635,9 @@ class ProjectService:
                                                                                                  fallbackElapsedSeconds=stepSummary.get(
                                                                                                      "elapsedSeconds"))
             elapsedTime = self._formatProtocolElapsedSecondsFromPostgresql(elapsedTimeSeconds)
+            elapsedSessionId = str(runtimeMetadata.get(
+                runtimeProtocolStatusSyncService.ELAPSED_SESSION_ID_KEY
+            ) or "").strip() or None
             isinteractive = bool(stepSummary.get("isInteractive"))
             numberOfSteps = self._toPersistedOutputInt(
                 stepSummary.get("numberOfSteps")
@@ -3971,6 +3974,7 @@ class ProjectService:
                 "outputs": outputs,
                 "cpuTime": cpuTime,
                 "elapsedTime": elapsedTime,
+                "elapsedSessionId": elapsedSessionId,
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,

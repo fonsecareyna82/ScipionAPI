@@ -226,7 +226,7 @@ class RuntimeProtocolStatusSyncService:
             "jobIds": self.getProtocolJobIds(protocol),
         }
 
-    def startCoordinatorRun(self, mapper, projectId: int, protocolId) -> str:
+    def startCoordinatorRun(self, mapper, projectId: int, protocolId, resetElapsed: bool = False) -> str:
         """Give each accepted dispatch its own identity, separate from workflow executionId."""
         row = mapper.getProjectProtocolByProtocolId(projectId=projectId, protocolId=protocolId)
         if not row or str(row.get("status") or "").strip().lower() != "scheduled":
@@ -237,6 +237,14 @@ class RuntimeProtocolStatusSyncService:
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
         runId = uuid4().hex
         metadata["coordinatorRunId"] = runId
+        if resetElapsed:
+            # A restart is a new elapsed session from the instant the
+            # scheduled coordinator is accepted, not from worker start.
+            # Reuse its fenced run identity for the elapsed session.
+            metadata[self.ELAPSED_SESSION_ID_KEY] = runId
+            metadata["elapsedTimeSeconds"] = 0.0
+            metadata["cpuTimeSeconds"] = 0.0
+            metadata.pop(self.ELAPSED_UPDATED_AT_KEY, None)
         metadata.pop("hostname", None)
         metadata.pop(self.COORDINATOR_HEARTBEAT_KEY, None)
         metadata["pid"] = None
@@ -920,6 +928,14 @@ class RuntimeProtocolStatusSyncService:
             and previousUpdate is not None
         )
 
+        # The dispatcher may already have started this restart
+        # session using the coordinator run ID. Do not rotate it
+        # again when the worker first reaches LAUNCHED.
+        coordinatorRunId = str(runtimeMetadata.get("coordinatorRunId") or "").strip()
+        restartSessionInitialized = bool(
+            resetElapsed and coordinatorRunId and elapsedSessionId == coordinatorRunId
+        )
+
         if activeElapsedSession:
             elapsedSeconds = max(
                 0.0,
@@ -935,7 +951,7 @@ class RuntimeProtocolStatusSyncService:
 
         else:
             if (
-                    resetElapsed
+                    (resetElapsed and not restartSessionInitialized)
                     or not elapsedSessionId
             ):
                 elapsedSessionId = (
