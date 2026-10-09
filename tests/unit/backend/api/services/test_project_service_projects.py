@@ -1606,7 +1606,7 @@ def test_GetProtocolRuntimeSummariesPreservesOutputClassHierarchy(
     )
 
     class RuntimeOutputPersistenceStub:
-        def loadPersistedOutputsByProtocolId(
+        def loadPersistedOutputSummariesByProtocolId(
                 self,
                 mapper,
                 projectId,
@@ -1675,7 +1675,7 @@ def test_GetProtocolRuntimeSummariesWorksForProtocolWithoutOutputsYet(
     )
 
     class RuntimeOutputPersistenceStub:
-        def loadPersistedOutputsByProtocolId(
+        def loadPersistedOutputSummariesByProtocolId(
                 self,
                 mapper,
                 projectId,

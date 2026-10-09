@@ -6600,7 +6600,7 @@ class ProjectService:
             )
         )
 
-        persistedOutputsByProtocolId = RuntimeProtocolOutputPersistenceService().loadPersistedOutputsByProtocolId(mapper=mapper,
+        persistedOutputsByProtocolId = RuntimeProtocolOutputPersistenceService().loadPersistedOutputSummariesByProtocolId(mapper=mapper,
                                                                                                                   projectId=projectId)
         classRegistry = ScipionClassHierarchyResolver.loadScipionObjectClasses()
 
