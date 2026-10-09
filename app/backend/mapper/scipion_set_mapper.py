@@ -30,6 +30,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 import logging
 
 from pyworkflow.object import (
+    Object as ScipionObject,
+    Scalar as ScipionScalar,
     Pointer,
     PointerList,
     Set as ScipionSet,
@@ -208,6 +210,152 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             ],
         }
 
+    def _singleGraphForStandardItem(self, item):
+        """Collect values, schema, and pointer refs using one native Object walk.
+
+        For any custom introspection, PointerList, or unsupported nested object,
+        return None and let the existing independently-tested legacy path run.
+        There is deliberately no class- or item-wide cache.
+        """
+        if type(self) is not ScipionSetPostgresqlMapper:
+            return None
+        if not isinstance(item, ScipionObject):
+            return None
+
+        def standard(candidate):
+            if not isinstance(candidate, ScipionObject):
+                return False
+            namespace = getattr(candidate, "__dict__", None)
+            if not isinstance(namespace, dict):
+                return False
+            if any(
+                key in namespace
+                for key in ("getAttributes", "getAttributesToStore", "getObjDict")
+            ):
+                return False
+            cls = type(candidate)
+            return (
+                getattr(cls, "getAttributes", None) is ScipionObject.getAttributes
+                and getattr(cls, "getAttributesToStore", None)
+                    is ScipionObject.getAttributesToStore
+                and getattr(cls, "__getattribute__", None)
+                    is object.__getattribute__
+            )
+
+        if not standard(item):
+            return None
+        if getattr(type(item), "getObjDict", None) is not ScipionObject.getObjDict:
+            return None
+
+        rawValues = {}
+        rawSchema = {SELF_LABEL: (item.getClassName(),)}
+        foundPointers = []
+        seen = set()
+
+        class UnsupportedGraph(Exception):
+            pass
+
+        def visit(current, prefix):
+            if not standard(current):
+                raise UnsupportedGraph()
+            identity = id(current)
+            if identity in seen:
+                # Native getObjDict can see shared sub-objects twice, while
+                # _iterPointerAttributes deduplicates by object identity.
+                # Keep the exact existing behavior for aliases and cycles.
+                raise UnsupportedGraph()
+            seen.add(identity)
+            for name, child in current.getAttributesToStore():
+                # The legacy pointer traversal filters these, whereas
+                # getObjDict does not. Fall back rather than serializing
+                # an additional runtime-only pointer.
+                if str(name) in self.RUNTIME_ONLY_ATTRIBUTE_NAMES:
+                    raise UnsupportedGraph()
+                if not isinstance(child, ScipionObject):
+                    raise UnsupportedGraph()
+                path = (prefix + "." + str(name)) if prefix else str(name)
+                if isinstance(child, PointerList):
+                    # PointerList inherits List and has special Scipion behavior.
+                    raise UnsupportedGraph()
+                if child.isPointer():
+                    if not isinstance(child, Pointer):
+                        raise UnsupportedGraph()
+                    foundPointers.append((path, child))
+                    continue
+                rawValues[path] = child.getObjValue()
+                rawSchema[path] = (child.getClassName(), rawValues[path])
+                if not isinstance(child, ScipionScalar):
+                    # Native getObjDict recursively visits all non-scalars.
+                    visit(child, path)
+            # Keep 'seen' populated: repeated objects are a semantic
+            # edge case where the legacy pointer walk deduplicates.
+
+        try:
+            visit(item, "")
+        except UnsupportedGraph:
+            return None
+        except Exception:
+            # Preserve the original exception behavior from getObjDict.
+            return None
+
+        # SCIPIONAPI-UNIFIED-GRAPH-POINTER-FALLBACK-82
+        # The #81 fast graph collects pointer descriptors, but the normal
+        # serializeRuntimeItem flow initializes its own pointerSchema.
+        # Preserve the exact existing nested/dynamic Pointer semantics by
+        # using the independently tested #79 path whenever any pointer is
+        # present. Pointer-free native Objects keep the unified fast path.
+        if foundPointers:
+            return None
+
+        pointerSchema = {}
+        pointerValues = {}
+        for path, pointer in foundPointers:
+            pointerSchema[path] = (self._getClassName(pointer), None)
+            pointerValues[path] = self._serializePointerReference(pointer)
+        return rawValues, rawSchema, pointerSchema, pointerValues
+
+    def _singleObjDictForStandardItem(self, item):
+        """One Scipion traversal for values and schema, or None for fallback.
+
+        No per-class/per-item cache. Objects with plugin-defined attribute
+        introspection keep the older independent traversals. A tuple check
+        guards against unexpected custom representations.
+        """
+        if type(self) is not ScipionSetPostgresqlMapper:
+            return None
+        if not isinstance(item, ScipionObject):
+            return None
+        cls = type(item)
+        if (
+            getattr(cls, "getObjDict", None) is not ScipionObject.getObjDict
+            or getattr(cls, "getAttributesToStore", None)
+                is not ScipionObject.getAttributesToStore
+            or getattr(cls, "getAttributes", None)
+                is not ScipionObject.getAttributes
+            or getattr(cls, "__getattribute__", None)
+                is not object.__getattribute__
+        ):
+            return None
+        ownAttributes = getattr(item, "__dict__", None)
+        if not isinstance(ownAttributes, dict):
+            return None
+        if any(
+            key in ownAttributes
+            for key in ("getObjDict", "getAttributes", "getAttributesToStore")
+        ):
+            return None
+
+        schema = self._getObjDict(item, includeClass=True)
+        if not isinstance(schema, dict) or SELF_LABEL not in schema:
+            return None
+        if any(
+            not isinstance(pair, (tuple, list)) or len(pair) < 2
+            for path, pair in schema.items()
+            if str(path) != SELF_LABEL
+        ):
+            return None
+        return schema
+
     def serializeRuntimeItem(
             self,
             item: Any,
@@ -227,15 +375,43 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 "a Scipion object id."
             )
 
+        # SCIPIONAPI-SINGLE-OBJDICT-GREEN-79
+        # Only the standard Scipion traversal has equivalent value/schema
+        # semantics. Custom plugin getters keep the established two-pass path.
+        # SCIPIONAPI-UNIFIED-GRAPH-GREEN-81
+        # Avoid serializing the same object's graph via two APIs.
+        combinedSchema = None
+        combinedValues = None
+        combinedPointerValues = None
+        combinedPointers = self._singleGraphForStandardItem(item)
+        if combinedPointers is not None:
+            combinedValues, combinedSchema, pointerSchema, combinedPointerValues = combinedPointers
+        else:
+            combinedSchema = self._singleObjDictForStandardItem(item)
+            if combinedSchema is not None:
+                combinedValues = {
+                    str(path): pair[1]
+                    for path, pair in combinedSchema.items()
+                    if str(path) != SELF_LABEL
+                }
+
+        # The pointer descriptors below belong to THIS item serialization only.
+        # Dynamic attributes may vary between items, so never cache across items.
+        pointerSchema = {}
         itemValues = self._getItemValues(
             item,
             scipionSet=scipionSet,
+            pointerSchema=pointerSchema,
+            precomputedRawValues=combinedValues,
+            precomputedPointerValues=combinedPointerValues,
         )
 
         itemSchema = self._getCompleteItemSchema(
             item,
             scipionSet=scipionSet,
             itemValues=itemValues,
+            pointerSchema=pointerSchema,
+            precomputedRawSchema=combinedSchema,
         )
 
         return {
@@ -3500,21 +3676,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     def _getItemSchema(
             self,
             item: Any,
+            pointerSchema: Optional[Dict[str, Any]] = None,
+            precomputedRawSchema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        schema = self._getObjDict(
-            item,
-            includeClass=True,
+        schema = (
+            dict(precomputedRawSchema)
+            if precomputedRawSchema is not None
+            else self._getObjDict(item, includeClass=True)
         )
 
         self._removeLegacyPointerListEntries(
             schema
         )
 
-        for path, pointerAttribute in self._iterPointerAttributes(item):
-            schema[str(path)] = (
-                self._getClassName(pointerAttribute),
-                None,
-            )
+        if pointerSchema is None:
+            # Direct schema callers must still discover all pointer paths.
+            for path, pointerAttribute in self._iterPointerAttributes(item):
+                schema[str(path)] = (
+                    self._getClassName(pointerAttribute),
+                    None,
+                )
+        else:
+            # The same item's values pass their already discovered paths.
+            schema.update(pointerSchema)
 
         return schema
 
@@ -3523,10 +3707,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             item: Any,
             scipionSet: Optional[Any] = None,
             itemValues: Optional[Dict[str, Any]] = None,
+            pointerSchema: Optional[Dict[str, Any]] = None,
+            precomputedRawSchema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        schema = self._getItemSchema(
-            item
-        )
+        if precomputedRawSchema is not None:
+            schema = self._getItemSchema(
+                item,
+                pointerSchema=pointerSchema,
+                precomputedRawSchema=precomputedRawSchema,
+            )
+        else:
+            schema = (
+                self._getItemSchema(item, pointerSchema=pointerSchema)
+                if pointerSchema is not None
+                else self._getItemSchema(item)
+            )
 
         if itemValues is None:
             itemValues = self._getItemValues(
@@ -3545,10 +3740,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             self,
             item: Any,
             scipionSet: Optional[Any] = None,
+            pointerSchema: Optional[Dict[str, Any]] = None,
+            precomputedRawValues: Optional[Dict[str, Any]] = None,
+            precomputedPointerValues: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        rawValues = self._getObjDict(
-            item,
-            includeClass=False,
+        rawValues = (
+            dict(precomputedRawValues)
+            if precomputedRawValues is not None
+            else self._getObjDict(item, includeClass=False)
         )
 
         self._removeLegacyPointerListEntries(
@@ -3556,8 +3755,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         )
 
         rawValues.update(
-            self._getItemPointerValues(
-                item
+            precomputedPointerValues
+            if precomputedPointerValues is not None
+            else self._getItemPointerValues(
+                item,
+                pointerSchema=pointerSchema,
             )
         )
 
@@ -3600,11 +3802,37 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         return values
 
+    @staticmethod
+    def _mayReusePointerChildAttributes(child) -> bool:
+        """Reuse attribute snapshots only for standard deterministic Scipion getters.
+
+        # SCIPIONAPI-POINTER-CHILD-REUSE-GREEN-77
+        Plugins overriding attribute getters, instance methods, or attribute
+        resolution keep the original two-lookup path. No cross-item caching.
+        """
+        if not isinstance(child, ScipionObject):
+            return False
+        childDict = getattr(child, "__dict__", None)
+        if not isinstance(childDict, dict):
+            return False
+        if "getAttributes" in childDict or "getAttributesToStore" in childDict:
+            return False
+        cls = type(child)
+        return (
+            getattr(cls, "getAttributesToStore", None)
+            is ScipionObject.getAttributesToStore
+            and getattr(cls, "getAttributes", None)
+            is ScipionObject.getAttributes
+            and getattr(cls, "__getattribute__", None)
+            is object.__getattribute__
+        )
+
     def _iterPointerAttributes(
             self,
             scipionObj: Any,
             prefix: str = "",
             visited: Optional[set] = None,
+            preloadedAttributes=None,
     ):
         if scipionObj is None:
             return
@@ -3623,11 +3851,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             objectIdentity
         )
 
-        for attrName, attrValue in (
-                self._getAttributesToStore(
-                    scipionObj
-                )
-        ):
+        # A standard Scipion getter has already returned these exact children
+        # during the parent's preflight; do not traverse the same node twice.
+        attributes = (
+            self._getAttributesToStore(scipionObj)
+            if preloadedAttributes is None
+            else preloadedAttributes
+        )
+        for attrName, attrValue in attributes:
             path = (
                 "%s.%s"
                 % (
@@ -3638,38 +3869,36 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 else str(attrName)
             )
 
-            if isinstance(
-                    attrValue,
-                    Pointer,
-            ):
+            if isinstance(attrValue, Pointer):
                 yield path, attrValue
                 continue
 
-            if isinstance(
-                    attrValue,
-                    PointerList,
-            ):
+            if isinstance(attrValue, PointerList):
                 yield path, attrValue
                 continue
 
-            childAttributes = (
-                self._getAttributesToStore(
-                    attrValue
-                )
-            )
-
+            childAttributes = self._getAttributesToStore(attrValue)
             if not childAttributes:
                 continue
 
+            # Preserve plugin-defined dynamic getters' previous behavior:
+            # they can legitimately change between consecutive invocations.
+            reusedAttributes = (
+                childAttributes
+                if self._mayReusePointerChildAttributes(attrValue)
+                else None
+            )
             yield from self._iterPointerAttributes(
                 scipionObj=attrValue,
                 prefix=path,
                 visited=visited,
+                preloadedAttributes=reusedAttributes,
             )
 
     def _getItemPointerValues(
             self,
             item: Any,
+            pointerSchema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         result = {}
 
@@ -3678,6 +3907,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     item
                 )
         ):
+            if pointerSchema is not None:
+                pointerSchema[str(path)] = (
+                    self._getClassName(pointerAttribute),
+                    None,
+                )
             if isinstance(
                     pointerAttribute,
                     PointerList,
@@ -3888,6 +4122,21 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             scipionSet: Optional[Any] = None,
     ) -> Optional[Tuple[float, float, float]]:
         if BOTTOM_LEFT_CORNER is None:
+            return None
+
+        # Most SPA items have neither three-dimensional coordinate
+        # getters nor a setVolume hook. Looking up tomograms for each
+        # such item is unnecessary: _readCoordinate3dBottomLeftCoordinates
+        # would return None and _attachCoordinate3dTomogram has no
+        # observable effect without setVolume. Preserve the original
+        # path for 3D coordinates AND items that may attach a volume.
+        if (
+                not all(
+                    callable(getattr(item, getterName, None))
+                    for getterName in ("getX", "getY", "getZ")
+                )
+                and not callable(getattr(item, "setVolume", None))
+        ):
             return None
 
         self._attachCoordinate3dTomogram(
