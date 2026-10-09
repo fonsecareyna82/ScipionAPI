@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
 
 from pyworkflow.object import (
+    Object as ScipionObject,
     Pointer,
     PointerList,
     Set as ScipionSet,
@@ -797,6 +798,49 @@ class PostgresqlRuntimeSetMixin:
             self
         )
 
+    @staticmethod
+    def _getDetachedScipionChildren(candidate):
+        """Snapshot children, preserving native Scipion getter semantics.
+
+        # SCIPIONAPI-DETACHED-POINTER-WALK-GREEN-75
+        The default Scipion Object.getAttributes() is a generator over vars()
+        using getattr()/isinstance(Object). We perform the same iteration
+        directly, avoiding a generator frame per nested Scipion Object.
+
+        Custom class/instance getters and custom attribute resolution use
+        the previous getter route. Never cache graphs, paths, or pointers:
+        a plugin may add/change attributes dynamically between traversals.
+        """
+        getter = getattr(candidate, "getAttributes", None)
+        if not callable(getter):
+            return []
+
+        if (
+                isinstance(candidate, ScipionObject)
+                and getattr(type(candidate), "getAttributes", None)
+                is ScipionObject.getAttributes
+                and getattr(type(candidate), "__getattribute__", None)
+                is object.__getattribute__
+        ):
+            try:
+                ownAttributes = vars(candidate)
+                # An instance-level method can override the class method.
+                if "getAttributes" not in ownAttributes:
+                    children = []
+                    for name in ownAttributes:
+                        value = getattr(candidate, name)
+                        if isinstance(value, ScipionObject):
+                            children.append(value)
+                    return children
+            except Exception:
+                # Match the previous all-or-nothing getter behavior.
+                return []
+
+        try:
+            return [attribute for _, attribute in getter()]
+        except Exception:
+            return []
+
     def _detachPostgresqlRuntimePointers(self, runtimeObject) -> None:
         detachedRuntimeSets = getattr(self, "_postgresqlDetachedRuntimeSets", None)
 
@@ -833,17 +877,7 @@ class PostgresqlRuntimeSetMixin:
 
                 return
 
-            attributesGetter = getattr(candidate, "getAttributes", None)
-
-            if not callable(attributesGetter):
-                return
-
-            try:
-                attributes = list(attributesGetter())
-            except Exception:
-                return
-
-            for _, attribute in attributes:
+            for attribute in self._getDetachedScipionChildren(candidate):
                 detachPointers(attribute)
 
         detachPointers(runtimeObject)

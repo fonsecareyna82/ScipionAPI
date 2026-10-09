@@ -143,6 +143,21 @@ class PostgresqlScipionItemHydrator:
             if column.get("labelProperty")
         }
 
+        # SCIPIONAPI-HYDRATOR-PATHS-GREEN-71
+        # Derived once per hydrator from its persisted column schema.
+        # When columns change, the factory creates a fresh hydrator.
+        # Unknown per-row paths remain supported without an unbounded cache.
+        self._pathPartsCache = {}
+        self._nestedPathPrefixes = set()
+        for path in self._classByPath:
+            rawParts = str(path).split(".")
+            self._pathPartsCache[str(path)] = tuple(
+                part for part in rawParts if part
+            )
+            # Raw prefixes preserve even unusual path spelling.
+            for index in range(1, len(rawParts)):
+                self._nestedPathPrefixes.add(".".join(rawParts[:index]))
+
         self.itemClass = self._resolveClass(
             self.itemClassName,
             required=True,
@@ -744,22 +759,20 @@ class PostgresqlScipionItemHydrator:
             self,
             path: str,
     ) -> bool:
-        prefix = "%s." % path
-
-        return any(
-            candidate.startswith(prefix)
-            for candidate in self._classByPath
-        )
+        return str(path) in self._nestedPathPrefixes
 
     def _splitPath(
             self,
             path: str,
     ):
-        return [
-            part
-            for part in str(path).split(".")
-            if part
-        ]
+        path = str(path)
+        parts = self._pathPartsCache.get(path)
+        if parts is not None:
+            # Preserve the previous public return type and independence.
+            return list(parts)
+
+        # Do not retain arbitrary dynamic per-item attribute names.
+        return [part for part in path.split(".") if part]
 
     def _callSetter(
             self,
