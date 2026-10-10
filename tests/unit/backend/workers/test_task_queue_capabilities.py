@@ -150,7 +150,13 @@ def test_ListInstalledPluginsFromLocalDomainRegistryNeverImportsPluginService(mo
         classmethod(lambda cls: {}),
     )
 
-    sys.modules.pop("app.backend.api.services.plugin_service", None)
+    # Remove it temporarily, preserving the original module for subsequent tests.
+    # A raw sys.modules.pop() leaks state and breaks monkeypatching in CLI tests.
+    monkeypatch.delitem(
+        sys.modules,
+        "app.backend.api.services.plugin_service",
+        raising=False,
+    )
 
     taskQueueModule._listInstalledPluginsFromLocalDomainRegistry()
 
