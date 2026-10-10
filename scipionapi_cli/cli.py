@@ -32,6 +32,7 @@ import typer
 from importlib import metadata as importlibMetadata
 
 from scipionapi_cli.bootstrap import bootstrapCommand
+from scipionapi_cli.plugins import app as pluginsApp
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.doctor import doctorCommand
@@ -158,6 +159,8 @@ app = typer.Typer(
     ),
 )
 
+
+app.add_typer(pluginsApp, name="plugins")
 
 @app.command(
     "bootstrap",

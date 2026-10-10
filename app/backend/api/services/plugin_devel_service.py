@@ -337,6 +337,12 @@ class PluginDevelService:
         if explicitExecutable:
             return [explicitExecutable]
 
+        envBin = Path(sys.prefix) / "bin"
+        for name in ("scipion3", "scipion"):
+            executable = envBin / name
+            if executable.is_file() and os.access(str(executable), os.X_OK):
+                return [str(executable)]
+
         scipion3 = shutil.which("scipion3")
         if scipion3:
             return [scipion3]

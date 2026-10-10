@@ -237,4 +237,35 @@ version = "1.0.0"
         "--devel",
     ]
 
+def test_DevelInstallerPrefersScipion3FromCurrentPythonEnvironment(monkeypatch, tmp_path):
+    from types import SimpleNamespace
 
+    runtime_bin = tmp_path / "active-conda-env" / "bin"
+    runtime_bin.mkdir(parents=True)
+    current_scipion = runtime_bin / "scipion3"
+    current_scipion.touch()
+    current_scipion.chmod(0o755)
+
+    monkeypatch.delenv("SCIPIONAPI_SCIPION_EXECUTABLE", raising=False)
+    monkeypatch.delenv("SCIPION_EXECUTABLE", raising=False)
+    monkeypatch.setattr(develModule, "sys", SimpleNamespace(executable=str(runtime_bin / "python"), prefix=str(runtime_bin.parent)))
+    monkeypatch.setattr(develModule.shutil, "which", lambda name: "/other-conda-env/bin/" + name)
+
+    assert PluginDevelService()._resolveScipionCommand() == [str(current_scipion)]
+
+
+def test_DevelInstallerPrefersScipionFromCurrentPythonEnvironment(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    runtime_bin = tmp_path / "active-conda-env" / "bin"
+    runtime_bin.mkdir(parents=True)
+    current_scipion = runtime_bin / "scipion"
+    current_scipion.touch()
+    current_scipion.chmod(0o755)
+
+    monkeypatch.delenv("SCIPIONAPI_SCIPION_EXECUTABLE", raising=False)
+    monkeypatch.delenv("SCIPION_EXECUTABLE", raising=False)
+    monkeypatch.setattr(develModule, "sys", SimpleNamespace(executable=str(runtime_bin / "python"), prefix=str(runtime_bin.parent)))
+    monkeypatch.setattr(develModule.shutil, "which", lambda name: "/other-conda-env/bin/" + name)
+
+    assert PluginDevelService()._resolveScipionCommand() == [str(current_scipion)]
