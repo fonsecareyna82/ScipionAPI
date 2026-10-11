@@ -1,4 +1,5 @@
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from scipionapi_cli.cli import app
@@ -13,19 +14,21 @@ def test_PluginsCommandIsAvailable():
 def test_PluginsInstallSupportsNormalAndDevelModes():
     result = CliRunner().invoke(app, ["plugins", "install", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--devel" in result.output
-    assert "--skip-binaries" in result.output
+    assert "--devel" in unstyle(result.output)
+    assert "--skip-binaries" in unstyle(result.output)
 
 
 def test_PluginsDevelInstallOffersForce():
     result = CliRunner().invoke(app, ["plugins", "install", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--force" in result.output
+    assert "--force" in unstyle(result.output)
 
 
 def test_PluginsDevelInstallForwardsForce(monkeypatch, tmp_path):
-    from app.backend.api.services import plugin_devel_service
+    from app.backend.api.services import plugin_devel_service, plugins_revision, reload_trigger
 
+    monkeypatch.setattr(plugins_revision, "bumpPluginsRevision", lambda: None)
+    monkeypatch.setattr(reload_trigger, "triggerBackendReloadIfEnabled", lambda: None)
     calls = []
 
     class FakeDevelService:
@@ -221,7 +224,7 @@ def test_PluginsInstallRejectsForceOutsideDevel(monkeypatch):
     result = CliRunner().invoke(app, ["plugins", "install", "scipion-em-example", "--force"])
 
     assert result.exit_code != 0
-    assert "--force is only supported with --devel" in result.output
+    assert "--force is only supported with --devel" in unstyle(result.output)
 
 @pytest.fixture(autouse=True)
 def _stubPluginRuntimePreparation(monkeypatch):
