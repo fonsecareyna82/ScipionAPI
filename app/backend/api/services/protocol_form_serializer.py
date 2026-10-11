@@ -1051,7 +1051,7 @@ class ProtocolFormSerializer:
                         paramProcessed["condition"] = None
                         paramProcessed["_isImportant"] = True
                         paramProcessed["paramClass"] = "EnumParam"
-                        paramProcessed["default"] = 0
+                        paramProcessed["default"] = 1
                         paramProcessed["readOnly"] = False
                         paramProcessed["hasWizard"] = False
                         paramProcessed["wizards"] = []
