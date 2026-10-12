@@ -3174,6 +3174,30 @@ class PostgresqlSetRuntimeMapper:
         if cachedValueType is not None:
             return cachedValueType
 
+        # Logical roots duplicate the canonical rows, whose full JSON GIN is
+        # retained. The logical GIN covers nested rows only. Split the two
+        # disjoint populations so PostgreSQL can use that partial index while
+        # still reading legacy NULL-parent rows and logical roots unchanged.
+        sourceSql = self._itemsTable
+        sourceParams = (self._scopeId, field)
+        sourceWhere = 'WHERE "{scopeColumn}" = %s AND "values" ? %s'.format(
+            scopeColumn=self._scopeColumn,
+        )
+        if self._itemsTable == self.LOGICAL_ITEMS_TABLE:
+            sourceSql = """(
+                SELECT "values" FROM {itemsTable}
+                 WHERE "{scopeColumn}" = %s AND "parentItemId" IS NOT NULL
+                   AND "values" ? %s
+                UNION ALL
+                SELECT "values" FROM {itemsTable}
+                 WHERE "{scopeColumn}" = %s AND "parentItemId" IS NULL
+                   AND "values" ? %s
+            ) AS dynamic_items""".format(
+                itemsTable=self._itemsTable, scopeColumn=self._scopeColumn,
+            )
+            sourceParams = (self._scopeId, field, self._scopeId, field)
+            sourceWhere = "WHERE TRUE"
+
         rows = self.db.fetchAll(
             """
             SELECT jsonb_typeof(
@@ -3190,9 +3214,8 @@ class PostgresqlSetRuntimeMapper:
                            ELSE FALSE
                        END
                    ) AS has_floating_number
-              FROM {itemsTable}
-             WHERE "{scopeColumn}" = %s
-               AND "values" ? %s
+              FROM {sourceSql}
+             {sourceWhere}
                AND jsonb_typeof(
                        "values" -> %s
                    ) <> 'null'
@@ -3200,18 +3223,10 @@ class PostgresqlSetRuntimeMapper:
                           "values" -> %s
                       )
             """.format(
-                itemsTable=self._itemsTable,
-                scopeColumn=self._scopeColumn,
+                sourceSql=sourceSql,
+                sourceWhere=sourceWhere,
             ),
-            (
-                field,
-                field,
-                field,
-                self._scopeId,
-                field,
-                field,
-                field,
-            ),
+            (field, field, field) + sourceParams + (field, field),
         ) or []
 
         jsonTypes = {

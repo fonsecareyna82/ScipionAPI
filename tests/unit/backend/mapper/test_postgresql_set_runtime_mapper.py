@@ -1093,15 +1093,22 @@ def test_MissingDynamicScalarFieldUsesNullableTextExpression():
     )
 
 
-def test_MissingDynamicFieldIsRetypedWhenStreamingValueAppears():
-    db = DynamicFieldFakeDb(
+@pytest.mark.parametrize("scope", ("root", "logical"))
+def test_MissingDynamicFieldIsRetypedWhenStreamingValueAppears(scope):
+    class StreamingFieldFakeDb(DynamicFieldFakeDb):
+        def fetchAll(self, query, params=None):
+            if "FROM scipion_set_table_columns" in str(query):
+                return []
+            return super().fetchAll(query, params)
+
+    db = StreamingFieldFakeDb(
         rows=[]
     )
 
     mapper = PostgresqlSetRuntimeMapper(
         db=db,
-        setId=31,
         itemBuilder=buildItem,
+        **({"setId": 31} if scope == "root" else {"tableId": 31}),
     )
 
     firstResult = mapper.unique(

@@ -74,6 +74,13 @@ boundary; custom serializers retain deferred conversion. Root bulk writes update
 one SQL statement per chunk, inside one transaction covering the entire flush.
 Preserve rollback/retry behavior and both stored representations.
 
+Root item JSON keeps its full GIN in the canonical table. The logical item
+JSON GIN covers only rows with a non-null `parentItemId`, avoiding duplicate
+root indexing. Dynamic logical-field discovery reads both parent populations
+in one statement so nested searches can use the partial index while legacy
+null-parent rows remain readable. Migration `41c8d93e7a62` replaces indexes
+concurrently, supports retries of failed builds, and does not change item data.
+
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
 ## Known gotchas

@@ -315,6 +315,23 @@ conflict updates and counters remain required. A failure in either table or a
 later chunk must roll back the whole flush, including updates to existing items.
 Nested logical tables retain their own scope and parent-item identity.
 
+The canonical root JSON GIN remains fully indexed. The logical JSON GIN is
+partial (`parentItemId IS NOT NULL`): logical root copies must not maintain
+a second full JSON index. Both root representations remain persisted; this
+changes only index maintenance. Dynamic logical-field type discovery must
+read both non-null and null parent populations in one statement. The explicit
+non-null branch permits use of the partial GIN, while the null branch retains
+logical-root and legacy-row semantics, including mixed-type errors and JSON
+null handling. Rare unknown-field lookups through a logical root use the
+table-scope index instead of a JSON GIN; normal runtime roots keep using the
+canonical GIN. Do not infer field absence from schema metadata alone.
+
+Index replacement migration `41c8d93e7a62` builds its replacement concurrently
+before dropping the previous index, in both directions. A retry must remove
+an invalid index left by a failed build instead of accepting it with
+`IF NOT EXISTS`. It must never rewrite rows, change foreign keys, or alter
+the canonical JSON index.
+
 ## Per-user protocol runtime concurrency
 
 `maxConcurrentRunsPerUser` limits concurrent execution slots for a user.
