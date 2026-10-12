@@ -2726,37 +2726,18 @@ class PostgresqlRuntimeSetFactory:
             setId: int,
             parentItemId: int,
     ) -> Optional[int]:
-        matchingTables = []
-
-        for table in (
-                setMapper.listStoredSetTables(
-                    int(setId)
-                )
-                or []
-        ):
-            if (
-                    table.get("tableKind")
-                    != "child"
-            ):
-                continue
-
-            storedParentItemId = (
-                self._toOptionalInt(
-                    table.get(
-                        "parentItemId"
-                    )
-                )
-            )
-
-            if (
-                    storedParentItemId
-                    != int(parentItemId)
-            ):
-                continue
-
-            matchingTables.append(
-                dict(table)
-            )
+        # Revalidate the current generation on every lookup, without loading
+        # and decoding the metadata of every class/tilt series in the Set.
+        matchingTables = setMapper.db.fetchAll(
+            """
+            SELECT id
+              FROM scipion_set_tables
+             WHERE "setId" = %s
+               AND "parentItemId" = %s
+               AND "tableKind" = 'child'
+            """,
+            (int(setId), int(parentItemId)),
+        ) or []
 
         if len(matchingTables) > 1:
             raise ValueError(

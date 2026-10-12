@@ -315,6 +315,18 @@ conflict updates and counters remain required. A failure in either table or a
 later chunk must roll back the whole flush, including updates to existing items.
 Nested logical tables retain their own scope and parent-item identity.
 
+Native nested Sets, including classes and tilt series, must revalidate the
+current child table by Set id, parent item id, and child kind without reading
+all logical-table metadata for each item. Parent updates may skip copying
+already persisted child rows only for the exact writable PostgreSQL child
+mapper owned by that Set and table, after its append buffer is flushed and a
+locked database check confirms the Set, root table, parent item, table name,
+and declared child type. Other children retain the generic snapshot/import
+route. Keep the root and nested counter, schema, and property refresh paths.
+Collect a native Set sampling rate through its Set getter before asking the
+first item; only the latter may invoke a compatibility snapshot for class
+Sets. Explicit `getFileName()` consumers still materialize normally.
+
 The canonical root JSON GIN remains fully indexed. The logical JSON GIN is
 partial (`parentItemId IS NOT NULL`): logical root copies must not maintain
 a second full JSON index. Both root representations remain persisted; this

@@ -74,6 +74,14 @@ boundary; custom serializers retain deferred conversion. Root bulk writes update
 one SQL statement per chunk, inside one transaction covering the entire flush.
 Preserve rollback/retry behavior and both stored representations.
 
+Nested runtime Sets revalidate their current logical table with a scoped
+identity query instead of loading every class or tilt-series table. Once an
+owned writable child mapper has flushed, parent updates may reuse its exact
+persisted table without copying the child items again. External/SQLite-backed
+children and mismatched or pending mapper scopes still use snapshot import.
+Set properties read a Set's sampling-rate getter before falling back to its
+first item, avoiding implicit SQLite materialization of native class Sets.
+
 Root item JSON keeps its full GIN in the canonical table. The logical item
 JSON GIN covers only rows with a non-null `parentItemId`, avoiding duplicate
 root indexing. Dynamic logical-field discovery reads both parent populations

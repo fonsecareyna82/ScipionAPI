@@ -2855,9 +2855,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 "batchSize must be greater than zero"
             )
 
-        tableId = (
-            self
-            ._upsertNestedLogicalTablesForItem(
+        tableId = self._getOwnedRuntimeNestedTableId(
+            setId=setId,
+            rootTableId=rootTableId,
+            parentSet=parentSet,
+            parentItemId=parentItemId,
+        )
+
+        if tableId is None:
+            tableId = self._upsertNestedLogicalTablesForItem(
                 setId=setId,
                 parentTableId=rootTableId,
                 parentItem=parentSet,
@@ -2865,7 +2871,6 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 batchSize=batchSize,
                 runtimeWritable=True,
             )
-        )
 
         if tableId is None:
             raise RuntimeError(
@@ -3020,6 +3025,57 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 tableRow
             ),
         }
+
+    def _getOwnedRuntimeNestedTableId(
+            self,
+            *,
+            setId: int,
+            rootTableId: int,
+            parentSet: Any,
+            parentItemId: int,
+    ) -> Optional[int]:
+        """Reuse a flushed child table only within its exact native scope."""
+        from app.backend.mapper.postgresql_set_runtime_mapper import PostgresqlSetRuntimeMapper
+
+        sourceMapper = getattr(parentSet, "_mapper", None)
+        runtimeInfo = getattr(parentSet, "_postgresqlRuntimeInfo", {})
+        if (
+                type(sourceMapper) is not PostgresqlSetRuntimeMapper
+                or sourceMapper.db is not self.db
+                or not sourceMapper.isWritable()
+                or sourceMapper.setId is not None
+                or sourceMapper.tableId is None
+                or sourceMapper.parentItemId != parentItemId
+                or sourceMapper._pendingAppendItems
+                or not isinstance(runtimeInfo, dict)
+                or runtimeInfo.get("setId") != setId
+                or runtimeInfo.get("parentItemId") != parentItemId
+                or runtimeInfo.get("tableId") != sourceMapper.tableId
+        ):
+            return None
+
+        # The caller has flushed the child mapper. Recheck persisted identity
+        # under a row lock before skipping the import/snapshot route. Names or
+        # owners may have changed, or the logical table may have been replaced.
+        tableName = self._getNestedLogicalTableName(parentSet, parentItemId)
+        itemClassName = self._getDeclaredItemClassName(parentSet)
+        row = self.db.fetchOne(
+            """
+            SELECT id
+              FROM scipion_set_tables
+             WHERE id = %s
+               AND "setId" = %s
+               AND "parentTableId" = %s
+               AND "parentItemId" = %s
+               AND "tableKind" = 'child'
+               AND name = %s
+               AND "itemClassName" = %s
+             FOR UPDATE
+            """,
+            (sourceMapper.tableId, setId, rootTableId, parentItemId,
+             tableName, itemClassName),
+        )
+        return int(row["id"]) if row else None
 
     def _upsertNestedLogicalTablesForItem(
             self,
@@ -4702,11 +4758,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         getSamplingRate = getattr(scipionSet, "getSamplingRate", None)
 
         if properties.get("_samplingRate") is None and callable(getSamplingRate):
-            firstItem = self._callOptionalGetter(scipionSet, "getFirstItem")
-            firstItemSamplingRate = self._callOptionalGetter(firstItem, "getSamplingRate")
+            # Class Sets derive sampling from their images pointer. Reading
+            # their first member instead can request a full SQLite snapshot.
+            samplingRate = self._callOptionalGetter(scipionSet, "getSamplingRate")
+            if samplingRate is None:
+                firstItem = self._callOptionalGetter(scipionSet, "getFirstItem")
+                samplingRate = self._callOptionalGetter(firstItem, "getSamplingRate")
 
-            if firstItemSamplingRate is not None:
-                properties["_samplingRate"] = self._toJsonValue(firstItemSamplingRate)
+            if samplingRate is not None:
+                properties["_samplingRate"] = self._toJsonValue(samplingRate)
 
         if isPostgresqlRuntimeSet:
             self._removePostgresqlRuntimeStorageProperties(

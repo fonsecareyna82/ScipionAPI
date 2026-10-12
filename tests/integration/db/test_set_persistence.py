@@ -1736,6 +1736,7 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
 def test_NestedSetParentUpdatePreservesBufferedChildren(
         postgresqlIntegrationDb,
         postgresqlMigratedEnv,
+        monkeypatch,
 ):
     writerMapper = PostgresqlFlatMapper(postgresqlIntegrationDb)
     suffix = uuid4().hex
@@ -1843,7 +1844,17 @@ def test_NestedSetParentUpdatePreservesBufferedChildren(
         )
         assert len(pendingItems) == 1
 
+        originalIterator = readerSetMapper._iterNestedItems
+        resnapshots = []
+
+        def recordResnapshot(item):
+            resnapshots.append(item)
+            return originalIterator(item)
+
+        monkeypatch.setattr(ScipionSetPostgresqlMapper, "_iterNestedItems",
+                            lambda self, item: recordResnapshot(item))
         runtimeSet.update(nestedRuntimeSet)
+        assert resnapshots == []
 
         childTable = next(
             table

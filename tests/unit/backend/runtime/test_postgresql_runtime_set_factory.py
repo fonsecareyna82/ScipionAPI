@@ -496,6 +496,14 @@ class FakeNestedSetDb:
             if setId != self.ROOT_SET_ID:
                 return []
 
+            if '"parentItemId" = %s' in normalizedQuery:
+                return [
+                    {"id": table["id"]}
+                    for table in self.logicalTables
+                    if table["tableKind"] == "child"
+                    and table["parentItemId"] == int(params[1])
+                ]
+
             return [
                 dict(table)
                 for table in self.logicalTables
@@ -3993,3 +4001,31 @@ def test_RefreshRuntimePropertiesFillsMissingSetAcquisitionFromFirstItem():
     assert acquisition.getVoltage() == 300.0
     assert acquisition.getSphericalAberration() == 2.7
     assert acquisition.getAmplitudeContrast() == 0.1
+
+
+def test_LogicalTableLookupReadsOnlyIdentityAndRevalidatesReplacement():
+    db = FakeNestedSetDb()
+    setMapper = ScipionSetPostgresqlMapper(db)
+    factory = PostgresqlRuntimeSetFactory()
+    def resolve():
+        return factory._resolveCurrentLogicalTableId(
+            setMapper=setMapper, setId=db.ROOT_SET_ID, parentItemId=db.ROOT_ITEM_ID)
+
+    assert resolve() == db.CHILD_TABLE_ID
+    query, params = db.queries[-1]
+    assert query.startswith("SELECT id FROM scipion_set_tables")
+    assert '\"parentItemId\" = %s' in query
+    assert params == (db.ROOT_SET_ID, db.ROOT_ITEM_ID)
+    db.logicalTables[1]["id"] = 101
+    assert resolve() == 101
+    db.logicalTables.pop()
+    assert resolve() is None
+
+
+def test_LogicalTableLookupRejectsDuplicateChildScope():
+    db = FakeNestedSetDb()
+    db.logicalTables.append(dict(db.logicalTables[1], id=102))
+    with pytest.raises(ValueError, match="More than one PostgreSQL logical table"):
+        PostgresqlRuntimeSetFactory()._resolveCurrentLogicalTableId(
+            setMapper=ScipionSetPostgresqlMapper(db),
+            setId=db.ROOT_SET_ID, parentItemId=db.ROOT_ITEM_ID)

@@ -235,6 +235,36 @@ def test_GetSetPropertiesUsesFirstItemSamplingWhenSetSamplingIsMissing():
     assert properties["_samplingRate"] == 7.08
 
 
+def test_GetSetPropertiesUsesNativeSetSamplingBeforeReadingMembers():
+    class DerivedSamplingSet(ExamplePostgresqlRuntimeSet):
+        def getSamplingRate(self):
+            return 1.25
+
+        def getFirstItem(self):
+            raise AssertionError("Reading a class member would materialize its SQLite mapper")
+
+    properties = ScipionSetPostgresqlMapper(db=None)._getSetProperties(DerivedSamplingSet())
+
+    assert properties["_samplingRate"] == 1.25
+
+
+def test_GetSetPropertiesKeepsPersistedSamplingWithoutCallingGetters():
+    class PersistedSamplingSet(ExamplePostgresqlRuntimeSet):
+        def __init__(self):
+            super().__init__()
+            self._samplingRate = Float(2.5)
+
+        def getSamplingRate(self):
+            raise AssertionError("Persisted sampling is already available")
+
+        def getFirstItem(self):
+            raise AssertionError("Persisted sampling is already available")
+
+    properties = ScipionSetPostgresqlMapper(db=None)._getSetProperties(PersistedSamplingSet())
+
+    assert properties["_samplingRate"] == 2.5
+
+
 def test_GetSetPropertiesSkipsPostgresqlRuntimeStorageAccessors():
     scipionSet = ExamplePostgresqlRuntimeSet()
     scipionSet.setObjId(41)
