@@ -276,6 +276,19 @@ hydration. Construct optional objects only for paths present in the row and
 continue calling native setters and pointer hydration hooks. Unknown paths and
 overridden attribute/path hooks retain the generic hydration path.
 
+Serialization may consume the freshly collected, pointer-free graph of the
+current item when its stored values are plain JSON primitives and the relevant
+mapper helpers have their standard implementations. Graphs with fewer than
+four paths retain their existing route to avoid eligibility-check overhead.
+This avoids copying and
+normalizing those dictionaries again. Never cache item data or assume that
+different items share fields. Complex values, custom introspection and replaced
+mapper hooks retain the general route. Recheck hooks after runtime-property and
+derived-value callbacks so changes during serialization still take effect.
+Direct helper callers retain independent copies of precomputed dictionaries.
+Schema coverage must inspect the live column registry on every append and
+continue synchronizing optional paths first encountered in later items.
+
 Queued append schemas are synchronized before their temporary `_schema` entry
 is discarded. Schema growth locks the owning registry rows in the caller's
 transaction and preserves existing column aliases, positions and index flags.

@@ -366,6 +366,71 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             return None
         return schema
 
+    def _reusePlainItemGraph(self, graph, item, scipionSet):
+        """Consume this item's private graph when JSON normalization is a no-op.
+
+        Never reuse data between items. Public helpers and custom mapper hooks
+        keep their copy/conversion contract. A failed eligibility check leaves
+        both dictionaries untouched for the normal serialization route.
+        """
+        if any(getattr(getattr(self, name), "__func__", None) is not original
+               for name, original in _PLAIN_GRAPH_METHODS.items()):
+            return None
+        values, schema, pointers, pointerValues = graph
+        if pointers or pointerValues:
+            return None
+        legacyPaths = []
+        for path, value in values.items():
+            if type(path) is not str:
+                return None
+            if path == SELF_LABEL:
+                continue
+            if path.startswith("__item__"):
+                legacyPaths.append(path)
+                continue
+            kind = type(value)
+            if (value is not None and kind is not bool and kind is not int
+                    and kind is not float and kind is not str):
+                return None
+        for path in legacyPaths:
+            values.pop(path, None)
+        values.pop(SELF_LABEL, None)
+        plainValues = True
+        if self._isPostgresqlRuntimeSet(scipionSet):
+            remover = self._removePostgresqlRuntimeStorageProperties
+            remover(values)
+            plainValues = (getattr(remover, "__func__", None)
+                           is _PLAIN_GRAPH_METHODS["_removePostgresqlRuntimeStorageProperties"])
+        # Runtime-property hooks can change the normalizer or insert values.
+        if (not plainValues or getattr(self._toJsonValue, "__func__", None)
+                is not _PLAIN_GRAPH_METHODS["_toJsonValue"]):
+            values = {
+                str(label): self._toJsonValue(value)
+                for label, value in values.items()
+                if str(label) != SELF_LABEL
+            }
+        self._addRelationIdentityValues(item=item, values=values)
+        classSize = self._getClassItemSize(item)
+        if classSize is not None and "_size" not in values:
+            values["_size"] = classSize
+        self._addCoordinate3dBottomLeftCoordinates(
+            item=item, values=values, scipionSet=scipionSet,
+        )
+        # Derived-value getters may replace mapper hooks during this call.
+        if all(getattr(getattr(self, name), "__func__", None)
+               is _PLAIN_GRAPH_METHODS[name]
+               for name in ("_getItemSchema", "_getCompleteItemSchema",
+                            "_removeLegacyPointerListEntries")):
+            for path in legacyPaths:
+                schema.pop(path, None)
+            self._completeScalarSchemaFromValues(schema=schema, values=values)
+        else:
+            schema = self._getCompleteItemSchema(
+                item, scipionSet=scipionSet, itemValues=values,
+                pointerSchema={}, precomputedRawSchema=schema,
+            )
+        return values, schema
+
     def serializeRuntimeItem(
             self,
             item: Any,
@@ -407,22 +472,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         # The pointer descriptors below belong to THIS item serialization only.
         # Dynamic attributes may vary between items, so never cache across items.
-        pointerSchema = {}
-        itemValues = self._getItemValues(
-            item,
-            scipionSet=scipionSet,
-            pointerSchema=pointerSchema,
-            precomputedRawValues=combinedValues,
-            precomputedPointerValues=combinedPointerValues,
-        )
+        # On very small graphs the eligibility checks can cost more than the
+        # copies they avoid. Keep their established serialization route.
+        reused = (self._reusePlainItemGraph(combinedPointers, item, scipionSet)
+                  if combinedPointers is not None and len(combinedValues) >= 4 else None)
+        if reused is not None:
+            itemValues, itemSchema = reused
+        else:
+            pointerSchema = {}
+            itemValues = self._getItemValues(
+                item,
+                scipionSet=scipionSet,
+                pointerSchema=pointerSchema,
+                precomputedRawValues=combinedValues,
+                precomputedPointerValues=combinedPointerValues,
+            )
 
-        itemSchema = self._getCompleteItemSchema(
-            item,
-            scipionSet=scipionSet,
-            itemValues=itemValues,
-            pointerSchema=pointerSchema,
-            precomputedRawSchema=combinedSchema,
-        )
+            itemSchema = self._getCompleteItemSchema(
+                item,
+                scipionSet=scipionSet,
+                itemValues=itemValues,
+                pointerSchema=pointerSchema,
+                precomputedRawSchema=combinedSchema,
+            )
 
         return {
             "scipionItemId": int(
@@ -4928,3 +5000,14 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         yield firstItem
         for item in remainingItems:
             yield item
+
+
+# Freeze these identities so instance, subclass and class monkeypatches retain
+# the generic path. This cache contains functions, never item data or fields.
+_PLAIN_GRAPH_METHODS = {
+    name: getattr(ScipionSetPostgresqlMapper, name)
+    for name in ("_singleGraphForStandardItem", "_getItemValues", "_getItemSchema",
+                 "_getCompleteItemSchema", "_toJsonValue",
+                 "_removeLegacyPointerListEntries",
+                 "_removePostgresqlRuntimeStorageProperties")
+}

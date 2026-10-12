@@ -1619,9 +1619,12 @@ class PostgresqlSetRuntimeMapper:
                 return
 
             # The existing Set schema already covers this item.
-            if requiredPaths.issubset(
-                    self._columns
-            ):
+            # Compare with the live keys view instead of building a temporary
+            # Set from the full column registry on every append.
+            covered = (requiredPaths <= self._columns.keys()
+                       if type(self._columns) is dict
+                       else requiredPaths.issubset(self._columns))
+            if covered:
                 return
 
         synchronizer = (
