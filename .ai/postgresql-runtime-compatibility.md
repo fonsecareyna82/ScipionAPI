@@ -317,7 +317,14 @@ Nested logical tables retain their own scope and parent-item identity.
 
 Native nested Sets, including classes and tilt series, must revalidate the
 current child table by Set id, parent item id, and child kind without reading
-all logical-table metadata for each item. Parent updates may skip copying
+all logical-table metadata for each item. The native compact append path may
+defer that identity query while items exist only in its worker-local buffer,
+but every flush must revalidate before publishing rows. A replaced child table
+must receive every schema path discovered by the buffered items in the same
+transaction as their bulk insert; failed schema or row writes must retain the
+buffer for retry. New schema paths still trigger immediate scoped validation
+before their column registry is changed. Generic/custom serializers retain
+their existing per-operation validation. Parent updates may skip copying
 already persisted child rows only for the exact writable PostgreSQL child
 mapper owned by that Set and table, after its append buffer is flushed and a
 locked database check confirms the Set, root table, parent item, table name,

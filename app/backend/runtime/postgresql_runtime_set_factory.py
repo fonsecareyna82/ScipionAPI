@@ -3065,6 +3065,17 @@ class PostgresqlRuntimeSetFactory:
 
             return schemaInfo
 
+        def synchronizeQueuedChildSchema(serializedSchema):
+            currentTableId = resolveCurrentTableId()
+            schemaInfo = setMapper.synchronizeRuntimeLogicalItemSchemaFromSerialized(
+                tableId=currentTableId,
+                itemSchema=serializedSchema,
+                parentSet=item,
+            )
+            childMapperState["tableId"] = currentTableId
+            updateChildHydratorColumns(schemaInfo.get("columns") or [])
+            return schemaInfo
+
         def mapperFactory(
                 writable=False,
         ):
@@ -3095,12 +3106,14 @@ class PostgresqlRuntimeSetFactory:
                 itemSchemaSynchronizer=(
                     synchronizeChildSchema
                 ),
+                queuedSchemaSynchronizer=synchronizeQueuedChildSchema,
                 itemColumnsUpdater=(
                     updateChildHydratorColumns
                 ),
                 writable=bool(
                     writable
                 ),
+                deferQueuedScopeValidation=bool(writable),
             )
 
         item._postgresqlMapperFactory = (

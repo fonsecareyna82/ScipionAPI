@@ -558,9 +558,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             scipionSet=scipionSet,
         )
 
-        columns = self._getSetColumns(
-            itemSchema
-        )
+        columns = self._getSetColumns(itemSchema)
 
         # Optional objects can appear before existing paths in a later item.
         # Serialize schema growth and preserve previously assigned aliases.
@@ -711,9 +709,35 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
         )
 
-        columns = self._getSetColumns(
-            itemSchema
+        return self.synchronizeRuntimeLogicalItemSchemaFromSerialized(
+            tableId=tableId,
+            itemSchema=itemSchema,
+            parentSet=parentSet,
+            itemClassName=itemClassName,
         )
+
+    def synchronizeRuntimeLogicalItemSchemaFromSerialized(
+            self,
+            tableId: int,
+            itemSchema: Dict[str, Any],
+            parentSet: Optional[Any] = None,
+            itemClassName: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Restore queued child-item columns after a table replacement.
+
+        The caller owns the PostgreSQL transaction. Only class metadata is
+        needed; queued appends do not retain their native item objects.
+        """
+        if not isinstance(itemSchema, dict):
+            raise TypeError("A serialized PostgreSQL item schema is required.")
+
+        tableId = int(tableId)
+        itemClassName = itemClassName or self._getItemClassName(
+            item=None,
+            itemSchema=itemSchema,
+            scipionSet=parentSet,
+        )
+        columns = self._getSetColumns(itemSchema)
 
         self.db.execute('SELECT id FROM scipion_set_tables WHERE id = %s FOR UPDATE',
                         (tableId,), commit=False)

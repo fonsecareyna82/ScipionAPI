@@ -23,6 +23,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import json
 from uuid import uuid4
 
 import pytest
@@ -1697,6 +1698,61 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
         assert appendedHydratedChild.getObjParentId() == 7
         assert appendedHydratedChild._score.get() == 0.95
         assert appendedHydratedChild._code.get() == "CHILD_03"
+
+        # A concurrent reset may replace the child table after an append is
+        # queued. The flush must follow the new table and restore its schema.
+        rehydratedRuntimeSet.enablePostgresqlWrite()
+        rehydratedNestedSet.enableAppend()
+        rehydratedNestedSet.append(_buildItem(
+            itemId=4, score=1.25, code="CHILD_04",
+        ))
+
+        oldTable = postgresqlIntegrationDb.fetchOne(
+            'SELECT name, alias, "parentTableId", "itemClassName", properties '
+            'FROM scipion_set_tables WHERE id = %s',
+            (childTableId,),
+        )
+        oldRows = postgresqlIntegrationDb.fetchAll(
+            'SELECT "scipionItemId", "parentItemId", enabled, label, '
+            'comment, creation, "values" FROM scipion_set_table_items '
+            'WHERE "tableId" = %s ORDER BY "scipionItemId"',
+            (childTableId,),
+        )
+        postgresqlIntegrationDb.execute(
+            'DELETE FROM scipion_set_tables WHERE id = %s',
+            (childTableId,),
+        )
+        replacement = postgresqlIntegrationDb.executeReturningOne(
+            'INSERT INTO scipion_set_tables '
+            '("setId", name, alias, "tableKind", "parentTableId", '
+            '"parentItemId", "itemClassName", properties) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING id',
+            (setId, oldTable["name"], oldTable["alias"], "child",
+             oldTable["parentTableId"], 7, oldTable["itemClassName"],
+             json.dumps(oldTable["properties"])),
+        )
+        replacementId = int(replacement["id"])
+        for row in oldRows:
+            postgresqlIntegrationDb.execute(
+                'INSERT INTO scipion_set_table_items '
+                '("tableId", "scipionItemId", "parentItemId", enabled, '
+                'label, comment, creation, "values") '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)',
+                (replacementId, row["scipionItemId"], row["parentItemId"],
+                 row["enabled"], row["label"], row["comment"],
+                 row["creation"], json.dumps(row["values"])),
+            )
+        assert setMapper.getStoredSetTableColumns(replacementId) == []
+
+        rehydratedNestedSet.write(properties=False)
+        rehydratedRuntimeSet.update(rehydratedNestedSet)
+        replacementRows = setMapper.getStoredSetTableItems(replacementId)
+        assert [row["scipionItemId"] for row in replacementRows] == [1, 2, 3, 4]
+        assert replacementRows[-1]["values"]["_code"] == "CHILD_04"
+        assert {column["labelProperty"] for column in
+                setMapper.getStoredSetTableColumns(replacementId)} >= {
+                    "_score", "_code",
+                }
 
     finally:
         if rehydratedNestedSet is not None:

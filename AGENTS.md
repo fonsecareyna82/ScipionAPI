@@ -75,7 +75,10 @@ one SQL statement per chunk, inside one transaction covering the entire flush.
 Preserve rollback/retry behavior and both stored representations.
 
 Nested runtime Sets revalidate their current logical table with a scoped
-identity query instead of loading every class or tilt-series table. Once an
+identity query instead of loading every class or tilt-series table. Native
+child appends are buffered without a lookup per item; flushing revalidates
+the table and restores queued schema paths if it was replaced. Schema growth
+still validates the current table before writing columns. Once an
 owned writable child mapper has flushed, parent updates may reuse its exact
 persisted table without copying the child items again. External/SQLite-backed
 children and mismatched or pending mapper scopes still use snapshot import.

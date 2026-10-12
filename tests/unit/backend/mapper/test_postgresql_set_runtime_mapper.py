@@ -1406,6 +1406,192 @@ def test_QueuedLogicalAppendRevalidatesScopeOncePerItem():
     assert mapper.tableId == 191
 
 
+def test_DeferredLogicalAppendsRevalidateAtFlushAndRestoreReplacementSchema():
+    class LogicalDb(WritableLogicalTableFakeDb):
+        def __init__(self):
+            super().__init__()
+            self.columnsByTable = {91: [{
+                "labelProperty": "_score", "className": "Float",
+                "valueType": "float", "position": 0,
+            }], 191: []}
+
+        def fetchAll(self, query, params=None):
+            if "FROM scipion_set_table_columns" in str(query):
+                return list(self.columnsByTable[int(params[0])])
+            return super().fetchAll(query, params)
+
+    db = LogicalDb()
+    currentScope = {"tableId": 91}
+    lookups = []
+    rebuilt = []
+
+    def resolve():
+        lookups.append(currentScope["tableId"])
+        return currentScope["tableId"]
+
+    def serialize(item):
+        result = serializeWritableItem(item)
+        result["_schema"] = {
+            "self": ("FakeWritableItem", None),
+            "_score": ("Float", 0.75),
+        }
+        return result
+
+    def rebuild(schema):
+        rebuilt.append(schema)
+        columns = [{
+            "labelProperty": "_score", "className": "Float",
+            "valueType": "float", "position": 0,
+        }]
+        db.columnsByTable[currentScope["tableId"]] = columns
+        return {"columns": columns}
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db, tableId=91, tableIdResolver=resolve, parentItemId=7,
+        itemBuilder=buildItem, itemSerializer=serialize,
+        itemSchemaSynchronizer=lambda item: {"columns": db.columnsByTable[91]},
+        queuedSchemaSynchronizer=rebuild,
+        writable=True, normalizedAppendValues=True,
+        deferQueuedScopeValidation=True,
+    )
+
+    first = FakeWritableItem(itemId=1)
+    mapper.queueAppendItem(first)
+    mapper.queueAppendItem(FakeWritableItem(itemId=2))
+    assert lookups == []
+    assert db.valueExecutions == []
+
+    first.setObjId(99)
+    currentScope["tableId"] = 191
+    mapper.commit()
+
+    assert lookups == [191, 191]
+    assert mapper.tableId == 191
+    assert rebuilt == [{
+        "self": {"className": "FakeWritableItem"},
+        "_score": {"className": "Float"},
+    }]
+    assert [row[:3] for row in db.valueExecutions[0]["values"]] == [
+        (191, 1, 7), (191, 2, 7),
+    ]
+    assert len(mapper._pendingAppendItems) == 0
+    assert mapper._pendingAppendScopeId is None
+
+
+def test_DeferredLogicalSchemaAndBulkFailuresKeepRowsForRetry(monkeypatch):
+    db = WritableLogicalTableFakeDb()
+    scope = {"tableId": 91}
+    fail = {"once": True}
+
+    def synchronize(schema):
+        if fail["once"]:
+            fail["once"] = False
+            raise RuntimeError("schema sync failed")
+        return {"columns": [{
+            "labelProperty": "_score", "className": "Float",
+            "valueType": "float", "position": 0,
+        }]}
+
+    def serialize(item):
+        result = serializeWritableItem(item)
+        result["_schema"] = {"_score": ("Float", 0.75)}
+        return result
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db, tableId=91, tableIdResolver=lambda: scope["tableId"],
+        parentItemId=7, itemBuilder=buildItem, itemSerializer=serialize,
+        itemSchemaSynchronizer=lambda item: {"columns": []},
+        queuedSchemaSynchronizer=synchronize,
+        writable=True, normalizedAppendValues=True,
+        deferQueuedScopeValidation=True,
+    )
+    mapper.queueAppendItem(FakeWritableItem(itemId=3))
+    scope["tableId"] = 191
+
+    with pytest.raises(RuntimeError, match="schema sync failed"):
+        mapper.commit()
+    assert len(mapper._pendingAppendItems) == 1
+    assert db.valueExecutions == []
+
+    originalExecuteValues = db.executeValues
+    failBulk = {"once": True}
+
+    def executeValues(*args, **kwargs):
+        if failBulk["once"]:
+            failBulk["once"] = False
+            raise RuntimeError("bulk write failed")
+        return originalExecuteValues(*args, **kwargs)
+
+    monkeypatch.setattr(db, "executeValues", executeValues)
+    with pytest.raises(RuntimeError, match="bulk write failed"):
+        mapper.commit()
+    assert len(mapper._pendingAppendItems) == 1
+    assert mapper._itemSchemaReady is False
+    assert db.valueExecutions == []
+
+    mapper.commit()
+    assert len(mapper._pendingAppendItems) == 0
+    assert db.valueExecutions[0]["values"][0][:3] == (191, 3, 7)
+
+
+def test_DeferredLogicalReplacementKeepsFieldsAddedByLaterItems():
+    class SchemaDb(WritableLogicalTableFakeDb):
+        def __init__(self):
+            super().__init__()
+            self.columns = {91: [{
+                "labelProperty": "_score", "className": "Float",
+                "valueType": "float", "position": 0,
+            }], 191: []}
+
+        def fetchAll(self, query, params=None):
+            if "FROM scipion_set_table_columns" in str(query):
+                return list(self.columns[int(params[0])])
+            return super().fetchAll(query, params)
+
+    db = SchemaDb()
+    scope = {"tableId": 91}
+    queuedSchemas = []
+
+    def serialize(item):
+        result = serializeWritableItem(item)
+        result["_schema"] = {"_score": ("Float", 0.75)}
+        if item.getObjId() == 2:
+            result["values"]["_code"] = "later"
+            result["_schema"]["_code"] = ("String", "later")
+        return result
+
+    def addColumns(item):
+        db.columns[scope["tableId"]] = db.columns[91] + [{
+            "labelProperty": "_code", "className": "String",
+            "valueType": "text", "position": 1,
+        }]
+        return {"columns": db.columns[scope["tableId"]]}
+
+    def restoreColumns(schema):
+        queuedSchemas.append(schema)
+        db.columns[191] = db.columns[91]
+        return {"columns": db.columns[191]}
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=db, tableId=91, tableIdResolver=lambda: scope["tableId"],
+        parentItemId=7, itemBuilder=buildItem, itemSerializer=serialize,
+        itemSchemaSynchronizer=addColumns,
+        queuedSchemaSynchronizer=restoreColumns,
+        writable=True, normalizedAppendValues=True,
+        deferQueuedScopeValidation=True,
+    )
+    mapper.queueAppendItem(FakeWritableItem(itemId=1))
+    mapper.queueAppendItem(FakeWritableItem(itemId=2))
+    scope["tableId"] = 191
+    mapper.commit()
+
+    assert queuedSchemas[0]["_code"] == {"className": "String"}
+    assert {column["labelProperty"] for column in db.columns[191]} == {
+        "_score", "_code",
+    }
+    assert len(db.valueExecutions[0]["values"]) == 2
+
+
 def test_WritableMapperRequiresSerializer():
     with pytest.raises(
             ValueError,

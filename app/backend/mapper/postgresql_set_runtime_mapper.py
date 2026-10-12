@@ -159,6 +159,8 @@ class PostgresqlSetRuntimeMapper:
             ] = None,
             writable: bool = False,
             normalizedAppendValues: bool = False,
+            deferQueuedScopeValidation: bool = False,
+            queuedSchemaSynchronizer: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ):
         if db is None:
             raise ValueError("db is required")
@@ -333,6 +335,21 @@ class PostgresqlSetRuntimeMapper:
         self.writable = bool(
             writable
         )
+        self.deferQueuedScopeValidation = bool(deferQueuedScopeValidation)
+        self.queuedSchemaSynchronizer = queuedSchemaSynchronizer
+        if self.deferQueuedScopeValidation and not (
+                hasTableId and writable and normalizedAppendValues
+                and callable(tableIdResolver)
+                and callable(itemSchemaSynchronizer)
+                and callable(queuedSchemaSynchronizer)
+        ):
+            raise ValueError(
+                "Deferred queued scope validation requires a writable "
+                "normalized logical-table mapper with a table resolver "
+                "and schema synchronizers."
+            )
+        self._pendingAppendScopeId = None
+        self._pendingSerializedSchema = {}
 
         if self.setId is not None:
             self._scopeId = self.setId
@@ -955,7 +972,9 @@ class PostgresqlSetRuntimeMapper:
             item,
     ):
         """Queue an already identified item for the next commit."""
-        self._requireWritable()
+        self._requireWritable(
+            refreshScope=not self.deferQueuedScopeValidation
+        )
 
         if self.nestedItemSynchronizer is not None:
             return None
@@ -971,6 +990,13 @@ class PostgresqlSetRuntimeMapper:
             item
         )
 
+        if self.deferQueuedScopeValidation and not isinstance(
+                serialized.get("_schema"), dict
+        ):
+            raise RuntimeError(
+                "Deferred logical-table appends require a serialized schema."
+            )
+
         self._ensureItemSchema(
             item=item,
             serialized=serialized,
@@ -978,10 +1004,26 @@ class PostgresqlSetRuntimeMapper:
 
         # Schema has been synchronized already. Retaining a per-item copy
         # until write() wastes memory without contributing to persistence.
-        serialized.pop("_schema", None)
+        serializedSchema = serialized.pop("_schema", None)
         self._pendingAppendItems.append(
             serialized
         )
+
+        if self.deferQueuedScopeValidation:
+            if self._pendingAppendScopeId is None:
+                self._pendingAppendScopeId = self.tableId
+            newPaths = serializedSchema.keys() - self._pendingSerializedSchema.keys()
+            for path in newPaths:
+                value = serializedSchema[path]
+                if isinstance(value, (tuple, list)):
+                    className = value[0] if value else None
+                elif isinstance(value, dict):
+                    className = value.get("className") or value.get("class_name")
+                else:
+                    className = None
+                self._pendingSerializedSchema[str(path)] = {
+                    "className": str(className) if className else None
+                }
 
         return int(
             itemId
@@ -998,21 +1040,50 @@ class PostgresqlSetRuntimeMapper:
         pendingItems = (buffer.iterPrefix(pendingCount) if isinstance(buffer, PostgresqlAppendBuffer)
                         else iter(buffer[:pendingCount]))
 
-        with self.db.transaction():
-            if isinstance(buffer, PostgresqlAppendBuffer):
-                chunks = self._iterCompactAppendChunks(pendingItems)
-            else:
-                chunks = (list(islice(pendingItems, self.BULK_APPEND_SIZE))
-                          for _ in range(0, pendingCount, self.BULK_APPEND_SIZE))
-            for chunk in chunks:
-                self._bulkUpsertSerializedItems(chunk)
+        replacedScope = (self.deferQueuedScopeValidation
+                         and self._pendingAppendScopeId != self.tableId)
+        try:
+            with self.db.transaction():
+                if replacedScope:
+                    schemaInfo = dict(self.queuedSchemaSynchronizer(
+                        dict(self._pendingSerializedSchema)
+                    ) or {})
+                    columns = schemaInfo.get("columns")
+                    if columns is None:
+                        raise RuntimeError(
+                            "Replacement logical-table schema was not synchronized."
+                        )
+                    self._replaceColumns(columns)
+                    missing = set(self._pendingSerializedSchema) - {"self"} - set(self._columns)
+                    if missing:
+                        raise RuntimeError(
+                            "Replacement logical-table schema is missing paths: %s"
+                            % sorted(missing)
+                        )
+                if isinstance(buffer, PostgresqlAppendBuffer):
+                    chunks = self._iterCompactAppendChunks(pendingItems)
+                else:
+                    chunks = (list(islice(pendingItems, self.BULK_APPEND_SIZE))
+                              for _ in range(0, pendingCount, self.BULK_APPEND_SIZE))
+                for chunk in chunks:
+                    self._bulkUpsertSerializedItems(chunk)
 
-            self._refreshSetCounters()
+                self._refreshSetCounters()
+        except Exception:
+            if replacedScope:
+                # The transaction may have rolled back the replacement
+                # schema. A retry must never trust its in-memory columns.
+                self._columns = {}
+                self._itemSchemaReady = False
+            raise
 
         if isinstance(buffer, PostgresqlAppendBuffer):
             buffer.discardPrefix(pendingCount)
         else:
             del buffer[:pendingCount]
+        if self.deferQueuedScopeValidation:
+            self._pendingAppendScopeId = None
+            self._pendingSerializedSchema.clear()
 
         return True
 
@@ -1476,7 +1547,7 @@ class PostgresqlSetRuntimeMapper:
     def commit(self) -> None:
         self._requireWritable()
 
-        if self._flushPendingAppends():
+        if self._synchronizePendingAppends():
             return
 
         self.db.conn.commit()
@@ -1490,15 +1561,17 @@ class PostgresqlSetRuntimeMapper:
         """
         if isinstance(self._pendingAppendItems, PostgresqlAppendBuffer):
             self._pendingAppendItems.clear()
+        self._pendingAppendScopeId = None
+        self._pendingSerializedSchema.clear()
         return None
 
-    def _requireWritable(self) -> None:
+    def _requireWritable(self, refreshScope=True) -> None:
         if not self.writable:
             raise RuntimeError(
                 "PostgreSQL runtime Set is read-only."
             )
 
-        if self.tableId is not None:
+        if refreshScope and self.tableId is not None:
             self._refreshLogicalTableScope()
 
         if self._scopeId is None:
@@ -1625,6 +1698,14 @@ class PostgresqlSetRuntimeMapper:
                        if type(self._columns) is dict
                        else requiredPaths.issubset(self._columns))
             if covered:
+                return
+
+        if getattr(self, "deferQueuedScopeValidation", False):
+            # Schema growth is a database write, so bind it to the current
+            # child-table generation even though ordinary appends stay queued.
+            self._refreshLogicalTableScope()
+            if (self._itemSchemaReady and hasSerializedSchema
+                    and requiredPaths <= self._columns.keys()):
                 return
 
         synchronizer = (
