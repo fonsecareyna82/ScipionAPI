@@ -1685,8 +1685,9 @@ class PostgresqlSetRuntimeMapper:
             self,
             item,
     ) -> Dict[str, Any]:
-        self._requireWritable()
-
+        # All callers validate writability and the current logical-table
+        # scope before reaching serialization. Repeating that check here
+        # issues a second table-identity query for every queued child item.
         serialized = dict(
             self.itemSerializer(
                 item

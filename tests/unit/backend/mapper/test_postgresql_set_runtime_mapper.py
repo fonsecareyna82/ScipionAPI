@@ -1378,6 +1378,34 @@ def test_LogicalTableMapperRefreshesRecreatedTableId():
     assert db.params == (191,)
 
 
+def test_QueuedLogicalAppendRevalidatesScopeOncePerItem():
+    currentScope = {"tableId": 91}
+    resolved = []
+
+    def resolve():
+        resolved.append(currentScope["tableId"])
+        return currentScope["tableId"]
+
+    mapper = PostgresqlSetRuntimeMapper(
+        db=FakeLogicalTableDb(),
+        tableId=91,
+        tableIdResolver=resolve,
+        parentItemId=7,
+        itemBuilder=buildItem,
+        itemSerializer=serializeWritableItem,
+        writable=True,
+    )
+
+    mapper.queueAppendItem(FakeWritableItem(itemId=1))
+    assert resolved == [91]
+
+    # A replacement between appends must still redirect the next item.
+    currentScope["tableId"] = 191
+    mapper.queueAppendItem(FakeWritableItem(itemId=2))
+    assert resolved == [91, 191]
+    assert mapper.tableId == 191
+
+
 def test_WritableMapperRequiresSerializer():
     with pytest.raises(
             ValueError,
