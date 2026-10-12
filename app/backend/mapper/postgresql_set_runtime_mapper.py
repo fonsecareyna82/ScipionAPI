@@ -31,6 +31,44 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from app.backend.mapper.postgresql_append_buffer import EncodedAppendItem, PostgresqlAppendBuffer
 
 
+class _PostgresqlItemIterator:
+    """Close the row reader even when the hydration generator never starts."""
+
+    def __init__(self, items, rows):
+        self._items = items
+        self._rows = rows
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._items is None:
+            raise StopIteration
+        try:
+            return next(self._items)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        items, self._items = self._items, None
+        rows, self._rows = self._rows, None
+        if items is None:
+            return
+        try:
+            items.close()
+        finally:
+            close = getattr(rows, "close", None)
+            if callable(close):
+                close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 class PostgresqlSetRuntimeMapper:
     """
     Read-only mapper exposing the subset of the SqliteFlatMapper API used by
@@ -2819,17 +2857,14 @@ class PostgresqlSetRuntimeMapper:
         return list(self._iterItems(rows, rowFilter, objectFilter))
 
     def _iterItems(self, rows, rowFilter=None, objectFilter=None):
-        try:
+        def buildItems():
             for row in rows if rows is not None else ():
                 if rowFilter is not None and not rowFilter(row):
                     continue
                 item = self.itemBuilder(dict(row))
                 if objectFilter is None or objectFilter(item):
                     yield item
-        finally:
-            close = getattr(rows, "close", None)
-            if callable(close):
-                close()
+        return _PostgresqlItemIterator(buildItems(), rows)
 
 
     @staticmethod

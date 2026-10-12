@@ -904,6 +904,9 @@ def test_RuntimeSetAppendPreservesNativeImageMetadataHooks():
                 self.items
             )
 
+        def close(self):
+            pass
+
     runtimeClass = type(
         "ExampleRuntimeAppendSet",
         (
@@ -974,6 +977,9 @@ def test_RuntimeSetBufferedAppendAvoidsPerItemCount():
         def count(self):
             self.countCalls += 1
             return 999
+
+        def close(self):
+            pass
 
     runtimeClass = type(
         "ExampleRuntimeBufferedAppendSet",
@@ -2559,6 +2565,9 @@ def test_RuntimeSetRefreshRetriesUnresolvedProtocolExtendedPointer():
                 return self.targetProtocol
 
             return None
+
+        def close(self):
+            pass
 
         def refreshProperties(self):
             pass

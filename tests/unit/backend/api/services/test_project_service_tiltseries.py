@@ -701,6 +701,7 @@ def test_ScipionSetPostgresqlMapperDoesNotStringifySets(authTestEnv):
     scipionSet = object.__new__(
         ExplodingSet
     )
+    scipionSet._mapper = None
 
     assert mapper._getObjectDisplayText(
         scipionSet

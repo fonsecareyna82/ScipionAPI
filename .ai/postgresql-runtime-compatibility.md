@@ -259,7 +259,10 @@ retains its independent client-cursor default unless server-side mode is
 explicitly requested.
 
 Cursors must close on exhaustion, explicit iterator close, hydration failure,
-thread cleanup and database shutdown. Read errors respect explicit transaction
+thread cleanup and database shutdown. Item iterators must explicitly own and
+close their row reader even before first consumption, rather than relying on
+generator finalization or reference-release behavior that varies between
+Python versions. Read errors respect explicit transaction
 ownership just like `fetchAll()`; result-fetching time is recorded without
 including the consumer's object-processing time. A rollback can discard a newly
 declared server cursor; cleanup must not mask the original statement failure or

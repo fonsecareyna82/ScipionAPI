@@ -32,7 +32,7 @@ FastAPI + Uvicorn, PostgreSQL via SQLAlchemy 2.0 + Alembic migrations, Celery + 
 ScipionAPI backend and the packaged `scipionapi_cli` CLI.
 
 Runtime dependencies live in `[project].dependencies`. Test-only
-dependencies (`pytest`, `httpx`) live in `[project.optional-dependencies].test`.
+dependencies (`pytest`, `pytest-asyncio`, `httpx`) live in `[project.optional-dependencies].test`.
 
 `requirements.txt` is retained only as a compatibility shim and installs
 the editable project with test dependencies. New install/bootstrap/update
@@ -42,6 +42,8 @@ code must install from `pyproject.toml`, not maintain a second dependency list.
 
 - CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.
 - Run locally: needs real Postgres + Valkey (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -e ".[test]" && pytest`.
+- `pytest-asyncio` is part of the test extra; keep it compatible with Python 3.8–3.12 so marked async tests execute throughout the CI matrix.
+- Unhandled async tests and unraisable teardown exceptions are errors in `pytest.ini`; do not silence them or rely on garbage collection for resource cleanup.
 - `tests/smoke/` (e.g. `test_app_import.py`, `test_main_app.py`) is the fastest thing to run to sanity-check the app still imports/boots.
 
 ## PostgreSQL runtime Set contract

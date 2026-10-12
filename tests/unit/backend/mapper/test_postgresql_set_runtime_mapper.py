@@ -394,6 +394,38 @@ def test_SelectAllClosesRowReaderOnEarlyExitOrHydrationFailure(failureStage):
     assert events == ["query", "closed"]
 
 
+def test_SelectAllClosesRetainedRowReaderBeforeFirstItem():
+    class RetainedRows:
+        def __init__(self):
+            self.closed = False
+            self.closeCalls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise AssertionError("Closing an unused iterator must not read rows.")
+
+        def close(self):
+            self.closed = True
+            self.closeCalls += 1
+
+    retained = RetainedRows()
+
+    class IteratorDb(FakeDb):
+        def iterRows(self, query, params):
+            return retained
+
+    mapper = PostgresqlSetRuntimeMapper(db=IteratorDb(), setId=31, itemBuilder=dict)
+    items = mapper.selectAll()
+    items.close()
+    assert retained.closed
+    assert retained.closeCalls == 1
+    items.close()
+    assert retained.closeCalls == 1
+    assert list(items) == []
+
+
 def test_SelectAllUsesScipionItemIdForIdOrdering():
     db = FakeDb(rows=[
         {

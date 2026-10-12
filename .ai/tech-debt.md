@@ -38,6 +38,10 @@ scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 
 `mapper/postgresql_runtime_mapper.py::_prepareNativeSetForPostgresqlSnapshot` (and its callers in `createPostgresqlOutputSet`/`_storeSetObject`) writes/closes/reloads a real on-disk SQLite file for any output Set that wasn't created through the PostgreSQL-native runtime factory, then adopts its data into PostgreSQL. This was removed outright on 2026-08-09 (`5a358b6`, `4964eef`) and restored ~50 minutes later the same day (`99d8597`) once it broke a real code path — confirming it's not dead code. It exists because `scipion-pyworkflow`'s `Object`/`Set` machinery still allocates a `SqliteFlatMapper` by default for any protocol using the standard `_defineOutputs` flow; ScipionAPI has no hook to intercept that at creation time without an upstream change to `scipion-pyworkflow/pyworkflow/object.py` (flagged in that repo's own `AGENTS.md` as the highest-blast-radius file in the ecosystem). The rules for when this bridge may exist are formalized in [`postgresql-runtime-compatibility.md`](postgresql-runtime-compatibility.md) — treat that document as authoritative before touching this mechanism, not this note.
 
-## Minor: cosmetic test-teardown warnings
+## Resolved test lifecycle gaps
 
-`pytest tests/unit tests/smoke` passes clean (1179 passed as of 2026-08-12) but emits `PytestUnraisableExceptionWarning` from two test doubles whose `__del__`/`close()` contracts are incomplete: `ExplodingSet` (missing `_mapper`) and `FakeWritableMapper` (missing `close`), both in runtime test fixtures. Not a production bug, just noise in CI output — low-priority, drive-by fix whenever those fixture files are next touched.
+Test doubles used by native Set destructors now initialize `_mapper` or provide
+`close()` as appropriate. Marked async tests use `pytest-asyncio` from the test
+extra throughout the Python 3.8–3.12 CI matrix. Runtime item iterators explicitly
+close their PostgreSQL row readers before first consumption instead of relying
+on generator reference-release behavior that differs in Python 3.12.
