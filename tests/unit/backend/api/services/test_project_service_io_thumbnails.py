@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 
+import asyncio
 import importlib
 import inspect
 import json
@@ -885,8 +886,7 @@ def test_WriteRemoteFileServiceWritesContent(service, monkeypatch, tmp_path):
     }
 
 
-@pytest.mark.asyncio
-async def test_GetProtocolOutputThumbnailsBatchDelegatesToPreviewProcess(
+def test_GetProtocolOutputThumbnailsBatchDelegatesToPreviewProcess(
         monkeypatch,
 ):
     projectRouterModule = importlib.import_module(
@@ -921,10 +921,12 @@ async def test_GetProtocolOutputThumbnailsBatchDelegatesToPreviewProcess(
         inlineImages=False,
     )
 
-    response = await projectRouterModule.getProtocolOutputThumbnailsBatch(
-        projectId=1,
-        payload=payload,
-        currentUser={"id": 1},
+    response = asyncio.run(
+        projectRouterModule.getProtocolOutputThumbnailsBatch(
+            projectId=1,
+            payload=payload,
+            currentUser={"id": 1},
+        )
     )
 
     assert calls == [{
@@ -1276,8 +1278,7 @@ def test_LoadProjectForThumbnailsRequiresPostgresqlMapper(
         )
 
 
-@pytest.mark.asyncio
-async def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
+def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
         monkeypatch,
 ):
     projectRouterModule = (
@@ -1343,7 +1344,7 @@ async def test_OutputPreviewUsesPostgresqlMovieMetadataFastPath(
         failRuntimePreview,
     )
 
-    response = await (
+    response = asyncio.run(
         projectRouterModule
         .previewOutput(
             projectId=12,

@@ -41,7 +41,9 @@ scipion-app @ git+https://github.com/fonsecareyna82//scipion-app.git@devel
 ## Resolved test lifecycle gaps
 
 Test doubles used by native Set destructors now initialize `_mapper` or provide
-`close()` as appropriate. Marked async tests use `pytest-asyncio` from the test
-extra throughout the Python 3.8–3.12 CI matrix. Runtime item iterators explicitly
+`close()` as appropriate. The test extra includes a Python 3.8–3.12 compatible
+`pytest-asyncio`, while the thumbnail route checks execute their coroutines
+through `asyncio.run()` and remain runnable with async plugins disabled.
+Runtime item iterators explicitly
 close their PostgreSQL row readers before first consumption instead of relying
 on generator reference-release behavior that differs in Python 3.12.
