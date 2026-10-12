@@ -4029,3 +4029,69 @@ def test_LogicalTableLookupRejectsDuplicateChildScope():
         PostgresqlRuntimeSetFactory()._resolveCurrentLogicalTableId(
             setMapper=ScipionSetPostgresqlMapper(db),
             setId=db.ROOT_SET_ID, parentItemId=db.ROOT_ITEM_ID)
+
+
+def test_NestedReadsResolveChildTableOncePerQuery():
+    db = FakeNestedSetDb()
+    db.childItemRows = [
+        dict(db.childItemRows[0], id=700 + itemId, scipionItemId=itemId,
+             label="child-%s" % itemId, values={"_value": "child-%s" % itemId})
+        for itemId in range(1, 6)
+    ]
+    _, runtimeSet = buildNestedRuntimeSet(db=db)
+    nestedSet = runtimeSet.getFirstItem()
+
+    def countLookups():
+        return sum('"parentItemId" = %s' in query for query, _ in db.queries)
+
+    list(nestedSet.iterItems())
+    lookupsBefore = countLookups()
+    children = list(nestedSet.iterItems())
+
+    assert [child._value.get() for child in children] == ["child-%s" % i for i in range(1, 6)]
+    # Identity checks happen per read, never per hydrated row.
+    assert countLookups() - lookupsBefore < len(children)
+
+
+class MapperPathParentSet(Set):
+    """Native nested Sets build child paths from the parent file name."""
+    ITEM_TYPE = ExampleNestedSet
+
+    def _setItemMapperPath(self, item):
+        item._mapperPath.set("%s,%s" % (self.getFileName(), item.getObjId()))
+        item.load()
+        item._subclassHookRan = True
+
+    def iterItems(self, *args, **kwargs):
+        for item in Set.iterItems(self, *args, **kwargs):
+            self._setItemMapperPath(item)
+            yield item
+
+
+def test_NestedChildMapperPathDoesNotExportParent():
+    parent = FakeParent()
+    parent.setObjId(5)
+    runtimeSet = PostgresqlRuntimeSetFactory().build(
+        db=FakeNestedSetDb(), parent=parent, outputName="outputTiltSeries",
+        outputInfo={"setId": 41, "objectId": 901, "runtimeObjectId": 45,
+                    "className": "MapperPathParentSet", "itemClassName": "ExampleNestedSet",
+                    "itemsCount": 1, "properties": {"_streamState": Set.STREAM_CLOSED}},
+        classes={"MapperPathParentSet": MapperPathParentSet,
+                 "ExampleNestedSet": ExampleNestedSet, "ExampleChildItem": ExampleChildItem})
+    exports = []
+
+    class RecordingMaterializer:
+        def materialize(self, runtimeSet):
+            exports.append(runtimeSet)
+            return "/tmp/exported.sqlite"
+
+    runtimeSet._postgresqlSqliteMaterializer = RecordingMaterializer()
+
+    nestedSets = list(runtimeSet.iterItems())
+
+    assert exports == []
+    assert [nested._subclassHookRan for nested in nestedSets] == [True]
+    assert [child._value.get() for child in nestedSets[0].iterItems()] == ["child-3"]
+    # Explicit requests outside the hook still export the parent.
+    assert runtimeSet.getFileName() == "/tmp/exported.sqlite"
+    assert exports == [runtimeSet]

@@ -84,6 +84,9 @@ persisted table without copying the child items again. External/SQLite-backed
 children and mismatched or pending mapper scopes still use snapshot import.
 Set properties read a Set's sampling-rate getter before falling back to its
 first item, avoiding implicit SQLite materialization of native class Sets.
+Child reads resolve the table identity once per query, never per hydrated
+row. A parent's `_setItemMapperPath` hook does not export the parent for
+runtime children, which load their own mapper; subclass hook code still runs.
 
 Root item JSON keeps its full GIN in the canonical table. The logical item
 JSON GIN covers only rows with a non-null `parentItemId`, avoiding duplicate

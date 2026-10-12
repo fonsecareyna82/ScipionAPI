@@ -984,7 +984,35 @@ class PostgresqlRuntimeSetMixin:
 
         self._releaseDetachedPostgresqlRuntimeSets()
 
+    def _setItemMapperPath(self, item):
+        # Native nested Sets (classes, tilt series) point every child at the
+        # parent's file and then call item.load(). Runtime children load
+        # their own mapper and ignore that path, so building it must not
+        # export the whole parent. Subclass overrides (e.g. coordinate
+        # injection) still run through super().
+        if not (
+                isinstance(item, PostgresqlRuntimeSetMixin)
+                and callable(getattr(item, "_postgresqlMapperFactory", None))
+        ):
+            return super()._setItemMapperPath(item)
+
+        self._deferredFileNameDepth = getattr(self, "_deferredFileNameDepth", 0) + 1
+        try:
+            return super()._setItemMapperPath(item)
+        finally:
+            self._deferredFileNameDepth -= 1
+
+    def _getDeferredFileName(self):
+        cachedPath = getattr(self, "_postgresqlMaterializedFileName", None)
+        if cachedPath:
+            return str(cachedPath)
+        info = self.getPostgresqlRuntimeInfo()
+        return "runtime-set-%s" % (info.get("setId") or self.getObjId())
+
     def getFileName(self):
+        if getattr(self, "_deferredFileNameDepth", 0) > 0:
+            return self._getDeferredFileName()
+
         materializer = getattr(
             self,
             "_postgresqlSqliteMaterializer",
@@ -3013,8 +3041,17 @@ class PostgresqlRuntimeSetFactory:
         def buildChildItem(
                 childRow,
         ):
+            # Every read refreshes the table scope and columns once before
+            # building rows (tableIdResolver/itemColumnsUpdater), which also
+            # drops a stale hydrator. Rows reuse it instead of re-resolving
+            # the table identity once per item.
+            hydrator = (
+                childMapperState["hydrator"]
+                or getChildHydrator()
+            )
+
             return (
-                getChildHydrator()
+                hydrator
                 .build(
                     dict(
                         childRow

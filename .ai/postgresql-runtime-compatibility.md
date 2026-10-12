@@ -334,6 +334,14 @@ Collect a native Set sampling rate through its Set getter before asking the
 first item; only the latter may invoke a compatibility snapshot for class
 Sets. Explicit `getFileName()` consumers still materialize normally.
 
+Child reads revalidate the table identity and columns once per query, through
+the mapper's read refresh; row hydration reuses the current hydrator, which a
+scope or column change drops. When native nested Sets call
+`_setItemMapperPath` (iteration, item access, existing-item cloning), runtime
+children load their own mapper and ignore the path, so the parent file name is
+a placeholder and the parent is not exported. The native and subclass hook
+bodies still run. Children without a runtime mapper keep the original path.
+
 The canonical root JSON GIN remains fully indexed. The logical JSON GIN is
 partial (`parentItemId IS NOT NULL`): logical root copies must not maintain
 a second full JSON index. Both root representations remain persisted; this
