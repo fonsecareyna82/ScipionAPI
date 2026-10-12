@@ -411,7 +411,7 @@ def test_SetAndItemsPersistAndHydrateAcrossPostgresqlConnections(
         assert runtimeSet.getSize() == 2
 
         runtimeItems = list(
-            runtimeSet.iterItems()
+            runtimeSet.iterItems(iterate=False)
         )
 
         assert len(runtimeItems) == 2
@@ -866,7 +866,7 @@ def test_PostgresqlRuntimeSetAppendPersistsAcrossConnections(
         assert verifiedRuntimeSet.getSize() == 3
 
         verifiedItems = list(
-            verifiedRuntimeSet.iterItems()
+            verifiedRuntimeSet.iterItems(iterate=False)
         )
 
         assert len(verifiedItems) == 3
@@ -1098,7 +1098,7 @@ def test_PostgresqlStreamingProducerConsumerRefreshesItemsAndState(
         assert consumerSet.isStreamOpen()
 
         consumerItems = list(
-            consumerSet.iterItems()
+            consumerSet.iterItems(iterate=False)
         )
 
         assert len(consumerItems) == 3
@@ -1347,7 +1347,7 @@ def test_NestedSetLogicalTablesPersistAndHydrateAcrossPostgresqlConnections(
         assert not hydratedNestedSet.isPostgresqlWritable()
 
         hydratedChildren = list(
-            hydratedNestedSet.iterItems()
+            hydratedNestedSet.iterItems(iterate=False)
         )
 
         assert len(hydratedChildren) == 2
@@ -1573,7 +1573,7 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
         assert hydratedNestedSet.isPostgresqlWritable() is False
 
         initialChildren = list(
-            hydratedNestedSet.iterItems()
+            hydratedNestedSet.iterItems(iterate=False)
         )
 
         assert len(initialChildren) == 2
@@ -1683,7 +1683,7 @@ def test_NestedSetIncrementalAppendPersistsAndHydratesAcrossPostgresqlConnection
         assert rehydratedNestedSet.isPostgresqlWritable() is False
 
         rehydratedChildren = list(
-            rehydratedNestedSet.iterItems()
+            rehydratedNestedSet.iterItems(iterate=False)
         )
 
         assert len(rehydratedChildren) == 3
@@ -1929,7 +1929,7 @@ def test_NestedSetParentUpdatePreservesBufferedChildren(
         assert childRows[2]["values"]["_code"] == "CHILD_03"
 
         reloadedNestedSet = runtimeSet.getFirstItem()
-        reloadedChildren = list(reloadedNestedSet.iterItems())
+        reloadedChildren = list(reloadedNestedSet.iterItems(iterate=False))
 
         assert [child.getObjId() for child in reloadedChildren] == [1, 2, 3]
         assert reloadedNestedSet.getSize() == 3

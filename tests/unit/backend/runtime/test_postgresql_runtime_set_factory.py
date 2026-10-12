@@ -4044,13 +4044,13 @@ def test_NestedReadsResolveChildTableOncePerQuery():
     def countLookups():
         return sum('"parentItemId" = %s' in query for query, _ in db.queries)
 
-    list(nestedSet.iterItems())
+    list(nestedSet.iterItems(iterate=False))
     lookupsBefore = countLookups()
-    children = list(nestedSet.iterItems())
+    values = [child._value.get() for child in nestedSet.iterItems()]
 
-    assert [child._value.get() for child in children] == ["child-%s" % i for i in range(1, 6)]
+    assert values == ["child-%s" % i for i in range(1, 6)]
     # Identity checks happen per read, never per hydrated row.
-    assert countLookups() - lookupsBefore < len(children)
+    assert countLookups() - lookupsBefore < len(values)
 
 
 class MapperPathParentSet(Set):

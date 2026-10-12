@@ -157,6 +157,7 @@ class PostgresqlSetRuntimeMapper:
                     Optional[Dict[str, Any]],
                 ]
             ] = None,
+            itemRefiller: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
             writable: bool = False,
             normalizedAppendValues: bool = False,
             deferQueuedScopeValidation: bool = False,
@@ -332,6 +333,9 @@ class PostgresqlSetRuntimeMapper:
         self.nestedItemSynchronizer = (
             nestedItemSynchronizer
         )
+        # Optional (previousItem, row) -> item | None. Lets iterate=True reuse
+        # one item per row, matching native Scipion template iteration.
+        self.itemRefiller = itemRefiller if callable(itemRefiller) else None
         self.writable = bool(
             writable
         )
@@ -516,6 +520,7 @@ class PostgresqlSetRuntimeMapper:
             rows,
             rowFilter=rowFilter,
             objectFilter=objectFilter,
+            reuseItems=bool(iterate),
         )
 
         if iterate:
@@ -2941,12 +2946,20 @@ class PostgresqlSetRuntimeMapper:
     ):
         return list(self._iterItems(rows, rowFilter, objectFilter))
 
-    def _iterItems(self, rows, rowFilter=None, objectFilter=None):
+    def _iterItems(self, rows, rowFilter=None, objectFilter=None, reuseItems=False):
+        refill = self.itemRefiller if reuseItems else None
+
         def buildItems():
+            previous = None
             for row in rows if rows is not None else ():
                 if rowFilter is not None and not rowFilter(row):
                     continue
-                item = self.itemBuilder(dict(row))
+                item = None
+                if refill is not None and previous is not None:
+                    item = refill(previous, dict(row))
+                if item is None:
+                    item = self.itemBuilder(dict(row))
+                previous = item
                 if objectFilter is None or objectFilter(item):
                     yield item
         return _PostgresqlItemIterator(buildItems(), rows)
@@ -3256,10 +3269,9 @@ class PostgresqlSetRuntimeMapper:
         if cachedValueType is not None:
             return cachedValueType
 
-        # Logical roots duplicate the canonical rows, whose full JSON GIN is
-        # retained. The logical GIN covers nested rows only. Split the two
-        # disjoint populations so PostgreSQL can use that partial index while
-        # still reading legacy NULL-parent rows and logical roots unchanged.
+        # Logical tables hold nested rows and NULL-parent rows (logical roots,
+        # legacy data). Read both disjoint populations of the table scope;
+        # the ("tableId", "scipionItemId") index narrows each branch.
         sourceSql = self._itemsTable
         sourceParams = (self._scopeId, field)
         sourceWhere = 'WHERE "{scopeColumn}" = %s AND "values" ? %s'.format(

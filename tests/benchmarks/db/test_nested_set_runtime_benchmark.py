@@ -39,12 +39,14 @@ Run with, for example::
 
 ``SCIPIONAPI_BENCHMARK_NESTED_SIZES`` takes ``<classes>x<particles>`` pairs.
 ``SCIPIONAPI_BENCHMARK_NESTED_MATERIALIZE=0`` skips SQLite materialization.
+``SCIPIONAPI_BENCHMARK_QUERY_REPORT=1`` prints the costliest write statements.
 """
 import cProfile
 import io
 import json
 import os
 import pstats
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -63,6 +65,8 @@ from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import Postg
 RUN_BENCHMARKS = os.getenv("SCIPIONAPI_RUN_BENCHMARKS") == "1"
 PROFILE_DIR = (os.getenv("SCIPIONAPI_BENCHMARK_PROFILE_DIR") or "").strip()
 MATERIALIZE = os.getenv("SCIPIONAPI_BENCHMARK_NESTED_MATERIALIZE", "1") != "0"
+QUERY_REPORT = os.getenv("SCIPIONAPI_BENCHMARK_QUERY_REPORT") == "1"
+QUERY_METHODS = ("execute", "executeValues", "executeReturningOne", "fetchOne", "fetchAll")
 SAMPLING_RATE = 1.25
 
 
@@ -174,6 +178,64 @@ def _profiled(label):
         report = io.StringIO()
         pstats.Stats(profiler, stream=report).sort_stats("cumulative").print_stats(30)
         print("\nSCIPIONAPI_NESTED_PROFILE[%s]\n%s" % (label, report.getvalue()))
+
+
+def _normalizeStatement(query):
+    return re.sub(r"\s+", " ", str(query)).strip()[:220]
+
+
+@contextmanager
+def _queryReport(db, label):
+    """Group statements by text; transaction commits are timed on exit."""
+    if not QUERY_REPORT:
+        yield
+        return
+    statements = {}
+
+    def record(key, seconds):
+        entry = statements.setdefault(key, {"calls": 0, "seconds": 0.0, "maxSeconds": 0.0})
+        entry["calls"] += 1
+        entry["seconds"] += seconds
+        entry["maxSeconds"] = max(entry["maxSeconds"], seconds)
+
+    def timed(method):
+        def wrapper(query, *args, **kwargs):
+            startedAt = time.perf_counter()
+            try:
+                return method(query, *args, **kwargs)
+            finally:
+                record(_normalizeStatement(query), time.perf_counter() - startedAt)
+        return wrapper
+
+    originalTransaction = db.transaction
+
+    @contextmanager
+    def timedTransaction(*args, **kwargs):
+        context = originalTransaction(*args, **kwargs)
+        context.__enter__()
+        try:
+            yield db
+        except BaseException as error:
+            if not context.__exit__(type(error), error, error.__traceback__):
+                raise
+        else:
+            startedAt = time.perf_counter()
+            context.__exit__(None, None, None)
+            record("<transaction exit/commit>", time.perf_counter() - startedAt)
+
+    for name in QUERY_METHODS:
+        setattr(db, name, timed(getattr(db, name)))
+    db.transaction = timedTransaction
+    try:
+        yield
+    finally:
+        for name in QUERY_METHODS + ("transaction",):
+            db.__dict__.pop(name, None)
+        top = sorted(statements.items(), key=lambda item: item[1]["seconds"], reverse=True)[:20]
+        print("\nSCIPIONAPI_NESTED_QUERY_REPORT[%s]" % label)
+        for statement, entry in top:
+            print("  %8.2fs  calls=%-7d max=%6.3fs  %s" % (
+                entry["seconds"], entry["calls"], entry["maxSeconds"], statement))
 
 
 def _fillInputParticles(images, particlesCount, stackPath):
@@ -343,16 +405,17 @@ def _runPostgresql(ctx, classesCount, particlesCount, stackPath):
         native.setImages(images)
         output, info = ctx["reserve"](native, "outputClasses", 2_000_002)
 
-    with _profiled("postgresql-classify-%s" % sizeLabel):
-        _classifyLikeCryosparc(output, classesCount, stackPath, timer)
-    classifySeconds = time.perf_counter() - startedAt
+    with _queryReport(db, "classify-finalize-%s" % sizeLabel):
+        with _profiled("postgresql-classify-%s" % sizeLabel):
+            _classifyLikeCryosparc(output, classesCount, stackPath, timer)
+        classifySeconds = time.perf_counter() - startedAt
 
-    with _profiled("postgresql-finalize-%s" % sizeLabel):
-        with timer("finalize"):
-            mapper.finalizeRuntimeSetOutput(
-                projectId=ctx["projectId"], protocolDbId=ctx["protocolDbId"],
-                outputName="outputClasses", scipionSet=output)
-    totalSeconds = time.perf_counter() - startedAt
+        with _profiled("postgresql-finalize-%s" % sizeLabel):
+            with timer("finalize"):
+                mapper.finalizeRuntimeSetOutput(
+                    projectId=ctx["projectId"], protocolDbId=ctx["protocolDbId"],
+                    outputName="outputClasses", scipionSet=output)
+        totalSeconds = time.perf_counter() - startedAt
 
     env = ctx["env"]
     reader = PostgresqlDb(dbName=env["databaseName"], user=env["databaseUser"],

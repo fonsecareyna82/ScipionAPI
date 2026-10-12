@@ -282,8 +282,10 @@ def test_PostgresqlObservabilityMeasuresRealRuntimeSetOperations(
         assert storeMetric["success"] is True
         assert storeMetric["queryCount"] > 0
         assert storeMetric["failedQueryCount"] == 0
-        assert storeMetric["batchQueryCount"] == 2
-        assert storeMetric["batchRowsCount"] == 6
+        # Items: canonical + logical root rows (2 batches, 3 rows each).
+        # Columns: Set and root-table registries (2 batches, 2 columns each).
+        assert storeMetric["batchQueryCount"] == 4
+        assert storeMetric["batchRowsCount"] == 10
         assert storeMetric["querySeconds"] > 0.0
 
         readerDb = _openPostgresqlIntegrationDb(

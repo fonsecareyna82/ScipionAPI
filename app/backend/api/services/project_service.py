@@ -5065,8 +5065,15 @@ class ProjectService:
             if obj is None:
                 return []
 
+            # Iteration may reuse one item per row (native Scipion template
+            # semantics); keep independent copies.
             try:
-                return list(obj.iterItems())
+                return list(obj.iterItems(iterate=False))
+            except Exception:
+                pass
+
+            try:
+                return [item.clone() for item in obj.iterItems()]
             except Exception:
                 pass
 

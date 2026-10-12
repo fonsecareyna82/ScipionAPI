@@ -197,7 +197,25 @@ def test_NestedDynamicLookupCanUsePartialGinWithoutLosingNullParentRows(logicalI
     assert PostgresqlSetRuntimeMapper._resolveDynamicFieldValueType(scope, "_score") == "float"
 
 
-def test_MigratedRuntimeKeepsCanonicalGinAndOnlyNestedLogicalGin(postgresqlMigratedEnv):
+def test_DropNestedGinMigrationPreservesRowsAndCanBeReversed(logicalIndexLab):
+    connection, schema, env = logicalIndexLab
+    _migrate(logicalIndexLab, "upgrade")
+    before = _rows(connection)
+    connection.commit()
+    _command(env, schema, "upgrade", "9d064ee31b1b")
+    indexes = _indexes(connection)
+    assert NESTED_INDEX not in indexes
+    assert FULL_INDEX not in indexes
+    assert _rows(connection) == before
+    connection.commit()
+    _command(env, schema, "downgrade", "41c8d93e7a62")
+    indexes = _indexes(connection)
+    assert indexes[NESTED_INDEX]["valid"]
+    assert indexes[NESTED_INDEX]["predicate"] == '("parentItemId" IS NOT NULL)'
+    assert _rows(connection) == before
+
+
+def test_MigratedRuntimeKeepsCanonicalGinWithoutLogicalGin(postgresqlMigratedEnv):
     env = postgresqlMigratedEnv
     db = PostgresqlDb(
         dbName=env["databaseName"], user=env["databaseUser"],
@@ -215,6 +233,5 @@ def test_MigratedRuntimeKeepsCanonicalGinAndOnlyNestedLogicalGin(postgresqlMigra
     indexes = {row["name"]: row for row in rows}
     assert indexes["idx_scipion_set_items_values_gin"]["valid"]
     assert indexes["idx_scipion_set_items_values_gin"]["predicate"] is None
-    assert indexes[NESTED_INDEX]["valid"]
-    assert indexes[NESTED_INDEX]["predicate"] == '("parentItemId" IS NOT NULL)'
+    assert NESTED_INDEX not in indexes
     assert FULL_INDEX not in indexes

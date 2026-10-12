@@ -2698,21 +2698,23 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return int(cur.fetchone()["id"])
 
     def _upsertSetColumns(self, setId: int, columns: List[Dict[str, Any]]) -> None:
-        for column in columns:
-            self.db.execute(
-                """
-                INSERT INTO scipion_set_columns (
-                    "setId", "labelProperty", "columnName", "className", "valueType", position, indexed
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT ON CONSTRAINT ux_scipion_set_columns_set_label
-                DO UPDATE SET
-                    "columnName" = EXCLUDED."columnName",
-                    "className" = EXCLUDED."className",
-                    "valueType" = EXCLUDED."valueType",
-                    position = EXCLUDED.position,
-                    indexed = EXCLUDED.indexed
-                """,
+        # One statement per Set; the last definition of a repeated label wins.
+        columnsByLabel = {column["labelProperty"]: column for column in columns}
+        self.db.executeValues(
+            """
+            INSERT INTO scipion_set_columns (
+                "setId", "labelProperty", "columnName", "className", "valueType", position, indexed
+            )
+            VALUES %s
+            ON CONFLICT ON CONSTRAINT ux_scipion_set_columns_set_label
+            DO UPDATE SET
+                "columnName" = EXCLUDED."columnName",
+                "className" = EXCLUDED."className",
+                "valueType" = EXCLUDED."valueType",
+                position = EXCLUDED.position,
+                indexed = EXCLUDED.indexed
+            """,
+            [
                 (
                     setId,
                     column["labelProperty"],
@@ -2721,9 +2723,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     column["valueType"],
                     column["position"],
                     column["indexed"],
-                ),
-                commit=False,
-            )
+                )
+                for column in columnsByLabel.values()
+            ],
+            commit=False,
+        )
 
     def _upsertSetProperties(self, setId: int, properties: Dict[str, Any]) -> None:
         for key, value in sorted(properties.items()):
@@ -3587,23 +3591,26 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         return int(cur.fetchone()["id"])
 
     def _upsertSetTableColumns(self, tableId: int, columns: List[Dict[str, Any]]) -> None:
-        for column in columns:
-            self.db.execute(
-                """
-                INSERT INTO scipion_set_table_columns (
-                    "tableId", "labelProperty", "columnName", "className",
-                    "valueType", position, indexed, properties
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT ON CONSTRAINT ux_scipion_set_table_columns_table_label
-                DO UPDATE SET
-                    "columnName" = EXCLUDED."columnName",
-                    "className" = EXCLUDED."className",
-                    "valueType" = EXCLUDED."valueType",
-                    position = EXCLUDED.position,
-                    indexed = EXCLUDED.indexed,
-                    properties = EXCLUDED.properties
-                """,
+        # One statement per table. A label may repeat in the input; keep the
+        # last definition, as the former per-column upserts did.
+        columnsByLabel = {column["labelProperty"]: column for column in columns}
+        self.db.executeValues(
+            """
+            INSERT INTO scipion_set_table_columns (
+                "tableId", "labelProperty", "columnName", "className",
+                "valueType", position, indexed, properties
+            )
+            VALUES %s
+            ON CONFLICT ON CONSTRAINT ux_scipion_set_table_columns_table_label
+            DO UPDATE SET
+                "columnName" = EXCLUDED."columnName",
+                "className" = EXCLUDED."className",
+                "valueType" = EXCLUDED."valueType",
+                position = EXCLUDED.position,
+                indexed = EXCLUDED.indexed,
+                properties = EXCLUDED.properties
+            """,
+            [
                 (
                     tableId,
                     column["labelProperty"],
@@ -3613,9 +3620,12 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                     column["position"],
                     column["indexed"],
                     self._jsonParam(column.get("properties") or {}),
-                ),
-                commit=False,
-            )
+                )
+                for column in columnsByLabel.values()
+            ],
+            template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            commit=False,
+        )
 
     def _flushSetTableItems(self, rows: List[Tuple[Any, ...]]) -> None:
         self.db.executeValues(

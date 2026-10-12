@@ -334,6 +334,17 @@ Collect a native Set sampling rate through its Set getter before asking the
 first item; only the latter may invoke a compatibility snapshot for class
 Sets. Explicit `getFileName()` consumers still materialize normally.
 
+Iteration with `iterate=True` follows native Scipion template semantics and
+may yield one reused item object; `iterate=False` (also `selectFirst()` and
+`selectBy()`) returns independent objects. Reuse must be indistinguishable
+from a fresh build for every row: an item is refilled only when the row has
+the exact value-path set and creation/enabled presence of the row that built
+it, all paths are plain instance attributes of standard-access owners
+(no Pointer, PointerList, List, property or descriptor), the item is not a
+Set and the hydrator has no custom hooks. Any other row builds a new object,
+which then becomes the reused one. Internal code that keeps iterated items
+must request copies.
+
 Child reads revalidate the table identity and columns once per query, through
 the mapper's read refresh; row hydration reuses the current hydrator, which a
 scope or column change drops. When native nested Sets call
@@ -342,17 +353,21 @@ children load their own mapper and ignore the path, so the parent file name is
 a placeholder and the parent is not exported. The native and subclass hook
 bodies still run. Children without a runtime mapper keep the original path.
 
-The canonical root JSON GIN remains fully indexed. The logical JSON GIN is
-partial (`parentItemId IS NOT NULL`): logical root copies must not maintain
-a second full JSON index. Both root representations remain persisted; this
-changes only index maintenance. Dynamic logical-field type discovery must
-read both non-null and null parent populations in one statement. The explicit
-non-null branch permits use of the partial GIN, while the null branch retains
+The canonical root JSON GIN remains fully indexed. Logical items keep no
+JSON GIN: logical root copies must not maintain a second full JSON index
+(`41c8d93e7a62`), and the partial nested GIN was dropped (`9d064ee31b1b`)
+because it roughly doubled child-row write cost. Measured on 500k child rows
+in 200 tables, a scoped dynamic-field lookup without it stays within ~15 ms
+per table. Both root representations remain persisted; these migrations
+change only index maintenance. Dynamic logical-field type discovery must
+read both non-null and null parent populations in one statement, retaining
 logical-root and legacy-row semantics, including mixed-type errors and JSON
-null handling. Rare unknown-field lookups through a logical root use the
-table-scope index instead of a JSON GIN; normal runtime roots keep using the
-canonical GIN. Do not infer field absence from schema metadata alone.
+null handling. Logical lookups use the table-scope index; normal runtime
+roots keep using the canonical GIN. Do not infer field absence from schema
+metadata alone.
 
+Migration `9d064ee31b1b` drops the nested GIN concurrently; its downgrade
+rebuilds the partial index concurrently, replacing an invalid leftover.
 Index replacement migration `41c8d93e7a62` builds its replacement concurrently
 before dropping the previous index, in both directions. A retry must remove
 an invalid index left by a failed build instead of accepting it with
