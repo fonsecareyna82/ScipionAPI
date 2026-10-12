@@ -42,7 +42,6 @@ from pyworkflow.object import (
     String,
     Pointer,
     PointerList,
-    Set as ScipionSet,
 )
 
 
@@ -155,8 +154,6 @@ class PostgresqlScipionItemHydrator:
         # Unknown per-row paths remain supported without an unbounded cache.
         self._pathPartsCache = {}
         self._nestedPathPrefixes = set()
-        # Pointer-free value path sets, keyed by the exact set of row paths.
-        self._refillablePaths = {}
         for path in self._classByPath:
             rawParts = str(path).split(".")
             self._pathPartsCache[str(path)] = tuple(
@@ -212,87 +209,7 @@ class PostgresqlScipionItemHydrator:
         # values added for runtime convenience that are not native attributes.
         item._postgresqlRuntimeValues = dict(values)
 
-        shape = self._getRefillShape(row, values)
-        if shape is not None and self._isRefillableShape(values):
-            item._runtimeRowShape = shape
-
         return item
-
-    def refill(self, item, row: Dict[str, Any]):
-        """Refill an item returned by build() with a row of the same shape.
-
-        Native Scipion iteration refills one template object per row. Here a
-        previous item is reused only when the row carries exactly the value
-        paths and optional metadata of the row it was built from: the same
-        setters then overwrite every attribute build() would set on a fresh
-        object, and all other attributes keep their construction defaults.
-        Returns None when that cannot be guaranteed; the caller builds anew.
-        """
-        row = dict(row or {})
-        values = self._normalizeValues(row.get("values"))
-        shape = self._getRefillShape(row, values)
-        if (
-                shape is None
-                or type(item) is not self.itemClass
-                or getattr(item, "_runtimeRowShape", None) != shape
-        ):
-            return None
-
-        self._applyBasicMetadata(item, row)
-        self._hydratePlannedAttributes(item, values)
-        item._postgresqlRuntimeValues = dict(values)
-        return item
-
-    def _getRefillShape(self, row: Dict[str, Any], values: Dict[str, Any]):
-        # Only the planned hydration of known paths is refill-safe. Custom
-        # hydrator hooks, unknown paths and nested Sets always build anew.
-        if type(self) is not PostgresqlScipionItemHydrator or any(
-                name in vars(self) for name in _REFILL_HOOK_NAMES):
-            return None
-        if isinstance(self.itemClass, type) and issubclass(self.itemClass, ScipionSet):
-            return None
-        if not all(isinstance(path, str) and path in self._classByPath for path in values):
-            return None
-        return (
-            id(self),
-            frozenset(values),
-            row.get("creation") is None,
-            row.get("enabled") is None,
-        )
-
-    def _isRefillableShape(self, values: Dict[str, Any]) -> bool:
-        """Decide from class metadata only, without touching the item.
-
-        Refilling assumes each path is a plain instance attribute: owners must
-        use standard attribute access (List appends on __setattr__), no path
-        name may be defined on a class (properties, descriptors), and Pointers
-        keep resolution state. Anything else is built anew on every row.
-        """
-        paths = frozenset(values)
-        eligible = self._refillablePaths.get(paths)
-        if eligible is None:
-            eligible = all(self._isRefillablePath(path) for path in paths)
-            if len(self._refillablePaths) < 64:
-                self._refillablePaths[paths] = eligible
-        return eligible
-
-    def _isRefillablePath(self, path: str) -> bool:
-        parts = self._pathPartsCache.get(path)
-        if not parts:
-            return False
-        ownerClass = self.itemClass
-        for index, part in enumerate(parts):
-            if not _hasPlainAttributeAccess(ownerClass):
-                return False
-            if any(part in vars(klass) for klass in ownerClass.__mro__):
-                return False
-            attributeClass = self._resolveClass(
-                self._classByPath.get(".".join(parts[:index + 1])), required=False,
-            )
-            if attributeClass is None or issubclass(attributeClass, (Pointer, PointerList)):
-                return False
-            ownerClass = attributeClass
-        return True
 
     # ------------------------------------------------------------------
     # Native object construction
@@ -985,21 +902,6 @@ class PostgresqlScipionItemHydrator:
 
 
 # Keep the original identities even when a plugin monkeypatches class methods.
-def _hasPlainAttributeAccess(objectClass) -> bool:
-    return (
-        isinstance(objectClass, type)
-        and objectClass.__setattr__ is object.__setattr__
-        and objectClass.__getattribute__ is object.__getattribute__
-        and getattr(objectClass, "__getattr__", None) is None
-    )
-
-
-# Instance-level replacements of these disable refilling.
-_REFILL_HOOK_NAMES = (
-    "build", "refill", "_applyBasicMetadata", "_callSetter", "_hydrateAttributes",
-    "_hydratePlannedAttributes", "_setAttributeValue", "_hasNestedPaths", "_splitPath",
-    "_instantiateClass", "_normalizeValues", "_hydratePointer", "_hydratePointerList",
-)
 _DEFAULT_SET_ATTRIBUTE_VALUE = PostgresqlScipionItemHydrator._setAttributeValue
 _DEFAULT_HAS_NESTED_PATHS = PostgresqlScipionItemHydrator._hasNestedPaths
 _DEFAULT_SPLIT_PATH = PostgresqlScipionItemHydrator._splitPath

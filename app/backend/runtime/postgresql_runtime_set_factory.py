@@ -2296,12 +2296,6 @@ class PostgresqlRuntimeSetFactory:
 
             return item
 
-        def refillItem(previousItem, row):
-            # Nested Set items carry their own mappers; always build them.
-            if nestedSetItemClass or logicalTablesByParentId:
-                return None
-            return getItemHydrator().refill(previousItem, row)
-
         def serializeItem(
                 item,
         ):
@@ -3065,13 +3059,6 @@ class PostgresqlRuntimeSetFactory:
                     )
                 )
             )
-
-        def refillChildItem(previousItem, childRow):
-            # Only the hydrator that built the previous item may refill it.
-            hydrator = childMapperState["hydrator"]
-            if hydrator is None:
-                return None
-            return hydrator.refill(previousItem, childRow)
 
         def serializeChildItem(
                 childItem,
