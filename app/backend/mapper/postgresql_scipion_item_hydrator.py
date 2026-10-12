@@ -172,6 +172,18 @@ class PostgresqlScipionItemHydrator:
             key=lambda path: (path.count("."), path),
         ))
 
+        # Cache path metadata only. Owners, native setters and missing classes
+        # are resolved again for each row and path to preserve plugin hooks.
+        self._hydrationPlan = tuple(
+            (path,
+             tuple((part, ".".join(parts[:index + 1]))
+                   for index, part in enumerate(parts[:-1])),
+             parts[-1], path in self._nestedPathPrefixes)
+            for path in self._orderedPaths
+            for parts in (self._pathPartsCache[path],)
+            if parts
+        )
+
     def __call__(self, row: Dict[str, Any]):
         return self.build(row)
 
@@ -221,9 +233,18 @@ class PostgresqlScipionItemHydrator:
         # Unknown plugin paths and non-string keys retain the generic ordering.
         if all(isinstance(path, str) and path in self._classByPath
                for path in values):
-            for path in self._orderedPaths:
-                if path in values:
-                    self._setAttributeValue(item=item, path=path, value=values[path])
+            # Custom hydration hooks retain their original invocation order.
+            if (getattr(self._setAttributeValue, "__func__", None)
+                    is _DEFAULT_SET_ATTRIBUTE_VALUE
+                    and getattr(self._hasNestedPaths, "__func__", None)
+                    is _DEFAULT_HAS_NESTED_PATHS
+                    and getattr(self._splitPath, "__func__", None)
+                    is _DEFAULT_SPLIT_PATH):
+                self._hydratePlannedAttributes(item, values)
+            else:
+                for path in self._orderedPaths:
+                    if path in values:
+                        self._setAttributeValue(item=item, path=path, value=values[path])
             return
 
         rowAttributes = [
@@ -255,6 +276,58 @@ class PostgresqlScipionItemHydrator:
                 path=path,
                 value=value,
             )
+
+    def _hydratePlannedAttributes(self, item, values: Dict[str, Any]) -> None:
+        """Apply the same native operations as _setAttributeValue to known paths.
+
+        Do not retain owners between paths: a descriptor or traced setter can
+        replace a parent while the row is being hydrated. Unknown paths and
+        overridden path hooks use the generic method instead.
+        """
+        for path, parents, attributeName, hasNestedPaths in self._hydrationPlan:
+            if path not in values:
+                continue
+            owner = item
+            for part, prefix in parents:
+                attribute = getattr(owner, part, None)
+                if attribute is None:
+                    attributeClass = self._resolveClass(
+                        self._classByPath.get(prefix), required=False,
+                    )
+                    if attributeClass is None:
+                        break
+                    attribute = self._instantiateClass(
+                        attributeClass, self._classByPath.get(prefix),
+                    )
+                    setattr(owner, part, attribute)
+                owner = attribute
+            else:
+                attribute = getattr(owner, attributeName, None)
+                if attribute is None:
+                    attributeClass = self._resolveClass(
+                        self._classByPath.get(path), required=False,
+                    )
+                    if attributeClass is None:
+                        continue
+                    attribute = self._instantiateClass(
+                        attributeClass, self._classByPath.get(path),
+                    )
+                    setattr(owner, attributeName, attribute)
+                value = values[path]
+                if type(attribute) not in self._PLAIN_SCALARS:
+                    if isinstance(attribute, PointerList):
+                        self._hydratePointerList(pointerList=attribute, value=value)
+                        continue
+                    if isinstance(attribute, Pointer):
+                        self._hydratePointer(pointer=attribute, value=value)
+                        continue
+                if value is None and hasNestedPaths:
+                    continue
+                setter = getattr(attribute, "set", None)
+                if callable(setter):
+                    setter(value)
+                else:
+                    setattr(owner, attributeName, value)
 
     def _setAttributeValue(
             self,
@@ -826,3 +899,9 @@ class PostgresqlScipionItemHydrator:
             return int(value)
         except (TypeError, ValueError):
             return value
+
+
+# Keep the original identities even when a plugin monkeypatches class methods.
+_DEFAULT_SET_ATTRIBUTE_VALUE = PostgresqlScipionItemHydrator._setAttributeValue
+_DEFAULT_HAS_NESTED_PATHS = PostgresqlScipionItemHydrator._hasNestedPaths
+_DEFAULT_SPLIT_PATH = PostgresqlScipionItemHydrator._splitPath

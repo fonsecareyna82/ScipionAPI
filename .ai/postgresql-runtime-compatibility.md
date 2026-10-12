@@ -268,13 +268,23 @@ including the consumer's object-processing time. A rollback can discard a newly
 declared server cursor; cleanup must not mask the original statement failure or
 independently roll back an explicit transaction owned by the caller.
 
+Hydrators prepare ordered access paths, parent prefixes and nested-path flags
+once per persisted schema. Plans contain metadata only: never retain attribute
+owners, resolved classes or native setters across paths or rows. Resolve each
+owner again because a descriptor or traced setter may replace it during
+hydration. Construct optional objects only for paths present in the row and
+continue calling native setters and pointer hydration hooks. Unknown paths and
+overridden attribute/path hooks retain the generic hydration path.
+
 Queued append schemas are synchronized before their temporary `_schema` entry
 is discarded. Schema growth locks the owning registry rows in the caller's
 transaction and preserves existing column aliases, positions and index flags.
 Optional paths first encountered in later items receive unused aliases and
 append positions in both canonical and logical schemas.
 The native factory opts into compact buffering of its already
-normalized JSON values. Above 8 MiB, pending records spill into an anonymous
+normalized JSON values, encoded without insignificant separator whitespace.
+String contents, numeric precision and deferred conversion for unsupported
+values retain their existing semantics. Above 8 MiB, pending records spill into an anonymous
 worker-local temporary file. This is neither a SQLite snapshot nor persistent
 storage, and it must never publish rows before the existing flush boundary.
 The mapper default leaves custom serializers' deferred conversion unchanged;

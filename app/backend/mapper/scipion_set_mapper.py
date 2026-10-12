@@ -79,6 +79,10 @@ RELATION_IDENTITY_FIELDS = (
 )
 
 
+class _UnsupportedItemGraph(Exception):
+    """Select the legacy serializer for graphs requiring custom introspection."""
+
+
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
 
@@ -228,10 +232,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             namespace = getattr(candidate, "__dict__", None)
             if not isinstance(namespace, dict):
                 return False
-            if any(
-                key in namespace
-                for key in ("getAttributes", "getAttributesToStore", "getObjDict")
-            ):
+            if ("getAttributes" in namespace or "getAttributesToStore" in namespace
+                    or "getObjDict" in namespace):
                 return False
             cls = type(candidate)
             return (
@@ -252,18 +254,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         foundPointers = []
         seen = set()
 
-        class UnsupportedGraph(Exception):
-            pass
-
         def visit(current, prefix):
             if not standard(current):
-                raise UnsupportedGraph()
+                raise _UnsupportedItemGraph()
             identity = id(current)
             if identity in seen:
                 # Native getObjDict can see shared sub-objects twice, while
                 # _iterPointerAttributes deduplicates by object identity.
                 # Keep the exact existing behavior for aliases and cycles.
-                raise UnsupportedGraph()
+                raise _UnsupportedItemGraph()
             seen.add(identity)
             # The standard getters above enumerate vars(), resolve each name,
             # then filter Object/_objDoStore through two generator layers.
@@ -278,19 +277,19 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 except Exception:
                     # The native getter logs and skips broken storage flags.
                     # Its fallback retains that behavior and diagnostics.
-                    raise UnsupportedGraph()
+                    raise _UnsupportedItemGraph()
                 # The legacy pointer traversal filters these, whereas
                 # getObjDict does not. Fall back rather than serializing
                 # an additional runtime-only pointer.
                 if str(name) in self.RUNTIME_ONLY_ATTRIBUTE_NAMES:
-                    raise UnsupportedGraph()
+                    raise _UnsupportedItemGraph()
                 path = (prefix + "." + str(name)) if prefix else str(name)
                 if isinstance(child, PointerList):
                     # PointerList inherits List and has special Scipion behavior.
-                    raise UnsupportedGraph()
+                    raise _UnsupportedItemGraph()
                 if child.isPointer():
                     if not isinstance(child, Pointer):
-                        raise UnsupportedGraph()
+                        raise _UnsupportedItemGraph()
                     foundPointers.append((path, child))
                     continue
                 rawValues[path] = child.getObjValue()
@@ -303,7 +302,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         try:
             visit(item, "")
-        except UnsupportedGraph:
+        except _UnsupportedItemGraph:
             return None
         except Exception:
             # Preserve the original exception behavior from getObjDict.

@@ -54,6 +54,26 @@ def test_NormalizedRowsFreezeValuesWithoutRetainingTheirMutableDictionary():
     pending.clear()
 
 
+@pytest.mark.parametrize("limit", [1, 8 * 1024 * 1024])
+def test_CompactJsonPreservesStringWhitespaceAndNumericPrecision(limit):
+    pending = PostgresqlAppendBuffer(limit)
+    row = item(1)
+    row["values"].update({
+        "text": '  é: a, b\n\t"quoted"\\N  ',
+        "integer": 2 ** 100,
+        "fraction": 1.2345678901234567,
+        "negativeZero": -0.0,
+    })
+    try:
+        pending.append(row)
+        encoded = pending[0].jsonValues
+        assert json.loads(encoded) == row["values"]
+        assert len(encoded) < len(json.dumps(row["values"]))
+        assert '"negativeZero":-0.0' in encoded
+    finally:
+        pending.clear()
+
+
 def test_UnsupportedValuesKeepDeferredConversionAndReferences():
     calls = []
 

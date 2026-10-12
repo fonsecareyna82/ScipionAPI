@@ -60,7 +60,7 @@ class PostgresqlAppendBuffer:
             try:
                 # Unsupported values fall back without calling custom __str__.
                 jsonValues = (item.jsonValues if isinstance(item, EncodedAppendItem)
-                              else json.dumps(item.get("values") or {}))
+                              else json.dumps(item.get("values") or {}, separators=(",", ":")))
                 record = (metadata, jsonValues)
             except (TypeError, ValueError, OverflowError):
                 pass

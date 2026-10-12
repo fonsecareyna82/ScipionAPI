@@ -62,7 +62,10 @@ from the first item or scan all items to build it.
 
 Runtime Set iteration uses independent server cursors with `WITH HOLD`, decodes
 rows in batches and hydrates only consumed objects. At commit, PostgreSQL spools
-remaining source rows on the server while preserving their snapshot. Native runtime appends use a compact buffer that spills above
+remaining source rows on the server while preserving their snapshot. Hydrators
+prepare access-path metadata per schema and still resolve owners and call native
+setters for every row; custom hydration hooks retain the generic path.
+Native runtime appends use a compact buffer that spills above
 8 MiB into an anonymous worker-local temporary file until the existing flush
 boundary; custom serializers retain deferred conversion. Root bulk writes update canonical and logical item tables in
 one SQL statement per chunk, inside one transaction covering the entire flush.
