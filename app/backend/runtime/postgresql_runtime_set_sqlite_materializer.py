@@ -747,7 +747,15 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             classes: Dict[str, Type],
     ) -> None:
         sourceClasses = self._getRuntimeClasses(sourceSet) or classes
-        itemSchema = None
+        itemSchema = self._getPersistedItemSchema(sourceSet, targetSet, sourceClasses)
+        if itemSchema is not None:
+            # SQLite fixes its columns at the first insert. Seed all persisted
+            # paths before copying a first item that may omit optional fields.
+            mapper = targetSet._getMapper()
+            if getattr(mapper, "doCreateTables", False):
+                itemSchema.setObjId(1)
+                mapper.insert(itemSchema)
+                mapper.delete(itemSchema)
 
         for sourceItem in self._iterSourceItems(sourceSet):
             targetItem = self._cloneItem(
@@ -814,6 +822,37 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             targetSet=targetSet,
             classes=sourceClasses,
         )
+
+    def _getPersistedItemSchema(self, sourceSet, targetSet, classes):
+        sourceMapper = sourceSet._getMapper()
+        getColumns = getattr(sourceMapper, "getItemSchemaColumns", None)
+        if not callable(getColumns):
+            return None
+        columns = list(getColumns())
+        if not columns:
+            return None
+        itemClass = self._resolveSetItemClass(sourceSet, targetSet, classes)
+        if issubclass(itemClass, ScipionSet):
+            # Nested Sets retain their existing mapper/append lifecycle.
+            return None
+        schemaItem = itemClass()
+        for column in sorted(columns, key=lambda entry: entry["labelProperty"].count(".")):
+            path = column["labelProperty"]
+            current = schemaItem
+            parts = path.split(".")
+            for part in parts[:-1]:
+                current = getattr(current, part, None)
+                if current is None:
+                    raise RuntimeError("Missing parent in PostgreSQL item schema: %s" % path)
+            name = parts[-1]
+            existingAttribute = getattr(current, name, None)
+            attributeClass = classes.get(column["className"])
+            if (existingAttribute is None or
+                    (attributeClass is not None and not isinstance(existingAttribute, attributeClass))):
+                if attributeClass is None:
+                    raise RuntimeError("Unknown PostgreSQL item schema class: %s" % column["className"])
+                setattr(current, name, attributeClass())
+        return schemaItem
 
     def _completeMissingItemAttributes(
             self,

@@ -2509,6 +2509,7 @@ class PostgresqlRuntimeSetFactory:
                 rootTableId=rootTableId,
                 itemBuilder=buildItem,
                 itemSerializer=serializeItem,
+                normalizedAppendValues=True,
                 itemSchemaSynchronizer=(
                     synchronizeItemSchema
                     if rootTableId is not None
@@ -3109,6 +3110,7 @@ class PostgresqlRuntimeSetFactory:
                 itemSerializer=(
                     serializeChildItem
                 ),
+                normalizedAppendValues=True,
                 itemSchemaSynchronizer=(
                     synchronizeChildSchema
                 ),

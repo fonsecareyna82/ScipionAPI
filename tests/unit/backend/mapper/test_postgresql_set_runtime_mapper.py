@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from app.backend.mapper.postgresql_set_runtime_mapper import (
     PostgresqlSetRuntimeMapper,
 )
+from app.backend.mapper.postgresql_append_buffer import PostgresqlAppendBuffer
 
 
 class FakeDb:
@@ -324,6 +325,73 @@ def serializeWritableItem(
 
 def buildItem(row):
     return dict(row)
+
+
+@pytest.mark.parametrize("scope", [{"setId": 31}, {"tableId": 91}])
+def test_SelectAllHydratesOnlyConsumedRowsAndKeepsObjectsIndependent(scope):
+    built = []
+    rows = [{"scipionItemId": index, "values": {}} for index in range(6)]
+
+    def build(row):
+        built.append(row["scipionItemId"])
+        return row
+
+    class RowsDb(FakeDb):
+        def fetchAll(self, query, params=None):
+            if "FROM scipion_set_table_columns" in query:
+                return []
+            return super().fetchAll(query, params)
+
+    mapper = PostgresqlSetRuntimeMapper(db=RowsDb(rows=rows), itemBuilder=build, **scope)
+    items = mapper.selectAll(rowFilter=lambda row: row["scipionItemId"] != 0,
+                             objectFilter=lambda item: item["scipionItemId"] != 2)
+    assert built == []
+    first = next(items)
+    assert built == [1]
+    first["scipionItemId"] = 99
+    assert next(items)["scipionItemId"] == 3
+    assert built == [1, 2, 3]
+    items.close()
+    assert built == [1, 2, 3]
+    assert rows[1]["scipionItemId"] == 1
+    assert len(mapper.selectAll(iterate=False)) == 6
+
+
+@pytest.mark.parametrize("failureStage", [None, "rowFilter", "builder", "objectFilter"])
+def test_SelectAllClosesRowReaderOnEarlyExitOrHydrationFailure(failureStage):
+    events = []
+
+    class IteratorDb(FakeDb):
+        def iterRows(self, query, params):
+            events.append("query")
+
+            def rows():
+                try:
+                    yield {"scipionItemId": 1, "values": {}}
+                    yield {"scipionItemId": 2, "values": {}}
+                finally:
+                    events.append("closed")
+            return rows()
+
+    def operation(stage):
+        def call(value):
+            if failureStage == stage:
+                raise ValueError(stage)
+            return value
+        return call
+
+    mapper = PostgresqlSetRuntimeMapper(db=IteratorDb(), setId=31,
+                                        itemBuilder=operation("builder"))
+    items = mapper.selectAll(rowFilter=operation("rowFilter"),
+                             objectFilter=operation("objectFilter"))
+    assert events == ["query"]
+    if failureStage:
+        with pytest.raises(ValueError, match=failureStage):
+            next(items)
+    else:
+        assert next(items)["scipionItemId"] == 1
+        items.close()
+    assert events == ["query", "closed"]
 
 
 def test_SelectAllUsesScipionItemIdForIdOrdering():
@@ -1400,15 +1468,15 @@ def test_QueuedAppendsFlushInSingleTransaction():
     mapper.commit()
 
     assert db.transactionCalls == 1
-    assert len(db.valueExecutions) == 2
+    assert len(db.valueExecutions) == 1
 
     canonicalInsert = db.valueExecutions[0]
-    logicalInsert = db.valueExecutions[1]
 
     assert "INSERT INTO scipion_set_items" in canonicalInsert["query"]
-    assert "INSERT INTO scipion_set_table_items" in logicalInsert["query"]
+    assert "INSERT INTO scipion_set_table_items" in canonicalInsert["query"]
+    assert "FROM canonical" in canonicalInsert["query"]
+    assert canonicalInsert["commit"] is False
     assert [row[1] for row in canonicalInsert["values"]] == [14, 15]
-    assert [row[1] for row in logicalInsert["values"]] == [14, 15]
 
     assert sum(
         "UPDATE scipion_sets"
@@ -1445,10 +1513,51 @@ def test_QueuedAppendsUseBoundedBulkChunks():
     mapper.commit()
 
     assert db.transactionCalls == 1
-    assert [len(call["values"]) for call in db.valueExecutions] == [1000, 1000, 1, 1]
+    assert [len(call["values"]) for call in db.valueExecutions] == [1000, 1]
     assert sum("UPDATE scipion_sets" in call["query"] for call in db.executions) == 1
     assert sum("UPDATE scipion_set_tables" in call["query"] for call in db.executions) == 1
     assert mapper._pendingAppendItems == []
+
+
+def test_QueuedAppendConsumesSchemaWithoutRetainingOrMutatingSerializerResult():
+    original = serializeWritableItem(FakeWritableItem(itemId=14))
+    original["_schema"] = {"_score": ("Float", 0.75)}
+    mapper = PostgresqlSetRuntimeMapper(
+        db=WritableFakeDb(), setId=31, rootTableId=71,
+        itemBuilder=buildItem, itemSerializer=lambda item: original, writable=True,
+    )
+    mapper.queueAppendItem(FakeWritableItem(itemId=14))
+    assert "_schema" in original
+    assert "_schema" not in mapper._pendingAppendItems[0]
+    assert mapper._pendingAppendItems[0]["values"] == original["values"]
+
+
+@pytest.mark.parametrize("constraint", ["rows", "bytes", "oversized"])
+def test_CompactAppendChunksRespectPayloadAndRowLimits(constraint):
+    mapper = PostgresqlSetRuntimeMapper(
+        db=WritableFakeDb(), setId=31, rootTableId=71,
+        itemBuilder=buildItem, itemSerializer=serializeWritableItem,
+        writable=True, normalizedAppendValues=True,
+    )
+    mapper.COMPACT_APPEND_MAX_ROWS = 5
+    mapper.COMPACT_APPEND_MAX_BYTES = 100 if constraint != "rows" else 1000000
+    pending = mapper._pendingAppendItems
+    assert isinstance(pending, PostgresqlAppendBuffer)
+    for itemId in range(1, 16):
+        row = serializeWritableItem(FakeWritableItem(itemId=itemId))
+        if constraint == "oversized" and itemId == 1:
+            row["values"]["large"] = "x" * 1000
+        pending.append(row)
+    chunks = list(mapper._iterCompactAppendChunks(iter(pending)))
+    assert [row["scipionItemId"] for chunk in chunks for row in chunk] == list(range(1, 16))
+    assert all(len(chunk) <= 5 for chunk in chunks)
+    for chunk in chunks:
+        assert len(chunk) == 1 or sum(row.encodedSize for row in chunk) <= mapper.COMPACT_APPEND_MAX_BYTES
+    if constraint == "rows":
+        assert [len(chunk) for chunk in chunks] == [5, 5, 5]
+    if constraint == "oversized":
+        assert len(chunks[0]) == 1
+    pending.clear()
 
 
 def test_AppendItemAllocatesIdAtomically():

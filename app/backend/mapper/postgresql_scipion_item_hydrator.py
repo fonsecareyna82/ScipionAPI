@@ -36,6 +36,10 @@ from typing import (
 
 from pyworkflow.object import (
     OBJECTS_DICT,
+    Boolean,
+    Float,
+    Integer,
+    String,
     Pointer,
     PointerList,
 )
@@ -110,6 +114,7 @@ class PostgresqlScipionItemHydrator:
     """
 
     SELF_LABEL = "self"
+    _PLAIN_SCALARS = frozenset((Boolean, Float, Integer, String))
 
     def __init__(
             self,
@@ -162,6 +167,10 @@ class PostgresqlScipionItemHydrator:
             self.itemClassName,
             required=True,
         )
+        self._orderedPaths = tuple(sorted(
+            (path for path in self._classByPath if path != self.SELF_LABEL),
+            key=lambda path: (path.count("."), path),
+        ))
 
     def __call__(self, row: Dict[str, Any]):
         return self.build(row)
@@ -208,6 +217,15 @@ class PostgresqlScipionItemHydrator:
         hasCTF(), hasTransform(), hasOrigin() and hasCoordinate() preserve
         their original Scipion semantics.
         """
+        # Reuse the schema order without constructing absent optional objects.
+        # Unknown plugin paths and non-string keys retain the generic ordering.
+        if all(isinstance(path, str) and path in self._classByPath
+               for path in values):
+            for path in self._orderedPaths:
+                if path in values:
+                    self._setAttributeValue(item=item, path=path, value=values[path])
+            return
+
         rowAttributes = [
             (
                 str(path),
@@ -244,7 +262,9 @@ class PostgresqlScipionItemHydrator:
             path: str,
             value: Any,
     ) -> bool:
-        parts = self._splitPath(path)
+        parts = self._pathPartsCache.get(path)
+        if parts is None:
+            parts = self._splitPath(path)
 
         if not parts:
             return False
@@ -314,23 +334,13 @@ class PostgresqlScipionItemHydrator:
                 attribute,
             )
 
-        if isinstance(
-                attribute,
-                PointerList,
-        ):
-            return self._hydratePointerList(
-                pointerList=attribute,
-                value=value,
-            )
-
-        if isinstance(
-                attribute,
-                Pointer,
-        ):
-            return self._hydratePointer(
-                pointer=attribute,
-                value=value,
-            )
+        # Most paths hold a native scalar. Its exact type cannot be a Pointer
+        # or PointerList; custom classes retain the generic type checks.
+        if type(attribute) not in self._PLAIN_SCALARS:
+            if isinstance(attribute, PointerList):
+                return self._hydratePointerList(pointerList=attribute, value=value)
+            if isinstance(attribute, Pointer):
+                return self._hydratePointer(pointer=attribute, value=value)
 
         # Complex objects usually appear together with nested paths. Their
         # own stored value is commonly None, so do not replace the object.

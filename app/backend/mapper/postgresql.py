@@ -25,6 +25,7 @@ import json
 import threading
 import time
 from datetime import datetime
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
@@ -60,6 +61,78 @@ def _toJsonParam(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return psycopg2.extras.Json(value, dumps=json.dumps)
     return value
+
+
+class _PostgresqlRowIterator:
+    """Own an independent client cursor until exhaustion or explicit close."""
+
+    def __init__(self, db, cursor, batchSize, stats, querySeconds, serverSide=False):
+        self.db = db
+        self.cursor = cursor
+        self.batchSize = batchSize
+        self.stats = stats
+        self.querySeconds = querySeconds
+        self.rows = iter(())
+        self.serverSide = serverSide
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.cursor is None:
+            raise StopIteration
+        try:
+            return next(self.rows)
+        except StopIteration:
+            pass
+
+        startedAt = time.perf_counter()
+        if self.serverSide:
+            self.stats["queryCount"] += 1
+        try:
+            batch = self.cursor.fetchmany(self.batchSize)
+        except Exception:
+            self.stats["failedQueryCount"] += 1
+            try:
+                if not self.db._isTransactionActive():
+                    self.cursor.connection.rollback()
+            finally:
+                self.close()
+            raise
+        finally:
+            elapsed = time.perf_counter() - startedAt
+            self.querySeconds += elapsed
+            self.stats["querySeconds"] += elapsed
+            self.stats["maxQuerySeconds"] = max(
+                self.stats["maxQuerySeconds"], self.querySeconds,
+            )
+
+        if not batch:
+            self.close()
+            raise StopIteration
+        self.rows = iter(batch)
+        return next(self.rows)
+
+    def close(self):
+        cursor, self.cursor = self.cursor, None
+        self.rows = iter(())
+        if cursor is not None:
+            try:
+                if not cursor.closed:
+                    self.db._closeRowCursor(cursor)
+            finally:
+                with self.db._resourcesLock:
+                    self.db._cursors = [
+                        registered for registered in self.db._cursors
+                        if registered is not cursor
+                    ]
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            # Explicit close and database shutdown report cleanup errors.
+            pass
 
 
 class PostgresqlDb:
@@ -159,6 +232,11 @@ class PostgresqlDb:
 
             cursor = getattr(self._threadLocal, "cursor", None)
             connection = getattr(self._threadLocal, "connection", None)
+            cursors = [registered for registered in self._cursors
+                       if registered is cursor or (
+                           connection is not None
+                           and registered.connection is connection
+                       )]
 
             self._threadLocal.cursor = None
             self._threadLocal.connection = None
@@ -168,15 +246,18 @@ class PostgresqlDb:
         cursorClosed = False
         connectionClosed = False
 
-        if cursor is not None:
+        closedCursors = []
+        for cursor in cursors:
             try:
                 if not bool(getattr(cursor, "closed", False)):
-                    cursor.close()
+                    self._closeRowCursor(cursor)
 
                 cursorClosed = True
+                closedCursors.append(cursor)
 
             except Exception as error:
-                firstError = error
+                if firstError is None:
+                    firstError = error
 
         if connection is not None:
             try:
@@ -194,7 +275,7 @@ class PostgresqlDb:
                 self._cursors = [
                     registeredCursor
                     for registeredCursor in self._cursors
-                    if registeredCursor is not cursor
+                    if registeredCursor not in closedCursors
                 ]
 
             if connectionClosed:
@@ -521,6 +602,67 @@ class PostgresqlDb:
                 succeeded,
             )
 
+    def iterRows(self, query: str, params: Optional[tuple] = None,
+                 batchSize: int = 256, serverSide: bool = False) -> Iterator[Dict]:
+        """Execute now and decode rows in bounded batches on a private cursor.
+
+        An unnamed client cursor preserves the query's snapshot across other
+        reads, writes and commits on this connection. libpq still buffers the
+        raw SQL result; Python row dictionaries and native objects are lazy.
+        """
+        batchSize = int(batchSize)
+        if batchSize < 1:
+            raise ValueError("PostgreSQL row batch size must be positive.")
+        with self._resourcesLock:
+            connection = self.conn
+            options = {"cursor_factory": psycopg2.extras.RealDictCursor}
+            if serverSide:
+                options.update(name="scipion_rows_" + uuid4().hex, withhold=True)
+            cursor = connection.cursor(**options)
+            self._cursors.append(cursor)
+
+        startedAt = time.perf_counter()
+        succeeded = False
+        try:
+            cursor.execute(query, params)
+            succeeded = True
+        except Exception:
+            try:
+                if not self._isTransactionActive():
+                    connection.rollback()
+            finally:
+                self._closeRowCursor(cursor)
+                with self._resourcesLock:
+                    self._cursors = [registered for registered in self._cursors
+                                     if registered is not cursor]
+            raise
+        finally:
+            self._recordQueryMeasurement(startedAt, succeeded)
+
+        return _PostgresqlRowIterator(
+            self, cursor, batchSize, self._getQueryStatsState(),
+            time.perf_counter() - startedAt, serverSide=serverSide,
+        )
+
+    def iterSetRows(self, query: str, params: Optional[tuple] = None) -> Iterator[Dict]:
+        """Bound client memory and preserve the declared result across commits.
+
+        WITH HOLD moves remaining rows into a server-side spool at commit;
+        source-row snapshots never depend on subsequent metadata writes.
+        """
+        return self.iterRows(query, params, batchSize=1000, serverSide=True)
+
+    @staticmethod
+    def _closeRowCursor(cursor):
+        try:
+            cursor.close()
+        except psycopg2.errors.InvalidCursorName:
+            # Rollback discards a newly declared server cursor. psycopg2's
+            # CLOSE on an idle connection reports that without aborting a
+            # transaction; retain the original read/rollback exception.
+            if cursor.connection.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                raise
+
     def close(self):
         with self._resourcesLock:
             if self._closed:
@@ -540,7 +682,7 @@ class PostgresqlDb:
         for cursor in cursors:
             try:
                 if not bool(getattr(cursor, "closed", False)):
-                    cursor.close()
+                    self._closeRowCursor(cursor)
 
             except Exception as error:
                 if firstError is None:

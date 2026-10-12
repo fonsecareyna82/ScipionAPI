@@ -38,6 +38,9 @@ class FakeCursor:
         self._row = None
         self.executeError = None
         self.fetchallError = None
+        self.fetchmanyError = None
+        self.rows = []
+        self.batchSizes = []
 
     def execute(self, query, params=None):
         if self.closed:
@@ -51,6 +54,7 @@ class FakeCursor:
             "connectionId": id(self.connection),
             "cursorId": id(self),
         }
+        self.rows = [dict(self._row)]
 
         if str(query).startswith("thread-"):
             self.connection.barrier.wait(timeout=5)
@@ -63,6 +67,15 @@ class FakeCursor:
             raise self.fetchallError
 
         return [dict(self._row)]
+
+    def fetchmany(self, size):
+        if self.closed or self.connection.closed:
+            raise RuntimeError("Cursor is closed")
+        if self.fetchmanyError is not None:
+            raise self.fetchmanyError
+        self.batchSizes.append(size)
+        batch, self.rows = self.rows[:size], self.rows[size:]
+        return batch
 
     def close(self):
         self.closed = True
@@ -109,6 +122,103 @@ class FakeConnectionFactory:
             self.connections.append(connection)
 
         return connection
+
+
+@pytest.fixture
+def rowIteratorDb(monkeypatch):
+    factory = FakeConnectionFactory(threading.Barrier(1))
+    monkeypatch.setattr(postgresqlModule.psycopg2, "connect", factory)
+    db = PostgresqlDb(dbName="test", user="test", password="test")
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def test_IterRowsDecodesBatchesAndSurvivesInterleavedStatements(rowIteratorDb):
+    db = rowIteratorDb
+    rows = db.iterRows("SELECT snapshot", batchSize=2)
+    cursor = db.conn.cursors[-1]
+    cursor.rows = [{"id": index} for index in range(5)]
+    assert cursor.batchSizes == []
+    assert next(rows) == {"id": 0}
+    db.execute("UPDATE elsewhere")
+    assert db.fetchOne("SELECT elsewhere")["query"] == "SELECT elsewhere"
+    assert list(rows) == [{"id": index} for index in range(1, 5)]
+    assert cursor.batchSizes == [2, 2, 2, 2]
+    assert cursor.closed
+    assert db._cursors == [db.cursor]
+    assert db.getQueryStats()["queryCount"] == 3
+
+
+@pytest.mark.parametrize("consume", [False, True])
+def test_IterRowsClosesPartiallyConsumedAndUnconsumedResults(rowIteratorDb, consume):
+    rows = rowIteratorDb.iterRows("SELECT snapshot")
+    cursor = rowIteratorDb.conn.cursors[-1]
+    if consume:
+        next(rows)
+    rows.close()
+    rows.close()
+    assert cursor.closed
+    assert list(rows) == []
+    assert rowIteratorDb._cursors == [rowIteratorDb.cursor]
+
+
+@pytest.mark.parametrize("stage", ["execute", "fetch"])
+@pytest.mark.parametrize("transactionActive", [False, True])
+def test_IterRowsFailuresRespectTransactionOwnership(
+        rowIteratorDb, monkeypatch, stage, transactionActive):
+    db = rowIteratorDb
+    connection = db.conn
+    error = RuntimeError("read failed")
+    originalExecute = FakeCursor.execute
+
+    def execute(cursor, query, params=None):
+        if stage == "execute" and query == "broken":
+            raise error
+        originalExecute(cursor, query, params)
+
+    monkeypatch.setattr(FakeCursor, "execute", execute)
+
+    def read():
+        rows = db.iterRows("broken")
+        connection.cursors[-1].fetchmanyError = error
+        next(rows)
+
+    if transactionActive:
+        with pytest.raises(RuntimeError) as failure:
+            with db.transaction():
+                try:
+                    read()
+                except RuntimeError:
+                    assert connection.rollbacks == 0
+                    raise
+    else:
+        with pytest.raises(RuntimeError) as failure:
+            read()
+    assert failure.value is error
+    assert connection.rollbacks == 1
+    assert db._cursors == [db.cursor]
+    assert db.getQueryStats()["failedQueryCount"] == 1
+    assert db.fetchOne("SELECT recovered")["query"] == "SELECT recovered"
+
+
+def test_ThreadCleanupReleasesOutstandingRowIterators(rowIteratorDb):
+    db = rowIteratorDb
+    rows = db.iterRows("SELECT snapshot")
+    cursor = db.conn.cursors[-1]
+    assert db.closeCurrentThreadResources()["cursorClosed"]
+    assert cursor.closed
+    assert db._cursors == []
+    assert db._connections == []
+    rows.close()
+
+
+def test_IterRowsRejectsInvalidBatchSizeWithoutAcquiringResources(rowIteratorDb):
+    db = rowIteratorDb
+    with pytest.raises(ValueError, match="positive"):
+        db.iterRows("SELECT snapshot", batchSize=0)
+    assert len(db.conn.cursors) == 1
 
 
 def test_PostgresqlDbUsesIndependentResourcesPerThread(monkeypatch):

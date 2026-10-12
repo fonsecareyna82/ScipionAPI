@@ -185,6 +185,13 @@ Recursive materialization of the same runtime Set must fail immediately instead 
 
 Native nested Set implementations may call `load()` internally from `append()`, `_insertItem()`, or equivalent item-mapper setup methods. Every destination Set created while constructing a compatibility snapshot must carry the compatibility-build marker until its nested data has been copied and its mapper detached.
 
+For ordinary items, initialize the compatibility SQLite schema from the full
+persisted PostgreSQL column registry before inserting any item. The first item
+may omit optional attributes that appear later; using only its attributes
+silently loses those later values. This must use schema metadata, without
+scanning or retaining all source items. Native flat SQLite readback represents
+missing optional objects using empty objects with nullable fields.
+
 This marker applies only to native destination objects being written into the temporary SQLite snapshot. It must never be used to suppress recursive materialization of the PostgreSQL source runtime Set.
 
 ## Managed-path registration
@@ -237,6 +244,50 @@ Required regression coverage must preserve both directions of this contract:
 
 - persistent mutation -> project activity is updated;
 - read-only operation or unchanged runtime synchronization -> project activity is not updated.
+
+## Runtime Set iteration and bulk writes
+
+`selectAll(iterate=True)` executes its SQL query before returning and hydrates
+only consumed rows, preserving ordering, limits, filters and independent native
+objects. Its cursor must be separate from the shared statement cursor, so
+nested reads and output writes cannot replace the input result. Runtime Sets
+use named server cursors with `WITH HOLD`; never replace these with non-holdable
+cursors that become invalid during runtime metadata writes. At commit,
+PostgreSQL spools the remaining source rows server-side while preserving the
+declared snapshot. The client fetches bounded batches. Generic `iterRows()`
+retains its independent client-cursor default unless server-side mode is
+explicitly requested.
+
+Cursors must close on exhaustion, explicit iterator close, hydration failure,
+thread cleanup and database shutdown. Read errors respect explicit transaction
+ownership just like `fetchAll()`; result-fetching time is recorded without
+including the consumer's object-processing time. A rollback can discard a newly
+declared server cursor; cleanup must not mask the original statement failure or
+independently roll back an explicit transaction owned by the caller.
+
+Queued append schemas are synchronized before their temporary `_schema` entry
+is discarded. Schema growth locks the owning registry rows in the caller's
+transaction and preserves existing column aliases, positions and index flags.
+Optional paths first encountered in later items receive unused aliases and
+append positions in both canonical and logical schemas.
+The native factory opts into compact buffering of its already
+normalized JSON values. Above 8 MiB, pending records spill into an anonymous
+worker-local temporary file. This is neither a SQLite snapshot nor persistent
+storage, and it must never publish rows before the existing flush boundary.
+The mapper default leaves custom serializers' deferred conversion unchanged;
+unsupported native values or metadata retain their original representation.
+Buffer spill/write failures preserve all earlier records, and mapper close
+releases its spill file without closing the shared PostgreSQL connection.
+
+A flush decodes only bounded chunks (up to 10,000 compact rows or 2 MiB of
+encoded records; one oversized item stays alone) inside one transaction and retains the
+entire pending buffer on failure for retry. Do not commit each chunk separately.
+
+Root bulk writes use a data-modifying CTE: upsert canonical items and feed their
+returned metadata and JSONB into the logical root table. Both representations,
+conflict updates and counters remain required. A failure in either table or a
+later chunk must roll back the whole flush, including updates to existing items.
+Nested logical tables retain their own scope and parent-item identity.
 
 ## Per-user protocol runtime concurrency
 

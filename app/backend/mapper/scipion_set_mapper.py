@@ -265,13 +265,24 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 # Keep the exact existing behavior for aliases and cycles.
                 raise UnsupportedGraph()
             seen.add(identity)
-            for name, child in current.getAttributesToStore():
+            # The standard getters above enumerate vars(), resolve each name,
+            # then filter Object/_objDoStore through two generator layers.
+            # Keep getattr() (including descriptors), but fuse those filters.
+            for name in vars(current):
+                child = getattr(current, name)
+                if not isinstance(child, ScipionObject):
+                    continue
+                try:
+                    if not child._objDoStore:
+                        continue
+                except Exception:
+                    # The native getter logs and skips broken storage flags.
+                    # Its fallback retains that behavior and diagnostics.
+                    raise UnsupportedGraph()
                 # The legacy pointer traversal filters these, whereas
                 # getObjDict does not. Fall back rather than serializing
                 # an additional runtime-only pointer.
                 if str(name) in self.RUNTIME_ONLY_ATTRIBUTE_NAMES:
-                    raise UnsupportedGraph()
-                if not isinstance(child, ScipionObject):
                     raise UnsupportedGraph()
                 path = (prefix + "." + str(name)) if prefix else str(name)
                 if isinstance(child, PointerList):
@@ -480,6 +491,15 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             itemSchema
         )
 
+        # Optional objects can appear before existing paths in a later item.
+        # Serialize schema growth and preserve previously assigned aliases.
+        self.db.execute('SELECT id FROM scipion_sets WHERE id = %s FOR UPDATE',
+                        (setId,), commit=False)
+        self.db.execute('SELECT id FROM scipion_set_tables WHERE id = %s FOR UPDATE',
+                        (rootTableId,), commit=False)
+        logicalColumns = self._mergeRuntimeColumns(columns, self.getStoredSetTableColumns(rootTableId))
+        columns = self._mergeRuntimeColumns(columns, self.getStoredSetColumns(setId))
+
         self._upsertSetColumns(
             setId=setId,
             columns=columns,
@@ -487,7 +507,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         self._upsertSetTableColumns(
             tableId=rootTableId,
-            columns=columns,
+            columns=logicalColumns,
         )
 
         # Read the complete stored representation because
@@ -623,6 +643,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         columns = self._getSetColumns(
             itemSchema
         )
+
+        self.db.execute('SELECT id FROM scipion_set_tables WHERE id = %s FOR UPDATE',
+                        (tableId,), commit=False)
+        columns = self._mergeRuntimeColumns(columns, self.getStoredSetTableColumns(tableId))
 
         self._upsertSetTableColumns(
             tableId=tableId,
@@ -4370,6 +4394,29 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
 
         return columns
+
+    @staticmethod
+    def _mergeRuntimeColumns(discovered, stored):
+        byLabel = {column["labelProperty"]: column for column in stored}
+        names = {column["columnName"] for column in stored}
+        nextPosition = max((int(column["position"]) for column in stored), default=-1) + 1
+        merged = []
+        for discoveredColumn in discovered:
+            column = dict(discoveredColumn)
+            previous = byLabel.get(column["labelProperty"])
+            if previous is not None:
+                for key in ("columnName", "position", "indexed"):
+                    column[key] = previous[key]
+            else:
+                index = nextPosition
+                while "c%02d" % index in names:
+                    index += 1
+                column["columnName"] = "c%02d" % index
+                column["position"] = nextPosition
+                names.add(column["columnName"])
+                nextPosition += 1
+            merged.append(column)
+        return merged
 
     def _getItemClassName(
             self,

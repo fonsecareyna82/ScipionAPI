@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 import tempfile
 import pytest
 
@@ -690,6 +691,74 @@ def test_MaterializeCompletesMissingAttributesFromFirstItemSchema(
     finally:
         compatibilitySet.close()
         sourceSet.close()
+
+def test_MaterializeIncludesOptionalFieldsFirstPresentInLaterItems(tmp_path, monkeypatch):
+    sourceSet = _createEmptySource(tmp_path / "late-optional-source.sqlite")
+    first = ExampleItem()
+    first.setObjId(1)
+    first._name.set("first")
+    second = ExampleItem()
+    second.setObjId(2)
+    second._name.set("second")
+    second._metadata = ExampleChildItem()
+    second._metadata._value.set("late value")
+    sourceSet.iterItems = lambda *args, **kwargs: iter([first, second])
+    _configureRuntimeSource(sourceSet, ExampleSet, {
+        "setId": 502, "className": "ExampleSet", "itemClassName": "ExampleItem",
+    })
+    monkeypatch.setattr(sourceSet._getMapper(), "getItemSchemaColumns", lambda: [
+        {"labelProperty": "_metadata._value", "className": "String"},
+        {"labelProperty": "_name", "className": "String"},
+        {"labelProperty": "_metadata", "className": "ExampleChildItem"},
+    ], raising=False)
+    try:
+        path = PostgresqlRuntimeSetSqliteMaterializer().materialize(sourceSet)
+        compatibilitySet = _openSet(ExampleSet, path)
+        try:
+            assert compatibilitySet.getSize() == 2
+            assert compatibilitySet[1]._name.get() == "first"
+            assert compatibilitySet[1]._metadata._value.get() is None
+            assert compatibilitySet[2]._metadata._value.get() == "late value"
+            assert not hasattr(first, "_metadata")
+            assert second._metadata._value.get() == "late value"
+        finally:
+            compatibilitySet.close()
+    finally:
+        sourceSet.close()
+
+
+def test_MaterializeUsesPersistedScalarTypeInsteadOfConstructorDefault(tmp_path, monkeypatch):
+    sourceSet = _createEmptySource(tmp_path / "changed-type-source.sqlite")
+    value = ExampleItem()
+    value.setObjId(1)
+    value._name = Float(3.25)
+    sourceSet.iterItems = lambda *args, **kwargs: iter([value])
+    _configureRuntimeSource(sourceSet, ExampleSet, {
+        "setId": 503, "className": "ExampleSet", "itemClassName": "ExampleItem",
+    })
+    sourceSet._postgresqlRuntimeClasses["Float"] = Float
+    monkeypatch.setattr(sourceSet._getMapper(), "getItemSchemaColumns", lambda: [
+        {"labelProperty": "_name", "className": "Float"},
+    ], raising=False)
+    try:
+        path = PostgresqlRuntimeSetSqliteMaterializer().materialize(sourceSet)
+        compatibilitySet = _openSet(ExampleSet, path)
+        try:
+            with sqlite3.connect(path) as snapshot:
+                className, columnName = snapshot.execute(
+                    "SELECT class_name, column_name FROM Classes WHERE label_property=?",
+                    ("_name",),
+                ).fetchone()
+                assert className == "Float"
+                assert snapshot.execute(
+                    'SELECT "%s" FROM Objects WHERE id=1' % columnName,
+                ).fetchone()[0] == 3.25
+            assert value._name.get() == 3.25
+        finally:
+            compatibilitySet.close()
+    finally:
+        sourceSet.close()
+
 
 def test_IterSourceItemsLazilyLoadsPostgresqlMapper(
         tmp_path,

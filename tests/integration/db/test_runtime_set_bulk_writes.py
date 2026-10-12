@@ -6,6 +6,7 @@ import psycopg2
 import pytest
 
 from app.backend.mapper.postgresql_set_runtime_mapper import PostgresqlSetRuntimeMapper
+from app.backend.mapper.postgresql_append_buffer import PostgresqlAppendBuffer
 
 
 @pytest.fixture
@@ -70,14 +71,19 @@ def test_RootBulkUpsertKeepsCanonicalAndLogicalRowsIdentical(bulkMapper):
 
 
 @pytest.mark.parametrize("bulkMapper", ["root", "logical"], indirect=True)
-def test_LaterChunkFailureRollsBackBothTablesAndRetainsBufferForRetry(bulkMapper):
+@pytest.mark.parametrize("spooled", [False, True])
+def test_LaterChunkFailureRollsBackBothTablesAndRetainsBufferForRetry(bulkMapper, spooled):
     mapper, db, counters = bulkMapper
     with db.transaction():
         mapper._bulkUpsertSerializedItems([serialized(1, "old")])
     db.execute('''ALTER TABLE scipion_set_table_items ADD CONSTRAINT injected_failure
                   CHECK ("scipionItemId" <> 3)''')
     pending = [serialized(index) for index in (1, 2, 3)]
-    mapper._pendingAppendItems = list(pending)
+    mapper._pendingAppendItems = PostgresqlAppendBuffer(1) if spooled else []
+    for row in pending:
+        mapper._pendingAppendItems.append(row)
+    if spooled:
+        assert mapper._pendingAppendItems.spilled
 
     with pytest.raises(psycopg2.errors.CheckViolation):
         mapper._flushPendingAppends()
@@ -100,11 +106,26 @@ def test_LaterChunkFailureRollsBackBothTablesAndRetainsBufferForRetry(bulkMapper
     assert counters == ["refreshed"]
 
 
+def test_ClosingMapperReleasesPendingSpillWithoutClosingSharedDatabase(bulkMapper):
+    mapper, db, _ = bulkMapper
+    mapper._pendingAppendItems = PostgresqlAppendBuffer(1)
+    mapper._pendingAppendItems.append(serialized(1))
+    file = mapper._pendingAppendItems._file
+    mapper.close()
+    assert file.closed
+    assert mapper._pendingAppendItems == []
+    assert db.fetchOne("SELECT 1 AS available")["available"] == 1
+    assert rows(db, "scipion_set_items") == []
+
+
 def test_IteratorPreservesOriginalResultAcrossSameConnectionCommits(bulkMapper):
     mapper, db, _ = bulkMapper
     with db.transaction():
         mapper._bulkUpsertSerializedItems([serialized(index, "old") for index in (1, 2, 3)])
     items = mapper.selectAll(orderBy="id", direction="DESC", limit=(2, 1))
+    cursor = db._cursors[-1]
+    assert cursor.name.startswith("scipion_rows_")
+    assert cursor.withhold is True
     # SQL executes at selectAll(), before any objects are requested.
     with db.transaction():
         mapper._bulkUpsertSerializedItems([serialized(1), serialized(4)])
@@ -114,6 +135,32 @@ def test_IteratorPreservesOriginalResultAcrossSameConnectionCommits(bulkMapper):
     assert all(item["values"]["_score"] == "old" for item in result)
     assert [item["scipionItemId"] for item in mapper.selectAll()] == [1, 2, 3, 4]
     assert db._cursors == [db.cursor]
+
+
+def test_RollbackDiscardedServerCursorDoesNotMaskStatementFailure(bulkMapper):
+    mapper, db, _ = bulkMapper
+    items = mapper.selectAll()
+    with pytest.raises(psycopg2.errors.UndefinedColumn):
+        try:
+            db.execute("SELECT missing_test_column")
+        finally:
+            items.close()
+    assert db._cursors == [db.cursor]
+    assert db.fetchOne("SELECT 1 AS recovered")["recovered"] == 1
+
+
+def test_ServerCursorCleanupDoesNotOwnExplicitTransactionRollback(bulkMapper):
+    mapper, db, _ = bulkMapper
+    with pytest.raises(psycopg2.errors.UndefinedColumn):
+        with db.transaction():
+            items = mapper.selectAll()
+            try:
+                db.execute("SELECT missing_test_column")
+            finally:
+                items.close()
+                assert db.conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INERROR
+    assert db._cursors == [db.cursor]
+    assert db.fetchOne("SELECT 1 AS recovered")["recovered"] == 1
 
 
 @pytest.mark.parametrize("consume", [False, True])

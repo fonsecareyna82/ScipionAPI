@@ -25,7 +25,10 @@
 # ******************************************************************************
 import json
 import re
+from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from app.backend.mapper.postgresql_append_buffer import EncodedAppendItem, PostgresqlAppendBuffer
 
 
 class PostgresqlSetRuntimeMapper:
@@ -51,6 +54,8 @@ class PostgresqlSetRuntimeMapper:
     LOGICAL_COLUMNS_TABLE = "scipion_set_table_columns"
 
     BULK_APPEND_SIZE = 1000
+    COMPACT_APPEND_MAX_ROWS = 10000
+    COMPACT_APPEND_MAX_BYTES = 2 * 1024 * 1024
 
     STREAMING_CREATION_EXPRESSION = (
         "("
@@ -115,6 +120,7 @@ class PostgresqlSetRuntimeMapper:
                 ]
             ] = None,
             writable: bool = False,
+            normalizedAppendValues: bool = False,
     ):
         if db is None:
             raise ValueError("db is required")
@@ -312,7 +318,9 @@ class PostgresqlSetRuntimeMapper:
         self._columns = self._loadColumns()
         self._itemSchemaReady = bool(self._columns)
         self._dynamicFieldValueTypes = {}
-        self._pendingAppendItems = []
+        self._pendingAppendItems = (PostgresqlAppendBuffer() if normalizedAppendValues else [])
+        if normalizedAppendValues:
+            self.BULK_APPEND_SIZE = self.COMPACT_APPEND_MAX_ROWS
 
     def _refreshLogicalTableScope(
             self,
@@ -439,21 +447,26 @@ class PostgresqlSetRuntimeMapper:
                     int(skipRows)
                 )
 
-        rows = self.db.fetchAll(
+        readRows = None
+        if iterate:
+            readRows = getattr(self.db, "iterSetRows", None)
+            if not callable(readRows):
+                readRows = getattr(self.db, "iterRows", None)
+        rows = (readRows if callable(readRows) else self.db.fetchAll)(
             query,
             tuple(params),
         )
 
-        items = self._buildItems(
+        items = self._iterItems(
             rows,
             rowFilter=rowFilter,
             objectFilter=objectFilter,
         )
 
         if iterate:
-            return iter(items)
+            return items
 
-        return items
+        return list(items)
 
 
     def selectFirst(self):
@@ -925,6 +938,9 @@ class PostgresqlSetRuntimeMapper:
             serialized=serialized,
         )
 
+        # Schema has been synchronized already. Retaining a per-item copy
+        # until write() wastes memory without contributing to persistence.
+        serialized.pop("_schema", None)
         self._pendingAppendItems.append(
             serialized
         )
@@ -939,30 +955,45 @@ class PostgresqlSetRuntimeMapper:
         if not self._pendingAppendItems:
             return False
 
-        pendingItems = list(
-            self._pendingAppendItems
-        )
+        pendingCount = len(self._pendingAppendItems)
+        buffer = self._pendingAppendItems
+        pendingItems = (buffer.iterPrefix(pendingCount) if isinstance(buffer, PostgresqlAppendBuffer)
+                        else iter(buffer[:pendingCount]))
 
         with self.db.transaction():
-            for offset in range(
-                    0,
-                    len(pendingItems),
-                    self.BULK_APPEND_SIZE,
-            ):
-                self._bulkUpsertSerializedItems(
-                    pendingItems[
-                        offset:
-                        offset + self.BULK_APPEND_SIZE
-                    ]
-                )
+            if isinstance(buffer, PostgresqlAppendBuffer):
+                chunks = self._iterCompactAppendChunks(pendingItems)
+            else:
+                chunks = (list(islice(pendingItems, self.BULK_APPEND_SIZE))
+                          for _ in range(0, pendingCount, self.BULK_APPEND_SIZE))
+            for chunk in chunks:
+                self._bulkUpsertSerializedItems(chunk)
 
             self._refreshSetCounters()
 
-        del self._pendingAppendItems[
-            :len(pendingItems)
-        ]
+        if isinstance(buffer, PostgresqlAppendBuffer):
+            buffer.discardPrefix(pendingCount)
+        else:
+            del buffer[:pendingCount]
 
         return True
+
+    def _iterCompactAppendChunks(self, items):
+        chunk, byteCount = [], 0
+        # Honor a smaller explicit/test chunk limit. Native compact rows can
+        # fill larger batches, while large JSON bodies remain byte-bounded.
+        rowLimit = min(self.COMPACT_APPEND_MAX_ROWS, self.BULK_APPEND_SIZE)
+        for item in items:
+            encoded = isinstance(item, EncodedAppendItem)
+            size = item.encodedSize if encoded else 0
+            limit = rowLimit if encoded else min(rowLimit, 1000)
+            if chunk and (len(chunk) >= limit or byteCount + size > self.COMPACT_APPEND_MAX_BYTES):
+                yield chunk
+                chunk, byteCount = [], 0
+            chunk.append(item)
+            byteCount += size
+        if chunk:
+            yield chunk
 
     def _bulkUpsertSerializedItems(
             self,
@@ -980,17 +1011,18 @@ class PostgresqlSetRuntimeMapper:
             label = serialized.get("label")
             comment = serialized.get("comment")
             creation = serialized.get("creation")
-            jsonValues = json.dumps(serialized.get("values") or {}, default=str)
+            jsonValues = (serialized.jsonValues if isinstance(serialized, EncodedAppendItem)
+                          else json.dumps(serialized.get("values") or {}, default=str))
 
             if self.setId is not None:
                 canonicalRows.append((int(self.setId), itemId, enabled, label, comment, creation, jsonValues))
-                logicalRows.append((int(self.rootTableId), itemId, None, enabled, label, comment, creation, jsonValues))
             else:
                 logicalRows.append((int(self.tableId), itemId, int(self.parentItemId), enabled, label, comment, creation, jsonValues))
 
         if canonicalRows:
             self.db.executeValues(
                 """
+                WITH canonical AS (
                 INSERT INTO scipion_set_items (
                     "setId", "scipionItemId", enabled, label, comment, creation, "values"
                 )
@@ -1003,11 +1035,30 @@ class PostgresqlSetRuntimeMapper:
                     creation = EXCLUDED.creation,
                     "values" = EXCLUDED."values",
                     "updatedAt" = NOW()
-                """,
+                RETURNING "scipionItemId", enabled, label, comment, creation, "values"
+                )
+                INSERT INTO scipion_set_table_items (
+                    "tableId", "scipionItemId", "parentItemId", enabled,
+                    label, comment, creation, "values"
+                )
+                SELECT {rootTableId}, "scipionItemId", NULL, enabled,
+                       label, comment, creation, "values"
+                  FROM canonical
+                ON CONFLICT ON CONSTRAINT ux_scipion_set_table_items_table_item
+                DO UPDATE SET
+                    "parentItemId" = EXCLUDED."parentItemId",
+                    enabled = EXCLUDED.enabled,
+                    label = EXCLUDED.label,
+                    comment = EXCLUDED.comment,
+                    creation = EXCLUDED.creation,
+                    "values" = EXCLUDED."values",
+                    "updatedAt" = NOW()
+                """.format(rootTableId=int(self.rootTableId)),
                 canonicalRows,
                 template="(%s, %s, %s, %s, %s, %s, %s::jsonb)",
                 commit=False,
             )
+            return
 
         self.db.executeValues(
             """
@@ -1399,6 +1450,8 @@ class PostgresqlSetRuntimeMapper:
         Closing one runtime Set must not close the shared
         project-level PostgreSQL connection.
         """
+        if isinstance(self._pendingAppendItems, PostgresqlAppendBuffer):
+            self._pendingAppendItems.clear()
         return None
 
     def _requireWritable(self) -> None:
@@ -2103,6 +2156,12 @@ class PostgresqlSetRuntimeMapper:
             self._tableProperties = (
                 self._loadLogicalTableProperties()
             )
+
+    def getItemSchemaColumns(self):
+        """Return the complete persisted schema without reading Set items."""
+        self._refreshReadSchema()
+        return [dict(column) for column in self._columns.values()]
+
     # ------------------------------------------------------------------
     # Pending mapper operations
     # ------------------------------------------------------------------
@@ -2757,30 +2816,20 @@ class PostgresqlSetRuntimeMapper:
             rowFilter=None,
             objectFilter=None,
     ):
-        items = []
+        return list(self._iterItems(rows, rowFilter, objectFilter))
 
-        for row in rows or []:
-            if (
-                    rowFilter is not None
-                    and not rowFilter(row)
-            ):
-                continue
-
-            item = self.itemBuilder(
-                dict(row)
-            )
-
-            if (
-                    objectFilter is not None
-                    and not objectFilter(item)
-            ):
-                continue
-
-            items.append(
-                item
-            )
-
-        return items
+    def _iterItems(self, rows, rowFilter=None, objectFilter=None):
+        try:
+            for row in rows if rows is not None else ():
+                if rowFilter is not None and not rowFilter(row):
+                    continue
+                item = self.itemBuilder(dict(row))
+                if objectFilter is None or objectFilter(item):
+                    yield item
+        finally:
+            close = getattr(rows, "close", None)
+            if callable(close):
+                close()
 
 
     @staticmethod

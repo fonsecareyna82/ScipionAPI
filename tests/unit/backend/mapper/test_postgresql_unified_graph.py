@@ -177,3 +177,36 @@ def test_MultipleItemsHaveIndependentSchemas():
     b = m.serializeRuntimeItem(second)
     assert '_specialFirst' in a['_schema'] and '_specialSecond' not in a['_schema']
     assert '_specialSecond' in b['_schema'] and '_specialFirst' not in b['_schema']
+
+
+def test_StandardEnumerationStillResolvesClassDescriptors():
+    class DescriptorItem(Object):
+        @property
+        def _number(self):
+            return self._actualNumber
+
+    m = mapper()
+    item = DescriptorItem()
+    item.setObjId(3)
+    item._actualNumber = Integer(42)
+    item.__dict__['_number'] = 'stored placeholder'
+    # Keep only one stored reference to avoid the intentional alias fallback.
+    item._actualNumber._objDoStore = True
+    expected_values, expected_schema = legacy_result(m, item)
+    serialized = m.serializeRuntimeItem(item)
+    assert serialized['values'] == expected_values
+    assert serialized['_schema'] == expected_schema
+    assert serialized['values']['_number'] == 42
+
+
+def test_BrokenStorageFlagRetainsNativeSkipBehavior():
+    m = mapper()
+    item = ordinary_item(1)
+    broken = Integer(9)
+    del broken._objDoStore
+    item._broken = broken
+    values, schema = legacy_result(m, item)
+    serialized = m.serializeRuntimeItem(item)
+    assert serialized['values'] == values
+    assert serialized['_schema'] == schema
+    assert '_broken' not in serialized['values']

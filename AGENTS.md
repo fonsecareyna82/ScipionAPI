@@ -52,6 +52,19 @@ These snapshots must remain under `/tmp/postgresql-runtime-sets/worker-<PID>/`, 
 
 Input restoration and compatibility materialization must not mutate or persist parent protocols or their canonical outputs.
 
+Ordinary-item compatibility snapshots initialize their SQLite schema from the
+complete persisted PostgreSQL columns before copying items, so optional fields
+first present in later items remain readable. Do not infer that schema only
+from the first item or scan all items to build it.
+
+Runtime Set iteration uses independent server cursors with `WITH HOLD`, decodes
+rows in batches and hydrates only consumed objects. At commit, PostgreSQL spools
+remaining source rows on the server while preserving their snapshot. Native runtime appends use a compact buffer that spills above
+8 MiB into an anonymous worker-local temporary file until the existing flush
+boundary; custom serializers retain deferred conversion. Root bulk writes update canonical and logical item tables in
+one SQL statement per chunk, inside one transaction covering the entire flush.
+Preserve rollback/retry behavior and both stored representations.
+
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
 ## Known gotchas

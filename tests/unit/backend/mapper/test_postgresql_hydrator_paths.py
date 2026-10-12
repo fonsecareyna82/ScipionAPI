@@ -2,6 +2,7 @@
 """Per-hydrator path metadata, with dynamic and nested fields preserved."""
 
 from pyworkflow.object import Integer, Object, String
+import pytest
 from app.backend.mapper.postgresql_scipion_item_hydrator import (
     PostgresqlScipionItemHydrator,
 )
@@ -106,3 +107,19 @@ def test_PerHydratorIndexesCannotLeakAcrossSchemas():
     assert not first._hasNestedPaths('_b')
     assert second._hasNestedPaths('_b')
     assert not second._hasNestedPaths('_a')
+
+
+@pytest.mark.parametrize('values', [
+    {'_nested._score': 42, '_name': 'sample', '_nested': None},
+    {'_nested._score': 42, 'dynamic.unknown': 99, '_nested': None},
+    {7: 'unknown', '_nested._score': 42, '_nested': None},
+])
+def test_HydrationPreservesParentFirstOrderForKnownAndUnknownPaths(values):
+    hydrator = makeHydrator()
+    item = hydrator.build({'scipionItemId': 1, 'values': values})
+    assert isinstance(item._nested, PathNested)
+    assert item._nested._score.get() == 42
+    assert item._postgresqlRuntimeValues == values
+    absent = hydrator.build({'scipionItemId': 2, 'values': {'_name': 'absent'}})
+    assert absent._nested is None
+    assert item._nested._score.get() == 42
