@@ -84,13 +84,6 @@ persisted table without copying the child items again. External/SQLite-backed
 children and mismatched or pending mapper scopes still use snapshot import.
 Set properties read a Set's sampling-rate getter before falling back to its
 first item, avoiding implicit SQLite materialization of native class Sets.
-Set iteration follows native Scipion semantics: `iterItems()`/`selectAll()`
-with `iterate=True` may return the same item object for consecutive rows, so
-callers that keep items must clone them or pass `iterate=False` (copies). The
-hydrator refills an item only when the row has exactly the value paths and
-optional metadata of the row it was built from, through plain attributes
-without Pointers, Lists, class-level descriptors or custom hydrator hooks;
-nested Set items are always built anew.
 Child reads resolve the table identity once per query, never per hydrated
 row. A parent's `_setItemMapperPath` hook does not export the parent for
 runtime children, which load their own mapper; subclass hook code still runs.

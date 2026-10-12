@@ -157,7 +157,6 @@ class PostgresqlSetRuntimeMapper:
                     Optional[Dict[str, Any]],
                 ]
             ] = None,
-            itemRefiller: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
             writable: bool = False,
             normalizedAppendValues: bool = False,
             deferQueuedScopeValidation: bool = False,
@@ -333,9 +332,6 @@ class PostgresqlSetRuntimeMapper:
         self.nestedItemSynchronizer = (
             nestedItemSynchronizer
         )
-        # Optional (previousItem, row) -> item | None. Lets iterate=True reuse
-        # one item per row, matching native Scipion template iteration.
-        self.itemRefiller = itemRefiller if callable(itemRefiller) else None
         self.writable = bool(
             writable
         )
@@ -520,7 +516,6 @@ class PostgresqlSetRuntimeMapper:
             rows,
             rowFilter=rowFilter,
             objectFilter=objectFilter,
-            reuseItems=bool(iterate),
         )
 
         if iterate:
@@ -2946,20 +2941,12 @@ class PostgresqlSetRuntimeMapper:
     ):
         return list(self._iterItems(rows, rowFilter, objectFilter))
 
-    def _iterItems(self, rows, rowFilter=None, objectFilter=None, reuseItems=False):
-        refill = self.itemRefiller if reuseItems else None
-
+    def _iterItems(self, rows, rowFilter=None, objectFilter=None):
         def buildItems():
-            previous = None
             for row in rows if rows is not None else ():
                 if rowFilter is not None and not rowFilter(row):
                     continue
-                item = None
-                if refill is not None and previous is not None:
-                    item = refill(previous, dict(row))
-                if item is None:
-                    item = self.itemBuilder(dict(row))
-                previous = item
+                item = self.itemBuilder(dict(row))
                 if objectFilter is None or objectFilter(item):
                     yield item
         return _PostgresqlItemIterator(buildItems(), rows)
