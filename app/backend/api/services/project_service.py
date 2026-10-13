@@ -18220,10 +18220,16 @@ class ProjectService:
                                     useScipionPreview = True
 
                             if useScipionPreview:
-                                previewIndex = imageIndex
+                                # Scipion metadata references are 1-based:
+                                # 1@stack.mrcs selects image 0 in the reader.
+                                # Keep 0 unchanged for paths without an index.
+                                previewIndex = imageIndex - 1 if imageIndex > 0 else imageIndex
 
+                                # Use the central slice only for UNINDEXED 3D
+                                # volumes. An explicit 1@stack now maps to 0,
+                                # but must still select its first image.
                                 if (
-                                        previewIndex in (None, 0)
+                                        imageIndex in (None, 0)
                                         and self._isVolumeLikeImageFile(resolvedPath)
                                 ):
                                     previewIndex = None

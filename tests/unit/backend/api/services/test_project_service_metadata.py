@@ -1819,6 +1819,84 @@ def test_RenderMetadataImageCellServicePrefersPillowForTiffFiles(
         str(imagePath.resolve())
     ]
 
+@pytest.mark.parametrize(
+    ("persistedIndex", "readerIndex"),
+    [
+        (None, 0),  # A plain .mrcs reference starts at the first image.
+        (1, 0),     # Scipion's 1@stack.mrcs is its FIRST image.
+        (2, 1),     # Scipion's 2@stack.mrcs is its SECOND image.
+    ],
+)
+def test_MetadataIndexedStackImageUsesZeroBasedReaderIndex(
+    service, projectServiceModule, monkeypatch, tmp_path,
+    persistedIndex, readerIndex,
+):
+    """Avoid silently rendering the NEXT particle from a 1-based reference."""
+    from PIL import Image as PILImage
+    from starlette.responses import Response
+
+    imagePath = tmp_path / "particles.mrcs"
+    imagePath.write_bytes(b"MRC reader is mocked; only path existence matters")
+    imageRef = (
+        f"{persistedIndex}@{imagePath}"
+        if persistedIndex is not None else str(imagePath)
+    )
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    table = FakeTable(
+        name="objects",
+        alias="Particles",
+        columns=[FakeColumn("stack", "Stack", PathRenderer())],
+    )
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(17, [imageRef])]},
+        rowCounts={"objects": 1},
+        fileName="postgresql://project/1/protocol/2/output/outputParticles",
+    )
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+
+    # Ensure the MRC/MRCS reader path is exercised, even if Pillow plugins
+    # registered additional extensions in this test environment.
+    monkeypatch.setattr(PILImage, "registered_extensions", lambda: {})
+    monkeypatch.setattr(service, "_isVolumeLikeImageFile", lambda _: False)
+
+    readerIndices = []
+
+    class FakeOutputsPreview:
+        def __init__(self, currentProject, protocol, output):
+            pass
+
+        def renderImageFromFilePath(self, **kwargs):
+            readerIndices.append(kwargs["index"])
+            assert kwargs["filePath"] == str(imagePath)
+            return Response(content=b"image", media_type="image/png")
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+
+    response = service.renderMetadataImageCellService(
+        projectId=1,
+        protocolId=2,
+        outputName="outputParticles",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="stack",
+        size=128,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        contrastMode="original",
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("x-image-placeholder") is None
+    assert readerIndices == [readerIndex]
+
+
 def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
     service,
     projectServiceModule,
@@ -2642,7 +2720,9 @@ def test_ClassAveragePreviewFallbackEnhanced(
     assert result.status_code == 200
     assert result.media_type == "image/png"
     assert len(calls) == 1
-    assert calls[0]["index"] == (1 if indexed else 0)
+    # A Scipion "1@stack.mrcs" location identifies the first image, whose
+    # zero-based ImageReadersRegistry index is 0; unindexed paths also use 0.
+    assert calls[0]["index"] == 0
     np.testing.assert_array_equal(pixels, expected)
     np.testing.assert_array_equal(source, original)
     assert result.body != previewBytes
