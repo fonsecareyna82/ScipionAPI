@@ -88,13 +88,14 @@ Child reads resolve the table identity once per query, never per hydrated
 row. A parent's `_setItemMapperPath` hook does not export the parent for
 runtime children, which load their own mapper; subclass hook code still runs.
 
-Root item JSON keeps its full GIN in the canonical table. Logical items have
-no JSON GIN: migration `9d064ee31b1b` dropped the partial nested GIN (added by
-`41c8d93e7a62`) because it roughly doubled child-row write cost, while child
-reads are always scoped to one table through ("tableId", "scipionItemId").
-Dynamic logical-field discovery still reads both parent populations in one
-statement so legacy null-parent rows remain readable. Both migrations work
-concurrently, retry failed builds, and do not change item data.
+Neither canonical root nor logical items keep a JSON GIN. Migration
+`b75a4e291c0f` drops the canonical root GIN; `9d064ee31b1b` dropped the
+partial nested GIN (added by `41c8d93e7a62`). Normal reads use the scoped
+item indexes. Rare or absent undeclared-field type lookups scan a root Set,
+which can cost more for very large Sets. Dynamic logical-field discovery still
+reads both parent populations in one statement so legacy null-parent rows
+remain readable. These migrations run concurrently, retry failed builds, and
+do not change item data.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 

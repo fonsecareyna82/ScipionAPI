@@ -349,26 +349,32 @@ children load their own mapper and ignore the path, so the parent file name is
 a placeholder and the parent is not exported. The native and subclass hook
 bodies still run. Children without a runtime mapper keep the original path.
 
-The canonical root JSON GIN remains fully indexed. Logical items keep no
-JSON GIN: logical root copies must not maintain a second full JSON index
-(`41c8d93e7a62`), and the partial nested GIN was dropped (`9d064ee31b1b`)
-because it roughly doubled child-row write cost. Measured on 500k child rows
-in 200 tables, a scoped dynamic-field lookup without it stays within ~15 ms
-per table. Both root representations remain persisted; these migrations
-change only index maintenance. Dynamic logical-field type discovery must
-read both non-null and null parent populations in one statement, retaining
-logical-root and legacy-row semantics, including mixed-type errors and JSON
-null handling. Logical lookups use the table-scope index; normal runtime
-roots keep using the canonical GIN. Do not infer field absence from schema
-metadata alone.
+Neither canonical root nor logical items keep a JSON GIN. Logical root copies
+stopped maintaining a second full JSON index (`41c8d93e7a62`), the partial
+nested GIN was dropped (`9d064ee31b1b`), and the canonical root GIN was
+dropped (`b75a4e291c0f`) to reduce write cost. Normal reads use the
+(`setId`, `scipionItemId`) or (`tableId`, `scipionItemId`) index. Dynamic-field
+type discovery still checks item JSON: without GIN, rare or absent undeclared
+fields require scanning the scoped Set. On a synthetic one-million-item root
+Set, the median lookup rose from about 2 ms to 114 ms for a field present in
+0.1% of items, and from under 1 ms to 109 ms for an absent field; a common
+field was unchanged. Four 100k-row synthetic bulk inserts had a median
+database execution time of 283 ms without GIN versus 707 ms with it. These
+figures do not predict whole-protocol runtime. Both root representations
+remain persisted; the migrations change only index maintenance. Dynamic
+logical-field type discovery must read both non-null and null parent
+populations in one statement, retaining logical-root and legacy-row
+semantics, including mixed-type errors and JSON null handling. Do not infer
+field absence from schema metadata alone.
 
 Migration `9d064ee31b1b` drops the nested GIN concurrently; its downgrade
 rebuilds the partial index concurrently, replacing an invalid leftover.
+Migration `b75a4e291c0f` drops the canonical root GIN concurrently; its
+downgrade rebuilds the full index concurrently, replacing an invalid leftover.
 Index replacement migration `41c8d93e7a62` builds its replacement concurrently
 before dropping the previous index, in both directions. A retry must remove
 an invalid index left by a failed build instead of accepting it with
-`IF NOT EXISTS`. It must never rewrite rows, change foreign keys, or alter
-the canonical JSON index.
+`IF NOT EXISTS`. These migrations must never rewrite rows or change foreign keys.
 
 ## Per-user protocol runtime concurrency
 

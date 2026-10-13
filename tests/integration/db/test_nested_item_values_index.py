@@ -1,4 +1,4 @@
-"""Exercise concurrent index replacement and logical legacy reads on PostgreSQL."""
+"""Exercise Set JSON-index migrations and logical legacy reads on PostgreSQL."""
 import os
 import shutil
 import subprocess
@@ -15,6 +15,7 @@ from app.backend.mapper.postgresql import PostgresqlDb
 
 FULL_INDEX = "idx_scipion_set_table_items_values_gin"
 NESTED_INDEX = "idx_scipion_set_table_items_nested_values_gin"
+ROOT_INDEX = "idx_scipion_set_items_values_gin"
 
 
 def _command(env, schema, *arguments):
@@ -215,7 +216,93 @@ def test_DropNestedGinMigrationPreservesRowsAndCanBeReversed(logicalIndexLab):
     assert _rows(connection) == before
 
 
-def test_MigratedRuntimeKeepsCanonicalGinWithoutLogicalGin(postgresqlMigratedEnv):
+@pytest.fixture
+def canonicalIndexLab(postgresqlMigratedEnv):
+    env = postgresqlMigratedEnv
+    engine = create_engine(URL.create(
+        "postgresql+psycopg2", username=env["databaseUser"],
+        password=env["databasePass"], host=env["postgresHost"],
+        port=int(env["postgresPort"]), database=env["databaseName"],
+    ))
+    schema = "root_index_test_" + uuid4().hex
+    try:
+        with engine.connect() as connection:
+            try:
+                connection.exec_driver_sql('CREATE SCHEMA "' + schema + '"')
+                connection.exec_driver_sql('SET search_path TO "' + schema + '"')
+                connection.exec_driver_sql('''CREATE TABLE scipion_set_items (
+                    "setId" integer NOT NULL, "scipionItemId" integer NOT NULL,
+                    "values" jsonb NOT NULL,
+                    CONSTRAINT ux_scipion_set_items_set_item UNIQUE ("setId", "scipionItemId"))''')
+                connection.exec_driver_sql('''INSERT INTO scipion_set_items VALUES
+                    (11,1,'{"_score":1,"_word":"é"}'),
+                    (11,2,'{"_score":2.5}'),
+                    (12,1,'{"_score":3}')''')
+                connection.exec_driver_sql('''CREATE INDEX idx_scipion_set_items_values_gin
+                    ON scipion_set_items USING gin ("values")''')
+                connection.commit()
+                _command(env, schema, "stamp", "9d064ee31b1b")
+                yield connection, schema, env
+            finally:
+                connection.rollback()
+                connection.exec_driver_sql('DROP SCHEMA IF EXISTS "' + schema + '" CASCADE')
+                connection.commit()
+    finally:
+        engine.dispose()
+
+
+def _canonicalRows(connection):
+    return connection.exec_driver_sql('''SELECT * FROM scipion_set_items
+        ORDER BY "setId", "scipionItemId"''').all()
+
+
+def _canonicalIndexes(connection):
+    return {row["name"]: row for row in connection.exec_driver_sql('''
+        SELECT c.relname AS name, i.indisvalid AS valid,
+               pg_get_expr(i.indpred, i.indrelid) AS predicate
+        FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+        WHERE i.indrelid='scipion_set_items'::regclass
+    ''').mappings()}
+
+
+def test_DropCanonicalGinPreservesRowsAndCanBeReversed(canonicalIndexLab):
+    connection, schema, env = canonicalIndexLab
+    before = _canonicalRows(connection)
+    connection.commit()
+    _command(env, schema, "upgrade", "b75a4e291c0f")
+    indexes = _canonicalIndexes(connection)
+    assert ROOT_INDEX not in indexes
+    assert indexes["ux_scipion_set_items_set_item"]["valid"]
+    assert _canonicalRows(connection) == before
+    connection.commit()
+    _command(env, schema, "downgrade", "9d064ee31b1b")
+    indexes = _canonicalIndexes(connection)
+    assert indexes[ROOT_INDEX]["valid"]
+    assert indexes[ROOT_INDEX]["predicate"] is None
+    assert _canonicalRows(connection) == before
+
+
+def test_CanonicalGinDowngradeRebuildsInvalidIndex(canonicalIndexLab):
+    connection, schema, env = canonicalIndexLab
+    before = _canonicalRows(connection)
+    connection.commit()
+    _command(env, schema, "upgrade", "b75a4e291c0f")
+    connection.execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        with pytest.raises(DataError):
+            connection.exec_driver_sql('CREATE INDEX CONCURRENTLY ' + ROOT_INDEX
+                + ' ON scipion_set_items ((("values" ->> \'_word\')::integer))')
+    finally:
+        connection.rollback()
+        connection.execution_options(isolation_level="READ COMMITTED")
+    assert not _canonicalIndexes(connection)[ROOT_INDEX]["valid"]
+    connection.commit()
+    _command(env, schema, "downgrade", "9d064ee31b1b")
+    assert _canonicalIndexes(connection)[ROOT_INDEX]["valid"]
+    assert _canonicalRows(connection) == before
+
+
+def test_MigratedRuntimeHasNoItemJsonGin(postgresqlMigratedEnv):
     env = postgresqlMigratedEnv
     db = PostgresqlDb(
         dbName=env["databaseName"], user=env["databaseUser"],
@@ -231,7 +318,6 @@ def test_MigratedRuntimeKeepsCanonicalGinWithoutLogicalGin(postgresqlMigratedEnv
     finally:
         db.close()
     indexes = {row["name"]: row for row in rows}
-    assert indexes["idx_scipion_set_items_values_gin"]["valid"]
-    assert indexes["idx_scipion_set_items_values_gin"]["predicate"] is None
+    assert ROOT_INDEX not in indexes
     assert NESTED_INDEX not in indexes
     assert FULL_INDEX not in indexes

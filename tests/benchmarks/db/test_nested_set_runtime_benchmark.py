@@ -305,7 +305,8 @@ def _runSqlite(tmp_path, classesCount, particlesCount, stackPath):
     images = emobj.SetOfParticles(filename=str(imagesPath))
     images.setSamplingRate(SAMPLING_RATE)
     images.setAcquisition(_buildAcquisition())
-    _fillInputParticles(images, particlesCount, stackPath)
+    with _profiled("sqlite-input-%s" % particlesCount):
+        _fillInputParticles(images, particlesCount, stackPath)
     inputSeconds = time.perf_counter() - inputStartedAt
 
     timer = PhaseTimer()
@@ -385,17 +386,20 @@ def _runPostgresql(ctx, classesCount, particlesCount, stackPath):
     sizeLabel = "%sx%s" % (classesCount, particlesCount)
 
     # The input particles belong to an upstream protocol; time them apart.
+    db.resetQueryStats()
     inputStartedAt = time.perf_counter()
-    images = emobj.SetOfParticles()
-    images.setSamplingRate(SAMPLING_RATE)
-    images.setAcquisition(_buildAcquisition())
-    images, imagesInfo = ctx["reserve"](images, "inputParticles", 2_000_001)
-    _fillInputParticles(images, particlesCount, stackPath)
-    imagesReport = mapper.finalizeRuntimeSetOutput(
-        projectId=ctx["projectId"], protocolDbId=ctx["protocolDbId"],
-        outputName="inputParticles", scipionSet=images)
-    images = ctx["build"](db, dict(imagesInfo, properties=imagesReport["properties"]))
+    with _queryReport(db, "input-%s" % particlesCount), _profiled("postgresql-input-%s" % particlesCount):
+        images = emobj.SetOfParticles()
+        images.setSamplingRate(SAMPLING_RATE)
+        images.setAcquisition(_buildAcquisition())
+        images, imagesInfo = ctx["reserve"](images, "inputParticles", 2_000_001)
+        _fillInputParticles(images, particlesCount, stackPath)
+        imagesReport = mapper.finalizeRuntimeSetOutput(
+            projectId=ctx["projectId"], protocolDbId=ctx["protocolDbId"],
+            outputName="inputParticles", scipionSet=images)
     inputSeconds = time.perf_counter() - inputStartedAt
+    inputQueryStats = db.getQueryStats()
+    images = ctx["build"](db, dict(imagesInfo, properties=imagesReport["properties"]))
 
     db.resetQueryStats()
     timer = PhaseTimer(db)
@@ -422,6 +426,7 @@ def _runPostgresql(ctx, classesCount, particlesCount, stackPath):
                           password=env["databasePass"], host=env["postgresHost"], port=env["postgresPort"])
     result = {
         "inputWriteSeconds": inputSeconds,
+        "inputQueryStats": inputQueryStats,
         "classifyAndWriteSeconds": classifySeconds,
         "totalWriteSeconds": totalSeconds,
         "queryStats": db.getQueryStats(),

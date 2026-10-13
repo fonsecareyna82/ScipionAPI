@@ -202,5 +202,4 @@ class ScipionSetItem(Base):
     __table_args__ = (
         UniqueConstraint("setId", "scipionItemId", name="ux_scipion_set_items_set_item"),
         Index("idx_scipion_set_items_set", "setId"),
-        Index("idx_scipion_set_items_values_gin", "values", postgresql_using="gin"),
     )
