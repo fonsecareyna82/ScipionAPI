@@ -710,7 +710,9 @@ def test_GetParentProtocolForPointerUsesPostgresqlRuntimeOnly(projectServiceModu
     loadedProtocolIds = []
 
     service = object.__new__(projectServiceModule.ProjectService)
-    service._resolveScipionProtocolId = lambda mapper, projectId, protocolId: int(protocolId)
+    service._resolveScipionProtocolId = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("Pointer IDs must not use the dual resolver")
+    )
     service._getScipionProtocolByRuntimeId = lambda protocolId: loadedProtocolIds.append(int(protocolId)) or expectedParentProtocol
 
     parentProtocolId, parentProtocol = service._getParentProtocolForPointer(

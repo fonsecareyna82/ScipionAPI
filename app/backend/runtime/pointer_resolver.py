@@ -822,7 +822,7 @@ class RuntimePointerResolver:
                     continue
 
                 try:
-                    parentScipionProtocolId = protocolIdentityResolver.resolveScipionProtocolId(
+                    parentScipionProtocolId = protocolIdentityResolver.resolvePointerProtocolId(
                         parentId,
                     )
                 except Exception:

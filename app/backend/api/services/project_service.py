@@ -5837,11 +5837,9 @@ class ProjectService:
             projectId: int,
             parentId,
     ):
-        parentScipionProtocolId = self._resolveScipionProtocolId(
-            mapper=mapper,
-            projectId=projectId,
-            protocolId=parentId,
-        )
+        parentScipionProtocolId = ProtocolIdentityResolver(
+            mapper=mapper, projectId=projectId,
+        ).resolvePointerProtocolId(parentId)
 
         if parentScipionProtocolId is None:
             return None, None
@@ -5858,13 +5856,9 @@ class ProjectService:
             projectId: int,
             parentId,
     ):
-        parentScipionProtocolId = (
-            self._resolveScipionProtocolId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=parentId,
-            )
-        )
+        parentScipionProtocolId = ProtocolIdentityResolver(
+            mapper=mapper, projectId=projectId,
+        ).resolvePointerProtocolId(parentId)
 
         if parentScipionProtocolId is None:
             return None, None

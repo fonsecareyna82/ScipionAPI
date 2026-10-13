@@ -26,6 +26,8 @@
 from uuid import uuid4
 
 from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
+from app.backend.runtime.pointer_resolver import RuntimePointerResolver
+from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 
 
 def _openPostgresqlIntegrationDb(
@@ -38,6 +40,100 @@ def _openPostgresqlIntegrationDb(
         host=postgresqlMigratedEnv["postgresHost"],
         port=postgresqlMigratedEnv["postgresPort"],
     )
+
+
+def test_RetargetingDuplicatedProtocolPreservesOriginalGraphWhenIdsCollide(
+        postgresqlIntegrationDb,
+):
+    mapper = PostgresqlFlatMapper(postgresqlIntegrationDb)
+    repository = ProtocolGraphRepository()
+    suffix = uuid4().hex
+    userId = None
+    projectId = None
+
+    try:
+        userId = mapper.insertUser(
+            email="protocol-identity-%s@example.com" % suffix,
+            hashedPassword="integration-test",
+            firstName="Protocol",
+            lastName="Identity",
+            institution=None,
+            role="user",
+            isActive=True,
+            isVerified=True,
+            verificationCode="integration-test",
+        )
+        projectId = mapper.insertProject(
+            ownerId=userId,
+            name="Protocol identity %s" % suffix,
+            description="Duplicate graph identity integration test.",
+            status="active",
+        )
+
+        def saveProtocol(scipionId):
+            return mapper.saveProtocol({
+                "info": {
+                    "protocolId": scipionId,
+                    "projectId": projectId,
+                    "protocolClassName": "IntegrationProtocol",
+                    "status": "saved",
+                },
+                "values": {},
+                "parentIds": [],
+                "childIds": [],
+            })
+
+        rootId = 1000000001
+        originalId = 1000000002
+        duplicateId = 1000000003
+        rootDbId = saveProtocol(rootId)
+        originalDbId = saveProtocol(originalId)
+        duplicateDbId = saveProtocol(duplicateId)
+        # The new input's Scipion ID equals the original's PostgreSQL row ID.
+        alternateParentId = originalDbId
+        alternateParentDbId = saveProtocol(alternateParentId)
+
+        for childDbId in (originalDbId, duplicateDbId):
+            repository.replaceDependenciesForProtocol(
+                mapper=mapper,
+                projectId=projectId,
+                childProtocolDbId=childDbId,
+                parentProtocolDbIds=[rootDbId],
+            )
+
+        pointerData = RuntimePointerResolver().buildInputRefsFromPointerParams(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=duplicateDbId,
+            protocolId=duplicateId,
+            params={"inputProtocol": str(alternateParentId)},
+            getParamCallback=lambda name: object(),
+            isPointerParamCallback=lambda param: True,
+        )
+
+        assert pointerData["parentProtocolIds"] == [alternateParentId]
+        assert pointerData["parentProtocolDbIds"] == [alternateParentDbId]
+
+        repository.replaceInputGraphForProtocol(
+            mapper=mapper,
+            projectId=projectId,
+            protocolDbId=duplicateDbId,
+            parentProtocolDbIds=pointerData["parentProtocolDbIds"],
+            parentProtocolIds=pointerData["parentProtocolIds"],
+            inputRefs=pointerData["inputRefs"],
+        )
+
+        adjacency = mapper.getProjectProtocolAdjacencyMap(projectId)
+        assert adjacency[str(originalId)]["parents"] == [str(rootId)]
+        assert adjacency[str(duplicateId)]["parents"] == [str(alternateParentId)]
+
+    finally:
+        if projectId is not None and userId is not None:
+            mapper.deleteProject(projectId=projectId, ownerId=userId)
+        if userId is not None:
+            postgresqlIntegrationDb.execute(
+                "DELETE FROM users WHERE id = %s", (userId,),
+            )
 
 
 def test_ProtocolAndStepsPersistAcrossPostgresqlConnections(

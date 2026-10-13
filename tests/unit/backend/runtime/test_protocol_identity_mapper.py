@@ -394,13 +394,11 @@ def test_ProtocolIdentityResolverKeepsDbIdCompatibilityWhenNumericIdsCollide():
                 "protocolDbId": int(protocolDbId),
             })
 
-            if int(protocolDbId) != 10:
-                return None
-
-            return {
-                "id": 10,
-                "protocolId": "99",
-            }
+            if int(protocolDbId) == 10:
+                return {"id": 10, "protocolId": "99"}
+            if int(protocolDbId) == 500:
+                return {"id": 500, "protocolId": "10"}
+            return None
 
     mapper = CollidingIdentityMapper()
 
@@ -415,3 +413,26 @@ def test_ProtocolIdentityResolverKeepsDbIdCompatibilityWhenNumericIdsCollide():
         "projectId": 7,
         "protocolDbId": 10,
     }
+
+    mapper.calls.clear()
+    assert resolver.resolvePointerProtocolId("10") == 10
+    assert mapper.calls == [{
+        "method": "getProjectProtocolByProtocolId",
+        "projectId": 7,
+        "protocolId": "10",
+    }]
+
+    mapper.calls.clear()
+    assert resolver.resolvePointerProtocolId("500") == 10
+    assert mapper.calls == [
+        {
+            "method": "getProjectProtocolByProtocolId",
+            "projectId": 7,
+            "protocolId": "500",
+        },
+        {
+            "method": "getProjectProtocolByDbId",
+            "projectId": 7,
+            "protocolDbId": 500,
+        },
+    ]

@@ -216,14 +216,16 @@ def test_BuildInputRefsUsesStrictResolvedScipionProtocolIdentity(
             assert mapper is not None
             assert projectId == 7
 
-        def resolveScipionProtocolId(self, protocolId):
+        def resolvePointerProtocolId(self, protocolId):
+            assert protocolId == "500"
             identityCalls.append({
-                "method": "resolveScipionProtocolId",
+                "method": "resolvePointerProtocolId",
                 "protocolId": protocolId,
             })
-
-            assert protocolId == "500"
             return 19
+
+        def resolveScipionProtocolId(self, protocolId):
+            raise AssertionError("Form pointer IDs must not use the dual resolver")
 
         def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
             identityCalls.append({
@@ -300,7 +302,7 @@ def test_BuildInputRefsUsesStrictResolvedScipionProtocolIdentity(
 
     assert identityCalls == [
         {
-            "method": "resolveScipionProtocolId",
+            "method": "resolvePointerProtocolId",
             "protocolId": "500",
         },
         {
@@ -321,9 +323,12 @@ def test_BuildInputRefsUsesCanonicalPersistedOutputName(monkeypatch):
             assert mapper is not None
             assert projectId == 399
 
-        def resolveScipionProtocolId(self, protocolId):
+        def resolvePointerProtocolId(self, protocolId):
             assert protocolId == "2"
             return 2
+
+        def resolveScipionProtocolId(self, protocolId):
+            raise AssertionError("Form pointer IDs must not use the dual resolver")
 
         def resolvePostgresqlProtocolDbIdFromScipionProtocolId(self, protocolId):
             assert protocolId == 2

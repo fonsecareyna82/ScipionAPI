@@ -215,6 +215,7 @@ class RuntimeProtocolDuplicateService:
                     mapper=mapper,
                     projectId=projectId,
                     protocolId=duplicatedProtocolId,
+                    protocolIdIsScipionId=True,
                     registerOutputs=False,
                     syncRelations=False,
                     protocol=newProtocol,

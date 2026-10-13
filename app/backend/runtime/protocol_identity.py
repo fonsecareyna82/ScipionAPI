@@ -87,6 +87,20 @@ class ProtocolIdentityResolver:
 
         return self.toOptionalInt(protocolId)
 
+    def resolvePointerProtocolId(self, protocolId: Any) -> Optional[int]:
+        """Prefer Scipion IDs in form pointers, accepting legacy DB IDs."""
+        protocolRow = self.getProtocolRowByScipionProtocolId(protocolId)
+
+        if protocolRow is None:
+            protocolRow = self.getProtocolRowByDbId(protocolId)
+
+        if protocolRow is not None:
+            resolvedId = self.toOptionalInt(protocolRow.get("protocolId"))
+            if resolvedId is not None:
+                return resolvedId
+
+        return self.toOptionalInt(protocolId)
+
     def resolvePostgresqlProtocolDbId(self, protocolId: Any) -> Optional[int]:
         """
         Accept PostgreSQL protocols.id or Scipion protocols.protocolId.

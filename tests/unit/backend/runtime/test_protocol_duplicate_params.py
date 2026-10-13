@@ -202,10 +202,15 @@ def test_DuplicateRuntimeProtocolsUsesStrictScipionProtocolIdentity(
     sourceProtocol = ProtocolStub(19)
     duplicatedProtocol = ProtocolStub(29)
     saveCalls = []
+    syncCalls = []
 
     def saveProtocolCallback(**kwargs):
         saveCalls.append(kwargs)
         return duplicatedProtocol, []
+
+    def syncProtocolCallback(**kwargs):
+        syncCalls.append(kwargs)
+        return {}
 
     result = service.duplicatePostgresqlRuntimeProtocols(
         mapper=MapperStub(),
@@ -217,7 +222,7 @@ def test_DuplicateRuntimeProtocolsUsesStrictScipionProtocolIdentity(
         getScipionProtocolByRuntimeIdCallback=lambda protocolId: None,
         getScipionObjectIdCallback=lambda protocol: protocol.getObjId(),
         saveProtocolCallback=saveProtocolCallback,
-        syncPostgresqlRuntimeProtocolCallback=lambda **kwargs: {},
+        syncPostgresqlRuntimeProtocolCallback=syncProtocolCallback,
         storeProtocolCallback=lambda protocol: None,
         buildProtocolMutationResultCallback=lambda message, **kwargs: kwargs,
     )
@@ -225,6 +230,10 @@ def test_DuplicateRuntimeProtocolsUsesStrictScipionProtocolIdentity(
     assert len(saveCalls) == 1
     assert saveCalls[0]["setToSave"] is False
     assert saveCalls[0]["validateParams"] is False
+    assert len(syncCalls) == 1
+    assert syncCalls[0]["protocolId"] == 29
+    assert syncCalls[0]["protocolIdIsScipionId"] is True
+    assert syncCalls[0]["protocol"] is duplicatedProtocol
     assert strictCalls == [
         19,
         29,
