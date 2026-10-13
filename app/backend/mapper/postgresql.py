@@ -3517,6 +3517,7 @@ class PostgresqlFlatMapper(Mapper):
                     "protocolId",
                     status,
                     interactive,
+                    "needsGpu",
                     "updatedAt",
                     {
                         PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL
@@ -3554,6 +3555,10 @@ class PostgresqlFlatMapper(Mapper):
                 BOOL_OR(
                     interactive
                 ) AS "isInteractive",
+
+                BOOL_OR(
+                    "needsGpu" AND LOWER(COALESCE(status, '')) = 'running'
+                ) AS "hasRunningGpuStep",
 
                 MAX(
                     "updatedAt"
@@ -3609,6 +3614,7 @@ class PostgresqlFlatMapper(Mapper):
                         "isInteractive"
                     )
                 ),
+                "hasRunningGpuStep": bool(row.get("hasRunningGpuStep")),
                 "updatedAt": row.get(
                     "updatedAt"
                 ),

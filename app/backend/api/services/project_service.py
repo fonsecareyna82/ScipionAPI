@@ -3978,6 +3978,7 @@ class ProjectService:
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
+                "gpuIndicatorEligible": bool(str(status).strip().lower() == "running" and stepSummary.get("hasRunningGpuStep", False) and self._hasEnabledGpuSelection(params)),
                 "tags": tags.get(nodeId, []),
                 "extraTableColumns": extraTableColumns,
                 "thumbnailUrl": thumbnailUrl,
@@ -6573,6 +6574,34 @@ class ProjectService:
         """Return absolute path to a logo resource."""
         return os.path.join(self.currentProject.getPath(), logo)
 
+    @staticmethod
+    def _hasEnabledGpuSelection(params):
+        # A running step may request GPU even when the protocol has no GPU selected.
+        def getParam(name, default=None):
+            value = params.get(name, default)
+            if isinstance(value, dict):
+                for key in ('value', 'editableValue', 'default', 'objValue', '_value'):
+                    if key in value:
+                        return value[key]
+                return None
+            return value
+
+        gpuList = getParam('gpuList')
+        if isinstance(gpuList, (list, tuple, set)):
+            gpuIds = gpuList
+        elif isinstance(gpuList, str):
+            gpuIds = gpuList.split(',')
+        elif gpuList is not None and not isinstance(gpuList, bool):
+            gpuIds = [gpuList]
+        else:
+            gpuIds = []
+        hasGpu = any(str(gpuId).strip().lower() not in ('', '-1', 'none', 'null', 'false', '[]') for gpuId in gpuIds)
+
+        useGpu = getParam('useGpu', True)
+        if isinstance(useGpu, str):
+            useGpu = useGpu.strip().lower() in ('true', '1', 'yes', 'on')
+        return bool(hasGpu and useGpu)
+
     def getProtocolRuntimeSummaries(
             self,
             mapper: PostgresqlFlatMapper,
@@ -6719,6 +6748,8 @@ class ProjectService:
             result.append({
                 "protocolId": protocolId,
                 "status": statusValue,
+                "hasRunningGpuStep": bool(statusValue == "running" and stepSummary.get("hasRunningGpuStep", False)),
+                "gpuIndicatorEligible": bool(statusValue == "running" and stepSummary.get("hasRunningGpuStep", False) and self._hasEnabledGpuSelection(params)),
                 "cpuTimeSeconds": max(
                     0.0,
                     float(
