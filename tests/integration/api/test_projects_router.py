@@ -1787,3 +1787,79 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
         "email": "user@example.com",
         "role": "user",
     }
+
+# -----------------------------------------------------------------------------
+# Contrast mode for metadata image endpoints (RED: HTTP contract)
+# -----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("contrastMode", ["enhanced", "original"])
+def test_MetadataContrastModeHttpSingleImage(
+    projectClient, fakeProjectService, monkeypatch, contrastMode,
+):
+    calls = []
+
+    def recordRender(**kwargs):
+        calls.append(kwargs)
+        return fakeProjectService.renderMetadataImageCellResponse
+
+    monkeypatch.setattr(
+        fakeProjectService, "renderMetadataImageCellCachedService", recordRender,
+    )
+
+    response = projectClient.get(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image"
+        "?rowIndex=0&column=stack&contrastMode=" + contrastMode
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    # When omitted by the router, the service's existing default is original.
+    assert calls[0].get("contrastMode", "original") == contrastMode
+
+
+@pytest.mark.parametrize("contrastMode", ["enhanced", "original"])
+def test_MetadataContrastModeHttpBatchImages(
+    projectClient, fakeProjectService, monkeypatch, contrastMode,
+):
+    calls = []
+
+    def recordBatch(**kwargs):
+        calls.append(kwargs)
+        return fakeProjectService.renderMetadataImageCellsBatchResult
+
+    monkeypatch.setattr(
+        fakeProjectService, "renderMetadataImageCellsBatchService", recordBatch,
+    )
+
+    response = projectClient.post(
+        "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image/batch",
+        json={
+            "items": [{"rowIndex": 0, "columnName": "stack"}],
+            "contrastMode": contrastMode,
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0].get("contrastMode", "original") == contrastMode
+
+
+@pytest.mark.parametrize("routeKind", ["single", "batch"])
+def test_MetadataContrastModeHttpRejectsUnsupportedMode(
+    projectClient, fakeProjectService, routeKind,
+):
+    if routeKind == "single":
+        response = projectClient.get(
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image"
+            "?rowIndex=0&column=stack&contrastMode=invalid"
+        )
+    else:
+        response = projectClient.post(
+            "/projects/1/protocols/2/outputs/out/metadata/tables/objects/image/batch",
+            json={
+                "items": [{"rowIndex": 0, "columnName": "stack"}],
+                "contrastMode": "invalid",
+            },
+        )
+
+    assert response.status_code == 422

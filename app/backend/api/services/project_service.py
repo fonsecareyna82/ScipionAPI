@@ -17722,6 +17722,7 @@ class ProjectService:
             fmt: str,
             sortBy: str,
             asc: bool,
+            contrastMode: str = "original",
     ):
         return (
             int(projectId),
@@ -17736,6 +17737,7 @@ class ProjectService:
             str(fmt or "png").lower(),
             str(sortBy or "id"),
             bool(asc),
+            str(contrastMode or "original").strip().lower(),
         )
 
     def _getCachedMetadataImageResponse(self, cacheKey) -> Optional[Response]:
@@ -17803,6 +17805,7 @@ class ProjectService:
             ifNoneMatch: Optional[str] = None,
 
             protocolIdIsScipionId=False,
+            contrastMode: str = "original",
     ) -> Response:
         """
         Thin ETag/cache wrapper around renderMetadataImageCellService --
@@ -17825,6 +17828,7 @@ class ProjectService:
             fmt=fmt,
             sortBy=sortBy,
             asc=asc,
+            contrastMode=contrastMode,
         )
 
         etag = self._etagFromCacheKey(cacheKey)
@@ -17859,6 +17863,7 @@ class ProjectService:
             mapper=mapper,
             sortBy=sortBy,
             asc=asc,
+            contrastMode=contrastMode,
             **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
@@ -17867,6 +17872,49 @@ class ProjectService:
         response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
         self._exposeHeader(response.headers, "ETag")
         return response
+
+    @staticmethod
+    def _isMetadataClassAverageOutput(objMgr, table) -> bool:
+        """Enhance *class averages*, never the particles belonging to a class.
+
+        A SetOfClasses2D/3D contains a root `objects` table of class averages
+        and nested tables such as `Class001_Objects` with member particles.
+        Both share the same persisted Set header. Therefore the Set class alone
+        is insufficient: only the root table can be enhanced, even if a caller
+        explicitly requests ``contrastMode=enhanced`` on a member table.
+        """
+        getTableName = getattr(table, "getName", None)
+        try:
+            tableName = str(getTableName() or "").strip().lower() if callable(getTableName) else ""
+        except Exception:
+            return False
+
+        # Fail closed for unknown and nested tables. This guard covers BOTH
+        # the regular PIL renderer and the MRC/MRCS OutputsPreview fallback.
+        if tableName != "objects":
+            return False
+
+        dao = getattr(objMgr, "_dao", None)
+        getHeader = getattr(dao, "_getStoredSetHeader", None)
+        if callable(getHeader):
+            try:
+                header = getHeader()
+            except Exception:
+                header = None
+            if isinstance(header, dict) and header.get("setClassName"):
+                return str(header["setClassName"]).strip().lower() in (
+                    "setofclasses2d", "setofclasses3d",
+                )
+
+        getAlias = getattr(table, "getAlias", None)
+        if callable(getAlias):
+            try:
+                return str(getAlias() or "").strip().lower() in (
+                    "class2d", "class3d", "setofclasses2d", "setofclasses3d",
+                )
+            except Exception:
+                return False
+        return False
 
     def renderMetadataImageCellService(
             self,
@@ -17886,6 +17934,7 @@ class ProjectService:
             asc: bool = True,
 
             protocolIdIsScipionId=False,
+            contrastMode: str = "original",
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
@@ -18186,7 +18235,7 @@ class ProjectService:
                                         output=None,
                                     )
 
-                                    return preview.renderImageFromFilePath(
+                                    previewResponse = preview.renderImageFromFilePath(
                                         filePath=str(resolvedPath),
                                         size=size,
                                         fmt=fmt,
@@ -18196,6 +18245,18 @@ class ProjectService:
                                         rot=None,
                                         shifts=None,
                                     )
+                                    # MRC/MRCS previews return before the
+                                    # regular PIL metadata rendering path.
+                                    # Enhance class sets only; every other
+                                    # response must remain unchanged.
+                                    if (
+                                            str(contrastMode or "original").strip().lower() == "enhanced"
+                                            and self._isMetadataClassAverageOutput(objMgr, table)
+                                    ):
+                                        return self._enhanceMetadataClassPreviewResponse(
+                                            previewResponse
+                                        )
+                                    return previewResponse
                                 except Exception as previewError:
                                     logger.error(
                                         "Cannot render metadata image file '%s' with Scipion preview: %s",
@@ -18237,7 +18298,18 @@ class ProjectService:
             else:
                 arrGray = arr if arr.ndim == 2 else arr.mean(axis=-1)
 
-            im255 = self._normalize2dSlice(arrGray, mode="zscore")
+            # Enhance only images belonging to persisted class sets.
+            # Other metadata imagery keeps the existing normalization.
+            if (
+                    str(contrastMode or "original").strip().lower() == "enhanced"
+                    and self._isMetadataClassAverageOutput(objMgr, table)
+            ):
+                from app.backend.utils.metadata_image_contrast import (
+                    enhanceClassAverageContrast,
+                )
+                im255 = enhanceClassAverageContrast(arrGray)
+            else:
+                im255 = self._normalize2dSlice(arrGray, mode="zscore")
             pilImg = PILImage.fromarray(im255, mode="L")
         except Exception:
             # If any normalization fails, keep whatever pilImg we have
@@ -18266,6 +18338,75 @@ class ProjectService:
 
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
+    @staticmethod
+    def _enhanceMetadataClassPreviewResponse(previewResponse: Response) -> Response:
+        """Enhance a decoded preview *for display only*, retaining its format.
+
+        OutputsPreview has already read/rescaled the indexed MRC/MRCS image.
+        Decoding this existing HTTP response ensures 2D classes and 3D
+        projections use the same contrast helper as direct metadata cells.
+        Invalid, non-image and placeholder responses pass through unchanged.
+        """
+        if getattr(previewResponse, "status_code", None) != 200:
+            return previewResponse
+
+        if previewResponse.headers.get("x-image-placeholder") == "1":
+            return previewResponse
+
+        mime = str(
+            getattr(previewResponse, "media_type", None)
+            or previewResponse.headers.get("content-type", "")
+        ).split(";", 1)[0].strip().lower()
+        imageFormats = {
+            "image/png": "PNG",
+            "image/jpeg": "JPEG",
+            "image/webp": "WEBP",
+        }
+        imageFormat = imageFormats.get(mime)
+        body = getattr(previewResponse, "body", None)
+        if imageFormat is None or not isinstance(body, (bytes, bytearray)) or not body:
+            return previewResponse
+
+        try:
+            from PIL import Image as PILImage
+            from app.backend.utils.metadata_image_contrast import (
+                enhanceClassAverageContrast,
+            )
+
+            with PILImage.open(io.BytesIO(body)) as sourceImage:
+                grayPixels = np.asarray(sourceImage.convert("L"))
+
+            enhancedPixels = enhanceClassAverageContrast(grayPixels)
+            enhancedImage = PILImage.fromarray(enhancedPixels, mode="L")
+            outputBuffer = io.BytesIO()
+            enhancedImage.save(outputBuffer, format=imageFormat)
+        except Exception:
+            # An enhancement failure should never break a valid preview.
+            logger.warning(
+                "Could not enhance class-average metadata preview; "
+                "returning original image",
+                exc_info=True,
+            )
+            return previewResponse
+
+        # The bytes changed: do not reuse stale content length, validators or
+        # encodings from the preview response. Keep disposition and metadata.
+        staleHeaders = {
+            "content-length", "content-type", "etag", "content-md5",
+            "content-encoding", "last-modified",
+        }
+        headers = {
+            name: value
+            for name, value in previewResponse.headers.items()
+            if name.lower() not in staleHeaders
+        }
+        return Response(
+            content=outputBuffer.getvalue(),
+            media_type=mime,
+            status_code=previewResponse.status_code,
+            headers=headers,
+        )
+
     def renderMetadataImageCellsBatchService(
             self,
             projectId: int,
@@ -18282,6 +18423,7 @@ class ProjectService:
             mapper=None,
 
             protocolIdIsScipionId=False,
+            contrastMode: str = "original",
     ) -> Dict[str, Any]:
         # renderMetadataImageCellsBatchService -- reuses
         # renderMetadataImageCellCachedService (and its existing per-cell
@@ -18340,6 +18482,9 @@ class ProjectService:
                     sortBy=sortBy,
                     asc=asc,
                     **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+                    # Each cell uses the contrast-aware cache key.
+                    **({"contrastMode": contrastMode}
+                       if str(contrastMode).strip().lower() == "enhanced" else {}),
                 )
 
                 body = getattr(response, "body", None) or b""

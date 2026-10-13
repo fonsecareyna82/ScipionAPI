@@ -2372,5 +2372,440 @@ def test_MetadataRowPositionUsesPostgresqlDao(
         )
     ]
 
+# ---------------------------------------------------------------------------
+# Class-average metadata rendering: RED integration contract (patch 23)
+# ---------------------------------------------------------------------------
+
+def _makeClassAverageMetadataCellForContrast(
+        service, monkeypatch, setClassName,
+):
+    """Return a small grayscale cell backed by an explicit persisted Set class."""
+    import numpy as np
+    from PIL import Image as PILImage
+
+    rng = np.random.RandomState(51)
+    yy, xx = np.ogrid[:64, :64]
+    pixels = rng.normal(113, 12, (64, 64))
+    pixels[(xx - 32) ** 2 + (yy - 32) ** 2 < 12 ** 2] += 75
+    pixels = np.clip(pixels, 0, 255).astype(np.uint8)
+
+    class StoredSetDao:
+        def _getStoredSetHeader(self):
+            return {"setClassName": setClassName}
+
+    table = FakeTable(
+        name="objects",
+        alias=("Class2D" if setClassName == "SetOfClasses2D"
+               else "Class3D" if setClassName == "SetOfClasses3D"
+               else "Particles"),
+        columns=[FakeColumn("image", "Image", ImageRenderer())],
+    )
+    manager = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(1, [PILImage.fromarray(pixels)])]},
+        dao=StoredSetDao(),
+        fileName="postgresql://project/1/protocol/10/output/outputClasses",
+    )
+    patchOpenMetadataTable(service, monkeypatch, manager, table)
+    return pixels
 
 
+def _renderClassAverageMetadataCellWithMode(service, mode):
+    return service.renderMetadataImageCellService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputClasses",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="image",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+        contrastMode=mode,
+    )
+
+
+@pytest.mark.parametrize("setClassName", [
+    "SetOfClasses2D",
+    "SetOfClasses3D",
+])
+def test_ClassAverageMetadataCellEnhancedModeRendersPixelsWithNewAlgorithm(
+        service, monkeypatch, setClassName,
+):
+    import io
+    from PIL import Image as PILImage
+    from app.backend.utils.metadata_image_contrast import (
+        enhanceClassAverageContrast,
+    )
+
+    pixels = _makeClassAverageMetadataCellForContrast(
+        service, monkeypatch, setClassName,
+    )
+    original = pixels.copy()
+
+    response = _renderClassAverageMetadataCellWithMode(
+        service, "enhanced",
+    )
+    rendered = np.asarray(PILImage.open(io.BytesIO(response.body)))
+
+    assert response.media_type == "image/png"
+    np.testing.assert_array_equal(
+        rendered, enhanceClassAverageContrast(pixels),
+    )
+    np.testing.assert_array_equal(pixels, original)
+
+
+def test_ClassAverageMetadataCellEnhancedModeDoesNotChangeParticleImages(
+        service, monkeypatch,
+):
+    # Name is deliberately "outputClasses": class eligibility must use the
+    # persisted Set type, not the outputName string.
+    _makeClassAverageMetadataCellForContrast(
+        service, monkeypatch, "SetOfParticles",
+    )
+    baseline = _renderClassAverageMetadataCellWithMode(service, "original")
+    enhanced = _renderClassAverageMetadataCellWithMode(service, "enhanced")
+
+    assert enhanced.body == baseline.body
+
+
+def test_ClassAverageMetadataCellOriginalModeKeepsExistingRendering(
+        service, monkeypatch,
+):
+    _makeClassAverageMetadataCellForContrast(
+        service, monkeypatch, "SetOfClasses2D",
+    )
+    existing = service.renderMetadataImageCellService(
+        projectId=1,
+        protocolId=10,
+        outputName="outputClasses",
+        tableName="objects",
+        rowId=None,
+        rowIndex=0,
+        columnName="image",
+        size=64,
+        applyTransform=False,
+        inline=True,
+        fmt="png",
+    )
+    explicitlyOriginal = _renderClassAverageMetadataCellWithMode(
+        service, "original",
+    )
+
+    assert explicitlyOriginal.body == existing.body
+
+
+def test_MetadataImageCacheKeySeparatesOriginalAndEnhancedContrast(
+        service,
+):
+    params = dict(
+        projectId=1,
+        protocolId=10,
+        outputName="outputClasses",
+        tableName="objects",
+        rowId=1,
+        rowIndex=None,
+        columnName="image",
+        size=64,
+        applyTransform=False,
+        fmt="png",
+        sortBy="id",
+        asc=True,
+    )
+    original = service._buildMetadataImageCacheKey(
+        **params, contrastMode="original",
+    )
+    enhanced = service._buildMetadataImageCacheKey(
+        **params, contrastMode="enhanced",
+    )
+
+    assert original != enhanced
+
+# ---------------------------------------------------------------------------
+# 25 RED: class-average contrast when an MRC/MRCS path returns an image
+# through OutputsPreview rather than the metadata renderer's PIL route.
+# ---------------------------------------------------------------------------
+
+
+def _setupClassAveragePreviewFallback(
+        service, projectServiceModule, monkeypatch, tmp_path, setClassName,
+        imageExtension, indexed,
+):
+    import io
+    from PIL import Image as PILImage
+    from starlette.responses import Response
+
+    # Encoded, 8-bit image returned by OutputsPreview. No real MRC reader
+    # or native scientific stack is needed for this transport regression.
+    yy, xx = np.mgrid[:48, :48]
+    source = np.clip(
+        108 + 0.2 * xx + 0.3 * yy +
+        86 * np.exp(-((xx - 24) ** 2 + (yy - 24) ** 2) / 64),
+        0, 255,
+    ).astype(np.uint8)
+    stream = io.BytesIO()
+    PILImage.fromarray(source, mode="L").save(stream, format="PNG")
+    previewBytes = stream.getvalue()
+
+    filePath = tmp_path / ("class_average." + imageExtension)
+    filePath.write_bytes(b"dummy scientific image stack")
+    metadataPath = (
+        ("1@" if indexed else "") + str(filePath)
+    )
+
+    class StoredSetDao:
+        def _getStoredSetHeader(self):
+            return {"setClassName": setClassName}
+
+    table = FakeTable(
+        name="objects",
+        # The persisted Set class, not the table alias, is authoritative.
+        alias="Class2D",
+        columns=[FakeColumn("image", "Image", ImageRenderer())],
+    )
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(1, [metadataPath])]},
+        dao=StoredSetDao(),
+        fileName="postgresql://project/1/protocol/10/output/outputClasses",
+    )
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    # Force 2D stack semantics; never attempt to decode dummy MRC bytes.
+    monkeypatch.setattr(service, "_isVolumeLikeImageFile", lambda _: False)
+
+    calls = []
+
+    class FakeOutputsPreview:
+        def __init__(self, currentProject, protocol, output):
+            pass
+
+        def renderImageFromFilePath(self, **kwargs):
+            calls.append(kwargs)
+            return Response(content=previewBytes, media_type="image/png")
+
+    monkeypatch.setattr(
+        projectServiceModule, "OutputsPreview", FakeOutputsPreview,
+    )
+
+    def render(contrastMode):
+        return service.renderMetadataImageCellService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputClasses",
+            tableName="objects",
+            rowId=None,
+            rowIndex=0,
+            columnName="image",
+            size=48,
+            applyTransform=False,
+            inline=True,
+            fmt="png",
+            contrastMode=contrastMode,
+        )
+
+    return source, previewBytes, calls, render
+
+
+@pytest.mark.parametrize(
+    "setClassName,imageExtension,indexed",
+    [
+        ("SetOfClasses2D", "mrc", False),
+        ("SetOfClasses2D", "mrcs", True),
+        ("SetOfClasses3D", "mrc", False),
+        ("SetOfClasses3D", "mrcs", True),
+    ],
+)
+def test_ClassAveragePreviewFallbackEnhanced(
+        service, projectServiceModule, monkeypatch, tmp_path,
+        setClassName, imageExtension, indexed,
+):
+    import io
+    from PIL import Image as PILImage
+    from app.backend.utils.metadata_image_contrast import (
+        enhanceClassAverageContrast,
+    )
+
+    source, previewBytes, calls, render = (
+        _setupClassAveragePreviewFallback(
+            service, projectServiceModule, monkeypatch, tmp_path,
+            setClassName, imageExtension, indexed,
+        )
+    )
+    original = source.copy()
+
+    result = render("enhanced")
+    pixels = np.asarray(PILImage.open(io.BytesIO(result.body)))
+    expected = enhanceClassAverageContrast(source)
+
+    assert result.status_code == 200
+    assert result.media_type == "image/png"
+    assert len(calls) == 1
+    assert calls[0]["index"] == (1 if indexed else 0)
+    np.testing.assert_array_equal(pixels, expected)
+    np.testing.assert_array_equal(source, original)
+    assert result.body != previewBytes
+
+
+def test_ClassAveragePreviewFallbackOriginalPreservesResponse(
+        service, projectServiceModule, monkeypatch, tmp_path,
+):
+    source, previewBytes, calls, render = (
+        _setupClassAveragePreviewFallback(
+            service, projectServiceModule, monkeypatch, tmp_path,
+            "SetOfClasses2D", "mrcs", True,
+        )
+    )
+    response = render("original")
+
+    assert len(calls) == 1
+    assert response.body == previewBytes
+    assert response.media_type == "image/png"
+
+
+def test_ClassAveragePreviewFallbackIgnoresParticleOutput(
+        service, projectServiceModule, monkeypatch, tmp_path,
+):
+    source, previewBytes, calls, render = (
+        _setupClassAveragePreviewFallback(
+            service, projectServiceModule, monkeypatch, tmp_path,
+            "SetOfParticles", "mrcs", True,
+        )
+    )
+    response = render("enhanced")
+
+    assert len(calls) == 1
+    assert response.body == previewBytes
+    assert response.media_type == "image/png"
+
+# ---------------------------------------------------------------------------
+# 34 RED: nested ClassNNN_Objects hold member particles, NOT class averages.
+# Enhancing them is expensive and inappropriate even if the output set is
+# SetOfClasses2D/3D and a caller accidentally requests `enhanced`.
+# ---------------------------------------------------------------------------
+
+
+def _setupClassMemberParticleContrast(service, monkeypatch, setClassName, imageValue):
+    class StoredClassSetDao:
+        _logicalTables = {
+            "objects": {"itemClassName": "Class2D" if setClassName == "SetOfClasses2D" else "Class3D"},
+            "Class001_Objects": {"itemClassName": "Particle"},
+        }
+
+        def _getStoredSetHeader(self):
+            return {
+                "setClassName": setClassName,
+                "itemClassName": "Class2D" if setClassName == "SetOfClasses2D" else "Class3D",
+            }
+
+    memberTable = FakeTable(
+        name="Class001_Objects",
+        alias="Class001 objects",  # alias does not identify the item type
+        columns=[FakeColumn("image", "Image", ImageRenderer())],
+    )
+    manager = FakeObjectManager(
+        tables={"Class001_Objects": memberTable},
+        rowsByTable={"Class001_Objects": [FakeRow(1, [imageValue])]},
+        dao=StoredClassSetDao(),
+        fileName="postgresql://project/1/protocol/10/output/outputClasses",
+    )
+    patchOpenMetadataTable(service, monkeypatch, manager, memberTable)
+
+    def render(mode):
+        return service.renderMetadataImageCellService(
+            projectId=1,
+            protocolId=10,
+            outputName="outputClasses",
+            tableName="Class001_Objects",
+            rowId=None,
+            rowIndex=0,
+            columnName="image",
+            size=64,
+            applyTransform=False,
+            inline=True,
+            fmt="png",
+            contrastMode=mode,
+        )
+
+    return render
+
+
+@pytest.mark.parametrize("setClassName", ["SetOfClasses2D", "SetOfClasses3D"])
+def test_ClassMemberParticleContrastSkipsPIL(
+        service, monkeypatch, setClassName,
+):
+    import importlib
+    from PIL import Image as PILImage
+
+    yy, xx = np.ogrid[:64, :64]
+    pixels = np.full((64, 64), 110, dtype=np.uint8)
+    pixels[(xx - 32) ** 2 + (yy - 32) ** 2 < 10 ** 2] = 208
+    pixels[:6, :6] = 40
+    render = _setupClassMemberParticleContrast(
+        service, monkeypatch, setClassName, PILImage.fromarray(pixels),
+    )
+
+    contrastModule = importlib.import_module("app.backend.utils.metadata_image_contrast")
+    enhanceCalls = []
+    originalEnhancer = contrastModule.enhanceClassAverageContrast
+
+    def countingEnhancer(image):
+        enhanceCalls.append(True)
+        return originalEnhancer(image)
+
+    monkeypatch.setattr(contrastModule, "enhanceClassAverageContrast", countingEnhancer)
+    original = render("original")
+    enhanced = render("enhanced")
+
+    assert original.status_code == enhanced.status_code == 200
+    assert enhanced.body == original.body
+    assert enhanceCalls == [], "Member particles must never call the expensive enhancer"
+
+
+@pytest.mark.parametrize("setClassName", ["SetOfClasses2D", "SetOfClasses3D"])
+def test_ClassMemberParticleContrastSkipsMrcPreview(
+        service, projectServiceModule, monkeypatch, tmp_path, setClassName,
+):
+    import importlib
+    import io
+    from PIL import Image as PILImage
+    from starlette.responses import Response
+
+    mrc = tmp_path / "member_particles.mrcs"
+    mrc.write_bytes(b"fake MRC stack content")
+    image = np.full((64, 64), 115, dtype=np.uint8)
+    image[22:42, 22:42] = 222
+    buf = io.BytesIO()
+    PILImage.fromarray(image).save(buf, format="PNG")
+    previewBytes = buf.getvalue()
+
+    render = _setupClassMemberParticleContrast(
+        service, monkeypatch, setClassName, "1@" + str(mrc),
+    )
+    monkeypatch.setattr(service, "_isVolumeLikeImageFile", lambda _: False)
+
+    class FakeOutputsPreview:
+        def __init__(self, currentProject, protocol, output):
+            pass
+
+        def renderImageFromFilePath(self, **kwargs):
+            return Response(content=previewBytes, media_type="image/png")
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+
+    contrastModule = importlib.import_module("app.backend.utils.metadata_image_contrast")
+    enhanceCalls = []
+    originalEnhancer = contrastModule.enhanceClassAverageContrast
+
+    def countingEnhancer(image):
+        enhanceCalls.append(True)
+        return originalEnhancer(image)
+
+    monkeypatch.setattr(contrastModule, "enhanceClassAverageContrast", countingEnhancer)
+    original = render("original")
+    enhanced = render("enhanced")
+
+    assert original.status_code == enhanced.status_code == 200
+    assert enhanced.body == original.body == previewBytes
+    assert enhanceCalls == [], "Member MRC/MRCS must never call the expensive enhancer"

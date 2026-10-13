@@ -4272,6 +4272,9 @@ def renderMetadataImageCell(
     ),
     sortBy: str = Query("id", description="Sort column for legacy positional image reads"),
     asc: bool = Query(True, description="Sort direction for positional image reads"),
+    contrastMode: Literal["original", "enhanced"] = Query(
+        "original", description="Contrast mode for class-average images."
+    ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -4301,6 +4304,8 @@ def renderMetadataImageCell(
         mapper=mapper,
         ifNoneMatch=ifNoneMatch,
         protocolIdIsScipionId=True,
+        # Preserve legacy calls for Original; Enhanced is opt-in.
+        **({"contrastMode": contrastMode} if contrastMode == "enhanced" else {}),
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -4322,6 +4327,7 @@ class MetadataImageBatchRenderRequest(BaseModel):
     fmt: str = "png"
     sortBy: str = "id"
     asc: bool = True
+    contrastMode: Literal["original", "enhanced"] = "original"
 
 
 @router.post(
@@ -4362,6 +4368,8 @@ def renderMetadataImageCellsBatch(
         asc=payload.asc,
         mapper=mapper,
         protocolIdIsScipionId=True,
+        **({"contrastMode": payload.contrastMode}
+           if payload.contrastMode == "enhanced" else {}),
     )
 
     resp = JSONResponse(result)
