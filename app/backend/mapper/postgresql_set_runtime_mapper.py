@@ -28,6 +28,7 @@ import re
 from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from app.backend.mapper.postgresql import canStageCopyRows
 from app.backend.mapper.postgresql_append_buffer import EncodedAppendItem, PostgresqlAppendBuffer
 
 
@@ -67,6 +68,20 @@ class _PostgresqlItemIterator:
             self.close()
         except Exception:
             pass
+
+
+# Session-temporary staging tables for bulk item writes.
+STAGED_WRITE_MIN_ROWS = 500
+_CANONICAL_STAGE_TABLE = "scipion_stage_set_items"
+_CANONICAL_STAGE_COLUMNS = (
+    '"setId" integer, "scipionItemId" integer, enabled boolean, label text, '
+    'comment text, creation timestamptz, "values" jsonb'
+)
+_LOGICAL_STAGE_TABLE = "scipion_stage_table_items"
+_LOGICAL_STAGE_COLUMNS = (
+    '"tableId" integer, "scipionItemId" integer, "parentItemId" integer, enabled boolean, '
+    'label text, comment text, creation timestamptz, "values" jsonb'
+)
 
 
 class PostgresqlSetRuntimeMapper:
@@ -1135,14 +1150,20 @@ class PostgresqlSetRuntimeMapper:
             else:
                 logicalRows.append((int(self.tableId), itemId, int(self.parentItemId), enabled, label, comment, creation, jsonValues))
 
+        stageRows = getattr(self.db, "executeFromStagedRows", None)
+        stagedRows = canonicalRows or logicalRows
+        # Staging has a fixed per-batch cost that only large batches repay.
+        if (not callable(stageRows) or len(stagedRows) < STAGED_WRITE_MIN_ROWS
+                or not canStageCopyRows(stagedRows)):
+            stageRows = None
+
         if canonicalRows:
-            self.db.executeValues(
-                """
+            canonicalSql = """
                 WITH canonical AS (
                 INSERT INTO scipion_set_items (
                     "setId", "scipionItemId", enabled, label, comment, creation, "values"
                 )
-                VALUES %s
+                {source}
                 ON CONFLICT ON CONSTRAINT ux_scipion_set_items_set_item
                 DO UPDATE SET
                     enabled = EXCLUDED.enabled,
@@ -1169,20 +1190,35 @@ class PostgresqlSetRuntimeMapper:
                     creation = EXCLUDED.creation,
                     "values" = EXCLUDED."values",
                     "updatedAt" = NOW()
-                """.format(rootTableId=int(self.rootTableId)),
+                """
+            rootTableId = int(self.rootTableId)
+            if stageRows is not None:
+                stageRows(
+                    canonicalSql.format(
+                        source='SELECT "setId", "scipionItemId", enabled, label, comment, creation, '
+                               '"values" FROM %s' % _CANONICAL_STAGE_TABLE,
+                        rootTableId=rootTableId,
+                    ),
+                    canonicalRows,
+                    stageTable=_CANONICAL_STAGE_TABLE,
+                    stageColumns=_CANONICAL_STAGE_COLUMNS,
+                    commit=False,
+                )
+                return
+            self.db.executeValues(
+                canonicalSql.format(source="VALUES %s", rootTableId=rootTableId),
                 canonicalRows,
                 template="(%s, %s, %s, %s, %s, %s, %s::jsonb)",
                 commit=False,
             )
             return
 
-        self.db.executeValues(
-            """
+        logicalSql = """
             INSERT INTO scipion_set_table_items (
                 "tableId", "scipionItemId", "parentItemId", enabled,
                 label, comment, creation, "values"
             )
-            VALUES %s
+            {source}
             ON CONFLICT ON CONSTRAINT ux_scipion_set_table_items_table_item
             DO UPDATE SET
                 "parentItemId" = EXCLUDED."parentItemId",
@@ -1192,7 +1228,21 @@ class PostgresqlSetRuntimeMapper:
                 creation = EXCLUDED.creation,
                 "values" = EXCLUDED."values",
                 "updatedAt" = NOW()
-            """,
+            """
+        if stageRows is not None:
+            stageRows(
+                logicalSql.format(
+                    source='SELECT "tableId", "scipionItemId", "parentItemId", enabled, label, comment, '
+                           'creation, "values" FROM %s' % _LOGICAL_STAGE_TABLE,
+                ),
+                logicalRows,
+                stageTable=_LOGICAL_STAGE_TABLE,
+                stageColumns=_LOGICAL_STAGE_COLUMNS,
+                commit=False,
+            )
+            return
+        self.db.executeValues(
+            logicalSql.format(source="VALUES %s"),
             logicalRows,
             template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
             commit=False,

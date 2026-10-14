@@ -21,10 +21,11 @@
 # *
 # ******************************************************************************
 # postgresql.py
+import io
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from itertools import repeat
 from uuid import uuid4
 
@@ -55,6 +56,35 @@ PROTOCOL_STEP_EFFECTIVE_ELAPSED_SQL = """
         ELSE COALESCE("elapsedSeconds", 0.0)
     END
 """
+
+
+def _toCopyText(value: Any) -> str:
+    """Encode one value for the COPY text format (callers pass plain values)."""
+    if value is None:
+        return "\\N"
+    if value is True:
+        return "t"
+    if value is False:
+        return "f"
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return (str(value).replace("\\", "\\\\").replace("\t", "\\t")
+            .replace("\n", "\\n").replace("\r", "\\r"))
+
+
+_COPY_TEXT_TYPES = frozenset((type(None), bool, int, str, datetime, date))
+
+
+def canStageCopyRows(rows) -> bool:
+    """Whether COPY text encodes every value exactly as a bound parameter."""
+    for row in rows:
+        for value in row:
+            kind = type(value)
+            if kind not in _COPY_TEXT_TYPES:
+                return False
+            if kind is str and "\x00" in value:
+                return False
+    return True
 
 
 def _toJsonParam(value: Any) -> Any:
@@ -439,6 +469,66 @@ class PostgresqlDb:
                 template=template,
                 page_size=len(rows),
             )
+
+            if commit and not transactionActive:
+                connection.commit()
+
+            succeeded = True
+
+            return cursor
+
+        except Exception:
+            if not transactionActive:
+                connection.rollback()
+
+            raise
+
+        finally:
+            self._recordQueryMeasurement(
+                startedAt,
+                succeeded,
+                batchRowsCount=len(rows),
+            )
+
+    def executeFromStagedRows(
+            self,
+            query: str,
+            rows,
+            stageTable: str,
+            stageColumns: str,
+            commit: bool = True,
+    ):
+        """Bulk-load rows into a session temporary table, then run query.
+
+        The query reads ``stageTable``; it holds only this call's rows and
+        the same transaction rules as executeValues() apply. The table is
+        emptied before use rather than on commit, which would cost a
+        truncation at every later commit of the session.
+        """
+        rows = list(rows or [])
+        if not rows:
+            return self.cursor
+
+        cursor = self.cursor
+        connection = self.conn
+        transactionActive = self._isTransactionActive()
+
+        startedAt = time.perf_counter()
+        succeeded = False
+
+        try:
+            cursor.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS %s (%s)"
+                % (stageTable, stageColumns)
+            )
+            cursor.execute("TRUNCATE %s" % stageTable)
+            text = io.StringIO()
+            text.write("".join(
+                "\t".join(map(_toCopyText, row)) + "\n" for row in rows
+            ))
+            text.seek(0)
+            cursor.copy_expert("COPY %s FROM STDIN" % stageTable, text)
+            cursor.execute(query)
 
             if commit and not transactionActive:
                 connection.commit()
