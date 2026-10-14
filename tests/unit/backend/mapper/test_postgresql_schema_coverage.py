@@ -66,3 +66,18 @@ def test_IncompleteSynchronizationStillRaisesForMissingPaths():
     with pytest.raises(RuntimeError, match='missingPaths=.*_missing'):
         ensure(instance, {'_a': ('Integer', 1), '_missing': ('Integer', 2)})
     assert calls == ['current-item']
+
+
+def test_RepeatedPathSetsStillSynchronizeNewOrRemovedPaths():
+    instance, calls = scope({'_a': {}, '_b': {}})
+    shape = {'self': ('Object',), '_a': ('Integer', 1), '_b': ('String', 'b')}
+    ensure(instance, shape)
+    ensure(instance, dict(shape, _a=('Integer', 2)))
+    assert calls == []
+    grown = dict(shape, _late=('Float', 0.5))
+    with pytest.raises(RuntimeError, match='missingPaths=.*_late'):
+        ensure(instance, grown)
+    assert calls == ['current-item']
+    del instance._columns['_a']
+    ensure(instance, shape)
+    assert calls == ['current-item', 'current-item']

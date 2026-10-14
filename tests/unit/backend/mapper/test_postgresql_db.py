@@ -151,6 +151,29 @@ def test_IterRowsDecodesBatchesAndSurvivesInterleavedStatements(rowIteratorDb):
     assert db.getQueryStats()["queryCount"] == 3
 
 
+def test_IterRowsNamesPlainRowsFromTheFetchedDescription(rowIteratorDb):
+    db = rowIteratorDb
+    rows = db.iterRows("SELECT snapshot", batchSize=2)
+    cursor = db.conn.cursors[-1]
+    # Server-side cursors only describe their columns after the first fetch.
+    cursor.description = None
+    cursor.rows = [(index, {"_index": index}, None) for index in range(3)]
+    originalFetchmany = cursor.fetchmany
+
+    def fetchmany(size):
+        cursor.description = (("id",), ("values",), ("label",))
+        return originalFetchmany(size)
+
+    cursor.fetchmany = fetchmany
+    decoded = list(rows)
+    assert decoded == [
+        {"id": index, "values": {"_index": index}, "label": None}
+        for index in range(3)
+    ]
+    assert all(type(row) is dict for row in decoded)
+    assert [list(row) for row in decoded] == [["id", "values", "label"]] * 3
+
+
 @pytest.mark.parametrize("consume", [False, True])
 def test_IterRowsClosesPartiallyConsumedAndUnconsumedResults(rowIteratorDb, consume):
     rows = rowIteratorDb.iterRows("SELECT snapshot")

@@ -25,9 +25,11 @@
 # ******************************************************************************
 import json
 import logging
+import os
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Type
 
+from pyworkflow import Config as ScipionConfig
 from pyworkflow.object import (
     Object as ScipionObject,
     Pointer,
@@ -1752,6 +1754,21 @@ class PostgresqlRuntimeSetMixin:
         return result
 
 
+SET_ITEM_TEMPLATE_ENV = "SCIPIONAPI_SET_ITEM_TEMPLATE"
+
+
+def isSetItemTemplateEnabled() -> bool:
+    """Opt-in reuse of one item object per row during Set iteration.
+
+    Native Scipion iteration reuses a template object, so plugins must clone
+    the items they keep. Fresh objects stay the default until every plugin in
+    use has been audited for that; the native switch can still disable reuse.
+    """
+    if (os.getenv(SET_ITEM_TEMPLATE_ENV) or "").strip() != "1":
+        return False
+    return bool(getattr(ScipionConfig, "SCIPION_MAPPER_USE_TEMPLATE", True))
+
+
 class PostgresqlRuntimeSetFactory:
     """
     Build native Scipion SetOf... instances backed by PostgreSQL.
@@ -2296,6 +2313,12 @@ class PostgresqlRuntimeSetFactory:
 
             return item
 
+        def refillItem(previousItem, row):
+            # Nested Set items carry their own mappers; always build them.
+            if nestedSetItemClass or logicalTablesByParentId:
+                return None
+            return getItemHydrator().refill(previousItem, row)
+
         def serializeItem(
                 item,
         ):
@@ -2549,6 +2572,11 @@ class PostgresqlRuntimeSetFactory:
                 nestedItemSynchronizer=(
                     synchronizeNestedItem
                     if nestedSetItemClass
+                    else None
+                ),
+                itemRefiller=(
+                    refillItem
+                    if isSetItemTemplateEnabled()
                     else None
                 ),
                 writable=bool(
@@ -3060,6 +3088,13 @@ class PostgresqlRuntimeSetFactory:
                 )
             )
 
+        def refillChildItem(previousItem, childRow):
+            # Only the hydrator that built the previous item may refill it.
+            hydrator = childMapperState["hydrator"]
+            if hydrator is None:
+                return None
+            return hydrator.refill(previousItem, childRow)
+
         def serializeChildItem(
                 childItem,
         ):
@@ -3144,6 +3179,11 @@ class PostgresqlRuntimeSetFactory:
                     synchronizeChildSchema
                 ),
                 queuedSchemaSynchronizer=synchronizeQueuedChildSchema,
+                itemRefiller=(
+                    refillChildItem
+                    if isSetItemTemplateEnabled()
+                    else None
+                ),
                 itemColumnsUpdater=(
                     updateChildHydratorColumns
                 ),

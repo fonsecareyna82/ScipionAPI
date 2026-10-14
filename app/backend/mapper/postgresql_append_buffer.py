@@ -9,6 +9,9 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from itertools import islice
 
+_PLAIN_METADATA_TYPES = frozenset((str, bool, int, float, date, datetime))
+_READ_BATCH_SIZE = 256
+
 
 class EncodedAppendItem(Mapping):
     KEYS = ("scipionItemId", "enabled", "label", "comment", "creation")
@@ -41,6 +44,7 @@ class PostgresqlAppendBuffer:
     def __init__(self, maxMemoryBytes=8 * 1024 * 1024):
         self.maxMemoryBytes = maxMemoryBytes
         self._file = None
+        self._end = 0
         self._count = 0
         self._fallbacks = {}
         self._lock = threading.RLock()
@@ -52,9 +56,11 @@ class PostgresqlAppendBuffer:
     def append(self, item):
         metadata = tuple(item.get(key, True if key == "enabled" else None)
                          for key in EncodedAppendItem.KEYS)
-        normalMetadata = all(value is None or type(value) in (
-            str, bool, int, float, date, datetime,
-        ) for value in metadata)
+        normalMetadata = True
+        for value in metadata:
+            if value is not None and type(value) not in _PLAIN_METADATA_TYPES:
+                normalMetadata = False
+                break
         record = None
         if normalMetadata:
             try:
@@ -68,8 +74,8 @@ class PostgresqlAppendBuffer:
         with self._lock:
             if self._file is None:
                 self._file = io.BytesIO()
-            self._file.seek(0, io.SEEK_END)
-            start = self._file.tell()
+                self._end = 0
+            start = self._end
             if not self.spilled and start + len(data) > self.maxMemoryBytes:
                 temporary = tempfile.TemporaryFile(mode="w+b")
                 try:
@@ -84,27 +90,37 @@ class PostgresqlAppendBuffer:
                 self._file = temporary
                 self.spilled = True
             try:
+                # Readers move the shared position; records are only appended.
+                self._file.seek(start)
                 if self._file.write(data) != len(data):
                     raise OSError("Incomplete PostgreSQL append-buffer write.")
             except Exception:
                 self._file.seek(start)
                 self._file.truncate()
                 raise
+            self._end = start + len(data)
             if record is None:
                 self._fallbacks[self._count] = item
             self._count += 1
 
     def iterPrefix(self, count):
         position = 0
-        for index in range(min(count, len(self))):
+        index = 0
+        count = min(count, len(self))
+        while index < count:
+            batch = []
+            # Decode a bounded run per seek; appends made meanwhile only add
+            # records after this fixed prefix.
             with self._lock:
                 self._file.seek(position)
-                start = position
-                record = pickle.load(self._file)
-                position = self._file.tell()
-                item = (self._fallbacks[index] if record is None
-                        else EncodedAppendItem(*record, encodedSize=position - start))
-            yield item
+                for recordIndex in range(index, min(count, index + _READ_BATCH_SIZE)):
+                    start = position
+                    record = pickle.load(self._file)
+                    position = self._file.tell()
+                    batch.append(self._fallbacks[recordIndex] if record is None
+                                 else EncodedAppendItem(*record, encodedSize=position - start))
+            index += len(batch)
+            yield from batch
 
     def __iter__(self):
         return self.iterPrefix(len(self))
@@ -137,6 +153,7 @@ class PostgresqlAppendBuffer:
                 raise
             self.clear()
             self._file, replacement._file = replacement._file, None
+            self._end = replacement._end
             self._count = replacement._count
             self._fallbacks, replacement._fallbacks = replacement._fallbacks, {}
             self.spilled = replacement.spilled
@@ -146,6 +163,7 @@ class PostgresqlAppendBuffer:
             if self._file is not None:
                 self._file.close()
             self._file = None
+            self._end = 0
             self._count = 0
             self._fallbacks.clear()
             self.spilled = False

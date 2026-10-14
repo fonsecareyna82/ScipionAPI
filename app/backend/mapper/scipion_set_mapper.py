@@ -53,6 +53,8 @@ except Exception:
 
 
 SELF_LABEL = "self"
+# Values whose JSON normalization is the identity.
+_PLAIN_JSON_TYPES = frozenset((type(None), bool, int, float, str))
 NESTED_LOGICAL_TABLES_VERSION = 18
 SET_PROPERTIES_VERSION = 3
 
@@ -388,9 +390,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             if path.startswith("__item__"):
                 legacyPaths.append(path)
                 continue
-            kind = type(value)
-            if (value is not None and kind is not bool and kind is not int
-                    and kind is not float and kind is not str):
+            if type(value) not in _PLAIN_JSON_TYPES:
                 return None
         for path in legacyPaths:
             values.pop(path, None)
@@ -423,7 +423,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                             "_removeLegacyPointerListEntries")):
             for path in legacyPaths:
                 schema.pop(path, None)
-            self._completeScalarSchemaFromValues(schema=schema, values=values)
+            # Graph schema keys are strings, so a value path missing from the
+            # schema (including any non-string one) always takes the full pass.
+            if not values.keys() <= schema.keys():
+                self._completeScalarSchemaFromValues(schema=schema, values=values)
         else:
             schema = self._getCompleteItemSchema(
                 item, scipionSet=scipionSet, itemValues=values,

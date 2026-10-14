@@ -334,12 +334,20 @@ Collect a native Set sampling rate through its Set getter before asking the
 first item; only the latter may invoke a compatibility snapshot for class
 Sets. Explicit `getFileName()` consumers still materialize normally.
 
-Runtime iteration builds a new item object for every row, unlike native
-SQLite template iteration. Plugins written for native Scipion clone what they
-keep, so both behave the same for them; do not switch to template reuse
-without auditing every plugin, since code that keeps uncloned items (already
-broken under native Scipion) would then lose data here too. Internal code
-that keeps iterated items should still request copies (`iterate=False`).
+Runtime iteration builds a new item object for every row by default, unlike
+native template iteration. `SCIPIONAPI_SET_ITEM_TEMPLATE=1` opts into template
+semantics for `iterate=True` reads, and `SCIPION_MAPPER_USE_TEMPLATE=False`
+still disables them. Plugins written for native Scipion clone what they keep,
+so both behave the same for them; keep the default until every plugin in use
+has been audited, since code that keeps uncloned items (already broken under
+native Scipion) would then lose data here too. An item is refilled only when
+the row has the exact value-path set and creation/enabled presence of the row
+that built it, all paths are plain instance attributes of standard-access
+owners (no Pointer, PointerList, List, property or descriptor), the item is
+not a Set and the hydrator has no custom hooks; any other row builds a new
+object. `iterate=False`, `selectFirst()` and `selectById()` always return
+independent objects. Internal code that keeps iterated items must clone them
+or request copies (`iterate=False`).
 
 Child reads revalidate the table identity and columns once per query, through
 the mapper's read refresh; row hydration reuses the current hydrator, which a

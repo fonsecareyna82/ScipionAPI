@@ -87,6 +87,12 @@ first item, avoiding implicit SQLite materialization of native class Sets.
 Child reads resolve the table identity once per query, never per hydrated
 row. A parent's `_setItemMapperPath` hook does not export the parent for
 runtime children, which load their own mapper; subclass hook code still runs.
+Set iteration builds a new item per row by default. `SCIPIONAPI_SET_ITEM_TEMPLATE=1`
+opts into native template reuse for `iterItems()`/`for x in set` (honoring
+`SCIPION_MAPPER_USE_TEMPLATE`); `set[id]`, `getFirstItem()` and `iterate=False`
+always return independent objects, and nested Set items are always built anew.
+Enable it only once every plugin in use clones the items it keeps; code here
+that keeps iterated items must clone them or pass `iterate=False`.
 
 Neither canonical root nor logical items keep a JSON GIN. Migration
 `b75a4e291c0f` drops the canonical root GIN; `9d064ee31b1b` dropped the

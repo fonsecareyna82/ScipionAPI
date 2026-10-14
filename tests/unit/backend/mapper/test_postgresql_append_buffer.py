@@ -209,3 +209,32 @@ def test_PartialFlushRetainsOpaqueFallbackRecords():
     assert len(pending) == 1
     assert pending[0] is custom
     pending.clear()
+
+
+@pytest.mark.parametrize("limit", [1, 8 * 1024 * 1024])
+def test_LongPrefixReadsEveryRecordAcrossDecodeRunsWhileAppending(limit):
+    pending = PostgresqlAppendBuffer(limit)
+    opaque = {}
+    try:
+        for index in range(600):
+            row = item(index)
+            if index in (0, 255, 256, 511, 599):
+                row["creation"] = object()
+                opaque[index] = row
+            pending.append(row)
+        snapshot = pending.iterPrefix(520)
+        seen = [next(snapshot) for _ in range(300)]
+        pending.append(item(600))
+        seen.extend(snapshot)
+        assert len(seen) == 520
+        for index, record in enumerate(seen):
+            if index in opaque:
+                assert record is opaque[index]
+            else:
+                assert dict(record) == item(index)
+        pending.discardPrefix(520)
+        assert len(pending) == 81
+        assert pending[79] is opaque[599]
+        assert dict(pending[80]) == item(600)
+    finally:
+        pending.clear()

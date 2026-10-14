@@ -2972,7 +2972,8 @@ class ThumbnailService:
                 if not self._isEnabled(ctfModel):
                     continue
 
-                ctfItems.append(ctfModel)
+                # Ordered iteration may reuse one item object per row.
+                ctfItems.append(ctfModel.clone())
 
                 if len(ctfItems) >= 80:
                     break
@@ -5881,7 +5882,8 @@ class ThumbnailService:
             if callable(iterTomogramsFn):
                 try:
                     for tomogram in iterTomogramsFn():
-                        tomogramSources.append(tomogram)
+                        # Set iteration may reuse one item object per row.
+                        tomogramSources.append(tomogram.clone())
                 except Exception:
                     logger.debug("Coords3D iterVolumes failed", exc_info=True)
 

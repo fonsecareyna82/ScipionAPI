@@ -157,6 +157,7 @@ class PostgresqlSetRuntimeMapper:
                     Optional[Dict[str, Any]],
                 ]
             ] = None,
+            itemRefiller: Optional[Callable[[Any, Dict[str, Any]], Any]] = None,
             writable: bool = False,
             normalizedAppendValues: bool = False,
             deferQueuedScopeValidation: bool = False,
@@ -332,6 +333,9 @@ class PostgresqlSetRuntimeMapper:
         self.nestedItemSynchronizer = (
             nestedItemSynchronizer
         )
+        # Optional (previousItem, row) -> item | None. Lets iterate=True reuse
+        # one item per row, matching native Scipion template iteration.
+        self.itemRefiller = itemRefiller if callable(itemRefiller) else None
         self.writable = bool(
             writable
         )
@@ -372,6 +376,8 @@ class PostgresqlSetRuntimeMapper:
 
         self._columns = self._loadColumns()
         self._itemSchemaReady = bool(self._columns)
+        # (schema keys, required paths) of the last item known to be covered.
+        self._coveredSchema = None
         self._dynamicFieldValueTypes = {}
         self._pendingAppendItems = (PostgresqlAppendBuffer() if normalizedAppendValues else [])
         if normalizedAppendValues:
@@ -516,6 +522,7 @@ class PostgresqlSetRuntimeMapper:
             rows,
             rowFilter=rowFilter,
             objectFilter=objectFilter,
+            reuseItems=bool(iterate),
         )
 
         if iterate:
@@ -1676,6 +1683,14 @@ class PostgresqlSetRuntimeMapper:
             dict,
         )
 
+        covered = getattr(self, "_coveredSchema", None)
+        if (self._itemSchemaReady and hasSerializedSchema and covered is not None
+                and type(self._columns) is dict and serializedSchema.keys() == covered[0]
+                and covered[1] <= self._columns.keys()):
+            # Items of one Set usually share their exact path set: reuse its
+            # normalized paths, still checked against the live columns.
+            return
+
         requiredPaths = {
             str(path)
             for path in (
@@ -1698,6 +1713,7 @@ class PostgresqlSetRuntimeMapper:
                        if type(self._columns) is dict
                        else requiredPaths.issubset(self._columns))
             if covered:
+                self._coveredSchema = (frozenset(serializedSchema), frozenset(requiredPaths))
                 return
 
         if getattr(self, "deferQueuedScopeValidation", False):
@@ -2941,12 +2957,20 @@ class PostgresqlSetRuntimeMapper:
     ):
         return list(self._iterItems(rows, rowFilter, objectFilter))
 
-    def _iterItems(self, rows, rowFilter=None, objectFilter=None):
+    def _iterItems(self, rows, rowFilter=None, objectFilter=None, reuseItems=False):
+        refill = self.itemRefiller if reuseItems else None
+
         def buildItems():
+            previous = None
             for row in rows if rows is not None else ():
                 if rowFilter is not None and not rowFilter(row):
                     continue
-                item = self.itemBuilder(dict(row))
+                item = None
+                if refill is not None and previous is not None:
+                    item = refill(previous, dict(row))
+                if item is None:
+                    item = self.itemBuilder(dict(row))
+                previous = item
                 if objectFilter is None or objectFilter(item):
                     yield item
         return _PostgresqlItemIterator(buildItems(), rows)

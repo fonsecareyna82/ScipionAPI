@@ -25,6 +25,7 @@ import json
 import threading
 import time
 from datetime import datetime
+from itertools import repeat
 from uuid import uuid4
 
 import psycopg2
@@ -110,6 +111,11 @@ class _PostgresqlRowIterator:
         if not batch:
             self.close()
             raise StopIteration
+        if type(batch[0]) is tuple:
+            # Plain rows are paired with their column names in C, which is
+            # cheaper than building each dictionary key by key.
+            names = tuple(column[0] for column in self.cursor.description)
+            batch = list(map(dict, map(zip, repeat(names), batch)))
         self.rows = iter(batch)
         return next(self.rows)
 
@@ -615,7 +621,7 @@ class PostgresqlDb:
             raise ValueError("PostgreSQL row batch size must be positive.")
         with self._resourcesLock:
             connection = self.conn
-            options = {"cursor_factory": psycopg2.extras.RealDictCursor}
+            options = {}
             if serverSide:
                 options.update(name="scipion_rows_" + uuid4().hex, withhold=True)
             cursor = connection.cursor(**options)
