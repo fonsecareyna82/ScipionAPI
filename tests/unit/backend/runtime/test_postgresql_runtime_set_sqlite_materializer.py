@@ -1651,3 +1651,48 @@ def test_CleanupCurrentWorkerDirectoryRefusesSymbolicLink(
 
     assert sentinelPath.read_bytes() == b"do-not-delete"
     assert workerDirectory.is_symlink()
+
+
+def test_TableWideStableCreationMatchesThePerItemCursor(tmp_path):
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+    itemIds = [0, 1, 999999, 1000000, 86400000001, 2 ** 31,
+               materializer.MAX_TABLE_CREATION_ITEM_ID]
+    connection = sqlite3.connect(str(tmp_path / "creation.sqlite"))
+    connection.execute("CREATE TABLE Class001_Objects (id INTEGER PRIMARY KEY, creation DATE)")
+    connection.executemany("INSERT INTO Class001_Objects VALUES (?, datetime('now'))",
+                           [(itemId,) for itemId in itemIds])
+    db = type("Db", (), {"executeCommand": staticmethod(connection.execute),
+                         "tablePrefix": "Class001_"})()
+    targetSet = type("TargetSet", (), {"_getMapper": lambda self: type("M", (), {"db": db})()})()
+    materializer._setTableStableStreamingCreations(targetSet)
+    stored = dict(connection.execute("SELECT id, creation FROM Class001_Objects"))
+    assert stored == {itemId: materializer._buildStableStreamingCreation(itemId) for itemId in itemIds}
+    item = ExampleItem()
+    for itemId, deferred in ((5, True), (-1, False), (None, False),
+                             (materializer.MAX_TABLE_CREATION_ITEM_ID + 1, False)):
+        item.setObjId(itemId)
+        assert materializer._canDeferStableStreamingCreation(item) is deferred
+
+
+def test_PlannedMissingAttributesMatchTheRecursiveCompletion():
+    from pwem import objects as emobj
+    from pyworkflow.object import Pointer
+
+    def schemaParticle():
+        particle = emobj.Particle()
+        particle.setCTF(emobj.CTFModel())
+        particle.setCoordinate(emobj.Coordinate())
+        particle._reference = Pointer()
+        return particle
+
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+    schema = schemaParticle()
+    plan = materializer._planMissingItemAttributes(schema)
+    for build in (emobj.Particle, schemaParticle):
+        walked, planned = build(), build()
+        for target in (walked, planned):
+            target._ctfModel = None
+        materializer._completeMissingItemAttributes(walked, schema)
+        materializer._completeMissingItemAttributesFromPlan(planned, plan)
+        assert planned.getObjDict(includeClass=True) == walked.getObjDict(includeClass=True)
+        assert sorted(vars(planned)) == sorted(vars(walked))

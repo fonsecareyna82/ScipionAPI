@@ -748,6 +748,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
     ) -> None:
         sourceClasses = self._getRuntimeClasses(sourceSet) or classes
         itemSchema = self._getPersistedItemSchema(sourceSet, targetSet, sourceClasses)
+        # The persisted schema item is never appended, so its attribute tree
+        # can be planned once instead of walked again for every item.
+        persistedSchema = itemSchema is not None
+        schemaPlan = None
+        deferredCreations = 0
         if itemSchema is not None:
             # SQLite fixes its columns at the first insert. Seed all persisted
             # paths before copying a first item that may omit optional fields.
@@ -775,6 +780,10 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 if not nestedSetItem:
                     if itemSchema is None:
                         itemSchema = targetItem
+                    elif persistedSchema:
+                        if schemaPlan is None:
+                            schemaPlan = self._planMissingItemAttributes(itemSchema)
+                        self._completeMissingItemAttributesFromPlan(targetItem, schemaPlan)
                     else:
                         self._completeMissingItemAttributes(
                             targetItem,
@@ -782,6 +791,11 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                         )
 
                 targetSet.append(targetItem)
+
+                if not nestedSetItem and self._canDeferStableStreamingCreation(targetItem):
+                    # Written for the whole table once all items are in.
+                    deferredCreations += 1
+                    continue
 
                 self._setStableStreamingCreation(
                     targetItem=targetItem,
@@ -816,6 +830,9 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                         self.COMPATIBILITY_BUILD_ATTRIBUTE,
                         None,
                     )
+
+        if deferredCreations:
+            self._setTableStableStreamingCreations(targetSet)
 
         self._ensureSetSchema(
             sourceSet=sourceSet,
@@ -882,6 +899,24 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                 schemaAttribute,
             )
 
+    def _planMissingItemAttributes(self, schemaItem):
+        """Attribute tree walked by _completeMissingItemAttributes."""
+        return [
+            (attributeName, schemaAttribute,
+             None if schemaAttribute.isPointer()
+             else self._planMissingItemAttributes(schemaAttribute))
+            for attributeName, schemaAttribute in schemaItem.getAttributesToStore()
+        ]
+
+    def _completeMissingItemAttributesFromPlan(self, targetItem, plan) -> None:
+        for attributeName, schemaAttribute, children in plan:
+            targetAttribute = getattr(targetItem, attributeName, None)
+            if targetAttribute is None:
+                targetAttribute = schemaAttribute.getClass()()
+                setattr(targetItem, attributeName, targetAttribute)
+            if children is not None:
+                self._completeMissingItemAttributesFromPlan(targetAttribute, children)
+
     @classmethod
     def _buildStableStreamingCreation(
             cls,
@@ -910,6 +945,41 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
         return creation.strftime(
             "%Y-%m-%d %H:%M:%S.%f"
+        )
+
+    # Largest id whose stable creation SQLite and Python format identically.
+    MAX_TABLE_CREATION_ITEM_ID = 10 ** 15
+
+    def _canDeferStableStreamingCreation(self, targetItem) -> bool:
+        itemId = targetItem.getObjId()
+        return (type(itemId) is int
+                and 0 <= itemId <= self.MAX_TABLE_CREATION_ITEM_ID)
+
+    def _setTableStableStreamingCreations(
+            self,
+            targetSet: ScipionSet,
+    ) -> None:
+        """Write every row's stable creation with one statement.
+
+        The value depends only on the row id, so rows already written one by
+        one keep the same text.
+        """
+        epochSeconds = int(
+            (self.STREAMING_CURSOR_EPOCH - datetime(1970, 1, 1)).total_seconds()
+        )
+        sqliteDb = getattr(targetSet._getMapper(), "db", None)
+        executeCommand = getattr(sqliteDb, "executeCommand", None)
+        if not callable(executeCommand):
+            raise RuntimeError(
+                "SQLite compatibility mapper does not "
+                "provide executeCommand()."
+            )
+        tablePrefix = str(getattr(sqliteDb, "tablePrefix", "") or "")
+        executeCommand(
+            "UPDATE %sObjects "
+            "SET creation=strftime('%%Y-%%m-%%d %%H:%%M:%%S', %d + id / 1000000, 'unixepoch')"
+            " || '.' || printf('%%06d', id %% 1000000)"
+            % (tablePrefix, epochSeconds)
         )
 
     def _setStableStreamingCreation(
