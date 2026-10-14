@@ -242,3 +242,34 @@ class ScipionClassHierarchyResolver:
         return [
             normalizedClassName
         ]
+
+
+    @classmethod
+    def getPersistedItemClassMetadata(
+            cls,
+            persistedOutput,
+            classRegistry=None,
+    ) -> Dict[str, object]:
+        """Describe the type of SET MEMBERS without changing the output type.
+
+        PostgreSQL stores a set's `itemClassName` separately from `setClassName`.
+        A child class hierarchy must never be merged into pointerClassHierarchy:
+        a SetOfVolumes is not itself a Volume. Non-set outputs have no item
+        metadata and therefore keep their existing payload unchanged.
+        """
+        if not isinstance(persistedOutput, dict):
+            return {}
+
+        itemClassName = str(
+            persistedOutput.get('itemClassName') or ''
+        ).strip()
+        if not itemClassName:
+            return {}
+
+        return {
+            'itemClassName': itemClassName,
+            'itemClassHierarchy': cls.getPersistedClassHierarchy(
+                itemClassName,
+                classRegistry,
+            ),
+        }

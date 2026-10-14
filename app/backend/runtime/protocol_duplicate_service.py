@@ -497,6 +497,91 @@ class RuntimeProtocolDuplicateService:
                             ),
                         })
 
+                    # GREEN67: validate Scipion Set-member identity before protocol duplication.
+                    # The source object may be perfectly valid while a numeric
+                    # Pointer extension refers to a missing/different member.
+                    # Do not change legacy direct-output/protocol pointers.
+                    if callable(hasObjId):
+                        extended = ""
+                        try:
+                            getExtended = getattr(
+                                attribute,
+                                "getExtended",
+                                None,
+                            )
+                            extended = (
+                                str(getExtended() or "").strip()
+                                if callable(getExtended)
+                                else ""
+                            )
+                            extensionParts = [
+                                part for part in extended.split(".") if part
+                            ]
+
+                            if any(part.isdigit() for part in extensionParts):
+                                # Native Pointer.get() must resolve the entire
+                                # path, including attributes after a Set item.
+                                pointedObject = attribute.get()
+                                if pointedObject is None:
+                                    raise ValueError(
+                                        "Pointer extension %s resolved to None"
+                                        % extended
+                                    )
+
+                                currentObject = pointerValue
+                                for part in extensionParts:
+                                    if (
+                                            part.isdigit()
+                                            and callable(getattr(currentObject, "__getitem__", None))
+                                    ):
+                                        expectedItemId = int(part)
+                                        member = currentObject[expectedItemId]
+                                        if member is None:
+                                            raise ValueError(
+                                                "Scipion Set member %s is absent"
+                                                % expectedItemId
+                                            )
+
+                                        getMemberId = getattr(member, "getObjId", None)
+                                        actualItemId = (
+                                            getMemberId()
+                                            if callable(getMemberId)
+                                            else None
+                                        )
+                                        if (
+                                                actualItemId is None
+                                                or int(actualItemId) != expectedItemId
+                                        ):
+                                            raise ValueError(
+                                                "Scipion Set member %s resolved to item %s"
+                                                % (expectedItemId, actualItemId)
+                                            )
+                                        currentObject = member
+                                    else:
+                                        currentObject = getattr(
+                                            currentObject,
+                                            part,
+                                            None,
+                                        )
+                                        if currentObject is None:
+                                            raise ValueError(
+                                                "Pointer extension %s has no attribute %s"
+                                                % (extended, part)
+                                            )
+
+                        except Exception as error:
+                            errors.append({
+                                "path": attributePath,
+                                "extension": extended,
+                                "error": (
+                                    "Unresolved Scipion Set-member pointer %s: %s"
+                                    % (
+                                        extended,
+                                        error,
+                                    )
+                                ),
+                            })
+
                     continue
 
                 visit(

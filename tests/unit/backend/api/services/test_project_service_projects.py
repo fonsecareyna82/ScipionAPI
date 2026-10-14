@@ -1926,3 +1926,79 @@ def test_BuildProtocolsGraphUsesClassLabelInsteadOfLegacyNumberedObjectLabel(
     assert graph["27"]["label"] == "motioncorr - movie alignment"
     assert graph["27"]["runName"] == "motioncorr - movie alignment"
 
+
+# 45 RED: generic nested pointer item compatibility contract
+# The form selector consumes GRAPH outputs (including lightweight updates),
+# not only ProtocolFormSerializer's individual protocol context.
+
+
+def test_NestedPointerItemContractGraphPreservesPersistedItemHierarchy(service):
+    graph = service.buildProtocolsGraph(
+        projectId=1,
+        protocolRows=[
+            {
+                "protocolId": "10",
+                "protocolClassName": "ProtImportVolumes",
+                "status": "finished",
+            },
+        ],
+        tags={},
+        dependencyMap={},
+        runMap={},
+        persistedOutputsByProtocolId={
+            "10": {
+                "outputVolumes": {
+                    "className": "SetOfVolumes",
+                    "itemClassName": "Volume",
+                },
+            },
+        },
+        allowRuntimeFallback=False,
+    )
+
+    output = graph["10"]["outputs"][0]
+    assert output["pointerClass"] == "SetOfVolumes"
+    assert output["pointerClassHierarchy"][0] == "SetOfVolumes"
+    assert "Volume" not in output["pointerClassHierarchy"]
+    assert output["itemClassName"] == "Volume"
+    assert output["itemClassHierarchy"][0] == "Volume"
+
+
+def test_NestedPointerItemContractLightweightUpdatesKeepItemHierarchy(
+        service, mapper, projectServiceModule, monkeypatch,
+):
+    mapper.getProjectProtocolRuntimeRows = (
+        lambda projectId, protocolIds: [
+            {"protocolId": "10", "status": "running", "params": {}},
+        ]
+    )
+    mapper.getProjectProtocolStepSummaryByProtocolId = lambda projectId: {}
+
+    class RuntimeOutputPersistenceStub:
+        def loadPersistedOutputSummariesByProtocolId(self, mapper, projectId):
+            return {
+                "10": {
+                    "outputParticles": {
+                        "className": "SetOfParticles",
+                        "itemClassName": "Particle",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "RuntimeProtocolOutputPersistenceService",
+        RuntimeOutputPersistenceStub,
+    )
+
+    summaries = service.getProtocolRuntimeSummaries(
+        mapper=mapper,
+        projectId=1,
+        protocolIds=[10],
+    )
+    output = summaries[0]["outputs"][0]
+    assert output["pointerClass"] == "SetOfParticles"
+    assert output["pointerClassHierarchy"][0] == "SetOfParticles"
+    assert "Particle" not in output["pointerClassHierarchy"]
+    assert output["itemClassName"] == "Particle"
+    assert output["itemClassHierarchy"][0] == "Particle"

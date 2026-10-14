@@ -689,13 +689,18 @@ class RuntimePointerResolver:
                     "directProtocolPointer": True,
                 }
 
+            # A Scipion Pointer extension may traverse a Set member:
+            # "outputVolumes.34". PostgreSQL persists the root Set as the
+            # output "outputVolumes", but Pointer(parentProtocol,
+            # extended="outputVolumes.34") must retain the full extension.
+            rootOutputName = outputName.split(".", 1)[0]
             resolvedOutput = resolveParentOutputCallback(
                 mapper=mapper,
                 projectId=projectId,
                 parentProtocolDbId=int(parentProtocolDbId),
                 parentScipionProtocolId=parentScipionProtocolId,
                 parentProtocol=parentProtocol,
-                outputName=outputName,
+                outputName=rootOutputName,
             )
 
             if not resolvedOutput.get("exists"):
@@ -862,14 +867,24 @@ class RuntimePointerResolver:
                     parentProtocolIds.append(parentScipionProtocolId)
 
                 if outputName:
+                    # Only the first extension component is a persisted output
+                    # name. The rest is native Scipion Pointer traversal,
+                    # including numeric IDs of items in persisted Sets.
+                    rootOutputName = outputName.split(".", 1)[0]
+                    itemExtension = outputName[len(rootOutputName):]
                     outputInfo = protocolGraphRepository.getPersistedOutputInfoForInputRef(
                         mapper=mapper,
                         projectId=projectId,
                         parentProtocolDbId=parentProtocolDbId,
-                        outputName=outputName,
+                        outputName=rootOutputName,
                     )
 
-                    parentOutputName = str(outputInfo.get("outputName") or outputName)
+                    # Canonicalize only the root's spelling: never discard
+                    # the member extension or substitute the member for its Set.
+                    canonicalOutputName = str(
+                        outputInfo.get("outputName") or rootOutputName
+                    )
+                    parentOutputName = canonicalOutputName + itemExtension
 
                 else:
                     parentProtocolInfo = protocolGraphRepository.getProtocolRuntimeInfoByDbId(

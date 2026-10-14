@@ -108,6 +108,7 @@ from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
 from app.backend.project import PostgresqlProject
 
+from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 from app.backend.runtime.pointer_resolver import RuntimePointerResolver
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
@@ -3850,6 +3851,11 @@ class ProjectService:
                         persistedOutput = persistedOutputsByName.get(outputName)
                         outputItem["persisted"] = bool(persistedOutput)
                         outputItem["persistence"] = persistedOutput
+                        outputItem.update(
+                            ScipionClassHierarchyResolver.getPersistedItemClassMetadata(
+                                persistedOutput, classRegistry,
+                            )
+                        )
                         if not outputItem.get("info") and persistedOutput:
                             outputItem["info"] = persistedOutput.get("info") or ""
 
@@ -3952,6 +3958,9 @@ class ProjectService:
                     "parentId": nodeId,
                     "persisted": True,
                     "persistence": persistedOutput,
+                    **ScipionClassHierarchyResolver.getPersistedItemClassMetadata(
+                        persistedOutput, classRegistry,
+                    ),
                 })
 
             graphData[nodeId] = {
@@ -6743,6 +6752,9 @@ class ProjectService:
                     "info": str(outputInfo.get("info") or ""),
                     "value": f"{protocolId}.{normalizedOutputName}",
                     "parentId": int(protocolId) if protocolId.isdigit() else protocolId,
+                    **ScipionClassHierarchyResolver.getPersistedItemClassMetadata(
+                        outputInfo, classRegistry,
+                    ),
                 })
 
             result.append({
@@ -11978,6 +11990,137 @@ class ProjectService:
             )
 
         return None
+
+    def listPointerSelectableSetItemsPageService(
+            self,
+            mapper: PostgresqlFlatMapper,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            cursor: Optional[str] = None,
+            limit: int = 50,
+            protocolIdIsScipionId: bool = False,
+            includePointerValues: bool = False,
+    ) -> Dict[str, Any]:
+        """Browse Set item metadata through PostgreSQL without runtime hydration.
+
+        The route is the authorization boundary. This method resolves producer
+        identity *strictly*: a Scipion protocol ID must never silently fall
+        back to a same-numbered PostgreSQL primary key.
+        """
+        if mapper is None or getattr(mapper, "db", None) is None:
+            raise RuntimeError("PostgreSQL mapper is required for pointer item browsing")
+
+        identity = ProtocolIdentityResolver(
+            mapper=mapper,
+            projectId=projectId,
+        )
+        if protocolIdIsScipionId:
+            protocolDbId = (
+                identity.resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    protocolId
+                )
+            )
+        else:
+            protocolDbId = identity.resolvePostgresqlProtocolDbId(
+                protocolId
+            )
+
+        if protocolDbId is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Protocol '%s' not found in PostgreSQL" % protocolId,
+            )
+
+        setMapper = ScipionSetPostgresqlMapper(mapper.db)
+        page = setMapper.listPointerSelectableSetItemsPage(
+            projectId=projectId,
+            protocolDbId=protocolDbId,
+            outputName=outputName,
+            cursor=cursor,
+            limit=limit,
+        )
+
+        # Legacy paging is metadata-only; do not mutate the mapper response.
+        if not includePointerValues:
+            return page
+
+        # GREEN 69: author native Scipion Pointer values only for persisted selectable members.
+        # A PostgreSQL PK is NOT a Scipion protocol identity. Refuse ambiguous
+        # direct service calls; the authenticated router always supplies True.
+        if not protocolIdIsScipionId:
+            raise ValueError(
+                "Native pointer references require a Scipion producer protocol ID"
+            )
+
+        def positiveScipionId(value):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                number = value
+            elif (
+                    isinstance(value, str)
+                    and value.isascii()
+                    and value.isdigit()
+                    and value[0] != "0"
+            ):
+                number = int(value)
+            else:
+                return None
+            if not 0 < number <= 9223372036854775807:
+                return None
+            return str(number)
+
+        producerId = positiveScipionId(protocolId)
+        # Native extended paths use Scipion Python attribute names, not
+        # arbitrary labels, pre-existing pointer strings, or path expressions.
+        validOutput = (
+            isinstance(outputName, str)
+            and outputName.isascii()
+            and outputName.isidentifier()
+        )
+
+        items = []
+        for rawMember in page.get("items", []):
+            # Make a separate object: never modify cached/persisted metadata.
+            member = dict(rawMember)
+            member.pop("value", None)
+            member.pop("selectionKind", None)
+            member.pop("selectable", None)
+
+            itemId = positiveScipionId(member.get("scipionItemId"))
+            itemClassName = member.get("itemClassName")
+            validClass = (
+                isinstance(itemClassName, str)
+                and bool(itemClassName.strip())
+                and itemClassName.isascii()
+                and itemClassName.isidentifier()
+            )
+            # Strict `is True` prevents accidental selection from malformed
+            # mapper rows with non-boolean enabled flags.
+            selectable = bool(
+                producerId is not None
+                and validOutput
+                and itemId is not None
+                and validClass
+                and member.get("enabled") is True
+            )
+            member["selectable"] = selectable
+
+            if selectable:
+                member.update({
+                    "value": "%s.%s.%s" % (producerId, outputName, itemId),
+                    "pointerClass": itemClassName,
+                    "selectionKind": "set-item",
+                    "parentId": producerId,
+                    "protocolId": producerId,
+                    "key": outputName,
+                })
+            items.append(member)
+
+        # Preserve the backend cursor verbatim. It is a persistent Scipion
+        # item identity, never a positional index or offset.
+        return {**page, "items": items}
 
     def listOutputVolumesService(
             self,

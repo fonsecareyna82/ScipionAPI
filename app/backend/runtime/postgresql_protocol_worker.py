@@ -2841,6 +2841,70 @@ class RuntimePostgresqlProtocolWorker:
                     outputParts[1:]
                 )
 
+            # GREEN65: verify a numeric Scipion Set-member extension before installation.
+            # Native Pointer.get() uses Set.__getitem__(scipionItemId),
+            # NEVER the ordinal position of an item in a paginated result.
+            # Plain output pointers do not undergo item-specific validation.
+            selectedScipionItemId = None
+            if (
+                    isinstance(outputObject, Set)
+                    and len(outputParts) > 1
+                    and outputParts[1].isdigit()
+            ):
+                selectedScipionItemId = int(outputParts[1])
+                try:
+                    pointedValue = pointer.get()
+                    if pointedValue is None:
+                        raise ValueError(
+                            "Set member %s is absent" % selectedScipionItemId
+                        )
+
+                    # A deeper extension can point to an attribute of the
+                    # selected member. In that case validate the intermediate
+                    # member identity, rather than the leaf attribute's ID.
+                    selectedMember = (
+                        pointedValue
+                        if len(outputParts) == 2
+                        else outputObject[selectedScipionItemId]
+                    )
+                    if selectedMember is None:
+                        raise ValueError(
+                            "Set member %s is absent" % selectedScipionItemId
+                        )
+
+                    getMemberId = getattr(selectedMember, "getObjId", None)
+                    if not callable(getMemberId):
+                        raise ValueError(
+                            "Set member %s has no persistent Scipion identity"
+                            % selectedScipionItemId
+                        )
+
+                    actualMemberId = getMemberId()
+                    if (
+                            actualMemberId is None
+                            or int(actualMemberId) != selectedScipionItemId
+                    ):
+                        raise ValueError(
+                            "Set member %s resolved to unexpected item %s"
+                            % (selectedScipionItemId, actualMemberId)
+                        )
+                except Exception as error:
+                    errors.append({
+                        **dict(ref),
+                        "error": (
+                            "Could not resolve persisted Scipion Set member %s "
+                            "from %s: %s"
+                            % (
+                                selectedScipionItemId,
+                                parentOutputName,
+                                error,
+                            )
+                        ),
+                    })
+                    # Do not install a dangling pointer, append it to a
+                    # MultiPointer, or mark a false runtime input ref resolved.
+                    continue
+
             param = self.protocol.getParam(
                 inputName
             )
@@ -2933,6 +2997,11 @@ class RuntimePostgresqlProtocolWorker:
                 ),
                 "runtimeObjectId": int(
                     runtimeObjectId
+                ),
+                **(
+                    {"scipionItemId": selectedScipionItemId}
+                    if selectedScipionItemId is not None
+                    else {}
                 ),
                 "directOutputPointer": True,
                 "parentProtocolModified": False,

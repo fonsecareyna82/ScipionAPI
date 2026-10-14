@@ -797,3 +797,103 @@ def test_protocol_form_comment_uses_logical_object_getter():
 
     assert any(param["name"] == "_objComment" for section in sections for param in section["params"])
     assert values["_objComment"] == "Persisted protocol comment"
+
+# 45 RED: generic nested pointer item compatibility contract
+# These tests intentionally distinguish the output class hierarchy from the
+# item class hierarchy.  A set is only an expandable container for a pointer
+# accepting one of its items; it must not become a selectable item itself.
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "set_class,item_class",
+    [
+        ("SetOfVolumes", "Volume"),
+        ("SetOfParticles", "Particle"),
+    ],
+)
+def test_NestedPointerItemContractSerializerPersistsSetItemHierarchy(
+        set_class, item_class,
+):
+    class FakeProtocol:
+        def getObjId(self):
+            return 21
+
+        def iterOutputAttributes(self):
+            return []
+
+    outputs = ProtocolFormSerializer().serializeProtocolOutputs(
+        protocol=FakeProtocol(),
+        protocolName="producer",
+        persistedOutputs={
+            "outputSet": {
+                "className": set_class,
+                "itemClassName": item_class,
+            },
+        },
+    )
+    assert len(outputs) == 1
+    output = outputs[0]
+
+    # Output identity and ancestry must remain those of the SET.
+    assert output["pointerClass"] == set_class
+    assert output["pointerClassHierarchy"][0] == set_class
+    assert item_class not in output["pointerClassHierarchy"]
+
+    # The item has its OWN ancestry for compatibility matching.
+    assert output["itemClassName"] == item_class
+    assert output["itemClassHierarchy"][0] == item_class
+    assert set_class not in output["itemClassHierarchy"]
+
+
+def test_NestedPointerItemContractSerializerEnrichesRuntimeSet():
+    from pwem.objects import SetOfVolumes
+
+    class FakeProtocol:
+        def getObjId(self):
+            return 21
+
+        def iterOutputAttributes(self):
+            return [("outputVolumes", SetOfVolumes())]
+
+    outputs = ProtocolFormSerializer().serializeProtocolOutputs(
+        protocol=FakeProtocol(),
+        protocolName="producer",
+        persistedOutputs={
+            "outputVolumes": {
+                "className": "SetOfVolumes",
+                "itemClassName": "Volume",
+            },
+        },
+    )
+
+    assert len(outputs) == 1  # do not duplicate the persisted output
+    output = outputs[0]
+    assert output["pointerClass"] == "SetOfVolumes"
+    assert output["pointerClassHierarchy"][0] == "SetOfVolumes"
+    assert output["itemClassName"] == "Volume"
+    assert output["itemClassHierarchy"][0] == "Volume"
+    assert "Volume" not in output["pointerClassHierarchy"]
+
+
+def test_NestedPointerItemContractDirectOutputDoesNotClaimItems():
+    from pwem.objects import Volume
+
+    class FakeProtocol:
+        def getObjId(self):
+            return 21
+
+        def iterOutputAttributes(self):
+            return [("outputVolume", Volume())]
+
+    outputs = ProtocolFormSerializer().serializeProtocolOutputs(
+        protocol=FakeProtocol(),
+        protocolName="producer",
+    )
+    assert len(outputs) == 1
+    output = outputs[0]
+    assert output["pointerClass"] == "Volume"
+    assert output["pointerClassHierarchy"][0] == "Volume"
+    assert not output.get("itemClassName")
+    assert not output.get("itemClassHierarchy")

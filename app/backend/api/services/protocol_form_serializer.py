@@ -1491,6 +1491,13 @@ class ProtocolFormSerializer:
                         "info"
                     ] = persistedInfo
 
+                # Item ancestry is independent of the set's ancestry.
+                existingOutput.update(
+                    ScipionClassHierarchyResolver.getPersistedItemClassMetadata(
+                        persistedOutput, classRegistry,
+                    )
+                )
+
                 continue
 
             outputData = {
@@ -1513,6 +1520,12 @@ class ProtocolFormSerializer:
                 ),
                 "parentId": parentId,
             }
+
+            outputData.update(
+                ScipionClassHierarchyResolver.getPersistedItemClassMetadata(
+                    persistedOutput, classRegistry,
+                )
+            )
 
             outputs.append(
                 outputData

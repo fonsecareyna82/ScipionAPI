@@ -2427,6 +2427,90 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (setId,),
         )
 
+    def listPointerSelectableSetItemsPage(
+            self,
+            projectId: int,
+            protocolDbId: int,
+            outputName: str,
+            cursor: Optional[str] = None,
+            limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Read a bounded page of selectable Set item *metadata*.
+
+        The cursor is the persisted Scipion item ID, never a page offset,
+        row position, or the database row primary key. Lookups are scoped
+        to a concrete project, producer protocol and non-reserved output.
+        This intentionally does not construct executable Pointer values;
+        resolving an item inside a Set belongs to a separate runtime contract.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer between 1 and 100")
+
+        def positiveInt(value, name):
+            if isinstance(value, bool):
+                raise ValueError("%s must be a positive integer" % name)
+            if isinstance(value, int):
+                parsed = value
+            elif isinstance(value, str) and value.isascii() and value.isdigit():
+                parsed = int(value)
+            else:
+                raise ValueError("%s must be a positive integer" % name)
+            if not 0 < parsed <= 9223372036854775807:
+                raise ValueError("%s is outside the supported ID range" % name)
+            return parsed
+
+        projectId = positiveInt(projectId, "projectId")
+        protocolDbId = positiveInt(protocolDbId, "protocolDbId")
+        if not isinstance(outputName, str) or not outputName.strip():
+            raise ValueError("outputName must be a non-empty string")
+        outputName = outputName.strip()
+        cursorId = None if cursor is None else positiveInt(cursor, "cursor")
+
+        query = """
+            SELECT item."scipionItemId", item.label, item.enabled,
+                   stored_set."itemClassName" AS "itemClassName"
+              FROM scipion_sets stored_set
+              JOIN scipion_set_items item
+                ON item."setId" = stored_set.id
+             WHERE stored_set."projectId" = %s
+               AND stored_set."protocolDbId" = %s
+               AND stored_set."outputName" = %s
+               AND COALESCE(
+                       stored_set.properties ->> 'runtimeReserved',
+                       'false'
+                   ) <> 'true'
+        """
+        params = [projectId, protocolDbId, outputName]
+        if cursorId is not None:
+            query += ' AND item."scipionItemId" > %s\n'
+            params.append(cursorId)
+
+        query += ' ORDER BY item."scipionItemId" ASC LIMIT %s'
+        params.append(limit + 1)
+
+        rows = self.db.fetchAll(query, tuple(params)) or []
+        items = []
+        for row in rows[:limit]:
+            itemId = positiveInt(row.get("scipionItemId"), "scipionItemId")
+            itemClass = str(row.get("itemClassName") or "").strip()
+            label = str(row.get("label") or "").strip()
+            items.append({
+                "scipionItemId": itemId,
+                "name": label or "%s %s" % (itemClass or "Item", itemId),
+                "enabled": bool(row.get("enabled", True)),
+                "itemClassName": itemClass,
+            })
+
+        hasMore = len(rows) > limit
+        return {
+            "items": items,
+            "nextCursor": (
+                str(items[-1]["scipionItemId"])
+                if hasMore and items
+                else None
+            ),
+        }
+
     def getStoredSetItems(self, setId: int, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         if limit is None:
             return self.db.fetchAll(

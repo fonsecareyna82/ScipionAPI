@@ -2315,6 +2315,69 @@ def resolveAnalyzeViewer(
 
 
 # ==============================================================================
+#    GENERIC SET POINTER ITEMS: authenticated, bounded, metadata-only browsing
+# ==============================================================================
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/pointer-items",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def listPointerSelectableSetItems(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    cursor: Optional[str] = Query(
+        None,
+        regex=r"^[1-9][0-9]*$",
+        max_length=19,
+    ),
+    limit: int = Query(50, ge=1, le=100),
+    includePointerValues: bool = Query(False),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Return persisted Scipion item metadata, never executable pointer values.
+
+    Protocol IDs in API URLs are Scipion runtime IDs, not PostgreSQL PKs.
+    The project access check must precede any item query.
+    """
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        # GREEN 69: forward explicit native pointer opt-in only.
+        # Legacy callers must receive *exactly* the original service kwargs.
+        extraOptions = (
+            {"includePointerValues": True}
+            if includePointerValues
+            else {}
+        )
+        page = service.listPointerSelectableSetItemsPageService(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            cursor=cursor,
+            limit=limit,
+            protocolIdIsScipionId=True,
+            **extraOptions,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+
+    response = JSONResponse(page)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Authorization"
+    return response
+
+
+# ==============================================================================
 #                ANALYZE RESULTS: VOLUMES (Volume / VolumeMask / SetOfVolumes)
 # ==============================================================================
 
