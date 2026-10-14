@@ -186,7 +186,8 @@ class ScipionSetProperty(Base):
 class ScipionSetItem(Base):
     __tablename__ = "scipion_set_items"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # The primary key index already covers id lookups.
+    id = Column(Integer, primary_key=True)
     setId = Column(Integer, ForeignKey("scipion_sets.id", ondelete="CASCADE"), nullable=False)
     scipionItemId = Column(Integer, nullable=False)
     enabled = Column(Boolean, nullable=False, default=True, server_default="true")
@@ -200,6 +201,6 @@ class ScipionSetItem(Base):
     set = relationship("ScipionSet", back_populates="items")
 
     __table_args__ = (
+        # Also serves Set-scoped scans through its leading setId column.
         UniqueConstraint("setId", "scipionItemId", name="ux_scipion_set_items_set_item"),
-        Index("idx_scipion_set_items_set", "setId"),
     )

@@ -101,7 +101,10 @@ item indexes. Rare or absent undeclared-field type lookups scan a root Set,
 which can cost more for very large Sets. Dynamic logical-field discovery still
 reads both parent populations in one statement so legacy null-parent rows
 remain readable. These migrations run concurrently, retry failed builds, and
-do not change item data.
+do not change item data. Migration `6b00be24a501` indexes the child-table
+lookup on `scipion_set_tables ("setId", "parentItemId")` and drops item
+indexes that repeat the primary key or the leading column of the unique
+`(setId|tableId, scipionItemId)` constraints; do not re-add them.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
