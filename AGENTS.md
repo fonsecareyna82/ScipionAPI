@@ -105,6 +105,10 @@ do not change item data. Migration `6b00be24a501` indexes the child-table
 lookup on `scipion_set_tables ("setId", "parentItemId")` and drops item
 indexes that repeat the primary key or the leading column of the unique
 `(setId|tableId, scipionItemId)` constraints; do not re-add them.
+Runtime Sets expose `appendFromStoredSets()` (pwem's join and id subsets use it) to copy
+whole stored Sets with one `INSERT … SELECT`. It only runs when the copy is
+provably identical to appending the built items one by one, and otherwise
+writes nothing and returns False; keep that guarantee when extending it.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 

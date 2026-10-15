@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import json
+from contextlib import contextmanager
 import re
 from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -1247,6 +1248,241 @@ class PostgresqlSetRuntimeMapper:
             template="(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
             commit=False,
         )
+
+    # ------------------------------------------------------------------
+    # Whole-Set copies
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _copiedItemsSql(cls, selectSql, logicalSources=False):
+        """Source rows of a whole-Set copy, numbered like one-by-one appends.
+
+        Sources are root Sets or logical tables (e.g. classes), optionally
+        restricted to some item ids and to enabled items. Items come in
+        source order, then ascending item id. A later item whose id was
+        already seen can be dropped; ids can be renumbered 1..N, or kept for
+        the first source and continued after its highest id.
+        """
+        itemsTable, scopeColumn = (
+            (cls.LOGICAL_ITEMS_TABLE, "tableId") if logicalSources
+            else (cls.ROOT_ITEMS_TABLE, "setId")
+        )
+        return """
+            WITH source AS (
+                -- One scan with "= ANY" (no join), whatever the statistics say.
+                -- Numbering keeps rows narrow so windows never spill to disk.
+                SELECT array_position(%(sourceIds)s::int[], i."{scopeColumn}") AS ord,
+                       i."scipionItemId" AS "sourceId", i.id AS "rowId"
+                  FROM {itemsTable} i
+                 WHERE i."{scopeColumn}" = ANY(%(sourceIds)s::int[])
+                   AND (%(itemIds)s::int[] IS NULL OR i."scipionItemId" = ANY(%(itemIds)s::int[]))
+                   AND (NOT %(enabledOnly)s OR i.enabled)
+            ),
+            kept AS (
+                SELECT ord, "sourceId", "rowId"
+                  FROM (SELECT source.*,
+                               row_number() OVER (PARTITION BY "sourceId" ORDER BY ord) AS occurrence
+                          FROM source) seen
+                 WHERE NOT %(skipDuplicateIds)s OR occurrence = 1
+            ),
+            numbered AS (
+                SELECT ord, "sourceId", "rowId",
+                       CASE
+                           WHEN %(renumberAll)s
+                               THEN row_number() OVER (ORDER BY ord, "sourceId")
+                           WHEN %(renumberAfterFirst)s AND ord > 1
+                               -- Uncorrelated, so computed once whatever the plan.
+                               THEN (SELECT COALESCE(MAX("sourceId") FILTER (WHERE ord = 1), 0)
+                                       FROM kept)
+                                    + row_number() OVER (PARTITION BY ord = 1 ORDER BY ord, "sourceId")
+                           ELSE "sourceId"
+                       END AS "itemId"
+                  FROM kept
+            ),
+            copied AS (
+                SELECT n.ord, n."sourceId", n."itemId", i.enabled, i.label, i.comment,
+                       {creation} AS creation, i."values"
+                  FROM numbered n
+                  -- The scope filter keeps the hash join on the copied rows only.
+                  JOIN {itemsTable} i ON i.id = n."rowId"
+                                     AND i."{scopeColumn}" = ANY(%(sourceIds)s::int[])
+            )
+        """.format(
+            itemsTable=itemsTable,
+            scopeColumn=scopeColumn,
+            creation=cls.STREAMING_CREATION_EXPRESSION.replace('"scipionItemId"', 'i."scipionItemId"'),
+        ) + selectSql
+
+    @contextmanager
+    def _withoutNestedLoops(self):
+        """Run whole-Set copy statements with hash or merge joins only.
+
+        They join every copied row. Right after bulk writes the statistics
+        can still describe tiny tables, and a nested loop then rescans the
+        item table once per row. The previous setting is restored after.
+        """
+        with self.db.transaction():
+            previous = (self.db.fetchOne("SELECT current_setting('enable_nestloop') AS value")
+                        or {}).get("value", "on")
+            self.db.execute("SET LOCAL enable_nestloop = off", commit=False)
+            try:
+                yield
+            finally:
+                try:
+                    self.db.execute("SELECT set_config('enable_nestloop', %s, true)",
+                                    (previous,), commit=False)
+                except Exception:
+                    # A failed statement already aborted the transaction,
+                    # whose rollback discards the local setting anyway.
+                    pass
+
+    def _fetchCopyRow(self, sql, params):
+        with self._withoutNestedLoops():
+            return self.db.fetchOne(sql, params)
+
+    def firstCopiedItem(self, sourceIds, logicalSources=False, itemIds=None, enabledOnly=False):
+        """First copied row in append order, with its stored metadata and values."""
+        return self._fetchCopyRow(self._copiedItemsSql(
+            'SELECT ord, "sourceId", enabled, label, comment, creation, "values" '
+            'FROM copied ORDER BY ord, "sourceId" LIMIT 1', logicalSources,
+        ), self._copyParams(sourceIds, itemIds=itemIds, enabledOnly=enabledOnly))
+
+    def countItemsWithOtherPaths(self, sourceIds, paths, logicalSources=False, itemIds=None,
+                                 enabledOnly=False) -> int:
+        """Copied items whose stored paths differ from paths."""
+        row = self._fetchCopyRow(self._copiedItemsSql("""
+            SELECT COUNT(*) AS count FROM copied
+             WHERE NOT ("values" ?& %(paths)s::text[]
+                        AND (SELECT COUNT(*) FROM jsonb_object_keys("values")) = %(pathCount)s)
+        """, logicalSources), self._copyParams(sourceIds, itemIds=itemIds, enabledOnly=enabledOnly,
+                                                paths=list(paths), pathCount=len(paths))) or {}
+        return int(row.get("count") or 0)
+
+    def countCopiedItems(self, sourceIds, logicalSources=False, itemIds=None, enabledOnly=False,
+                         skipDuplicateIds=False, where="TRUE") -> int:
+        """Copied items (after duplicate skipping) matching a condition on their values."""
+        row = self._fetchCopyRow(self._copiedItemsSql(
+            "SELECT COUNT(*) AS count FROM copied WHERE " + where, logicalSources,
+        ), self._copyParams(sourceIds, itemIds=itemIds, enabledOnly=enabledOnly,
+                            skipDuplicateIds=skipDuplicateIds)) or {}
+        return int(row.get("count") or 0)
+
+    def countDuplicateCopiedIds(self, sourceIds, logicalSources=False, itemIds=None,
+                                enabledOnly=False) -> int:
+        row = self._fetchCopyRow(self._copiedItemsSql(
+            'SELECT COUNT(*) AS count FROM (SELECT COUNT(*) OVER (PARTITION BY "sourceId") AS seen '
+            'FROM source) counted WHERE seen > 1',
+            logicalSources,
+        ), self._copyParams(sourceIds, itemIds=itemIds, enabledOnly=enabledOnly)) or {}
+        return int(row.get("count") or 0)
+
+    def countItemsWithNonIntegralPaths(self, sourceIds, integerPaths, logicalSources=False,
+                                       itemIds=None, enabledOnly=False) -> int:
+        """Copied items with a value at integerPaths that int() would not turn
+        into the same 64-bit integer the copy writes (not a number or null)."""
+        if not integerPaths:
+            return 0
+        row = self._fetchCopyRow(self._copiedItemsSql("""
+            SELECT COUNT(*) AS count FROM copied
+             WHERE EXISTS (
+                 SELECT 1 FROM unnest(%(integerPaths)s::text[]) path
+                  WHERE jsonb_typeof("values"->path) NOT IN ('number', 'null')
+                     OR (jsonb_typeof("values"->path) = 'number'
+                         AND abs(("values"->>path)::numeric) >= 9e18))
+        """, logicalSources), self._copyParams(sourceIds, itemIds=itemIds, enabledOnly=enabledOnly,
+                                                integerPaths=list(integerPaths))) or {}
+        return int(row.get("count") or 0)
+
+    @staticmethod
+    def _copyParams(sourceIds, itemIds=None, enabledOnly=False, skipDuplicateIds=False,
+                    renumberAll=False, renumberAfterFirst=False, **extra):
+        params = {
+            "sourceIds": [int(i) for i in sourceIds],
+            "itemIds": None if itemIds is None else [int(i) for i in itemIds],
+            "enabledOnly": bool(enabledOnly),
+            "skipDuplicateIds": bool(skipDuplicateIds),
+            "renumberAll": bool(renumberAll),
+            "renumberAfterFirst": bool(renumberAfterFirst),
+        }
+        params.update(extra)
+        return params
+
+    def copyItemsFromSets(
+            self,
+            sourceIds,
+            itemMetadata=None,
+            logicalSources=False,
+            itemIds=None,
+            enabledOnly=False,
+            renumberAll=False,
+            renumberAfterFirst=False,
+            skipDuplicateIds=False,
+            integerPaths=(),
+    ):
+        """Copy the stored items of other Sets into this root Set.
+
+        Values are copied unchanged except for numbers at integerPaths, which
+        are truncated toward zero as Integer attributes store them. Callers
+        must check every item would be stored the same way item by item.
+        itemMetadata gives the enabled,
+        label, comment and creation of every copied item; without it each
+        item keeps its own, with the creation one-by-one reads expose.
+        Returns the id of the last item in append order, or None when
+        nothing was copied.
+        """
+        self._requireWritable()
+        if self.setId is None:
+            raise RuntimeError("Whole-Set copies need a root Set.")
+        self._synchronizePendingAppends()
+
+        metadata = dict(itemMetadata or {})
+        params = self._copyParams(
+            sourceIds, itemIds=itemIds, enabledOnly=enabledOnly,
+            skipDuplicateIds=skipDuplicateIds, renumberAll=renumberAll,
+            renumberAfterFirst=renumberAfterFirst,
+            setId=int(self.setId), rootTableId=int(self.rootTableId),
+            enabled=bool(metadata.get("enabled", True)), label=metadata.get("label"),
+            comment=metadata.get("comment"), creation=metadata.get("creation"),
+            integerPaths=list(integerPaths or ()),
+        )
+        with self._withoutNestedLoops():
+            return self._copyItems(params, logicalSources, itemMetadata is not None)
+
+    def _copyItems(self, params, logicalSources, fixedMetadata):
+        last = self.db.fetchOne(self._copiedItemsSql(
+            'SELECT "itemId" FROM numbered ORDER BY ord DESC, "sourceId" DESC LIMIT 1',
+            logicalSources,
+        ), params)
+        if not last:
+            return None
+
+        columns = ("%(enabled)s, %(label)s, %(comment)s, %(creation)s" if fixedMetadata
+                   else "enabled, label, comment, creation")
+        self.db.execute(self._copiedItemsSql("""
+            , canonical AS (
+                INSERT INTO scipion_set_items (
+                    "setId", "scipionItemId", enabled, label, comment, creation, "values"
+                )
+                SELECT %(setId)s, "itemId", {columns},
+                       CASE WHEN cardinality(%(integerPaths)s::text[]) = 0 THEN "values"
+                            ELSE "values" || COALESCE((
+                                SELECT jsonb_object_agg(path, to_jsonb(trunc(("values"->>path)::numeric)::bigint))
+                                  FROM unnest(%(integerPaths)s::text[]) path
+                                 WHERE jsonb_typeof("values"->path) = 'number'), '{{}}'::jsonb)
+                       END
+                  FROM copied
+                RETURNING "scipionItemId", enabled, label, comment, creation, "values"
+            )
+            INSERT INTO scipion_set_table_items (
+                "tableId", "scipionItemId", "parentItemId", enabled,
+                label, comment, creation, "values"
+            )
+            SELECT %(rootTableId)s, "scipionItemId", NULL, enabled,
+                   label, comment, creation, "values"
+              FROM canonical
+        """.format(columns=columns), logicalSources), params, commit=False)
+        self._refreshSetCounters()
+        return int(last["itemId"])
 
     def insert(
             self,

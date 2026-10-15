@@ -384,6 +384,37 @@ before dropping the previous index, in both directions. A retry must remove
 an invalid index left by a failed build instead of accepting it with
 `IF NOT EXISTS`. These migrations must never rewrite rows or change foreign keys.
 
+## Whole-Set copies
+
+`appendFromStoredSets(sourceSets, buildItem=None, paths=None, renumberAll,
+renumberAfterFirst, skipDuplicateIds, itemIds=None, enabledOnly=False)`
+copies the items of stored root Sets, or of logical tables such as classes,
+into an empty runtime root Set in one transaction (`copyItemsFromSets`).
+Items come in source order then ascending ids, optionally restricted to some
+ids and to enabled items, with the join's id rules: duplicate-id skipping,
+full renumbering, or renumbering after the first source's highest id.
+
+With `buildItem` (pwem's join) every item is a new object that copies no
+enabled flag, label, comment or creation. Without it (pwem's id-selection
+subsets) the source items are appended as they are, keeping their own
+metadata and the creation one-by-one reads expose. Values are copied
+unchanged, so the copy refuses (returns False, writes nothing) unless:
+
+- sources and target share the database, sources are all root Sets or all
+  logical tables of one item class, nothing is pending, and the item class
+  has no `setTsId`;
+- every copied item stores the same paths;
+- `_preparePostgresqlAppendItem` would change no sampling rate or
+  acquisition;
+- kept ids do not repeat (item-by-item appends would overwrite them);
+- the first item serializes to exactly its source row, metadata included.
+
+Dimensions come from the first item and alignment/odd-even flags from the
+last, as with one-by-one appends. Callers keep their item loop as the
+fallback, which classic Scipion always uses. pwem's `ProtUserSubSet` reads
+id selections (`.txt`) of stored inputs directly from the input Set instead
+of materializing it; ShowJ selections and other subset kinds are unchanged.
+
 ## Per-user protocol runtime concurrency
 
 `maxConcurrentRunsPerUser` limits concurrent execution slots for a user.

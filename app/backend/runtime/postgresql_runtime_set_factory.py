@@ -187,6 +187,33 @@ def _resolveOrInitializeNestedAttribute(
     return defaultValue
 
 
+def _integerPaths(schema, paths):
+    """Paths stored by Integer attributes according to a serialized schema."""
+    result = []
+    for path, description in (schema or {}).items():
+        if isinstance(description, (tuple, list)):
+            className = description[0] if description else None
+        elif isinstance(description, dict):
+            className = description.get("className")
+        else:
+            className = None
+        if className == "Integer" and str(path) in paths:
+            result.append(str(path))
+    return sorted(result)
+
+
+def _isSameDatabase(firstDb, secondDb) -> bool:
+    if firstDb is None or secondDb is None:
+        return False
+    if firstDb is secondDb:
+        return True
+    keys = ("dbname", "host", "port")
+    first = getattr(firstDb, "_connectionParams", None) or {}
+    second = getattr(secondDb, "_connectionParams", None) or {}
+    return all(first.get(key) is not None and str(first.get(key)) == str(second.get(key))
+               for key in keys)
+
+
 class PostgresqlRuntimeSetMixin:
     """
     Runtime behavior added to native Scipion SetOf... classes.
@@ -1262,6 +1289,181 @@ class PostgresqlRuntimeSetMixin:
             setItemAcquisition(
                 getContainerAcquisition()
             )
+
+    def appendFromStoredSets(
+            self,
+            sourceSets,
+            buildItem=None,
+            paths=None,
+            renumberAll=False,
+            renumberAfterFirst=False,
+            skipDuplicateIds=False,
+            itemIds=None,
+            enabledOnly=False,
+    ) -> bool:
+        """Append the items of stored Sets (or classes) with one database copy.
+
+        With buildItem(sourceItem), each appended item is that new object,
+        which must copy no enabled flag, label, comment or creation, and
+        ``paths`` are its stored paths. Without it, the source items
+        themselves are appended. itemIds and enabledOnly restrict the source
+        items; ids follow the policy documented in copyItemsFromSets.
+
+        The copy only runs when it is provably identical to appending the
+        items one by one: every copied item stores the same paths, append()
+        would not change their sampling rate or acquisition, kept ids do not
+        repeat, and the first item stores exactly its source row. Otherwise
+        nothing is written and False tells the caller to append one by one.
+        """
+        sources = list(sourceSets or [])
+        if not sources or not self.isPostgresqlWritable():
+            return False
+        mapper = self._getMapper()
+        if (getattr(mapper, "setId", None) is None
+                or not callable(getattr(mapper, "copyItemsFromSets", None))
+                or mapper.count() != 0):
+            return False
+        itemType = getattr(self, "ITEM_TYPE", None)
+        if (not isinstance(itemType, type) or issubclass(itemType, ScipionSet)
+                or hasattr(itemType, "setTsId")):
+            return False
+
+        sourceIds = []
+        logicalSources = None
+        for source in sources:
+            checker = getattr(source, "isPostgresqlRuntimeOutput", None)
+            if not (callable(checker) and checker()):
+                return False
+            sourceMapper = source._getMapper()
+            isLogical = getattr(sourceMapper, "setId", None) is None
+            scopeId = getattr(sourceMapper, "tableId" if isLogical else "setId", None)
+            if (scopeId is None or logicalSources not in (None, isLogical)
+                    or not _isSameDatabase(getattr(sourceMapper, "db", None), mapper.db)
+                    or len(getattr(sourceMapper, "_pendingAppendItems", None) or ())):
+                return False
+            logicalSources = isLogical
+            sourceIds.append(int(scopeId))
+
+        if len(set(sourceIds)) != len(sourceIds):
+            # A repeated source is appended once per occurrence item by item.
+            return False
+        db = mapper.db
+        if logicalSources:
+            scopes = db.fetchAll('SELECT "itemClassName", 0 AS children FROM scipion_set_tables '
+                                 'WHERE id = ANY(%s::int[])', (sourceIds,)) or []
+        else:
+            scopes = db.fetchAll(
+                """
+                SELECT s."itemClassName",
+                       (SELECT COUNT(*) FROM scipion_set_tables t
+                         WHERE t."setId" = s.id AND t."tableKind" = 'child') AS children
+                  FROM scipion_sets s
+                 WHERE s.id = ANY(%s::int[])
+                """,
+                (sourceIds,),
+            ) or []
+        itemClassNames = {row["itemClassName"] for row in scopes}
+        if (len(scopes) != len(set(sourceIds)) or len(itemClassNames) != 1
+                or any(int(row["children"] or 0) for row in scopes)):
+            return False
+
+        selection = dict(logicalSources=logicalSources, itemIds=itemIds, enabledOnly=enabledOnly)
+        firstRow = mapper.firstCopiedItem(sourceIds, **selection)
+        if not firstRow:
+            return False
+        sourceItem = sources[int(firstRow["ord"]) - 1]._getMapper().selectById(int(firstRow["sourceId"]))
+        if sourceItem is None:
+            return False
+        if paths is None:
+            if buildItem is not None:
+                return False
+            paths = list(firstRow["values"])
+        paths = [str(path) for path in paths]
+        if (mapper.countItemsWithOtherPaths(sourceIds, paths, **selection)
+                or not self._isAppendPreparationNoOp(mapper, sourceIds, selection, paths, itemType)):
+            return False
+        if (not (skipDuplicateIds or renumberAll or renumberAfterFirst)
+                and mapper.countDuplicateCopiedIds(sourceIds, **selection)):
+            return False
+
+        item = buildItem(sourceItem) if buildItem is not None else sourceItem
+        if item.getClassName() not in itemClassNames:
+            return False
+        item.setObjId(1 if renumberAll else int(firstRow["sourceId"]))
+        self._preparePostgresqlAppendItem(item)
+        serialized = mapper._serializeItem(item)
+        metadataKeys = ("enabled", "label", "comment", "creation")
+        # A new object stores numbers at Integer paths as int() of the source.
+        integerPaths = [] if buildItem is None else _integerPaths(serialized.get("_schema"), paths)
+        if mapper.countItemsWithNonIntegralPaths(sourceIds, integerPaths, **selection):
+            return False
+        expectedValues = dict(firstRow["values"])
+        for path in integerPaths:
+            value = expectedValues.get(path)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                expectedValues[path] = int(value)
+        if serialized["values"] != expectedValues:
+            return False
+        if buildItem is not None:
+            fresh = itemType()
+            fresh.setObjId(item.getObjId())
+            expected = mapper._serializeItem(fresh)
+            itemMetadata = {key: serialized.get(key) for key in metadataKeys}
+        else:
+            expected = firstRow
+            itemMetadata = None
+        if any(serialized.get(key) != expected.get(key) for key in metadataKeys):
+            return False
+
+        with db.transaction():
+            mapper._ensureItemSchema(item=item, serialized=serialized)
+            lastItemId = mapper.copyItemsFromSets(
+                sourceIds, itemMetadata, renumberAll=renumberAll,
+                renumberAfterFirst=renumberAfterFirst, skipDuplicateIds=skipDuplicateIds,
+                integerPaths=integerPaths, **selection
+            )
+
+        self._size.set(mapper.count())
+        self._idCount = mapper.maxId()
+        # One-by-one appends take the dimensions from the first item and the
+        # alignment/odd-even flags from the last one.
+        self._updatePostgresqlAppendMetadata(item=item, wasEmpty=True)
+        if lastItemId is not None and lastItemId != item.getObjId():
+            lastItem = mapper.selectById(lastItemId)
+            if lastItem is not None:
+                self._updatePostgresqlAppendMetadata(item=lastItem, wasEmpty=False)
+        return True
+
+    def _isAppendPreparationNoOp(self, mapper, sourceIds, selection, paths, itemType) -> bool:
+        """Whether _preparePostgresqlAppendItem would leave every copied item as stored."""
+        getSamplingRate = getattr(self, "getSamplingRate", None)
+        if (callable(getSamplingRate) and "_samplingRate" in paths
+                and hasattr(itemType, "getSamplingRate") and hasattr(itemType, "setSamplingRate")):
+            samplingRate = getSamplingRate()
+            itemRate = """("values"->>'_samplingRate')::float8"""
+            if samplingRate:
+                changed = "%s IS DISTINCT FROM %r::float8" % (itemRate, float(samplingRate))
+            else:
+                # Only items without a sampling rate take the container's one.
+                changed = ("COALESCE(%s, 0) = 0 AND %s IS DISTINCT FROM %s"
+                           % (itemRate, itemRate, "NULL" if samplingRate is None
+                              else "%r::float8" % float(samplingRate)))
+            if mapper.countCopiedItems(sourceIds, where=changed, **selection):
+                return False
+
+        hasAcquisition = getattr(self, "hasAcquisition", None)
+        if (callable(hasAcquisition) and callable(getattr(self, "getAcquisition", None))
+                and hasattr(itemType, "hasAcquisition") and hasattr(itemType, "setAcquisition")
+                and hasAcquisition()):
+            # Items without their own acquisition would take the container's one.
+            required = ("_acquisition._voltage", "_acquisition._magnification")
+            if (getattr(itemType.hasAcquisition, "__qualname__", "") != "Image.hasAcquisition"
+                    or not all(path in paths for path in required)):
+                return False
+            missing = " OR ".join("""("values"->>'%s') IS NULL""" % path for path in required)
+            if mapper.countCopiedItems(sourceIds, where="(%s)" % missing, **selection):
+                return False
+        return True
 
     def _updatePostgresqlAppendMetadata(
             self,
