@@ -414,6 +414,11 @@ last, as with one-by-one appends. Callers keep their item loop as the
 fallback, which classic Scipion always uses. pwem's `ProtUserSubSet` reads
 id selections (`.txt`) of stored inputs directly from the input Set instead
 of materializing it; ShowJ selections and other subset kinds are unchanged.
+pwem's `EMSet.copyItems` uses the copy when it has no callback, item data
+iterator, selector, row filter or custom order (`clone()` mode keeps label and
+comment, forces enabled and drops creation; `doClone=False` appends items as
+they are), and `createCopy` no longer calls `getFileName()` on Sets stored
+without a file just to choose the copy's extension.
 
 ## Per-user protocol runtime concurrency
 

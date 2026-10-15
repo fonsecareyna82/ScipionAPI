@@ -1300,13 +1300,16 @@ class PostgresqlRuntimeSetMixin:
             skipDuplicateIds=False,
             itemIds=None,
             enabledOnly=False,
+            copiedMetadata=None,
     ) -> bool:
         """Append the items of stored Sets (or classes) with one database copy.
 
-        With buildItem(sourceItem), each appended item is that new object,
-        which must copy no enabled flag, label, comment or creation, and
-        ``paths`` are its stored paths. Without it, the source items
-        themselves are appended. itemIds and enabledOnly restrict the source
+        With buildItem(sourceItem), each appended item is that object and
+        ``paths`` are its stored paths; copiedMetadata names which of enabled,
+        label, comment and creation it takes from its source (none by
+        default, e.g. a new object; ("label", "comment") for clone()), the
+        others being those of a new item. Without buildItem, the source items
+        themselves are appended with all of their metadata. itemIds and enabledOnly restrict the source
         items; ids follow the policy documented in copyItemsFromSets.
 
         The copy only runs when it is provably identical to appending the
@@ -1375,8 +1378,7 @@ class PostgresqlRuntimeSetMixin:
         if sourceItem is None:
             return False
         if paths is None:
-            if buildItem is not None:
-                return False
+            # Items stored with their source paths (e.g. as-is or cloned).
             paths = list(firstRow["values"])
         paths = [str(path) for path in paths]
         if (mapper.countItemsWithOtherPaths(sourceIds, paths, **selection)
@@ -1404,16 +1406,17 @@ class PostgresqlRuntimeSetMixin:
                 expectedValues[path] = int(value)
         if serialized["values"] != expectedValues:
             return False
-        if buildItem is not None:
-            fresh = itemType()
-            fresh.setObjId(item.getObjId())
-            expected = mapper._serializeItem(fresh)
-            itemMetadata = {key: serialized.get(key) for key in metadataKeys}
-        else:
-            expected = firstRow
-            itemMetadata = None
-        if any(serialized.get(key) != expected.get(key) for key in metadataKeys):
+        if buildItem is None:
+            copiedMetadata = metadataKeys
+        copiedMetadata = tuple(key for key in metadataKeys if key in (copiedMetadata or ()))
+        fresh = itemType()
+        fresh.setObjId(item.getObjId())
+        freshSerialized = mapper._serializeItem(fresh)
+        if any(serialized.get(key) != (firstRow if key in copiedMetadata else freshSerialized).get(key)
+               for key in metadataKeys):
             return False
+        itemMetadata = {key: serialized.get(key) for key in metadataKeys if key not in copiedMetadata}
+        itemMetadata["copied"] = copiedMetadata
 
         with db.transaction():
             mapper._ensureItemSchema(item=item, serialized=serialized)

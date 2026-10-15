@@ -1424,9 +1424,10 @@ class PostgresqlSetRuntimeMapper:
         Values are copied unchanged except for numbers at integerPaths, which
         are truncated toward zero as Integer attributes store them. Callers
         must check every item would be stored the same way item by item.
-        itemMetadata gives the enabled,
-        label, comment and creation of every copied item; without it each
-        item keeps its own, with the creation one-by-one reads expose.
+        itemMetadata gives the enabled, label, comment and creation written
+        for every item, except the keys of itemMetadata["copied"], which each
+        item keeps from its source (creation as one-by-one reads expose it).
+        Without itemMetadata every item keeps all of its own.
         Returns the id of the last item in append order, or None when
         nothing was copied.
         """
@@ -1445,10 +1446,12 @@ class PostgresqlSetRuntimeMapper:
             comment=metadata.get("comment"), creation=metadata.get("creation"),
             integerPaths=list(integerPaths or ()),
         )
+        copied = (("enabled", "label", "comment", "creation") if itemMetadata is None
+                  else tuple(metadata.get("copied") or ()))
         with self._withoutNestedLoops():
-            return self._copyItems(params, logicalSources, itemMetadata is not None)
+            return self._copyItems(params, logicalSources, copied)
 
-    def _copyItems(self, params, logicalSources, fixedMetadata):
+    def _copyItems(self, params, logicalSources, copiedMetadata):
         last = self.db.fetchOne(self._copiedItemsSql(
             'SELECT "itemId" FROM numbered ORDER BY ord DESC, "sourceId" DESC LIMIT 1',
             logicalSources,
@@ -1456,8 +1459,8 @@ class PostgresqlSetRuntimeMapper:
         if not last:
             return None
 
-        columns = ("%(enabled)s, %(label)s, %(comment)s, %(creation)s" if fixedMetadata
-                   else "enabled, label, comment, creation")
+        columns = ", ".join(key if key in copiedMetadata else "%%(%s)s" % key
+                            for key in ("enabled", "label", "comment", "creation"))
         self.db.execute(self._copiedItemsSql("""
             , canonical AS (
                 INSERT INTO scipion_set_items (

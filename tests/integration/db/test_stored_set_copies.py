@@ -368,3 +368,93 @@ def test_CopyRefusesIntegerPathsHoldingText(copyContext, tmp_path):
     slow, slowInfo, _ = _union(copyContext, sources, False, **policy)
     assert not copied
     assert _stored(copyContext["db"], fastInfo, fast) == _stored(copyContext["db"], slowInfo, slow)
+
+
+def _labelledParticles(ctx, ids, stack):
+    particles = emobj.SetOfParticles()
+    particles.setSamplingRate(SAMPLING_RATE)
+    particles.setAcquisition(_acquisition())
+    particles, info = ctx["reserve"](particles)
+    for itemId in ids:
+        particle = _particle(itemId, stack)
+        if itemId % 4 == 0:
+            particle.setObjLabel("label-%d" % itemId)
+        if itemId % 6 == 0:
+            particle.setObjComment("comment %d" % itemId)
+        if itemId % 5 == 0:
+            particle.setEnabled(False)
+        particles.append(particle)
+    return ctx["finalize"](particles, info)
+
+
+def _copyInto(ctx, source, allowCopy, **kwargs):
+    output, info = ctx["reserve"](emobj.SetOfParticles())
+    output.copyInfo(source)
+    if not allowCopy:
+        output.appendFromStoredSets = None
+    output.copyItems(source, **kwargs)
+    output.write()
+    return output, info
+
+
+@pytest.mark.parametrize("options", [dict(), dict(doClone=False), dict(copyDisabled=True),
+                                     dict(doClone=False, copyDisabled=True)])
+def test_CopyItemsMatchesItsLoop(copyContext, tmp_path, options, monkeypatch):
+    from app.backend.runtime import postgresql_runtime_set_factory as factoryModule
+    calls = []
+    original = factoryModule.PostgresqlRuntimeSetMixin.appendFromStoredSets
+
+    def tracked(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(factoryModule.PostgresqlRuntimeSetMixin, "appendFromStoredSets", tracked)
+    source = _labelledParticles(copyContext, range(1, 41), str(tmp_path / "particles.mrcs"))
+    fast, fastInfo = _copyInto(copyContext, source, True, **options)
+    slow, slowInfo = _copyInto(copyContext, source, False, **options)
+    assert calls == [True]
+    stored = _stored(copyContext["db"], fastInfo, fast)
+    assert stored == _stored(copyContext["db"], slowInfo, slow)
+    rows = stored[0]
+    assert len(rows) == (40 if options.get("copyDisabled") else 32)
+    assert any(row["label"] == "label-4" for row in rows)
+
+
+@pytest.mark.parametrize("options", [dict(updateItemCallback=lambda item, row: item.setClassId(3)),
+                                     dict(itemSelectedCallback=lambda item: item.getObjId() < 10),
+                                     dict(orderBy="id", direction="DESC")])
+def test_CopyItemsKeepsItsLoopForCallbacksAndOrders(copyContext, tmp_path, options, monkeypatch):
+    from app.backend.runtime import postgresql_runtime_set_factory as factoryModule
+    monkeypatch.setattr(factoryModule.PostgresqlRuntimeSetMixin, "appendFromStoredSets",
+                        lambda *args, **kwargs: pytest.fail("callbacks need the item loop"))
+    source = _labelledParticles(copyContext, range(1, 21), str(tmp_path / "particles.mrcs"))
+    output, info = copyContext["reserve"](emobj.SetOfParticles())
+    output.copyInfo(source)
+    output.copyItems(source, **options)
+    output.write()
+    assert output.getSize() > 0
+
+
+def test_CopyItemsIntoANonEmptySetAppendsOneByOne(copyContext, tmp_path):
+    stack = str(tmp_path / "particles.mrcs")
+    first = _labelledParticles(copyContext, range(1, 11), stack)
+    second = _labelledParticles(copyContext, range(11, 21), stack)
+    fast, fastInfo = copyContext["reserve"](emobj.SetOfParticles())
+    slow, slowInfo = copyContext["reserve"](emobj.SetOfParticles())
+    slow.appendFromStoredSets = None
+    for output in (fast, slow):
+        output.copyInfo(first)
+        output.copyItems(first)
+        output.copyItems(second)
+        output.write()
+    assert _stored(copyContext["db"], fastInfo, fast) == _stored(copyContext["db"], slowInfo, slow)
+    assert fast.getSize() == 16
+
+
+def test_CreateCopyOfAStoredSetDoesNotMaterializeIt(copyContext, tmp_path, monkeypatch):
+    source = _labelledParticles(copyContext, range(1, 6), str(tmp_path / "particles.mrcs"))
+    monkeypatch.setattr(type(source), "getFileName",
+                        lambda self: pytest.fail("createCopy must not materialize its source"))
+    copy = source.createCopy(str(tmp_path), copyInfo=True)
+    assert copy.getFileName().endswith(".sqlite")
