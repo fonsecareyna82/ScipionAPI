@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import types
+import warnings
 from pathlib import Path
 from typing import Iterator, Any
 from datetime import datetime, timezone
@@ -261,7 +262,47 @@ def postgresqlMigratedEnv(
         )
     )
 
+    _removeStaleTestProjects(postgresqlIntegrationEnv)
+
     return postgresqlIntegrationEnv
+
+
+def _removeStaleTestProjects(env):
+    """Delete test projects left behind by killed runs (their teardown never ran).
+
+    Only projects of @example.com test users older than an hour are removed,
+    so a concurrent test session keeps its own.
+    """
+    from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
+
+    try:
+        db = PostgresqlDb(
+            dbName=env["databaseName"],
+            user=env["databaseUser"],
+            password=env["databasePass"],
+            host=env["postgresHost"],
+            port=env["postgresPort"],
+        )
+    except Exception as error:
+        warnings.warn("Could not clean stale test projects: %s" % error)
+        return
+    try:
+        stale = db.fetchAll(
+            """
+            SELECT p.id, p."ownerId"
+              FROM projects p
+              JOIN users u ON u.id = p."ownerId"
+             WHERE u.email LIKE '%%@example.com'
+               AND p."createdAt" < NOW() - INTERVAL '1 hour'
+            """
+        ) or []
+        flat = PostgresqlFlatMapper(db)
+        for row in stale:
+            flat.deleteProject(projectId=row["id"], ownerId=row["ownerId"])
+    except Exception as error:
+        warnings.warn("Could not clean stale test projects: %s" % error)
+    finally:
+        db.close()
 
 
 @pytest.fixture

@@ -2571,6 +2571,29 @@ class PostgresqlSetRuntimeMapper:
             for row in rows or []
         ]
 
+    def getProperties(self):
+        """All properties as getPropertyKeys() and getProperty() return them,
+        validating the storage scope once instead of once per property."""
+        self._refreshLogicalTableScope()
+        if self.tableId is not None:
+            return {
+                str(key): self._tableProperties.get(str(key))
+                for key in sorted(self._tableProperties)
+            }
+        rows = self.db.fetchAll(
+            """
+            SELECT key, value
+              FROM scipion_set_properties
+             WHERE "setId" = %s
+             ORDER BY key ASC
+            """,
+            (self.setId,),
+        )
+        return {
+            row["key"]: row["value"]
+            for row in rows or []
+        }
+
     def refreshProperties(self):
         """
         Refresh properties cached by logical-table mappers.

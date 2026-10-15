@@ -240,18 +240,24 @@ class PostgresqlScipionItemHydrator:
 
         self._applyBasicMetadata(item, row)
         self._hydratePlannedAttributes(item, values)
-        item._postgresqlRuntimeValues = dict(values)
+        # values is already this row's private copy.
+        item._postgresqlRuntimeValues = values
         return item
 
     def _getRefillShape(self, row: Dict[str, Any], values: Dict[str, Any]):
         # Only the planned hydration of known paths is refill-safe. Custom
         # hydrator hooks, unknown paths and nested Sets always build anew.
-        if type(self) is not PostgresqlScipionItemHydrator or any(
-                name in vars(self) for name in _REFILL_HOOK_NAMES):
+        if (type(self) is not PostgresqlScipionItemHydrator
+                or not vars(self).keys().isdisjoint(_REFILL_HOOK_NAMES)):
             return None
         if isinstance(self.itemClass, type) and issubclass(self.itemClass, ScipionSet):
             return None
-        if not all(isinstance(path, str) and path in self._classByPath for path in values):
+        # Every path must be a known string path (one C-level subset check).
+        knownPaths = self.__dict__.get("_knownStringPaths")
+        if knownPaths is None:
+            knownPaths = self._knownStringPaths = frozenset(
+                path for path in self._classByPath if isinstance(path, str))
+        if not values.keys() <= knownPaths:
             return None
         return (
             id(self),
@@ -367,6 +373,7 @@ class PostgresqlScipionItemHydrator:
         replace a parent while the row is being hydrated. Unknown paths and
         overridden path hooks use the generic method instead.
         """
+        plainScalars = self._PLAIN_SCALARS
         for path, parents, attributeName, hasNestedPaths in self._hydrationPlan:
             if path not in values:
                 continue
@@ -397,7 +404,7 @@ class PostgresqlScipionItemHydrator:
                     )
                     setattr(owner, attributeName, attribute)
                 value = values[path]
-                if type(attribute) not in self._PLAIN_SCALARS:
+                if type(attribute) not in plainScalars:
                     if isinstance(attribute, PointerList):
                         self._hydratePointerList(pointerList=attribute, value=value)
                         continue

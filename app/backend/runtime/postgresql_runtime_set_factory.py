@@ -214,6 +214,10 @@ def _isSameDatabase(firstDb, secondDb) -> bool:
                for key in keys)
 
 
+# Shared microscope fields a Set takes from its first item when missing.
+ACQUISITION_REPAIR_FIELDS = ("Voltage", "SphericalAberration", "AmplitudeContrast")
+
+
 class PostgresqlRuntimeSetMixin:
     """
     Runtime behavior added to native Scipion SetOf... classes.
@@ -388,7 +392,25 @@ class PostgresqlRuntimeSetMixin:
             None,
         )
 
-        if (
+        getProperties = getattr(
+            mapper,
+            "getProperties",
+            None,
+        )
+
+        if callable(getProperties):
+            # One scope check (and at most one query) for all properties.
+            for propertyName, value in getProperties().items():
+                propertyName = str(
+                    propertyName
+                )
+
+                if propertyName == "self":
+                    continue
+
+                runtimeProperties[propertyName] = value
+
+        elif (
                 callable(getPropertyKeys)
                 and callable(getProperty)
         ):
@@ -535,11 +557,31 @@ class PostgresqlRuntimeSetMixin:
 
         try:
             setAcquisition = getAcquisition()
+        except Exception:
+            return
+
+        if setAcquisition is None:
+            return
+
+        # Reading the first item only pays off when a field is missing.
+        try:
+            nothingMissing = all(
+                not callable(getattr(setAcquisition, "get%s" % fieldName, None))
+                or getattr(setAcquisition, "get%s" % fieldName)() is not None
+                for fieldName in ACQUISITION_REPAIR_FIELDS
+            )
+        except Exception:
+            nothingMissing = False
+
+        if nothingMissing:
+            return
+
+        try:
             firstItem = selectFirst()
         except Exception:
             return
 
-        if setAcquisition is None or firstItem is None:
+        if firstItem is None:
             return
 
         hasAcquisition = getattr(
@@ -572,11 +614,7 @@ class PostgresqlRuntimeSetMixin:
         if itemAcquisition is None:
             return
 
-        for fieldName in (
-                "Voltage",
-                "SphericalAberration",
-                "AmplitudeContrast",
-        ):
+        for fieldName in ACQUISITION_REPAIR_FIELDS:
             setGetter = getattr(
                 setAcquisition,
                 "get%s" % fieldName,
