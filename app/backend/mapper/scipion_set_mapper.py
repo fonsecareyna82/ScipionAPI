@@ -2466,26 +2466,53 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         outputName = outputName.strip()
         cursorId = None if cursor is None else positiveInt(cursor, "cursor")
 
+        # Bound the root class page first; only then inspect nested members.
+        # The page is keyed by persisted Scipion IDs, not offsets or DB PKs.
         query = """
-            SELECT item."scipionItemId", item.label, item.enabled,
-                   stored_set."itemClassName" AS "itemClassName"
-              FROM scipion_sets stored_set
-              JOIN scipion_set_items item
-                ON item."setId" = stored_set.id
-             WHERE stored_set."projectId" = %s
-               AND stored_set."protocolDbId" = %s
-               AND stored_set."outputName" = %s
-               AND COALESCE(
-                       stored_set.properties ->> 'runtimeReserved',
-                       'false'
-                   ) <> 'true'
+            WITH pointer_page AS (
+                SELECT item."scipionItemId", item.label, item.enabled,
+                       stored_set.id AS "setId",
+                       stored_set."itemClassName" AS "itemClassName",
+                       COALESCE(
+                           NULLIF(stored_set.properties ->> '_samplingRate', ''),
+                           NULLIF(stored_set.properties ->> 'samplingRate', '')
+                       ) AS "samplingRate"
+                  FROM scipion_sets stored_set
+                  JOIN scipion_set_items item
+                    ON item."setId" = stored_set.id
+                 WHERE stored_set."projectId" = %s
+                   AND stored_set."protocolDbId" = %s
+                   AND stored_set."outputName" = %s
+                   AND COALESCE(
+                           stored_set.properties ->> 'runtimeReserved',
+                           'false'
+                       ) <> 'true'
         """
         params = [projectId, protocolDbId, outputName]
         if cursorId is not None:
             query += ' AND item."scipionItemId" > %s\n'
             params.append(cursorId)
 
-        query += ' ORDER BY item."scipionItemId" ASC LIMIT %s'
+        query += """
+                ORDER BY item."scipionItemId" ASC LIMIT %s
+            )
+            SELECT pointer_page."scipionItemId", pointer_page.label,
+                   pointer_page.enabled, pointer_page."itemClassName",
+                   pointer_page."samplingRate", member_counts."itemsCount"
+              FROM pointer_page
+              LEFT JOIN LATERAL (
+                  SELECT COUNT(child_item.id)::bigint AS "itemsCount"
+                    FROM scipion_set_tables child_table
+                    LEFT JOIN scipion_set_table_items child_item
+                      ON child_item."tableId" = child_table.id
+                   WHERE child_table."setId" = pointer_page."setId"
+                     AND child_table."parentItemId" = pointer_page."scipionItemId"
+                     AND child_table."tableKind" = 'child'
+                   GROUP BY child_table."parentItemId"
+              ) member_counts
+                ON pointer_page."itemClassName" IN ('Class2D', 'Class3D')
+             ORDER BY pointer_page."scipionItemId" ASC
+        """
         params.append(limit + 1)
 
         rows = self.db.fetchAll(query, tuple(params)) or []
@@ -2494,12 +2521,33 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             itemId = positiveInt(row.get("scipionItemId"), "scipionItemId")
             itemClass = str(row.get("itemClassName") or "").strip()
             label = str(row.get("label") or "").strip()
-            items.append({
+            member = {
                 "scipionItemId": itemId,
                 "name": label or "%s %s" % (itemClass or "Item", itemId),
                 "enabled": bool(row.get("enabled", True)),
                 "itemClassName": itemClass,
-            })
+            }
+
+            if itemClass in ("Class2D", "Class3D"):
+                # NULL means no persisted child table (unknown), while a
+                # real empty child table counts as zero. Never confuse them.
+                count = row.get("itemsCount")
+                if type(count) is int and count >= 0:
+                    member["itemsCount"] = count
+
+                # Class sampling is inherited from the persisted source Set;
+                # never hydrate a runtime object or invent a default.
+                try:
+                    samplingRate = float(row.get("samplingRate"))
+                except (TypeError, ValueError, OverflowError):
+                    samplingRate = None
+                if (
+                    samplingRate is not None
+                    and 0 < samplingRate < float("inf")
+                ):
+                    member["samplingRate"] = samplingRate
+
+            items.append(member)
 
         hasMore = len(rows) > limit
         return {

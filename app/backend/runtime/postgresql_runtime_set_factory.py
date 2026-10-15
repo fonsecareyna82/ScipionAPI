@@ -1601,6 +1601,12 @@ class PostgresqlRuntimeSetMixin:
                 "provide appendItem()."
             )
 
+        # A Set may refuse some new items (e.g. a repeated identity). Native Sets check that from their
+        # _insertItem, which this append does not go through: run the same check here.
+        validateNewItem = getattr(self, "_validateNewItem", None)
+        if callable(validateNewItem):
+            validateNewItem(item)
+
         wasEmpty = bool(
             self.isEmpty()
         )

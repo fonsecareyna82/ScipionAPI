@@ -2987,6 +2987,34 @@ def test_FmtDateProducesCreationWhereValue():
     ]
 
 
+def test_WhereSupportsIdInLists():
+    """Streaming consumers load the items behind a batch of ids with id IN (...)."""
+    mapper = PostgresqlSetRuntimeMapper(db=FakeDb(), setId=31, itemBuilder=buildItem)
+
+    whereSql, whereParams = mapper._buildWhere("id IN (4,3,5)")
+
+    assert whereSql == '"scipionItemId" = ANY(%s)'
+    assert whereParams == [[4, 3, 5]]
+
+
+def test_WhereInListsCombineWithOtherConditions():
+    mapper = PostgresqlSetRuntimeMapper(db=FakeDb(), setId=31, itemBuilder=buildItem)
+
+    whereSql, whereParams = mapper._buildWhere("id > 2 AND id IN ( 7 , 9 )")
+
+    assert whereSql == '("scipionItemId" > %s AND "scipionItemId" = ANY(%s))'
+    assert whereParams == [2, [7, 9]]
+
+
+def test_WhereEmptyInListMatchesNothing():
+    mapper = PostgresqlSetRuntimeMapper(db=FakeDb(), setId=31, itemBuilder=buildItem)
+
+    whereSql, whereParams = mapper._buildWhere("id IN ()")
+
+    assert whereSql == "FALSE"
+    assert whereParams == []
+
+
 def test_WhereSupportsSqliteOrExpressions():
     mapper = PostgresqlSetRuntimeMapper(
         db=FakeDb(),

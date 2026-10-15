@@ -93,6 +93,10 @@ opts into native template reuse for `iterItems()`/`for x in set` (honoring
 always return independent objects, and nested Set items are always built anew.
 Enable it only once every plugin in use clones the items it keeps; code here
 that keeps iterated items must clone them or pass `iterate=False`.
+Runtime `append()` does not go through a Set's `_insertItem`, so it calls the
+Set's `_validateNewItem(item)` when defined (e.g. tomo Sets refusing a repeated
+tsId) before storing: keep native admission checks working there. Where filters
+accept `field IN (v1, ...)` lists, which streaming consumers load batches with.
 
 Neither canonical root nor logical items keep a JSON GIN. Migration
 `b75a4e291c0f` drops the canonical root GIN; `9d064ee31b1b` dropped the

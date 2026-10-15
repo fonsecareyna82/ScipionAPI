@@ -132,6 +132,12 @@ class PostgresqlSetRuntimeMapper:
         "comment": "comment",
     }
 
+    # field IN (v1, v2, ...): how streaming consumers load the items behind a batch of ids
+    WHERE_IN_PATTERN = re.compile(
+        r"^\s*(?P<field>[A-Za-z_][A-Za-z0-9_.]*)\s+IN\s*\((?P<values>[^()]*)\)\s*$",
+        re.IGNORECASE,
+    )
+
     WHERE_PART_PATTERN = re.compile(
         r"""^\s*
             (?P<field>[A-Za-z_][A-Za-z0-9_.]*)
@@ -3335,6 +3341,21 @@ class PostgresqlSetRuntimeMapper:
             )
 
             for part in andParts:
+                inMatch = self.WHERE_IN_PATTERN.match(part)
+
+                if inMatch is not None:
+                    field = inMatch.group("field")
+                    values = [self._normalizeFieldValue(field, self._parseWhereValue(value))
+                              for value in inMatch.group("values").split(",") if value.strip()]
+                    if not values:
+                        andClauses.append("FALSE")
+                        continue
+                    expression, expressionParams = self._fieldExpression(field)
+                    andClauses.append("%s = ANY(%%s)" % expression)
+                    params.extend(expressionParams)
+                    params.append(values)
+                    continue
+
                 match = self.WHERE_PART_PATTERN.match(
                     part
                 )
