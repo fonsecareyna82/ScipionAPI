@@ -53,6 +53,7 @@ def _installStubModules() -> dict[str, types.ModuleType | None]:
 
     environmentModule = types.ModuleType("app.backend.api.services.environment")
     environmentModule.prepareEnvironment = lambda: None
+    environmentModule.removeCustomEnvironmentVariables = lambda *args, **kwargs: None
     sys.modules["app.backend.api.services.environment"] = environmentModule
 
     errorHandlersModule = types.ModuleType("app.backend.utils.error_handlers")

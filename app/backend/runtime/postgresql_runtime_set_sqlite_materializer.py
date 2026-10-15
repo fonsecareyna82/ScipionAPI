@@ -29,6 +29,8 @@ import re
 import shutil
 import tempfile
 import threading
+import time
+import traceback
 import uuid
 import weakref
 from datetime import datetime, timedelta
@@ -451,6 +453,7 @@ class PostgresqlRuntimeSetSqliteMaterializer:
 
             materializedPath = None
             targetSet = None
+            startedAt = time.perf_counter()
 
             try:
                 # Rebuild stale snapshots at the same worker-local
@@ -511,6 +514,12 @@ class PostgresqlRuntimeSetSqliteMaterializer:
                     sourceRevision=(
                         sourceRevision
                     ),
+                )
+
+                self._logMaterialization(
+                    runtimeSet,
+                    seconds=time.perf_counter() - startedAt,
+                    refreshed=cachedPath is not None,
                 )
 
                 return materializedPath
@@ -716,6 +725,46 @@ class PostgresqlRuntimeSetSqliteMaterializer:
             )
 
         return targetSet
+
+    # Frames of the Set machinery itself; the requester is the first other one.
+    _REQUESTER_SKIPPED_FILES = (
+        "/app/backend/runtime/postgresql_runtime_set_sqlite_materializer.py",
+        "/app/backend/runtime/postgresql_runtime_set_factory.py",
+        "/app/backend/runtime/postgresql_output_set_adapter.py",
+        "/pyworkflow/object.py",
+        "/pyworkflow/mapper/",
+        "/contextlib.py",
+    )
+
+    @classmethod
+    def _describeRequester(cls) -> str:
+        """Nearest calling code outside the Set machinery, e.g. a protocol line."""
+        for frame in reversed(traceback.extract_stack()[:-2]):
+            fileName = frame.filename.replace(os.sep, "/")
+            if not any(part in fileName for part in cls._REQUESTER_SKIPPED_FILES):
+                shortName = "/".join(fileName.split("/")[-2:])
+                return "%s:%s in %s" % (shortName, frame.lineno, frame.name)
+        return "unknown code"
+
+    def _logMaterialization(self, runtimeSet: ScipionSet, seconds: float, refreshed: bool) -> None:
+        """One line per file actually written, so remaining requesters show up in run logs."""
+        runtimeInfo = self._getRuntimeInfo(runtimeSet)
+        try:
+            itemsCount = runtimeSet.getSize()
+        except Exception:
+            itemsCount = None
+        getObjName = getattr(runtimeSet, "getObjName", None)
+        logger.info(
+            "%s a file copy of %s '%s' (setId=%s tableId=%s, %s items) in %.2fs, requested by %s",
+            "Refreshed" if refreshed else "Wrote",
+            runtimeSet.getClassName(),
+            (getObjName() if callable(getObjName) else "") or "",
+            runtimeInfo.get("setId"),
+            runtimeInfo.get("tableId"),
+            itemsCount,
+            seconds,
+            self._describeRequester(),
+        )
 
     def _copySetMetadata(
             self,

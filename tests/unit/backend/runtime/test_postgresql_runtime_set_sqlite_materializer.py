@@ -1696,3 +1696,28 @@ def test_PlannedMissingAttributesMatchTheRecursiveCompletion():
         materializer._completeMissingItemAttributesFromPlan(planned, plan)
         assert planned.getObjDict(includeClass=True) == walked.getObjDict(includeClass=True)
         assert sorted(vars(planned)) == sorted(vars(walked))
+
+
+def test_MaterializeLogsEachWrittenCopyWithItsRequester(tmp_path, caplog):
+    sourceSet = _createRootSource(tmp_path / "source.sqlite")
+    _configureRuntimeSource(
+        sourceSet=sourceSet,
+        nativeSetClass=ExampleSet,
+        runtimeInfo={"setId": 31, "className": "ExampleSet", "itemClassName": "ExampleItem"},
+        runtimeProperties={},
+    )
+    materializer = PostgresqlRuntimeSetSqliteMaterializer()
+    loggerName = "app.backend.runtime.postgresql_runtime_set_sqlite_materializer"
+
+    def requestingCode():
+        return materializer.materialize(sourceSet)
+
+    with caplog.at_level("INFO", logger=loggerName):
+        requestingCode()
+        requestingCode()  # Up-to-date copy: nothing is written, nothing logged.
+    records = [record.getMessage() for record in caplog.records if record.name == loggerName]
+    assert len(records) == 1
+    assert records[0].startswith("Wrote a file copy of ExampleSet")
+    assert "setId=31" in records[0] and "1 items" in records[0]
+    assert records[0].endswith("in requestingCode")
+    assert "test_postgresql_runtime_set_sqlite_materializer.py:" in records[0]
