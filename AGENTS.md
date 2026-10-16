@@ -122,6 +122,7 @@ Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatib
 - **Runtime-generated persistence artifacts are not source files**: files such as `dump.rdb` and `.backend_reload_marker` are gitignored and must remain untracked.
 - **Valkey intentionally still uses the Redis Celery transport/client stack**: `celery[redis]`, `redis-py`, and `redis://`/`rediss://` URLs remain correct. Do not replace them merely because the server is Valkey.
 - `pydantic==1.10.x` pin (see Stack above) — a real, easy-to-violate-by-accident constraint.
+- **Plugins installed in develop mode while the backend runs** (`pip install -e`) are importable only through the `.pth` file the install writes, which the interpreter reads only at startup. The Domain refresh (`scipion_domain_refresh_service`, on every plugins revision bump) processes the `.pth` files written or changed since the process started (`PathFileTracker`) before registering new plugins. Keep that order, or workflows imported after such an install silently lose the new plugin's protocols.
 - `scipion_home/` is gitignored and holds a local `.env` — not a leak, just local config; don't assume secrets belong there or that it's meant to be committed.
 
 ## Keeping this document current

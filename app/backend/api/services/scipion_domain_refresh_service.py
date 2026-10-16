@@ -26,8 +26,10 @@
 import importlib
 import logging
 import os
+import site
+import sys
 import threading
-from typing import Set
+from typing import Dict, Iterable, List, Set
 
 from pyworkflow import VariablesRegistry
 from pyworkflow.config import Config
@@ -59,6 +61,83 @@ def _readEnvironmentRevision() -> int:
     except Exception:
         return 0
 
+
+class PathFileTracker:
+    """The .pth files of some site directories, as the interpreter processed them when it started.
+
+    A plugin installed in develop mode (pip install -e) while this process runs is importable only through the .pth
+    file the install writes, and the interpreter reads .pth files only at startup. activateNewPathFiles processes
+    the files written or changed since, so the plugin can be imported without restarting the process. The import
+    lines of a new file run once (they install import finders); those of a changed file already ran at startup, so
+    only its new paths are added.
+    """
+
+    def __init__(self, siteDirs: Iterable[str]):
+        self.siteDirs = [str(siteDir) for siteDir in siteDirs if siteDir]
+        self.seen = self._scan()
+
+    def _scan(self) -> Dict[str, float]:
+        pathFiles = {}
+        for siteDir in self.siteDirs:
+            try:
+                names = os.listdir(siteDir)
+            except OSError:
+                continue
+            for name in names:
+                if name.endswith(".pth"):
+                    pathFile = os.path.join(siteDir, name)
+                    try:
+                        pathFiles[pathFile] = os.path.getmtime(pathFile)
+                    except OSError:
+                        continue
+        return pathFiles
+
+    def activateNewPathFiles(self) -> List[str]:
+        """Process the .pth files written or changed since the last time. Returns those processed."""
+        current = self._scan()
+        processed = []
+        for pathFile, mtime in sorted(current.items()):
+            isNew = pathFile not in self.seen
+            if isNew or mtime != self.seen[pathFile]:
+                try:
+                    self._process(pathFile, runImports=isNew)
+                    processed.append(pathFile)
+                except Exception as e:
+                    logger.warning("Could not process %s: %s", pathFile, e)
+        self.seen = current
+        if processed:
+            importlib.invalidate_caches()
+            logger.info("Processed .pth files written while running: %s", processed)
+        return processed
+
+    @staticmethod
+    def _process(pathFile: str, runImports: bool) -> None:
+        siteDir = os.path.dirname(pathFile)
+        with open(pathFile, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith(("import ", "import\t")):
+                if runImports:
+                    exec(line)  # As site.addpackage does for these lines
+                continue
+            path = os.path.abspath(os.path.join(siteDir, line))
+            if os.path.exists(path) and path not in sys.path:
+                sys.path.append(path)
+
+
+def _getSiteDirs() -> List[str]:
+    siteDirs = list(getattr(site, "getsitepackages", lambda: [])())
+    userSite = getattr(site, "getusersitepackages", lambda: None)()
+    if userSite:
+        siteDirs.append(userSite)
+    return siteDirs
+
+
+# Taken when the process starts: the .pth files the interpreter already processed
+_pathFiles = PathFileTracker(_getSiteDirs())
 
 _lastDomainRevision = _readPluginsRevision()
 _lastEnvironmentRevision = _readEnvironmentRevision()
@@ -208,6 +287,8 @@ def _refreshScipionDomainLocked(
         return False
 
     importlib.invalidate_caches()
+    # Plugins installed in develop mode since this process started are importable only from here on
+    _pathFiles.activateNewPathFiles()
 
     Config.setDomain("pwem")
     domain = Config.getDomain()

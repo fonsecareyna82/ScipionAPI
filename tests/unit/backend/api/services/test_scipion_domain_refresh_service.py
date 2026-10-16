@@ -23,7 +23,9 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import sys
 import threading
+import uuid
 import app.backend.api.services.scipion_domain_refresh_service as domainRefreshModule
 
 
@@ -769,3 +771,97 @@ def test_RefreshScipionDomainRemovesVariablesOwnedByUninstalledPlugin(
     }
 
 
+def _newPackage(tmp_path, value):
+    """A package in its own source folder, as a develop-mode install leaves it."""
+    name = "devpkg_%s" % uuid.uuid4().hex
+    package = tmp_path / "src" / name
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = %d\n" % value)
+    return name, str(tmp_path / "src")
+
+
+def test_APackageInstalledInDevelopModeWhileRunningBecomesImportable(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    siteDir = tmp_path / "site-packages"
+    siteDir.mkdir()
+    pathFiles = domainRefreshModule.PathFileTracker([str(siteDir)])
+    name, sourceDir = _newPackage(tmp_path, 7)
+    # What pip install -e writes while the backend runs
+    (siteDir / ("__editable__.%s.pth" % name)).write_text(sourceDir + "\n")
+
+    pathFiles.activateNewPathFiles()
+
+    assert __import__(name).VALUE == 7
+
+
+def test_TheImportLinesOfANewPathFileRunOnce(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "_pathFileRuns", 0, raising=False)
+    siteDir = tmp_path / "site-packages"
+    siteDir.mkdir()
+    pathFiles = domainRefreshModule.PathFileTracker([str(siteDir)])
+    (siteDir / "finder.pth").write_text("import sys; sys._pathFileRuns += 1\n")
+
+    pathFiles.activateNewPathFiles()
+    pathFiles.activateNewPathFiles()
+
+    assert sys._pathFileRuns == 1
+
+
+def test_AChangedPathFileOnlyAddsItsNewPaths(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "_pathFileRuns", 0, raising=False)
+    siteDir = tmp_path / "site-packages"
+    siteDir.mkdir()
+    pathFile = siteDir / "easy-install.pth"
+    # Processed when the interpreter started: its import lines already ran then
+    pathFile.write_text("import sys; sys._pathFileRuns += 1\n")
+    pathFiles = domainRefreshModule.PathFileTracker([str(siteDir)])
+    name, sourceDir = _newPackage(tmp_path, 3)
+    pathFile.write_text("import sys; sys._pathFileRuns += 1\n%s\n" % sourceDir)
+
+    pathFiles.activateNewPathFiles()
+
+    assert __import__(name).VALUE == 3
+    assert sys._pathFileRuns == 0
+
+
+def test_RefreshActivatesNewPathFilesBeforeRegisteringNewPlugins(monkeypatch):
+    calls = []
+
+    class NewPluginDomainStub:
+        _plugins = {}
+        _protocols = {}
+        _objects = {}
+        _viewers = {}
+        _wizards = {}
+        _pluginsLoaded = True
+        _preferred_viewers = None
+        _Domain__mapperDict = None
+
+        @classmethod
+        def getPlugins(cls):
+            return dict(cls._plugins)
+
+        @classmethod
+        def registerPlugin(cls, pluginName):
+            calls.append("register " + pluginName)
+            cls._plugins[pluginName] = object()
+
+        @classmethod
+        def getProtocols(cls):
+            return {}
+
+    monkeypatch.setattr(domainRefreshModule, "_lastDomainRevision", 3)
+    monkeypatch.setattr(domainRefreshModule, "getPluginsRevision", lambda: 4)
+    monkeypatch.setattr(domainRefreshModule.importlib, "invalidate_caches", lambda: None)
+    monkeypatch.setattr(domainRefreshModule.Config, "setDomain", lambda value: None)
+    monkeypatch.setattr(domainRefreshModule.Config, "getDomain", lambda: NewPluginDomainStub)
+    monkeypatch.setattr(domainRefreshModule, "_getCleanScipionPluginNames", lambda: {"cryocare"})
+    monkeypatch.setattr(domainRefreshModule, "_pathFiles",
+                        type("Tracker", (), {"activateNewPathFiles": lambda self: calls.append("activate")})(),
+                        raising=False)
+
+    domainRefreshModule.refreshScipionDomain()
+
+    assert calls == ["activate", "register cryocare"]
