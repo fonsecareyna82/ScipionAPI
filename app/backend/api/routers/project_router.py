@@ -2313,6 +2313,12 @@ def listPersistedProtocolViewers(
             snapshot=snapshot,
         )
         result["runtimePreviewAvailable"] = isProtocolViewerRuntimePreviewAvailable(currentUser)
+        if result["runtimePreviewAvailable"] and result.get("viewers"):
+            # The user may open a viewer next: warm its worker up meanwhile.
+            from app.backend.api.services.protocol_viewer_dynamic_form_service import (
+                prestartViewerWorkers,
+            )
+            prestartViewerWorkers()
         return result
     except PersistedProtocolViewerError as exc:
         if exc.code in ("not_found", "unregistered_class"):
@@ -2430,59 +2436,6 @@ def runProtocolViewerActionRoute(
     except PersistedProtocolViewerError as exc:
         raise HTTPException(status_code=404 if exc.code == "not_found" else 409,
                             detail={"code": exc.code, "messages": []}) from None
-
-
-# BEGIN PROTOCOLVIEWER INSPECTION HTTP 172
-class ProtocolViewerOutputInspectionRequest(BaseModel):
-    """Only an exact registered viewer/action identity; no client output paths."""
-    viewerId: StrictStr = Field(..., min_length=3, max_length=255)
-    actionId: StrictStr = Field(..., min_length=1, max_length=128)
-
-    class Config:
-        extra = "forbid"
-
-
-@router.post(
-    "/{projectId}/protocols/{protocolId}/viewers/inspection-target",
-    response_model=Any,
-)
-def inspectProtocolViewerOutputTarget(
-    projectId: int,
-    protocolId: int,
-    payload: ProtocolViewerOutputInspectionRequest,
-    currentUser=Depends(getCurrentUser),
-    mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
-):
-    """Authorized read-only metadata, never a ProtocolViewer action executor."""
-    from app.backend.api.services.protocol_viewer_output_inspection_http_service import (
-        ProtocolViewerInspectionHttpError,
-        requestProtocolViewerOutputInspectionHttp,
-    )
-    try:
-        return requestProtocolViewerOutputInspectionHttp(
-            mapper=mapper, current_user=currentUser, project_service=service,
-            project_id=projectId, protocol_id=protocolId,
-            viewer_id=payload.viewerId, action_id=payload.actionId,
-            snapshot_provider=getScipionViewerResolutionSnapshot,
-        )
-    except ProtocolViewerInspectionHttpError as exc:
-        status_code = {
-            "project_not_found": 404,
-            "unauthenticated": 401,
-            "invalid_identity": 422,
-            "invalid_context": 503,
-            "inspection_target_not_found": 404,
-            "inspection_target_unavailable": 409,
-            "invalid_inspection_target": 502,
-        }.get(exc.code, 502)
-        raise HTTPException(status_code=status_code, detail=exc.code) from None
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("ProtocolViewer output inspection could not be completed")
-        raise HTTPException(status_code=502, detail="inspection_unavailable") from None
-# END PROTOCOLVIEWER INSPECTION HTTP 172
 
 
 @router.post(

@@ -26,9 +26,6 @@ from app.backend.api.services.protocol_viewer_action_schema_service import (
 from app.backend.api.services.protocol_viewer_contract_service import (
     validateProtocolViewerContracts,
 )
-from app.backend.api.services.protocol_viewer_web_action_contract_service import (
-    describeProtocolViewerWebActionContracts,
-)
 
 
 class PersistedProtocolViewerError(ValueError):
@@ -130,6 +127,4 @@ def resolvePersistedProtocolViewerCandidates(
     validated = validateProtocolViewerContracts(
         static_actions, snapshot["viewers"],
     )
-    return describeProtocolViewerWebActionContracts(
-        validated, snapshot["viewers"],
-    )
+    return validated

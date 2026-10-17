@@ -249,11 +249,12 @@ def test_worker_timeout_kills_process_group(monkeypatch):
         pid = 987
         returncode = None
         n = 0
-        def communicate(self, input=None, timeout=None):
+        def wait(self, timeout=None):
             self.n += 1
             if self.n == 1:
                 raise subprocess.TimeoutExpired(['fake'], timeout)
             self.returncode = -9
+            return self.returncode
     monkeypatch.setattr(runner.subprocess, 'Popen', lambda *args, **kwargs: FakeProcess())
     monkeypatch.setattr(runner.os, 'killpg', lambda pid, sig: called.append((pid, sig)))
     with pytest.raises(runner.DynamicProtocolViewerFormError) as exc:
@@ -268,8 +269,8 @@ def test_child_command_is_fixed_and_does_not_use_shell(monkeypatch):
     launched = []
     class FakeProcess:
         returncode = 0
-        def communicate(self, input=None, timeout=None):
-            return None
+        def wait(self, timeout=None):
+            return 0
     def start(command, **kw):
         launched.append((command, kw))
         return FakeProcess()

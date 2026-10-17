@@ -2369,3 +2369,10 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         yield client
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def noWarmViewerWorker(monkeypatch):
+    # Viewer workers run as one-shot processes in tests unless a test enables
+    # the warm worker itself (test_protocol_viewer_warm_pool).
+    monkeypatch.setenv("SCIPION_PROTOCOL_VIEWER_WARM_WORKER", "0")

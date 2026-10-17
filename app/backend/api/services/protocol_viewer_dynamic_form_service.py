@@ -19,6 +19,9 @@ from app.backend.api.services.protocol_viewer_condition_contract_service import 
     validViewerConditionRule, referencedViewerFields,
 )
 
+from app.backend.api.services.protocol_viewer_warm_pool import (
+    WarmWorkerTimeout, prestartWarmWorker, runInWarmWorker,
+)
 from app.backend.api.services.protocol_viewer_settings_service import (
     DESKTOP_DISPLAY_PREFIX, serverDesktopDisplay, viewerEvaluationEnabled,
 )
@@ -256,13 +259,14 @@ def _validate_actions(payload, visible_fields, conditional_fields):
     return list(actions)
 
 
-def _log_worker_failure(module, returncode, stderr):
+def _log_worker_failure(module, returncode, stderrPath):
     """Plugin errors go to the server log, never to the HTTP reply."""
     try:
-        stderr.seek(0, 2)
-        size = stderr.tell()
-        stderr.seek(max(0, size - _STDERR_TAIL))
-        tail = stderr.read().decode('utf-8', errors='replace')
+        with open(stderrPath, 'rb') as stderr:
+            stderr.seek(0, 2)
+            size = stderr.tell()
+            stderr.seek(max(0, size - _STDERR_TAIL))
+            tail = stderr.read().decode('utf-8', errors='replace')
     except Exception:
         tail = ''
     logger.warning('Viewer worker %s exited with %s:\n%s', module, returncode, tail)
@@ -273,12 +277,8 @@ _FORM_REPLY_MARKER = b'__SCIPION_VIEWER_FORM_JSON__:'
 _STDERR_TAIL = 4096
 
 
-def _run_worker(request: dict, timeout_seconds: int, *,
-                module: str = _FORM_WORKER_MODULE,
-                marker: bytes = _FORM_REPLY_MARKER,
-                max_request: int = _MAX_REQUEST,
-                max_reply: int = _MAX_REPLY) -> dict:
-    """Fixed child module, bounded disk-backed pipes, process-group timeout."""
+def _worker_environment() -> dict:
+    """Environment of viewer workers: no display, the server's one handed over."""
     env = os.environ.copy()
     for name, value in serverDesktopDisplay().items():
         env[DESKTOP_DISPLAY_PREFIX + name] = value
@@ -287,37 +287,73 @@ def _run_worker(request: dict, timeout_seconds: int, *,
     env['MPLBACKEND'] = 'Agg'
     env['QT_QPA_PLATFORM'] = 'offscreen'
     env['SCIPION_VIEWER_FORM_CHILD'] = '1'
-    command = [sys.executable, '-m', module]
-    data = json.dumps(request, separators=(',', ':'), allow_nan=False).encode('utf-8')
-    if len(data) > max_request:
-        raise DynamicProtocolViewerFormError('request_too_large')
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    return env
+
+
+def prestartViewerWorkers() -> None:
+    """Have a warm viewer worker ready before the first viewer action."""
+    prestartWarmWorker(_worker_environment())
+
+
+def _run_cold_worker(module: str, paths: dict, env: dict, timeout_seconds: int) -> int:
+    """A one-shot worker process, killed with its process group on timeout."""
+    with open(paths['stdin'], 'rb') as stdin, open(paths['stdout'], 'wb') as stdout, \
+            open(paths['stderr'], 'wb') as stderr:
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE,
+            process = subprocess.Popen([sys.executable, '-m', module], stdin=stdin,
                                        stdout=stdout, stderr=stderr,
                                        env=env, start_new_session=True)
         except OSError as exc:
             raise DynamicProtocolViewerFormError('worker_unavailable') from exc
         try:
-            process.communicate(input=data, timeout=timeout_seconds)
+            return process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 process.kill()
-            process.communicate()
+            process.wait()
             raise DynamicProtocolViewerFormError('worker_timeout') from exc
-        if process.returncode != 0:
-            _log_worker_failure(module, process.returncode, stderr)
+
+
+def _run_worker(request: dict, timeout_seconds: int, *,
+                module: str = _FORM_WORKER_MODULE,
+                marker: bytes = _FORM_REPLY_MARKER,
+                max_request: int = _MAX_REQUEST,
+                max_reply: int = _MAX_REPLY) -> dict:
+    """Fixed child module, disk-backed streams, process-group timeout.
+
+    The child is forked from the warm worker when possible (most of a cold
+    start is importing Scipion and the plugins), else started from scratch.
+    """
+    env = _worker_environment()
+    data = json.dumps(request, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    if len(data) > max_request:
+        raise DynamicProtocolViewerFormError('request_too_large')
+    with tempfile.TemporaryDirectory(prefix='scipion-viewer-') as folder:
+        paths = {name: os.path.join(folder, name) for name in ('stdin', 'stdout', 'stderr')}
+        with open(paths['stdin'], 'wb') as stdin:
+            stdin.write(data)
+        for name in ('stdout', 'stderr'):
+            open(paths[name], 'wb').close()
+        try:
+            returncode = runInWarmWorker(module, paths, env, timeout_seconds)
+        except WarmWorkerTimeout as exc:
+            raise DynamicProtocolViewerFormError('worker_timeout') from exc
+        if returncode is None:
+            returncode = _run_cold_worker(module, paths, env, timeout_seconds)
+        if returncode != 0:
+            _log_worker_failure(module, returncode, paths['stderr'])
             raise DynamicProtocolViewerFormError(
-                'reply_too_large' if process.returncode == 3 else 'worker_failed')
-        stdout.seek(0, 2)
-        size = stdout.tell()
-        stdout.seek(0)
-        # Plugin print() output may precede the reply; keep the last bytes.
-        if size > max_reply:
-            stdout.seek(size - max_reply - 1)
-        output = stdout.read(max_reply + 1)
+                'reply_too_large' if returncode == 3 else 'worker_failed')
+        with open(paths['stdout'], 'rb') as stdout:
+            stdout.seek(0, 2)
+            size = stdout.tell()
+            stdout.seek(0)
+            # Plugin print() output may precede the reply; keep the last bytes.
+            if size > max_reply:
+                stdout.seek(size - max_reply - 1)
+            output = stdout.read(max_reply + 1)
     # Plugin print() output is never trusted as a wire-format response.
     records = [line for line in output.splitlines() if line.startswith(marker)]
     if len(records) != 1:
