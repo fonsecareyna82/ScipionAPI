@@ -357,7 +357,82 @@ def serializeRuntimeViewerDefinition(
     return result
 
 
-def _evaluate(request: dict) -> dict:
+def attachStoredOutputs(project, protocol, project_id, protocol_db_id):
+    """Attach the protocol's stored outputs, as the desktop project load does.
+
+    Runtime protocols are built without outputs, and viewers read them as
+    protocol attributes (e.g. ``self.protocol.outputClasses``). Nothing is
+    written: streams are not reopened and the protocol is never stored.
+    """
+    from app.backend.mapper.postgresql_scipion_item_hydrator import (
+        setPostgresqlRuntimeParentReference,
+    )
+    runtime_mapper = getattr(project, 'mapper', None)
+    object_mapper = getattr(runtime_mapper, 'objectMapper', None)
+    reader = getattr(object_mapper, 'listProtocolStoredObjects', None)
+    select = getattr(runtime_mapper, 'selectRuntimeInputObjectById', None)
+    if not callable(reader) or not callable(select):
+        return []
+    attached = []
+    for row in reader(projectId=project_id, protocolDbId=protocol_db_id) or []:
+        if row.get('parentObjectId') not in (None, ''):
+            continue
+        name = str(row.get('path') or row.get('name') or '').strip()
+        object_id = row.get('scipionObjId')
+        if (not name.isidentifier() or name in attached
+                or object_id in (None, '') or getattr(protocol, name, None) is not None):
+            continue
+        try:
+            output = select(int(object_id))
+        except Exception:
+            output = None
+        if output is None:
+            continue
+        if callable(getattr(output, 'setName', None)):
+            output.setName(name)
+        setPostgresqlRuntimeParentReference(runtimeObject=output, parent=protocol)
+        setattr(protocol, name, output)
+        outputs = getattr(protocol, '_outputs', None)
+        if outputs is not None and name not in outputs:
+            outputs.append(name)
+        attached.append(name)
+    return attached
+
+
+def restoreProtocolInputs(mapper, project, protocol, project_id, protocol_id):
+    """Resolve the protocol's input pointers, as before running it.
+
+    Uses the protocol worker's own restoration without persisting anything:
+    viewers commonly read inputs (e.g. ``self.protocol.inputParticles.get()``).
+    """
+    from app.backend.runtime.postgresql_protocol_worker import (
+        RuntimePostgresqlProtocolWorker,
+    )
+    restorer = RuntimePostgresqlProtocolWorker(project_id, protocol_id)
+    restorer.mapper = mapper
+    restorer.project = project
+    restorer.protocol = protocol
+    restorer.runtimeMapper = getattr(project, 'mapper', None)
+    return restorer.restoreExecutionInputs(persistResolvedRefs=False)
+
+
+class RuntimeViewerContext:
+    """A viewer instantiated for one protocol, with its form already defined."""
+
+    def __init__(self, viewer, project, protocol, baseline, hidden_declarations):
+        self.viewer = viewer
+        self.project = project
+        self.protocol = protocol
+        self.baseline = baseline
+        self.hidden_declarations = hidden_declarations
+
+
+@contextmanager
+def loadRuntimeViewer(request: dict):
+    """Load the project, the protocol and the requested viewer with its form.
+
+    The request identity has already been authorized by the API parent.
+    """
     from pyworkflow import Config
     from pyworkflow.viewer import ProtocolViewer
     from app.backend.api.services.protocol_viewer_inventory_service import _class_identity
@@ -365,6 +440,9 @@ def _evaluate(request: dict) -> dict:
     from app.backend.database import getMapper
     from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 
+    if Config.getDomain() is None:
+        # Plugin protocol and viewer classes are only found through the domain.
+        Config.setDomain("pwem")
     project_id, protocol_id = request['projectId'], request['protocolId']
     viewer_id = request['viewerId']
     mapper = getMapper()
@@ -382,6 +460,14 @@ def _evaluate(request: dict) -> dict:
         protocol = service._getScipionProtocolByScipionId(protocol_id)
         if protocol is None or protocol.getClassName() != row['protocolClassName']:
             raise ValueError('protocol_class_changed')
+        # Viewers define their forms and actions from inputs and outputs.
+        try:
+            restoreProtocolInputs(mapper, project, protocol, project_id, protocol_id)
+        except Exception:
+            # A viewer that does not read inputs must still open.
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        attachStoredOutputs(project, protocol, project_id, request['protocolDbId'])
         registry = Config.getDomain().getViewers()
         matches = [cls for cls in registry.values()
                    if isinstance(cls, type) and issubclass(cls, ProtocolViewer)
@@ -401,13 +487,8 @@ def _evaluate(request: dict) -> dict:
         # silently drops it.  No plugin code is run in the API parent.
         with captureViewerHiddenDeclarations() as hidden_declarations:
             viewer.setProtocol(protocol)  # calls dynamic _defineParams
-        schema = serializeRuntimeViewerDefinition(
-            viewer._definition, inherited_field_names=baseline,
-            hidden_declarations=hidden_declarations)
-        return {'ok': True, 'status': 'runtime-preview', 'source': 'isolated-worker',
-                'projectId': project_id, 'protocolId': str(protocol_id), 'viewerId': viewer_id,
-                'webReady': False, 'renderable': False, 'executionAllowed': False,
-                **schema}
+        yield RuntimeViewerContext(viewer, project, protocol, baseline,
+                                   hidden_declarations)
     finally:
         try:
             mapper.db.close()
@@ -415,16 +496,45 @@ def _evaluate(request: dict) -> dict:
             pass
 
 
+def viewerActionNames(viewer):
+    """Form fields with a visualize handler: the desktop 'eye' buttons."""
+    try:
+        names = viewer._getVisualizeDict()
+    except Exception:
+        return []
+    return sorted(name for name in names
+                  if type(name) is str and name.isidentifier() and len(name) <= 128)
+
+
+def _serialized_field_names(schema):
+    names = set()
+    for section in schema['sections']:
+        names.update(field['name'] for field in section['fields'])
+        for group in section['groups']:
+            names.update(field['name'] for field in group['fields'])
+    names.update(entry['field']['name'] for entry in schema.get('conditionalFields', ()))
+    return names
+
+
+def _evaluate(request: dict) -> dict:
+    with loadRuntimeViewer(request) as context:
+        schema = serializeRuntimeViewerDefinition(
+            context.viewer._definition, inherited_field_names=context.baseline,
+            hidden_declarations=context.hidden_declarations)
+        fields = _serialized_field_names(schema)
+        schema['actions'] = [name for name in viewerActionNames(context.viewer)
+                             if name in fields]
+    return {'ok': True, 'status': 'runtime-preview', 'source': 'isolated-worker',
+            'projectId': request['projectId'], 'protocolId': str(request['protocolId']),
+            'viewerId': request['viewerId'],
+            'webReady': False, 'renderable': False, 'executionAllowed': False,
+            **schema}
+
+
 def main() -> int:
     if (os.environ.get('SCIPION_VIEWER_FORM_CHILD') != '1' or
             os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') != '1'):
         return 2
-    # Limit plugin log/file output; this is not a sandbox or a filesystem jail.
-    try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_FSIZE, (1048576, 1048576))
-    except (ImportError, OSError, ValueError):
-        pass
     # Worker uses a fixed module, never eval()s request strings.
     raw = sys.stdin.buffer.read(_MAX_REQUEST + 1)
     if len(raw) > _MAX_REQUEST:
@@ -449,6 +559,9 @@ def main() -> int:
         sys.stdout.buffer.flush()
         return 0
     except Exception:
+        # The parent logs the tail of stderr; the reply itself stays generic.
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         return 1
 
 

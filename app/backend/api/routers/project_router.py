@@ -21,7 +21,7 @@ from typing import List, Any, Union, Optional, Literal, Dict
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from pydantic import BaseModel, Field, StrictInt, StrictStr
+from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.schemas.protocols_schema import (
@@ -37,6 +37,19 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ProjectImportIn, ProtocolWizardExecuteResponse,
                                                     ProtocolWizardExecuteRequest, ProjectImportOut,
                                                     ProtocolRelationCandidatesRequest, ProtocolRelationCandidatesResponse,)
+from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
+    PersistedProtocolViewerError,
+    resolvePersistedProtocolViewerCandidates,
+)
+from app.backend.api.services.scipion_domain_refresh_service import getScipionViewerResolutionSnapshot
+from app.backend.api.services.protocol_viewer_runtime_preview_http_service import (
+    ProtocolViewerRuntimePreviewHttpError,
+    isProtocolViewerRuntimePreviewAvailable,
+    requestProtocolViewerRuntimePreview,
+)
+from app.backend.api.services.protocol_viewer_dynamic_form_service import (
+    DynamicProtocolViewerFormError,
+)
 from app.backend.api.services.project_service import ProjectService, _thumbnailProjectLock
 from app.backend.runtime.preview_process_executor import (
     runOutputPreviewInProcess,
@@ -2277,6 +2290,200 @@ async def previewOutput(
 # ==============================================================================
 
 from fastapi import Body
+
+@router.get("/{projectId}/protocols/{protocolId}/viewers", response_model=Any)
+def listPersistedProtocolViewers(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Read-only, advisory viewer candidates for the PostgreSQL protocol ID."""
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    snapshot = getScipionViewerResolutionSnapshot()
+    try:
+        result = resolvePersistedProtocolViewerCandidates(
+            mapper=mapper,
+            project_id=projectId,
+            protocol_id=protocolId,
+            snapshot=snapshot,
+        )
+        result["runtimePreviewAvailable"] = isProtocolViewerRuntimePreviewAvailable(currentUser)
+        return result
+    except PersistedProtocolViewerError as exc:
+        if exc.code in ("not_found", "unregistered_class"):
+            code = 404 if exc.code == "not_found" else 409
+        else:
+            code = 409 if exc.code in ("ambiguous_class", "invalid_row", "identity_mismatch") else 422
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
+class ProtocolViewerRuntimePreviewRequest(BaseModel):
+    viewerId: StrictStr = Field(..., min_length=1, max_length=255)
+
+    class Config:
+        extra = "forbid"
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/viewers/runtime-preview",
+    response_model=Any,
+)
+def inspectProtocolViewerRuntimeForm(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolViewerRuntimePreviewRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Experimental admin-only, non-executable form inspection of trusted plugins."""
+    if not isProtocolViewerRuntimePreviewAvailable(currentUser):
+        raise HTTPException(status_code=404, detail="preview_unavailable")
+    # Existing ownership/access checks precede plugin discovery and child spawn.
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    snapshot = getScipionViewerResolutionSnapshot()
+    try:
+        return requestProtocolViewerRuntimePreview(
+            mapper=mapper, current_user=currentUser, project_id=projectId,
+            protocol_id=protocolId, viewer_id=payload.viewerId,
+            snapshot=snapshot,
+        )
+    except ProtocolViewerRuntimePreviewHttpError as exc:
+        status_code = {
+            "preview_disabled": 404, "admin_required": 403,
+            "invalid_identity": 422, "invalid_context": 422,
+            "invalid_preview": 502,
+        }.get(exc.code, 400)
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+    except DynamicProtocolViewerFormError as exc:
+        status_code = {
+            "evaluation_disabled": 404, "unauthorized": 403,
+            "viewer_not_applicable": 404,
+            "invalid_identity": 422, "invalid_timeout": 422,
+            "worker_timeout": 504, "worker_unavailable": 503,
+        }.get(exc.code, 502)
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+    except PersistedProtocolViewerError as exc:
+        raise HTTPException(status_code=404 if exc.code == "not_found" else 409,
+                            detail=exc.code) from None
+
+
+class ProtocolViewerActionRequest(BaseModel):
+    viewerId: StrictStr = Field(..., min_length=1, max_length=255)
+    action: StrictStr = Field(..., min_length=1, max_length=128)
+    values: Dict[str, Union[StrictBool, StrictInt, StrictFloat, StrictStr, None]] = Field(
+        default_factory=dict)
+
+    class Config:
+        extra = "forbid"
+
+
+_PROTOCOL_VIEWER_ACTION_STATUS = {
+    "evaluation_disabled": 404, "unauthorized": 403,
+    "viewer_not_applicable": 404, "unknown_action": 404,
+    "invalid_identity": 422, "invalid_values": 422,
+    "validation_failed": 422, "action_failed": 422,
+    "worker_timeout": 504, "worker_unavailable": 503,
+}
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/viewers/action",
+    response_model=Any,
+)
+def runProtocolViewerActionRoute(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolViewerActionRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Run one viewer action (the desktop 'eye') and describe what it shows."""
+    from app.backend.api.services.protocol_viewer_action_service import (
+        ProtocolViewerActionError, runProtocolViewerAction,
+    )
+    if not isProtocolViewerRuntimePreviewAvailable(currentUser):
+        raise HTTPException(status_code=404, detail="viewer_actions_unavailable")
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        return runProtocolViewerAction(
+            mapper=mapper, current_user=currentUser, project_id=projectId,
+            protocol_id=protocolId, viewer_id=payload.viewerId,
+            action=payload.action, values=payload.values,
+            snapshot=getScipionViewerResolutionSnapshot(),
+        )
+    except ProtocolViewerActionError as exc:
+        raise HTTPException(
+            status_code=_PROTOCOL_VIEWER_ACTION_STATUS.get(exc.code, 502),
+            detail={"code": exc.code, "messages": exc.messages},
+        ) from None
+    except PersistedProtocolViewerError as exc:
+        raise HTTPException(status_code=404 if exc.code == "not_found" else 409,
+                            detail={"code": exc.code, "messages": []}) from None
+
+
+# BEGIN PROTOCOLVIEWER INSPECTION HTTP 172
+class ProtocolViewerOutputInspectionRequest(BaseModel):
+    """Only an exact registered viewer/action identity; no client output paths."""
+    viewerId: StrictStr = Field(..., min_length=3, max_length=255)
+    actionId: StrictStr = Field(..., min_length=1, max_length=128)
+
+    class Config:
+        extra = "forbid"
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/viewers/inspection-target",
+    response_model=Any,
+)
+def inspectProtocolViewerOutputTarget(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolViewerOutputInspectionRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Authorized read-only metadata, never a ProtocolViewer action executor."""
+    from app.backend.api.services.protocol_viewer_output_inspection_http_service import (
+        ProtocolViewerInspectionHttpError,
+        requestProtocolViewerOutputInspectionHttp,
+    )
+    try:
+        return requestProtocolViewerOutputInspectionHttp(
+            mapper=mapper, current_user=currentUser, project_service=service,
+            project_id=projectId, protocol_id=protocolId,
+            viewer_id=payload.viewerId, action_id=payload.actionId,
+            snapshot_provider=getScipionViewerResolutionSnapshot,
+        )
+    except ProtocolViewerInspectionHttpError as exc:
+        status_code = {
+            "project_not_found": 404,
+            "unauthenticated": 401,
+            "invalid_identity": 422,
+            "invalid_context": 503,
+            "inspection_target_not_found": 404,
+            "inspection_target_unavailable": 409,
+            "invalid_inspection_target": 502,
+        }.get(exc.code, 502)
+        raise HTTPException(status_code=status_code, detail=exc.code) from None
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("ProtocolViewer output inspection could not be completed")
+        raise HTTPException(status_code=502, detail="inspection_unavailable") from None
+# END PROTOCOLVIEWER INSPECTION HTTP 172
+
 
 @router.post(
     "/{projectId}/protocols/{protocolId}/viewer/resolve",

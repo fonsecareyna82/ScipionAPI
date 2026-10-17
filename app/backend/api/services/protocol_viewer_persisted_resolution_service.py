@@ -14,6 +14,21 @@ from app.backend.api.services.protocol_viewer_resolution_service import (
 from app.backend.api.services.protocol_viewer_eligibility_service import (
     assessProtocolViewerEligibility,
 )
+from app.backend.api.services.protocol_viewer_capabilities_service import (
+    describeProtocolViewerWebCapabilities,
+)
+from app.backend.api.services.protocol_viewer_form_schema_service import (
+    describeProtocolViewerStaticForms,
+)
+from app.backend.api.services.protocol_viewer_action_schema_service import (
+    describeProtocolViewerStaticActions,
+)
+from app.backend.api.services.protocol_viewer_contract_service import (
+    validateProtocolViewerContracts,
+)
+from app.backend.api.services.protocol_viewer_web_action_contract_service import (
+    describeProtocolViewerWebActionContracts,
+)
 
 
 class PersistedProtocolViewerError(ValueError):
@@ -99,4 +114,22 @@ def resolvePersistedProtocolViewerCandidates(
     assessProtocolViewerEligibility(
         candidates, snapshot["viewers"],
     )
-    return candidates
+    # A declaration is not proof of an implemented web renderer or eligibility.
+    declared_capabilities = describeProtocolViewerWebCapabilities(
+        candidates, snapshot["viewers"],
+        adapters=snapshot.get("webAdapters"),
+    )
+    # Only an advisory AST preview: never build Tk forms or invoke plugin hooks.
+    static_forms = describeProtocolViewerStaticForms(
+        declared_capabilities, snapshot["viewers"],
+    )
+    # Keep all static descriptors non-executable; verify cross-schema consistency.
+    static_actions = describeProtocolViewerStaticActions(
+        static_forms, snapshot["viewers"],
+    )
+    validated = validateProtocolViewerContracts(
+        static_actions, snapshot["viewers"],
+    )
+    return describeProtocolViewerWebActionContracts(
+        validated, snapshot["viewers"],
+    )

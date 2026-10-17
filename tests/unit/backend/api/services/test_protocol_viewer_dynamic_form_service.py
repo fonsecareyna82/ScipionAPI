@@ -97,7 +97,7 @@ def test_disabled_by_default_even_with_matching_viewer(monkeypatch):
 
 @pytest.mark.parametrize('bad', [{'project_id': True}, {'protocol_id': -1},
                                  {'viewer_id': '__import__("os").system("x")'},
-                                 {'timeout_seconds': 11}])
+                                 {'timeout_seconds': 301}, {'timeout_seconds': 0}])
 def test_malformed_input_fails_before_worker(monkeypatch, bad):
     with pytest.raises(lib().DynamicProtocolViewerFormError) as exc:
         call(monkeypatch, override=bad, runner=lambda *_: pytest.fail('worker ran'))
@@ -132,6 +132,7 @@ def test_non_protocol_viewer_is_not_accepted(monkeypatch):
 
 
 def test_valid_request_passes_only_strict_ids_to_worker(monkeypatch):
+    monkeypatch.delenv('SCIPION_PROTOCOL_VIEWER_FORM_TIMEOUT', raising=False)
     requests = []
     def runner(request, timeout):
         requests.append((request, timeout))
@@ -139,7 +140,7 @@ def test_valid_request_passes_only_strict_ids_to_worker(monkeypatch):
     result = call(monkeypatch, runner=runner)
     assert requests[0][0] == {'projectId': 4, 'protocolId': 19,
                               'protocolDbId': 71, 'viewerId': result['viewerId']}
-    assert requests[0][1] == 5
+    assert requests[0][1] == 60
     assert result['executionAllowed'] is False and result['webReady'] is False
     assert 'secret' not in str(result)
 
@@ -279,3 +280,9 @@ def test_child_command_is_fixed_and_does_not_use_shell(monkeypatch):
     assert launched[0][0][-1] == 'app.backend.api.services.protocol_viewer_dynamic_form_worker'
     assert launched[0][1]['start_new_session'] is True
     assert 'shell' not in launched[0][1]
+
+
+def test_form_timeout_is_configurable_and_bounded(monkeypatch):
+    for raw, expected in (('', 60), ('x', 60), ('0', 1), ('90', 90), ('9999', 300)):
+        monkeypatch.setenv('SCIPION_PROTOCOL_VIEWER_FORM_TIMEOUT', raw)
+        assert lib().formTimeoutSeconds() == expected

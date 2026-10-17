@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
 
 def svc():
     return importlib.import_module(
@@ -143,9 +145,9 @@ def test_rejects_mismatched_worker_identity(monkeypatch):
     assert exc.value.code == 'invalid_preview'
 
 
-def test_worker_metadata_cannot_inject_actions_or_paths(monkeypatch):
+def test_worker_metadata_cannot_inject_commands_or_paths(monkeypatch):
     response = dict(preview(), executionCommand='rm -rf',
-                    secrets={'password': 'not sent'}, actions=[{'launch': True}])
+                    secrets={'password': 'not sent'})
     request, _ = call(monkeypatch, response=response)
     result = svc().requestProtocolViewerRuntimePreview(**request)
     assert 'executionCommand' not in result
@@ -153,8 +155,16 @@ def test_worker_metadata_cannot_inject_actions_or_paths(monkeypatch):
     assert 'actions' not in result
 
 
+def test_actions_other_than_form_field_names_are_rejected(monkeypatch):
+    response = dict(preview(), actions=[{'launch': True}])
+    request, _ = call(monkeypatch, response=response)
+    with pytest.raises(svc().ProtocolViewerRuntimePreviewHttpError) as error:
+        svc().requestProtocolViewerRuntimePreview(**request)
+    assert error.value.code == 'invalid_preview'
+
+
 def test_route_uses_post_and_schema_not_get_or_free_form_path():
-    source = Path('app/backend/api/routers/project_router.py').read_text()
+    source = _REPO_ROOT.joinpath('app/backend/api/routers/project_router.py').read_text()
     assert '@router.post(\n    "/{projectId}/protocols/{protocolId}/viewers/runtime-preview",' in source
     assert 'class ProtocolViewerRuntimePreviewRequest(BaseModel):' in source
     assert 'viewerId: StrictStr' in source
@@ -162,7 +172,7 @@ def test_route_uses_post_and_schema_not_get_or_free_form_path():
 
 
 def test_route_auth_and_project_access_before_snapshot_or_worker():
-    source = Path('app/backend/api/routers/project_router.py').read_text()
+    source = _REPO_ROOT.joinpath('app/backend/api/routers/project_router.py').read_text()
     start = source.index('def inspectProtocolViewerRuntimeForm(')
     end = source.index('@router.post(\n    "/{projectId}/protocols/{protocolId}/viewer/resolve",', start)
     body = source[start:end]
@@ -178,7 +188,7 @@ def test_route_auth_and_project_access_before_snapshot_or_worker():
 
 
 def test_errors_are_sanitized_not_worker_tracebacks():
-    source = Path('app/backend/api/routers/project_router.py').read_text()
+    source = _REPO_ROOT.joinpath('app/backend/api/routers/project_router.py').read_text()
     start = source.index('def inspectProtocolViewerRuntimeForm(')
     end = source.index('@router.post(\n    "/{projectId}/protocols/{protocolId}/viewer/resolve",', start)
     body = source[start:end]
@@ -189,7 +199,7 @@ def test_errors_are_sanitized_not_worker_tracebacks():
 
 
 def test_get_discovery_advertises_only_explicit_admin_preview():
-    source = Path('app/backend/api/routers/project_router.py').read_text()
+    source = _REPO_ROOT.joinpath('app/backend/api/routers/project_router.py').read_text()
     start = source.index('def listPersistedProtocolViewers(')
     end = source.index('@router.post(', start)
     body = source[start:end]
@@ -199,7 +209,7 @@ def test_get_discovery_advertises_only_explicit_admin_preview():
 
 
 def test_existing_dynamic_worker_remains_opt_in_not_action_executor():
-    src = Path('app/backend/api/services/protocol_viewer_dynamic_form_service.py').read_text()
+    src = _REPO_ROOT.joinpath('app/backend/api/services/protocol_viewer_dynamic_form_service.py').read_text()
     assert "SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL" in src
     assert 'def evaluateProtocolViewerDynamicForm(' in src
     assert '_getVisualizeDict(' not in src

@@ -1,6 +1,6 @@
 """Fail-closed consistency check for advisory Scipion ProtocolViewer previews.
 
-The RED 121/123 scanners inspect AST; they cannot certify that a runtime
+The static scanners inspect AST; they cannot certify that a runtime
 ProtocolViewer form/action map is complete, or that a React action exists.
 This service reconciles their *metadata* without importing plugin code,
 instantiating viewers/protocols, or authorising UI/runtime execution.

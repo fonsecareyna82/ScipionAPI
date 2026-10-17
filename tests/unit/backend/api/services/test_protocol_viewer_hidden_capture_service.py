@@ -230,7 +230,8 @@ def test_group_aware_serializer_retains_limit_and_no_action_fields():
 
 
 def test_worker_entrypoint_wires_capture_to_setprotocol_and_serializer():
-    source = inspect.getsource(worker()._evaluate)
+    source = inspect.getsource(worker().loadRuntimeViewer)
     assert 'with captureViewerHiddenDeclarations() as hidden_declarations:' in source
-    assert 'hidden_declarations=hidden_declarations' in source
     assert source.index('with captureViewerHiddenDeclarations()') < source.index('viewer.setProtocol(protocol)')
+    evaluate = inspect.getsource(worker()._evaluate)
+    assert 'hidden_declarations=context.hidden_declarations' in evaluate

@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
 
 def mod():
     return importlib.import_module(
@@ -160,7 +162,7 @@ def test_invalid_numeric_identifiers_and_missing_mapper_fail_before_query():
 
 
 def test_project_route_authenticates_and_checks_authorization_before_pg_read():
-    source = Path("app/backend/api/routers/project_router.py").read_text(encoding="utf-8")
+    source = _REPO_ROOT.joinpath("app/backend/api/routers/project_router.py").read_text(encoding="utf-8")
     start = source.index('@router.get("/{projectId}/protocols/{protocolId}/viewers", response_model=Any)')
     end = source.index('@router.post(', start)
     handler = source[start:end]

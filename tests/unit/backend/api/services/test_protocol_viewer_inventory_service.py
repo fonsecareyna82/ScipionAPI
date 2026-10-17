@@ -4,6 +4,8 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
 
 def _catalog_module():
     # Import at test time: RED fails individual tests, not collection.
@@ -145,7 +147,7 @@ def test_viewer_registry_snapshot_is_refresh_synchronized(monkeypatch):
 
 
 def test_authenticated_diagnostic_endpoint_is_registered_before_plugin_detail():
-    source = Path("app/backend/api/routers/plugin_router.py").read_text(encoding="utf-8")
+    source = _REPO_ROOT.joinpath("app/backend/api/routers/plugin_router.py").read_text(encoding="utf-8")
     assert '@router.get("/viewers", response_model=Any)' in source
     assert 'Depends(getCurrentUser)' in source
     assert 'getScipionViewersSnapshot()' in source

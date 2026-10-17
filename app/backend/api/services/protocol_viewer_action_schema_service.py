@@ -40,7 +40,7 @@ def _empty(status: str = "unavailable") -> Dict[str, Any]:
 
 
 def _public_fields(form_schema: Any) -> Dict[str, Dict[str, str]]:
-    """Only names already reviewed by RED 121/GREEN 122 count as public."""
+    """Only names already reviewed by the static form scanner count as public."""
     if not isinstance(form_schema, dict) or form_schema.get("status") != "static-preview":
         return {}
     result = {}

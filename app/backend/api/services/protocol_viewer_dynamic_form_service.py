@@ -11,8 +11,9 @@ import re
 import signal
 import subprocess
 import sys
+import logging
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from app.backend.api.services.protocol_viewer_condition_contract_service import (
     validViewerConditionRule, referencedViewerFields,
@@ -22,9 +23,12 @@ from app.backend.api.services.protocol_viewer_persisted_resolution_service impor
     resolvePersistedProtocolViewerCandidates,
 )
 
+logger = logging.getLogger(__name__)
+
 _MAX_REPLY = 262144
 _MAX_REQUEST = 4096
-_MAX_SECONDS = 10
+_MAX_SECONDS = 300
+_DEFAULT_FORM_TIMEOUT = 60
 _VIEWER_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,254}\Z")
 
 
@@ -34,12 +38,21 @@ class DynamicProtocolViewerFormError(RuntimeError):
         super().__init__(code)
 
 
+def formTimeoutSeconds() -> int:
+    """Loading the project and the viewer form can take a while on big projects."""
+    try:
+        value = int(os.environ.get('SCIPION_PROTOCOL_VIEWER_FORM_TIMEOUT', ''))
+    except ValueError:
+        return _DEFAULT_FORM_TIMEOUT
+    return min(max(value, 1), _MAX_SECONDS)
+
+
 def _int_id(value):
     return type(value) is int and 0 < value <= 2147483647
 
 
 
-# The isolated worker's GREEN 142 visibility contract extends the legacy
+# The isolated worker's visibility contract extends the legacy
 # field vocabulary.  Accept only the complete, non-executable extension;
 # never relax the general field whitelist or allow arbitrary plugin metadata.
 _LEGACY_FIELD_KEYS = frozenset({
@@ -210,6 +223,7 @@ def _validated_reply(payload: Any, request: dict) -> dict:
                 elif 'choices' in field:
                     raise DynamicProtocolViewerFormError('invalid_worker_schema')
     conditional_fields = _validate_conditional_fields(payload, visible_fields)
+    actions = _validate_actions(payload, visible_fields, conditional_fields)
     # Return only a constrained set of keys, never arbitrary worker metadata.
     result = {'status': 'runtime-preview', 'source': 'isolated-worker',
             'projectId': request['projectId'], 'protocolId': str(request['protocolId']),
@@ -220,10 +234,47 @@ def _validated_reply(payload: Any, request: dict) -> dict:
             'renderable': False, 'executionAllowed': False}
     if conditional_fields is not None:
         result['conditionalFields'] = conditional_fields
+    if actions is not None:
+        result['actions'] = actions
     return result
 
 
-def _run_worker(request: dict, timeout_seconds: int) -> dict:
+def _validate_actions(payload, visible_fields, conditional_fields):
+    """Action names must be fields of the same form; None for older workers."""
+    if 'actions' not in payload:
+        return None
+    actions = payload['actions']
+    names = {field['name'] for _, _, field in visible_fields}
+    names.update(entry['field']['name'] for entry in conditional_fields or ())
+    if (type(actions) is not list or len(actions) > 96
+            or any(type(name) is not str or name not in names for name in actions)
+            or len(set(actions)) != len(actions)):
+        raise DynamicProtocolViewerFormError('invalid_worker_schema')
+    return list(actions)
+
+
+def _log_worker_failure(module, returncode, stderr):
+    """Plugin errors go to the server log, never to the HTTP reply."""
+    try:
+        stderr.seek(0, 2)
+        size = stderr.tell()
+        stderr.seek(max(0, size - _STDERR_TAIL))
+        tail = stderr.read().decode('utf-8', errors='replace')
+    except Exception:
+        tail = ''
+    logger.warning('Viewer worker %s exited with %s:\n%s', module, returncode, tail)
+
+
+_FORM_WORKER_MODULE = 'app.backend.api.services.protocol_viewer_dynamic_form_worker'
+_FORM_REPLY_MARKER = b'__SCIPION_VIEWER_FORM_JSON__:'
+_STDERR_TAIL = 4096
+
+
+def _run_worker(request: dict, timeout_seconds: int, *,
+                module: str = _FORM_WORKER_MODULE,
+                marker: bytes = _FORM_REPLY_MARKER,
+                max_request: int = _MAX_REQUEST,
+                max_reply: int = _MAX_REPLY) -> dict:
     """Fixed child module, bounded disk-backed pipes, process-group timeout."""
     env = os.environ.copy()
     env.pop('DISPLAY', None)
@@ -231,10 +282,9 @@ def _run_worker(request: dict, timeout_seconds: int) -> dict:
     env['MPLBACKEND'] = 'Agg'
     env['QT_QPA_PLATFORM'] = 'offscreen'
     env['SCIPION_VIEWER_FORM_CHILD'] = '1'
-    command = [sys.executable, '-m',
-               'app.backend.api.services.protocol_viewer_dynamic_form_worker']
+    command = [sys.executable, '-m', module]
     data = json.dumps(request, separators=(',', ':'), allow_nan=False).encode('utf-8')
-    if len(data) > _MAX_REQUEST:
+    if len(data) > max_request:
         raise DynamicProtocolViewerFormError('request_too_large')
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         try:
@@ -253,15 +303,17 @@ def _run_worker(request: dict, timeout_seconds: int) -> dict:
             process.communicate()
             raise DynamicProtocolViewerFormError('worker_timeout') from exc
         if process.returncode != 0:
-            raise DynamicProtocolViewerFormError('worker_failed')
+            _log_worker_failure(module, process.returncode, stderr)
+            raise DynamicProtocolViewerFormError(
+                'reply_too_large' if process.returncode == 3 else 'worker_failed')
         stdout.seek(0, 2)
         size = stdout.tell()
-        if size > _MAX_REPLY:
-            raise DynamicProtocolViewerFormError('reply_too_large')
         stdout.seek(0)
-        output = stdout.read(_MAX_REPLY + 1)
+        # Plugin print() output may precede the reply; keep the last bytes.
+        if size > max_reply:
+            stdout.seek(size - max_reply - 1)
+        output = stdout.read(max_reply + 1)
     # Plugin print() output is never trusted as a wire-format response.
-    marker = b'__SCIPION_VIEWER_FORM_JSON__:'
     records = [line for line in output.splitlines() if line.startswith(marker)]
     if len(records) != 1:
         raise DynamicProtocolViewerFormError('invalid_worker_reply')
@@ -275,7 +327,7 @@ def _run_worker(request: dict, timeout_seconds: int) -> dict:
 def evaluateProtocolViewerDynamicForm(
     *, mapper: Any, current_user: Mapping[str, Any], project_id: int,
     protocol_id: int, viewer_id: str, snapshot: Mapping[str, Any],
-    timeout_seconds: int = 5, worker_runner=None,
+    timeout_seconds: Optional[int] = None, worker_runner=None,
 ) -> dict:
     """Opt-in trusted-plugin preview; authorization BEFORE starting a subprocess.
 
@@ -286,6 +338,8 @@ def evaluateProtocolViewerDynamicForm(
     if not (_int_id(project_id) and _int_id(protocol_id) and
             type(viewer_id) is str and _VIEWER_ID.fullmatch(viewer_id)):
         raise DynamicProtocolViewerFormError('invalid_identity')
+    if timeout_seconds is None:
+        timeout_seconds = formTimeoutSeconds()
     if (type(timeout_seconds) is not int or not 1 <= timeout_seconds <= _MAX_SECONDS):
         raise DynamicProtocolViewerFormError('invalid_timeout')
     if (not isinstance(current_user, Mapping) or not _int_id(current_user.get('id')) or

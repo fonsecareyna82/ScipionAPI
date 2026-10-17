@@ -408,3 +408,35 @@ def getScipionProtocolsSnapshot() -> dict:
         _refreshScipionDomainLocked(force=False)
         domain = Config.getDomain()
         return dict(domain.getProtocols())
+
+
+def getScipionViewersSnapshot() -> dict:
+    """Refresh and read the viewer registry under the same lock as protocols."""
+    with _domainRefreshLock:
+        _refreshScipionDomainLocked(force=False)
+        domain = Config.getDomain()
+        return dict(domain.getViewers())
+
+
+def getScipionViewerResolutionSnapshot() -> dict:
+    """Atomically capture protocol and viewer registries + preferred config.
+
+    Accessing the Domain may import installed plugins during registration.
+    No protocol or viewer is instantiated or visualized.
+    """
+    with _domainRefreshLock:
+        _refreshScipionDomainLocked(force=False)
+        domain = Config.getDomain()
+        protocols = dict(domain.getProtocols())
+        viewers = dict(domain.getViewers())
+        raw_preferred = getattr(Config, "VIEWERS", {})
+        preferred = {}
+        if isinstance(raw_preferred, dict):
+            for name, names in raw_preferred.items():
+                if isinstance(name, str) and isinstance(names, (list, tuple)):
+                    preferred[name] = [n for n in names if isinstance(n, str)]
+        return {
+            "protocols": protocols,
+            "viewers": viewers,
+            "preferredViewers": preferred,
+        }

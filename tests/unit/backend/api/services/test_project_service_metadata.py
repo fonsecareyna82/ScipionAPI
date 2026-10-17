@@ -2889,3 +2889,46 @@ def test_ClassMemberParticleContrastSkipsMrcPreview(
     assert original.status_code == enhanced.status_code == 200
     assert enhanced.body == original.body == previewBytes
     assert enhanceCalls == [], "Member MRC/MRCS must never call the expensive enhancer"
+
+
+def test_ViewerFileTokenOpensTheSignedProjectFileInsteadOfAnOutput(
+    service,
+    projectServiceModule,
+    monkeypatch,
+    tmp_path,
+):
+    from app.backend.api.services.protocol_viewer_file_token_service import (
+        signViewerFileToken,
+    )
+
+    blockFile = tmp_path / "Runs" / "000115_CL2D" / "extra" / "level_classes.xmd"
+    blockFile.parent.mkdir(parents=True)
+    blockFile.write_text("data_info\n", encoding="utf-8")
+    opened = []
+
+    class FakeRepository:
+        # fakeRepository
+        def getProjectNameById(self, mapper, projectId):
+            return str(tmp_path)
+
+    monkeypatch.setattr(projectServiceModule, "ProjectRuntimeRepository", FakeRepository)
+    monkeypatch.setattr(service, "_getMetadataObjectManager", lambda path: opened.append(path) or "objMgr")
+
+    def noOutputLookup(**kwargs):
+        raise AssertionError("A viewer file is not a stored output")
+
+    monkeypatch.setattr(service, "_getPostgresqlDAOIfAvailable", noOutputLookup)
+
+    token = signViewerFileToken(7, "Runs/000115_CL2D/extra/level_classes.xmd")
+    result = service._getMetadataObjectManagerForOutput(
+        projectId=7, protocolId=115, outputName=token, mapper=object(),
+    )
+
+    assert result == "objMgr"
+    assert opened == [str(blockFile.resolve())]
+
+    with pytest.raises(Exception) as exc:
+        service._getMetadataObjectManagerForOutput(
+            projectId=8, protocolId=115, outputName=token, mapper=object(),
+        )
+    assert exc.value.status_code == 404

@@ -50,10 +50,48 @@ def _literal(node: ast.AST, max_length: int = 2048) -> Any:
 _MISSING = object()
 
 
-def _kw(call: ast.Call, name: str) -> Any:
+def _safe_constant_namespace(values: Any) -> Dict[str, Any]:
+    """Copy only inert module constants. Never getattr/eval plugin expressions."""
+    if type(values) is not dict:
+        return {}
+    answer = {}
+    for key, value in values.items():
+        if type(key) is not str or not key.isupper() or len(key) > 128:
+            continue
+        if type(value) in (bool, int, float) or (type(value) is str and len(value) <= 2048):
+            answer[key] = value
+        elif type(value) in (list, tuple) and 1 <= len(value) <= 100:
+            if all(type(part) in (bool, int, float) or
+                   (type(part) is str and len(part) <= 160) for part in value):
+                answer[key] = tuple(value)
+        if len(answer) >= 256:
+            break
+    return answer
+
+
+def _constant(node: ast.AST, constants: Mapping[str, Any]) -> Any:
+    result = _literal(node)
+    if result is not _MISSING:
+        return result
+    if isinstance(node, (ast.List, ast.Tuple)):
+        try:
+            value = ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError, OverflowError):
+            return _MISSING
+        if (type(value) in (list, tuple) and 1 <= len(value) <= 100
+                and all(type(part) in (bool, int, float) or
+                        (type(part) is str and len(part) <= 160) for part in value)):
+            return tuple(value)
+        return _MISSING
+    if isinstance(node, ast.Name):
+        return constants.get(node.id, _MISSING)
+    return _MISSING
+
+
+def _kw(call: ast.Call, name: str, constants: Mapping[str, Any] = None) -> Any:
     for keyword in call.keywords:
         if keyword.arg == name:
-            return _literal(keyword.value)
+            return _constant(keyword.value, constants or {})
     return _MISSING
 
 
@@ -88,9 +126,12 @@ def _empty_preview(status: str) -> Dict[str, Any]:
     }
 
 
-def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
-    """Best-effort literal syntax preview. No eval/exec or Scipion form creation."""
+def parseProtocolViewerStaticFormSource(
+    source: str, *, safe_constants: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Best-effort inert AST preview; safe module constants are data, not code."""
     answer = _empty_preview("unavailable")
+    constants = _safe_constant_namespace(safe_constants)
     if not isinstance(source, str) or len(source) > MAX_SOURCE_LENGTH:
         return answer
     try:
@@ -134,9 +175,9 @@ def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
             continue
         receiver, method = target
         if receiver == form_arg and method == "addSection":
-            label = _text(_kw(call, "label"))
+            label = _text(_kw(call, "label", constants))
             if label is None and call.args:
-                label = _text(_literal(call.args[0]))
+                label = _text(_constant(call.args[0], constants))
             if label is None:
                 skipped += 1
                 current = None
@@ -146,7 +187,7 @@ def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
             group_vars = {}
             continue
         if receiver == form_arg and method == "addGroup":
-            label = _text(_literal(call.args[0])) if call.args else _text(_kw(call, "label"))
+            label = _text(_constant(call.args[0], constants)) if call.args else _text(_kw(call, "label", constants))
             if current is None or label is None:
                 skipped += 1
                 continue
@@ -165,7 +206,18 @@ def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
         if current is None or len(call.args) < 2 or call.keywords and any(x.arg is None for x in call.keywords):
             skipped += 1
             continue
-        name = _text(_literal(call.args[0]), 128)
+        hidden_kw = next((k for k in call.keywords if k.arg == "hidden"), None)
+        if hidden_kw is not None:
+            hidden_value = _constant(hidden_kw.value, constants)
+            if hidden_value is True:
+                hidden += 1
+                continue
+            if hidden_value is not False:
+                # A plugin-defined visibility expression must not become an
+                # unconditional control in a static advisory preview.
+                skipped += 1
+                continue
+        name = _text(_constant(call.args[0], constants), 128)
         param_type = call.args[1]
         if isinstance(param_type, ast.Name):
             type_name = param_type.id
@@ -174,16 +226,16 @@ def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
         else:
             type_name = None
         control = PARAM_CONTROLS.get(type_name)
-        label = _text(_kw(call, "label"))
+        label = _text(_kw(call, "label", constants))
         if name is None or control is None or label is None or name in seen_fields:
             skipped += 1
             continue
         field = {"name": name, "label": label, "control": control,
                  "hasCondition": any(k.arg == "condition" for k in call.keywords)}
-        help_value = _kw(call, "help")
+        help_value = _kw(call, "help", constants)
         if isinstance(help_value, str) and len(help_value) <= 2048:
             field["help"] = help_value
-        default = _kw(call, "default")
+        default = _kw(call, "default", constants)
         if default is not _MISSING:
             field["default"] = default
         elif any(k.arg == "default" for k in call.keywords):
@@ -193,9 +245,8 @@ def parseProtocolViewerStaticFormSource(source: str) -> Dict[str, Any]:
             if choices_node is None:
                 skipped += 1
                 continue
-            try:
-                choices = ast.literal_eval(choices_node)
-            except (TypeError, ValueError, SyntaxError, MemoryError, RecursionError, OverflowError):
+            choices = _constant(choices_node, constants)
+            if choices is _MISSING:
                 skipped += 1
                 continue
             if (not isinstance(choices, (list, tuple)) or not 1 <= len(choices) <= 100
@@ -262,7 +313,8 @@ def describeProtocolViewerStaticForms(
             except (OSError, TypeError, IOError, ValueError, RuntimeError, UnicodeError):
                 source = None
             if isinstance(source, str):
-                preview = parseProtocolViewerStaticFormSource(source)
+                preview = parseProtocolViewerStaticFormSource(
+                    source, safe_constants=method.__globals__)
         candidate["formSchema"] = preview
         if preview["status"] == "static-preview":
             previews += 1

@@ -225,6 +225,6 @@ def test_oversized_or_malformed_conditions_fail_closed_without_crashing():
 
 
 def test_runtime_capture_occurs_before_set_protocol_in_worker():
-    source = inspect.getsource(worker()._evaluate)
+    source = inspect.getsource(worker().loadRuntimeViewer)
     assert source.index('baseline = capturePreViewerParameterNames(') < source.index('viewer.setProtocol(protocol)')
-    assert 'inherited_field_names=baseline' in source
+    assert 'inherited_field_names=context.baseline' in inspect.getsource(worker()._evaluate)

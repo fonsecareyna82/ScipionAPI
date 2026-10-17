@@ -2,8 +2,8 @@
 
 This is an opt-in *trusted plugin* diagnostics pathway, not a sandbox or an
 execution permission. Callers must authenticate, be administrators, and have
-project access before any child process can be launched. There is no action
-execution API.
+project access before any child process can be launched. The same admission
+gates the viewer actions (protocol_viewer_action_service).
 """
 from __future__ import annotations
 
@@ -95,8 +95,28 @@ def requestProtocolViewerRuntimePreview(
         or not isinstance(preview.get('sections'), list)
     ):
         raise ProtocolViewerRuntimePreviewHttpError('invalid_preview')
-    # Return only the inert schema fields exposed by the worker validation.
-    return {
+    # Conditional fields are revalidated here too (also for alternate
+    # evaluators); raw rules are never forwarded.
+    conditional_fields = None
+    if 'conditionalFields' in preview:
+        from app.backend.api.services.protocol_viewer_dynamic_form_service import (
+            _validated_reply, DynamicProtocolViewerFormError,
+        )
+        identity = {
+            'projectId': project_id,
+            'protocolId': protocol_id,
+            'viewerId': viewer_id,
+        }
+        try:
+            validated = _validated_reply({'ok': True, **preview}, identity)
+        except DynamicProtocolViewerFormError as exc:
+            raise ProtocolViewerRuntimePreviewHttpError('invalid_preview') from exc
+        conditional_fields = validated.get('conditionalFields')
+        if conditional_fields is None:
+            raise ProtocolViewerRuntimePreviewHttpError('invalid_preview')
+
+    # Explicit HTTP projection: preserve only validated, non-executable data.
+    result = {
         'status': 'runtime-preview',
         'source': 'isolated-worker',
         'projectId': project_id,
@@ -110,3 +130,16 @@ def requestProtocolViewerRuntimePreview(
         'renderable': False,
         'executionAllowed': False,
     }
+    if conditional_fields is not None:
+        result['conditionalFields'] = conditional_fields
+    actions = preview.get('actions')
+    if actions is not None:
+        names = {field.get('name') for section in preview['sections']
+                 for field in (section.get('fields', []) + [
+                     f for group in section.get('groups', []) for f in group.get('fields', [])])}
+        names.update(entry['field']['name'] for entry in conditional_fields or ())
+        if (type(actions) is not list
+                or any(type(name) is not str or name not in names for name in actions)):
+            raise ProtocolViewerRuntimePreviewHttpError('invalid_preview')
+        result['actions'] = list(actions)
+    return result

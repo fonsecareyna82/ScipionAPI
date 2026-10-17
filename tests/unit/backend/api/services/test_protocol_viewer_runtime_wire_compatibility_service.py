@@ -137,9 +137,19 @@ def test_legacy_worker_reply_remains_valid():
 
 def test_worker_top_level_extra_keys_still_never_reach_http():
     payload = reply([field('old')])
-    payload.update(secret='NEVER RETURN', actions=[{'launch': 'unsafe'}])
+    payload.update(secret='NEVER RETURN')
     result = service()._validated_reply(payload, REQUEST)
     assert 'secret' not in result and 'actions' not in result
+
+
+def test_actions_are_names_of_fields_in_the_same_form():
+    payload = reply([field('old')])
+    payload.update(actions=['old'])
+    assert service()._validated_reply(payload, REQUEST)['actions'] == ['old']
+    for actions in ([{'launch': 'unsafe'}], ['missing'], ['old', 'old'], 'old'):
+        payload.update(actions=actions)
+        with pytest.raises(service().DynamicProtocolViewerFormError):
+            service()._validated_reply(payload, REQUEST)
 
 
 def test_rejects_arbitrary_field_property():

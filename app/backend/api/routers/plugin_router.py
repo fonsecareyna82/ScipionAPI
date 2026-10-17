@@ -6,9 +6,17 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Literal, Set, List
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.services.protocol_viewer_inventory_service import buildProtocolViewerInventory
+from app.backend.api.services.scipion_domain_refresh_service import getScipionViewersSnapshot
+from app.backend.api.services.protocol_viewer_resolution_service import (
+    ProtocolViewerResolutionError,
+    resolveProtocolViewerCandidates,
+)
+from app.backend.api.services.scipion_domain_refresh_service import getScipionViewerResolutionSnapshot
 from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_service import PluginService
 from app.backend.api.services.plugin_task_log import (
@@ -597,6 +605,36 @@ def acknowledgePluginTask(taskId: str):
 
     return task
 
+
+
+
+@router.get("/viewers", response_model=Any)
+def listProtocolViewerInventory(currentUser=Depends(getCurrentUser)):
+    """Authenticated, read-only inventory; does not instantiate viewers."""
+    viewers = buildProtocolViewerInventory(getScipionViewersSnapshot())
+    return {"count": len(viewers), "viewers": viewers}
+
+
+
+@router.get("/viewers/resolve", response_model=Any)
+def resolveProtocolViewerInventory(
+    protocolClass: str = Query(..., min_length=1),
+    currentUser=Depends(getCurrentUser),
+):
+    """Read-only class candidates, not a launchable viewer or instance verdict."""
+    snapshot = getScipionViewerResolutionSnapshot()
+    try:
+        return resolveProtocolViewerCandidates(
+            protocol_registry=snapshot["protocols"],
+            viewer_registry=snapshot["viewers"],
+            protocol_class_id=protocolClass,
+            preferred_viewers=snapshot["preferredViewers"],
+        )
+    except ProtocolViewerResolutionError as exc:
+        raise HTTPException(
+            status_code=409 if exc.code == "ambiguous" else 404,
+            detail=str(exc),
+        ) from exc
 
 @router.get("/{pluginName}", response_model=Any)
 def loadPlugin(pluginName: str):

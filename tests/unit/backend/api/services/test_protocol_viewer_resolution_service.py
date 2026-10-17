@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
 
 def _module():
     return importlib.import_module(
@@ -212,7 +214,7 @@ def test_snapshot_refresh_is_atomic_with_protoc_viewer_and_preferences(monkeypat
 
 
 def test_authenticated_resolver_endpoint_is_static_and_before_plugin_name_route():
-    source = Path("app/backend/api/routers/plugin_router.py").read_text(encoding="utf-8")
+    source = _REPO_ROOT.joinpath("app/backend/api/routers/plugin_router.py").read_text(encoding="utf-8")
     assert '@router.get("/viewers/resolve", response_model=Any)' in source
     start = source.index('@router.get("/viewers/resolve", response_model=Any)')
     end = source.index('@router.get("/{pluginName}", response_model=Any)')

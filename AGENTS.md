@@ -116,6 +116,16 @@ writes nothing and returns False; keep that guarantee when extending it.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
+## Protocol viewers on the web
+
+ScipionWeb builds each plugin's desktop "Analyze results" viewer (`ProtocolViewer`) at runtime instead of porting viewers by hand:
+
+- `protocol_viewer_dynamic_form_worker` loads the project, restores the protocol's inputs and attaches its stored outputs, instantiates the viewer and serializes its form (`POST .../viewers/runtime-preview`). The reply lists the fields with a visualize handler as `actions`.
+- `protocol_viewer_action_worker` runs one handler of `_getVisualizeDict()` with every `View.show()` (and `pyplot.show`) captured and translates each View into a descriptor: message, plot (PNG), table, text, image, data (a stored output reference, or a project file) or unsupported (`POST .../viewers/action`).
+- Project files shown by an action travel as signed tokens (`protocol_viewer_file_token_service`) used in place of the output name in the output metadata routes, so the existing MetadataViewer reads `.sqlite`/`.star`/`.xmd` files and their blocks.
+- Both run in short-lived child processes; they protect the API from crashes and timeouts but are not a sandbox: plugin viewer code runs with the server's privileges, as protocols do. Gated by `SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP=1`, `SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL=1` and an admin user. Timeouts: `SCIPION_PROTOCOL_VIEWER_FORM_TIMEOUT` (default 60 s) and `SCIPION_PROTOCOL_VIEWER_ACTION_TIMEOUT` (default 120 s).
+- Viewer handlers may write cache files in the protocol folder, as on the desktop (e.g. CL2D's `classes_scipion_level_XX.sqlite`). A handler that fails half-way can leave an empty one that later runs reuse.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

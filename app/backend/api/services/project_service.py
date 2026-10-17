@@ -56,6 +56,10 @@ from app.backend.api.services.protocol_relation_service import (
     ProtocolRelationService,
 )
 from app.backend.api.services.protocol_context_service import ProtocolContextService
+from app.backend.api.services.protocol_viewer_file_token_service import (
+    isViewerFileToken,
+    resolveViewerFileToken,
+)
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
@@ -16713,6 +16717,19 @@ class ProjectService:
 
         return protocol, output, metaPath
 
+    def _resolveViewerFilePath(self, projectId: int, token: str, mapper=None) -> str:
+        """Absolute path of a signed viewer file token of this project."""
+        projectPath = None
+        if mapper is not None:
+            projectPath = ProjectRuntimeRepository().getProjectNameById(mapper, projectId)
+        if not projectPath and self.currentProject is not None:
+            projectPath = self.currentProject.getPath()
+        try:
+            absolutePath, _ = resolveViewerFileToken(token, projectId, projectPath)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Viewer file not found")
+        return absolutePath
+
     def _getMetadataObjectManager(self, metaPath: str) -> ObjectManager:
         """
         Configure ObjectManager to work over the given metadata file.
@@ -16776,6 +16793,12 @@ class ProjectService:
             mapper=None,
                 protocolIdIsScipionId=False,
     ) -> ObjectManager:
+        if isViewerFileToken(outputName):
+            # A file shown by a protocol viewer action, not a stored output.
+            return self._getMetadataObjectManager(
+                self._resolveViewerFilePath(projectId, outputName, mapper)
+            )
+
         daoKwargs = {
             "projectId": projectId,
             "protocolId": protocolId,
@@ -18114,7 +18137,9 @@ class ProjectService:
         metaDir = None
         objMgrFileName = str(getattr(objMgr, "_fileName", "") or "")
 
-        if not objMgrFileName.startswith("postgresql://"):
+        if isViewerFileToken(outputName):
+            metaDir = LocalPath(objMgrFileName).parent
+        elif not objMgrFileName.startswith("postgresql://"):
             try:
                 _protocol, _output, metaPath = self._resolveOutputForMetadata(protocolId, outputName, **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}))
                 metaDir = LocalPath(metaPath).parent
