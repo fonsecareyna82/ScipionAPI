@@ -4,7 +4,9 @@ from app.backend.api.services import protocol_viewer_action_service as service
 from app.backend.api.services.protocol_viewer_dynamic_form_service import (
     DynamicProtocolViewerFormError,
 )
-from app.backend.api.services.protocol_viewer_file_token_service import readViewerFileToken
+from app.backend.api.services.protocol_viewer_file_token_service import (
+    readViewerFileToken, readViewerFileTokenPaths,
+)
 
 VIEWER = 'xmipp3.viewers.viewer_cl2d.XmippCL2DViewer'
 
@@ -93,6 +95,20 @@ def test_files_are_returned_with_signed_tokens_and_outputs_as_references():
     assert output['fileToken'] is None and output['output']['outputName'] == 'outputParticles'
     assert readViewerFileToken(image['fileToken'], 7) == 'Runs/000115/extra/avg.mrc'
     assert 'injected' not in result
+
+
+def test_volumes_are_signed_together_and_desktop_launches_reported():
+    paths = ['Runs/000019_LocSharp/extra/sharpened.mrc', 'Runs/000019_LocSharp/extra/input.mrc']
+    result, _ = run(worker_reply=reply(items=[
+        {'kind': 'volumes', 'viewClass': 'ChimeraView', 'title': '2 volumes', 'paths': paths,
+         'desktopProgram': 'ChimeraX'},
+        {'kind': 'desktop', 'viewClass': 'VmdView', 'program': 'vmd'},
+    ]))
+    volumes, desktop = result['items']
+    assert readViewerFileTokenPaths(volumes['fileToken'], 7) == paths
+    assert volumes['desktopProgram'] == 'ChimeraX'
+    assert desktop == {'kind': 'desktop', 'viewClass': 'VmdView', 'program': 'vmd'}
+    assert code_of(worker_reply=reply(items=[{'kind': 'volumes', 'paths': ['/etc/passwd']}])) == 'invalid_worker_reply'
 
 
 def test_links_are_forwarded_only_for_web_addresses():

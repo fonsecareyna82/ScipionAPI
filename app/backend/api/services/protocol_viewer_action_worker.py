@@ -18,7 +18,9 @@ import re
 import sys
 from contextlib import contextmanager
 
-from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
+from app.backend.api.services.protocol_viewer_settings_service import (
+    viewerEvaluationEnabled, workerDesktopDisplay,
+)
 from app.backend.api.services.protocol_viewer_dynamic_form_worker import (
     _CONTROL_TYPES, loadRuntimeViewer, serializeRuntimeViewerDefinition,
 )
@@ -41,6 +43,12 @@ IMAGE_EXTENSIONS = frozenset({
     'vol', 'tif', 'tiff', 'png', 'jpg', 'jpeg', 'hdf', 'dm4',
 })
 TEXT_EXTENSIONS = frozenset({'txt', 'log', 'json', 'csv', 'out', 'err', 'tsv'})
+VOLUME_EXTENSIONS = frozenset({'mrc', 'map', 'ccp4', 'vol', 'rec', 'em', 'spi', 'hdf'})
+SCRIPT_EXTENSIONS = frozenset({'cxc', 'py', 'cmd', 'com'})
+ATOM_STRUCTURE_EXTENSIONS = frozenset({'pdb', 'cif', 'ent', 'mmcif'})
+MAX_SCRIPT_BYTES = 1024 * 1024
+MAX_VOLUMES = 64
+_OPEN_COMMAND = re.compile(r'''\bopen\s+(?:"([^"]+)"|'([^']+)'|([^\s'"),;]+))''')
 VIEW_PARAM_KEYS = frozenset({
     'mode', 'visible', 'order', 'render', 'zoom', 'sortby', 'labels',
 })
@@ -524,6 +532,99 @@ def _translate_data(view, resolver, outputs):
     return descriptor
 
 
+def _command_files(view, resolver):
+    """Project files an external-program View receives, scripts expanded."""
+    import shlex
+    command = getattr(view, '_cmd', None)
+    if not isinstance(command, str):
+        return []
+    try:
+        tokens = shlex.split(command.replace('&', ' '))
+    except ValueError:
+        return []
+    base = getattr(view, '_cwd', None) or resolver.root
+    files = []
+
+    def add(path, folder):
+        path = re.sub(r':[A-Za-z0-9]+\Z', '', path)  # ChimeraX format suffix
+        path = re.sub(r'\A\d+@', '', path)
+        candidate = path if os.path.isabs(path) else os.path.join(folder, path)
+        relative = resolver.relative(candidate)
+        if relative is not None and os.path.isfile(os.path.join(resolver.root, relative)) \
+                and relative not in files:
+            files.append(relative)
+            return relative
+        return None
+
+    for token in tokens[1:]:
+        relative = add(token, base)
+        if relative is None or _extension(relative) not in SCRIPT_EXTENSIONS:
+            continue
+        script = os.path.join(resolver.root, relative)
+        with open(script, 'rb') as handle:
+            text = handle.read(MAX_SCRIPT_BYTES).decode('utf-8', errors='replace')
+        for match in _OPEN_COMMAND.finditer(text):
+            opened = next(group for group in match.groups() if group)
+            add(opened, os.path.dirname(script))
+    return files
+
+
+def _program_name(view):
+    import shlex
+    try:
+        program = shlex.split(getattr(view, '_cmd', '') or '')[0]
+    except (ValueError, IndexError):
+        return type(view).__name__
+    name = os.path.basename(program)
+    return 'ChimeraX' if 'chimera' in name.lower() else name[:64]
+
+
+def launchOnDesktop(view, resolver, display):
+    """Run an external-program View on the server's screen, detached."""
+    import shlex
+    import shutil
+    import subprocess
+    command = getattr(view, '_cmd', None)
+    if not display or not isinstance(command, str) or not command.strip():
+        return False
+    env = dict(getattr(view, '_env', None) or os.environ)
+    try:
+        program = shlex.split(command)[0]
+    except (ValueError, IndexError):
+        return False
+    # Never claim a program opened when it is not installed.
+    if shutil.which(program, path=env.get('PATH')) is None:
+        return False
+    env.update(display)
+    try:
+        subprocess.Popen(command, shell=True, env=env, cwd=getattr(view, '_cwd', None) or resolver.root,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
+def _translate_command(view, resolver, display=None):
+    """An external program (e.g. ChimeraX) opens on the server's screen when it
+    has one; its volumes can also be shown in the web volume viewer."""
+    files = _command_files(view, resolver)
+    volumes = [path for path in files if _extension(path) in VOLUME_EXTENSIONS][:MAX_VOLUMES]
+    program = _program_name(view)
+    launched = launchOnDesktop(view, resolver, display)
+    if not volumes:
+        if launched:
+            return {'kind': 'desktop', 'viewClass': type(view).__name__, 'program': program}
+        unsupported = _unsupported(view, 'desktop_command')
+        models = sum(_extension(path) in ATOM_STRUCTURE_EXTENSIONS for path in files)
+        if models:
+            unsupported['detail'] = '%d atomic model file(s)' % models
+        return unsupported
+    title = os.path.basename(volumes[0]) if len(volumes) == 1 else '%d volumes' % len(volumes)
+    return {'kind': 'volumes', 'viewClass': type(view).__name__, 'title': title,
+            'paths': volumes, 'desktopProgram': program if launched else None}
+
+
 def _translate_md_view(view, resolver, outputs):
     em_set = getattr(view, '_emSet', None)
     output = outputs.find(getattr(em_set, 'getObjId', lambda: None)())
@@ -534,7 +635,7 @@ def _translate_md_view(view, resolver, outputs):
             'table': None, 'index': None, 'viewParams': {}, 'output': output}
 
 
-def translateView(view, resolver, outputs):
+def translateView(view, resolver, outputs, display=None):
     """Return one JSON-safe descriptor for a captured View."""
     from matplotlib.figure import Figure
 
@@ -569,7 +670,7 @@ def translateView(view, resolver, outputs):
     if 'TextView' in names:
         return _translate_text(view, resolver)
     if 'CommandView' in names:
-        return _unsupported(view, 'desktop_command')
+        return _translate_command(view, resolver, display)
     if 'CoordinatesObjectView' in names:
         return _unsupported(view, 'desktop_picker')
     if 'ImageView' in names:
@@ -630,10 +731,11 @@ def runViewerAction(context, action, values, project_id=None):
 
     resolver = PathResolver(context.project.getPath())
     outputs = OutputIndex(context.project, context.protocol, project_id)
+    display = workerDesktopDisplay()
     items = []
     for view in collector.views[:MAX_ITEMS]:
         try:
-            items.append(translateView(view, resolver, outputs))
+            items.append(translateView(view, resolver, outputs, display))
         except Exception as exc:
             items.append({'kind': 'unsupported', 'viewClass': type(view).__name__,
                           'reason': 'translation_failed', 'detail': str(exc)[:500]})

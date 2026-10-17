@@ -19,7 +19,9 @@ from app.backend.api.services.protocol_viewer_condition_contract_service import 
     validViewerConditionRule, referencedViewerFields,
 )
 
-from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
+from app.backend.api.services.protocol_viewer_settings_service import (
+    DESKTOP_DISPLAY_PREFIX, serverDesktopDisplay, viewerEvaluationEnabled,
+)
 from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
     resolvePersistedProtocolViewerCandidates,
 )
@@ -278,6 +280,8 @@ def _run_worker(request: dict, timeout_seconds: int, *,
                 max_reply: int = _MAX_REPLY) -> dict:
     """Fixed child module, bounded disk-backed pipes, process-group timeout."""
     env = os.environ.copy()
+    for name, value in serverDesktopDisplay().items():
+        env[DESKTOP_DISPLAY_PREFIX + name] = value
     env.pop('DISPLAY', None)
     env.pop('WAYLAND_DISPLAY', None)
     env['MPLBACKEND'] = 'Agg'

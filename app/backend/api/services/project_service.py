@@ -59,6 +59,7 @@ from app.backend.api.services.protocol_context_service import ProtocolContextSer
 from app.backend.api.services.protocol_viewer_file_token_service import (
     isViewerFileToken,
     resolveViewerFileToken,
+    resolveViewerFileTokenPaths,
 )
 from app.backend.api.services.protocol_service import ProtocolService
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
@@ -11931,6 +11932,10 @@ class ProjectService:
             outputName: str,
                 protocolIdIsScipionId=False,
     ):
+        if isViewerFileToken(outputName):
+            # Volume files shown by a protocol viewer action, not an output.
+            return self._getViewerFileVolumeReader(projectId, outputName, mapper)
+
         if mapper is None:
             return None
 
@@ -16729,6 +16734,21 @@ class ProjectService:
         except LookupError:
             raise HTTPException(status_code=404, detail="Viewer file not found")
         return absolutePath
+
+    def _getViewerFileVolumeReader(self, projectId: int, token: str, mapper=None):
+        """Volume reader over the files of a signed viewer file token."""
+        from app.backend.viewers.viewer_file_volume_reader import ViewerFileVolumeReader
+
+        projectPath = None
+        if mapper is not None:
+            projectPath = ProjectRuntimeRepository().getProjectNameById(mapper, projectId)
+        if not projectPath and self.currentProject is not None:
+            projectPath = self.currentProject.getPath()
+        try:
+            files = resolveViewerFileTokenPaths(token, projectId, projectPath)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Viewer file not found")
+        return ViewerFileVolumeReader(files)
 
     def _getMetadataObjectManager(self, metaPath: str) -> ObjectManager:
         """

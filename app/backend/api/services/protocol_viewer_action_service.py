@@ -162,6 +162,19 @@ def _validated_item(project_id, item) -> dict:
             'output': output,
             **(reference or {'path': None, 'fileToken': None}),
         }
+    if kind == 'volumes':
+        paths = item.get('paths')
+        if (not isinstance(paths, list) or not 0 < len(paths) <= 64
+                or not all(isSafeProjectRelativePath(path) for path in paths)):
+            raise ProtocolViewerActionError('invalid_worker_reply')
+        desktop = item.get('desktopProgram')
+        return {'kind': kind, 'viewClass': _text(item.get('viewClass'), 128),
+                'title': _text(item.get('title'), 255), 'paths': list(paths),
+                'fileToken': signViewerFileToken(project_id, paths),
+                'desktopProgram': _text(desktop, 64) if type(desktop) is str else None}
+    if kind == 'desktop':
+        return {'kind': kind, 'viewClass': _text(item.get('viewClass'), 128),
+                'program': _text(item.get('program'), 64)}
     if kind == 'link':
         url = item.get('url')
         if (type(url) is not str or len(url) > _MAX_STRING

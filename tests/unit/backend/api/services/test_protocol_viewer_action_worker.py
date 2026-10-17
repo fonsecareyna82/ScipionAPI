@@ -84,7 +84,7 @@ def test_text_message_and_command_views(project):
     assert (message['kind'], message['level'], message['text']) == ('message', 'warning', 'No classes')
     command = translate(CommandView('chimera x.cxc'), project)
     assert (command['kind'], command['reason']) == ('unsupported', 'desktop_command')
-    assert 'chimera' not in str(command)
+    assert 'x.cxc' not in str(command)
 
 
 def test_unknown_views_are_reported_by_class_name(project):
@@ -252,3 +252,71 @@ def test_pages_opened_in_the_desktop_browser_become_links(project):
     assert items[0] == {"kind": "link", "url": "http://cryosparc.local:39000/browse/P12-W3-J45",
                         "title": "http://cryosparc.local:39000/browse/P12-W3-J45"}
     assert items[1]["kind"] == "unsupported" and items[1]["reason"] == "invalid_link"
+
+
+@pytest.fixture
+def chimera_project(project):
+    extra = project / 'Runs' / '000115_CL2D' / 'extra'
+    (extra / 'volume.mrc').write_bytes(b'\0' * 16)
+    (extra / 'half1.map').write_bytes(b'\0' * 16)
+    (extra / 'model.pdb').write_text('ATOM\n')
+    (extra / 'chimera.cxc').write_text(
+        'open %s\nopen half1.map\nopen model.pdb\nvolume #1 level 0.1\n' % (extra / 'volume.mrc'))
+    return project
+
+
+def chimera_view(command):
+    from pyworkflow.viewer import CommandView
+
+    class ChimeraView(CommandView):
+        pass
+
+    return ChimeraView(command)
+
+
+def test_chimerax_volumes_from_files_and_scripts_go_to_the_volume_viewer(chimera_project):
+    view = chimera_view('/opt/chimerax/bin/ChimeraX "Runs/000115_CL2D/extra/chimera.cxc" &')
+    item = translate(view, chimera_project)
+    assert item == {
+        'kind': 'volumes', 'viewClass': 'ChimeraView', 'title': '2 volumes',
+        'paths': ['Runs/000115_CL2D/extra/volume.mrc', 'Runs/000115_CL2D/extra/half1.map'],
+        'desktopProgram': None,
+    }
+
+
+def test_chimerax_opens_on_the_server_screen_when_it_has_one(chimera_project, monkeypatch):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, 'which', lambda program, path=None: program)
+    launched = []
+    monkeypatch.setattr(subprocess, 'Popen', lambda command, **kwargs: launched.append((command, kwargs)))
+    view = chimera_view('/opt/chimerax/bin/ChimeraX "Runs/000115_CL2D/extra/volume.mrc:mrc" &')
+    item = worker.translateView(view, worker.PathResolver(str(chimera_project)), FakeOutputs(),
+                                {'DISPLAY': ':1'})
+    assert item['desktopProgram'] == 'ChimeraX'
+    assert item['paths'] == ['Runs/000115_CL2D/extra/volume.mrc']
+    command, kwargs = launched[0]
+    assert command.startswith('/opt/chimerax/bin/ChimeraX')
+    assert kwargs['env']['DISPLAY'] == ':1' and kwargs['start_new_session'] is True
+
+
+def test_programs_without_volumes_are_launched_or_reported(chimera_project, monkeypatch):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, 'which', lambda program, path=None: program)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: None)
+    view = chimera_view('/opt/chimerax/bin/ChimeraX "Runs/000115_CL2D/extra/model.pdb" &')
+    resolver = worker.PathResolver(str(chimera_project))
+    assert worker.translateView(view, resolver, FakeOutputs(), {'DISPLAY': ':1'}) == {
+        'kind': 'desktop', 'viewClass': 'ChimeraView', 'program': 'ChimeraX'}
+    reported = worker.translateView(view, resolver, FakeOutputs())
+    assert (reported['reason'], reported['detail']) == ('desktop_command', '1 atomic model file(s)')
+
+
+def test_a_program_that_is_not_installed_is_not_launched(chimera_project, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('launched'))
+    view = chimera_view('/not/installed/ChimeraX "Runs/000115_CL2D/extra/volume.mrc" &')
+    item = worker.translateView(view, worker.PathResolver(str(chimera_project)), FakeOutputs(),
+                                {'DISPLAY': ':1'})
+    assert item['kind'] == 'volumes' and item['desktopProgram'] is None

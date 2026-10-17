@@ -13,11 +13,12 @@ import hashlib
 import hmac
 import json
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
 VIEWER_FILE_TOKEN_PREFIX = "vf."
 _SIGNATURE_LENGTH = 32
 _MAX_PATH = 1024
+_MAX_PATHS = 64
 
 
 def _secret() -> bytes:
@@ -46,8 +47,18 @@ def isViewerFileToken(value) -> bool:
     return type(value) is str and value.startswith(VIEWER_FILE_TOKEN_PREFIX)
 
 
-def signViewerFileToken(projectId: int, relativePath: str) -> str:
-    if type(projectId) is not int or not isSafeProjectRelativePath(relativePath):
+def _validPaths(value) -> bool:
+    if isinstance(value, str):
+        return isSafeProjectRelativePath(value)
+    return (isinstance(value, list) and 0 < len(value) <= _MAX_PATHS
+            and all(isSafeProjectRelativePath(path) for path in value))
+
+
+def signViewerFileToken(projectId: int, relativePath: Union[str, Sequence[str]]) -> str:
+    """Sign one file, or a list of files shown together (e.g. several volumes)."""
+    if not isinstance(relativePath, str):
+        relativePath = list(relativePath)
+    if type(projectId) is not int or not _validPaths(relativePath):
         raise ValueError("invalid_viewer_file")
     payload = _b64(json.dumps([projectId, relativePath],
                               separators=(",", ":")).encode("utf-8"))
@@ -58,8 +69,21 @@ def signViewerFileToken(projectId: int, relativePath: str) -> str:
 
 
 def readViewerFileToken(token, projectId: int) -> Optional[str]:
-    """Return the project-relative path, or None if the token is not valid."""
-    if not isViewerFileToken(token) or len(token) > 4096:
+    """Return the project-relative path of a single-file token, or None."""
+    value = _readTokenPayload(token, projectId)
+    return value if isinstance(value, str) else None
+
+
+def readViewerFileTokenPaths(token, projectId: int) -> Optional[List[str]]:
+    """Return the project-relative paths of any valid token, or None."""
+    value = _readTokenPayload(token, projectId)
+    if value is None:
+        return None
+    return [value] if isinstance(value, str) else list(value)
+
+
+def _readTokenPayload(token, projectId: int):
+    if not isViewerFileToken(token) or len(token) > 16384:
         return None
     body = token[len(VIEWER_FILE_TOKEN_PREFIX):]
     payload, _, signature = body.partition(".")
@@ -74,18 +98,30 @@ def readViewerFileToken(token, projectId: int) -> Optional[str]:
     except (ValueError, UnicodeError):
         return None
     if (not isinstance(value, list) or len(value) != 2 or value[0] != projectId
-            or type(value[0]) is not int or not isSafeProjectRelativePath(value[1])):
+            or type(value[0]) is not int or not _validPaths(value[1])):
         return None
     return value[1]
 
 
-def resolveViewerFileToken(token, projectId: int, projectPath: str) -> Tuple[str, str]:
-    """Absolute path of a token's file, which must still be inside the project."""
-    relative = readViewerFileToken(token, projectId)
-    if relative is None or not projectPath:
-        raise LookupError("invalid_viewer_file")
-    root = os.path.realpath(projectPath)
+def _resolveInside(root: str, relative: str) -> str:
     absolute = os.path.realpath(os.path.join(root, relative))
     if os.path.commonpath([absolute, root]) != root or not os.path.isfile(absolute):
         raise LookupError("viewer_file_not_found")
-    return absolute, relative
+    return absolute
+
+
+def resolveViewerFileToken(token, projectId: int, projectPath: str) -> Tuple[str, str]:
+    """Absolute path of a single-file token, which must still be inside the project."""
+    relative = readViewerFileToken(token, projectId)
+    if relative is None or not projectPath:
+        raise LookupError("invalid_viewer_file")
+    return _resolveInside(os.path.realpath(projectPath), relative), relative
+
+
+def resolveViewerFileTokenPaths(token, projectId: int, projectPath: str) -> List[Tuple[str, str]]:
+    """(absolute, relative) paths of any token; every file must be inside the project."""
+    relatives = readViewerFileTokenPaths(token, projectId)
+    if relatives is None or not projectPath:
+        raise LookupError("invalid_viewer_file")
+    root = os.path.realpath(projectPath)
+    return [(_resolveInside(root, relative), relative) for relative in relatives]
