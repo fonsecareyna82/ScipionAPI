@@ -74,6 +74,9 @@ class RuntimeProtocolDuplicateService:
         "_cpuTime",
         "_numberOfSteps",
         "lastUpdateTimeStamp",
+        # A copy starts fresh: it must not reuse the original's runtime state
+        # (e.g. its cryoSPARC jobs).
+        "_scipionRuntimeAttributes",
     )
 
     def createDuplicateState(self) -> RuntimeProtocolDuplicateState:

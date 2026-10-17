@@ -95,7 +95,15 @@ def test_files_are_returned_with_signed_tokens_and_outputs_as_references():
     assert 'injected' not in result
 
 
+def test_links_are_forwarded_only_for_web_addresses():
+    url = 'https://cryosparc.example.org/browse/P12-W3-J45'
+    result, _ = run(worker_reply=reply(items=[{'kind': 'link', 'url': url, 'title': url}]))
+    assert result['items'] == [{'kind': 'link', 'url': url, 'title': url}]
+
+
 @pytest.mark.parametrize('item', [
+    {'kind': 'link', 'url': 'javascript:alert(1)'},
+    {'kind': 'link', 'url': 'file:///etc/passwd'},
     {'kind': 'image', 'title': 'x', 'path': '/etc/passwd'},
     {'kind': 'data', 'path': '../x.xmd', 'output': None},
     {'kind': 'data', 'path': None, 'output': None},

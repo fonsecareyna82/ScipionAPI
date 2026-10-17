@@ -576,3 +576,17 @@ def test_BuildDuplicatedProtocolParamsNormalizesNativeQueueParams():
 
 
 
+
+
+def test_BuildDuplicatedProtocolParamsDoesNotCopyRuntimeAttributes():
+    params = {
+        "runName": "cryoSPARC initial model",
+        "_scipionRuntimeAttributes": {"currenJob": {"class": "String", "value": "J45"}},
+    }
+
+    result = RuntimeProtocolDuplicateService().buildDuplicatedProtocolParams(
+        sourceProtocol=FakeSourceProtocol(),
+        sourceParams=params,
+    )
+
+    assert "_scipionRuntimeAttributes" not in result

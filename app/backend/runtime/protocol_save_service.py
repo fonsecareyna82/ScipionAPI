@@ -89,6 +89,7 @@ class RuntimeProtocolSaveService:
     nonFormParamNames = set(protectedParams) | {
         "expertLevel",
         "_scipionWebRuntime",
+        "_scipionRuntimeAttributes",
         "_queueName",
         "_queueParams",
     }

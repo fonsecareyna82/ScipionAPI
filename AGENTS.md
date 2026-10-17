@@ -133,6 +133,8 @@ ScipionWeb builds each plugin's desktop "Analyze results" viewer (`ProtocolViewe
 - **Valkey intentionally still uses the Redis Celery transport/client stack**: `celery[redis]`, `redis-py`, and `redis://`/`rediss://` URLs remain correct. Do not replace them merely because the server is Valkey.
 - `pydantic==1.10.x` pin (see Stack above) — a real, easy-to-violate-by-accident constraint.
 - **Plugins installed in develop mode while the backend runs** (`pip install -e`) are importable only through the `.pth` file the install writes, which the interpreter reads only at startup. The Domain refresh (`scipion_domain_refresh_service`, on every plugins revision bump) processes the `.pth` files written or changed since the process started (`PathFileTracker`) before registering new plugins. Keep that order, or workflows imported after such an install silently lose the new plugin's protocols.
+- **Attributes a protocol creates while running** (scalars that are not form params, e.g. cryoSPARC's `projectName`/`workSpaceName`/`currenJob`, or `summaryVar`) are stored with the protocol params under `_scipionRuntimeAttributes` and restored when the protocol is rebuilt (`app/backend/runtime/protocol_runtime_attributes.py`). Classic Scipion stores them too, and Continue, summaries and viewers read them. Attributes the server manages itself (status, timing, job/pid, host) are excluded; duplicating a protocol does not copy them.
+- Protocol viewers that open a page with `webbrowser.open*` (e.g. a cryoSPARC job) produce a `link` result that the web opens in the user's browser.
 - `scipion_home/` is gitignored and holds a local `.env` — not a leak, just local config; don't assume secrets belong there or that it's meant to be committed.
 
 ## Keeping this document current

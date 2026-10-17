@@ -162,6 +162,12 @@ def _validated_item(project_id, item) -> dict:
             'output': output,
             **(reference or {'path': None, 'fileToken': None}),
         }
+    if kind == 'link':
+        url = item.get('url')
+        if (type(url) is not str or len(url) > _MAX_STRING
+                or re.match(r'https?://[^\s]+\Z', url, re.I) is None):
+            raise ProtocolViewerActionError('invalid_worker_reply')
+        return {'kind': kind, 'url': url, 'title': _text(item.get('title'), 255)}
     if kind == 'unsupported':
         return {'kind': kind, 'viewClass': _text(item.get('viewClass'), 128),
                 'reason': _text(item.get('reason'), 64),

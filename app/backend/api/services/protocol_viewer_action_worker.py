@@ -81,6 +81,13 @@ class CapturedTable:
         self.title = title
 
 
+class CapturedLink:
+    """A page the viewer asked the desktop browser to open (webbrowser.open)."""
+
+    def __init__(self, url):
+        self.url = url
+
+
 class ViewCollector:
     """Ordered, de-duplicated Views and messages produced by one action."""
 
@@ -150,9 +157,24 @@ def captureShownViews(collector, view_base=None):
             collector.addView(plt.figure(number))
 
     plt.show = plt_show
+
+    # Viewers open web applications (e.g. a cryoSPARC job) in the desktop
+    # browser; on the web the user's own browser opens them instead.
+    import webbrowser
+    browser_functions = {name: getattr(webbrowser, name)
+                         for name in ('open', 'open_new', 'open_new_tab')}
+
+    def browser_open(url, *args, **kwargs):
+        collector.addView(CapturedLink(url))
+        return True
+
+    for name in browser_functions:
+        setattr(webbrowser, name, browser_open)
     try:
         yield collector
     finally:
+        for name, function in browser_functions.items():
+            setattr(webbrowser, name, function)
         plt.show = original_plt_show
         for cls, name, original in reversed(patched):
             setattr(cls, name, original)
@@ -527,6 +549,12 @@ def translateView(view, resolver, outputs):
                 'truncated': len(view.dataList or []) > MAX_TABLE_ROWS}
     if isinstance(view, Figure):
         return _translate_plot(view, view)
+    if isinstance(view, CapturedLink):
+        url = view.url if isinstance(view.url, str) else ''
+        if not re.match(r'https?://', url, re.I) or len(url) > MAX_STRING:
+            return {'kind': 'unsupported', 'viewClass': 'webbrowser',
+                    'reason': 'invalid_link'}
+        return {'kind': 'link', 'url': url, 'title': url}
 
     names = {cls.__name__ for cls in type(view).__mro__}
     figure = getattr(view, 'figure', None)

@@ -61,6 +61,11 @@ from app.backend.runtime.postgresql_runtime_set_factory import (
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+from app.backend.runtime.protocol_runtime_attributes import (
+    RUNTIME_ATTRIBUTES_KEY,
+    applyRuntimeAttributes,
+    collectRuntimeAttributes,
+)
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
 )
@@ -2559,6 +2564,10 @@ class PostgresqlRuntimeMapper(Mapper):
         self._attachRuntimeContext(protocol)
         self._applyStoredProtocolStatus(protocol, row.get("status"))
         self._applyStoredProtocolParams(protocol, row.get("params") or {})
+        applyRuntimeAttributes(
+            protocol,
+            self._normalizeStoredProtocolParams(row.get("params") or {}).get(RUNTIME_ATTRIBUTES_KEY),
+        )
         self._ensureProtocolWorkingDir(protocol)
 
         return protocol
@@ -5781,6 +5790,10 @@ class PostgresqlRuntimeMapper(Mapper):
         for paramName in self.TRANSIENT_PROTOCOL_PARAM_NAMES:
             values.pop(paramName, None)
 
+        # Attributes the protocol created while running (e.g. cryoSPARC job
+        # ids), which classic Scipion also stores with the protocol.
+        values[RUNTIME_ATTRIBUTES_KEY] = collectRuntimeAttributes(protocol, values.keys())
+
         runtimeStatusSyncService = RuntimeProtocolStatusSyncService()
 
         values[runtimeStatusSyncService.RUNTIME_METADATA_KEY] = runtimeStatusSyncService.buildRuntimeMetadata(protocol)
@@ -6582,7 +6595,8 @@ class PostgresqlRuntimeMapper(Mapper):
         )
 
         for key, storedValue in params.items():
-            if key == runtimeMetadataKey or key in self.TRANSIENT_PROTOCOL_PARAM_NAMES:
+            if (key == runtimeMetadataKey or key == RUNTIME_ATTRIBUTES_KEY
+                    or key in self.TRANSIENT_PROTOCOL_PARAM_NAMES):
                 continue
             value = (
                 self

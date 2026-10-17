@@ -238,3 +238,17 @@ def test_worker_request_shape_is_strict():
     for change in ({'action': 'not an action'}, {'values': []}, {'projectId': 0},
                    {'extra': 1}):
         assert not worker._valid_request(dict(request, **change))
+
+
+def test_pages_opened_in_the_desktop_browser_become_links(project):
+    import webbrowser
+    original = webbrowser.open_new_tab
+    collector = worker.ViewCollector()
+    with worker.captureShownViews(collector):
+        assert webbrowser.open_new_tab("http://cryosparc.local:39000/browse/P12-W3-J45") is True
+        webbrowser.open("javascript:alert(1)")
+    assert webbrowser.open_new_tab is original
+    items = [translate(view, project) for view in collector.views]
+    assert items[0] == {"kind": "link", "url": "http://cryosparc.local:39000/browse/P12-W3-J45",
+                        "title": "http://cryosparc.local:39000/browse/P12-W3-J45"}
+    assert items[1]["kind"] == "unsupported" and items[1]["reason"] == "invalid_link"
