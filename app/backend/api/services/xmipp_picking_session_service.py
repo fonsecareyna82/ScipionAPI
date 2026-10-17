@@ -8,6 +8,7 @@ reading the session files with Xmipp's readSetOfCoordinates.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, Response, status
 
 from app.backend.api.services import xmipp_picking_files as files
+from app.backend.runtime import web_interactive_picker as interactive
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
 
@@ -26,6 +28,10 @@ SUPERVISED_PICKING_PROTOCOLS = frozenset({"XmippProtParticlePicking"})
 MICROGRAPHS_INPUT = "inputMicrographs"
 OUTPUT_PREFIX = "outputCoordinates"
 MAX_PARTICLES_PER_MICROGRAPH = 100000
+# Manual particles needed to train, as PickingClassifier.getTrainingParticlesMinimum.
+TRAINING_PARTICLES_MINIMUM = 15
+TEMPLATES_FILE = "templates.stk"
+TEMPLATE_PARTICLES_MAXIMUM = 2000
 
 # One writer at a time per session folder (the web may save while picking).
 _folderLocks: Dict[str, threading.Lock] = {}
@@ -171,49 +177,135 @@ class XmippPickingSessionService:
             "boxSize": config.particleSize,
             "mode": config.mode,
             "autopickPercent": config.autopickPercent,
+            # Open while the protocol's interactive step waits for the web.
+            "webSession": {"open": interactive.readSession(session.folder) is not None},
         }
+
+    def listOpenSessions(self, mapper, projectId: int, currentUser) -> Dict[str, Any]:
+        """Picking protocols of the project whose interactive step waits for the web."""
+        if not self.projectService.getProjectDbRow(mapper, projectId, currentUser):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        rows = mapper.db.fetchAll(
+            """
+            SELECT "protocolId", "protocolClassName", params
+              FROM protocols
+             WHERE "projectId" = %s AND "protocolClassName" = ANY(%s)
+               AND status IN ('running', 'launched')
+            """,
+            (projectId, sorted(SUPERVISED_PICKING_PROTOCOLS)),
+        ) or []
+        projectPath = ProjectRuntimeRepository().getProjectNameById(mapper, projectId)
+        sessions = []
+        for row in rows:
+            protocolId = int(row["protocolId"])
+            folder = os.path.join(os.path.realpath(projectPath or ""), "Runs",
+                                  "%06d_%s" % (protocolId, row["protocolClassName"]), "extra")
+            webSession = interactive.readSession(folder)
+            if webSession is not None:
+                params = row.get("params") or {}
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except ValueError:
+                        params = {}
+                label = params.get("runName") if isinstance(params, dict) else None
+                sessions.append({"protocolId": protocolId, "kind": "xmipp-picking",
+                                 "sessionId": str(webSession.get("sessionId") or protocolId),
+                                 "label": label if isinstance(label, str) else row["protocolClassName"]})
+        return {"sessions": sessions}
+
+    def closeWebSession(self, mapper, projectId, protocolId, currentUser) -> Dict[str, Any]:
+        """The web closed the picker: the protocol's interactive step finishes."""
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        self._ensureTemplates(session, mapper)
+        return {"closed": interactive.requestClose(session.folder)}
+
+    def _ensureTemplates(self, session: PickingSession, mapper) -> None:
+        """A trained session without templates.stk gets it (sessions trained before it was written)."""
+        if (os.path.exists(os.path.join(session.folder, TEMPLATES_FILE))
+                or not os.path.exists(os.path.join(session.folder, "model_svm.txt"))):
+            return
+        try:
+            with _folderLock(session.folder):
+                self.writeTemplates(session, mapper, self._config(session))
+        except Exception:
+            logger.exception("Could not write the picking templates of %s", session.folder)
 
     # -- particles -----------------------------------------------------------
 
     def listParticles(self, mapper, projectId, protocolId, currentUser, micId) -> Dict[str, Any]:
+        """Manual particles, plus the automatic ones that are not rejected.
+
+        Automatic particles carry their score and an ``a<index>`` id that
+        saveParticles uses to tell which ones the user removed.
+        """
         session = self.openSession(mapper, projectId, protocolId, currentUser)
         micrograph = session.micrograph(mapper, micId)
         picks = files.readPos(session.posPath(micrograph))
         coordinates = [{"id": "m%d" % index, "micId": micrograph["id"], "x": x, "y": y}
                        for index, (x, y) in enumerate(picks.manual)]
-        automatic = [{"id": "a%d" % index, "micId": micrograph["id"], "x": x, "y": y,
-                      "score": cost, "enabled": enabled != -1 and cost >= picks.threshold}
-                     for index, (x, y, cost, enabled) in enumerate(picks.automatic)]
-        return {"coordinates": coordinates, "automatic": automatic, "state": picks.state,
-                "threshold": picks.threshold}
+        coordinates.extend(
+            {"id": "a%d" % index, "micId": micrograph["id"], "x": x, "y": y,
+             "score": cost, "kind": "automatic"}
+            for index, (x, y, cost, enabled) in enumerate(picks.automatic) if enabled != -1)
+        return {"coordinates": coordinates, "state": picks.state, "threshold": picks.threshold,
+                "automaticTotal": len(picks.automatic)}
 
     def saveParticles(self, mapper, projectId, protocolId, currentUser, micId,
-                      coordinates: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Replace a micrograph's manual particles; automatic ones are kept."""
+                      coordinates: List[Dict[str, Any]],
+                      threshold: Optional[float] = None) -> Dict[str, Any]:
+        """Save a micrograph's particles as the desktop picker does.
+
+        Points without an ``a<index>`` id are manual. Automatic particles keep
+        their place in the file; the ones no longer sent were removed by the
+        user and are written as rejected (enabled -1), like in Java. A moved
+        automatic particle becomes a manual one.
+        """
         session = self.openSession(mapper, projectId, protocolId, currentUser)
         micrograph = session.micrograph(mapper, micId)
         if len(coordinates) > MAX_PARTICLES_PER_MICROGRAPH:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 detail="Too many particles for one micrograph")
+        if threshold is not None and not 0.0 <= float(threshold) <= 1.0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="The threshold must be between 0 and 1")
         manual = []
+        keptAutomatic: Dict[int, tuple] = {}
         for point in coordinates:
             try:
                 x, y = int(round(float(point["x"]))), int(round(float(point["y"])))
             except (KeyError, TypeError, ValueError):
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                                     detail="Invalid particle coordinates")
-            manual.append((x, y))
+            pointId = str(point.get("id") or "")
+            if pointId.startswith("a") and pointId[1:].isdigit():
+                keptAutomatic[int(pointId[1:])] = (x, y)
+            else:
+                manual.append((x, y))
         path = session.posPath(micrograph)
         with _folderLock(session.folder):
             picks = files.readPos(path)
+            automatic = []
+            for index, (x, y, cost, enabled) in enumerate(picks.automatic):
+                kept = keptAutomatic.get(index)
+                if kept is not None and kept != (x, y):
+                    manual.append(kept)  # Moved by the user: now a manual particle.
+                    automatic.append((x, y, cost, -1))
+                elif kept is not None:
+                    automatic.append((x, y, cost, 1 if enabled != -1 else -1))
+                else:
+                    automatic.append((x, y, cost, -1))
             picks.manual = manual
+            picks.automatic = automatic
+            if threshold is not None:
+                picks.threshold = float(threshold)
             if picks.state == "Available" and manual:
                 picks.state = "Manual"
             elif not picks.hasData():
                 picks.state = "Available"
             files.writePos(path, picks)
             self._updateConfigCounts(session, mapper, micrograph)
-        return {"saved": len(manual), "state": picks.state}
+        return {"saved": len(manual) + sum(1 for *_, e in automatic if e != -1), "state": picks.state}
 
     def saveSettings(self, mapper, projectId, protocolId, currentUser,
                      particleSize: Optional[int] = None) -> Dict[str, Any]:
@@ -234,9 +326,9 @@ class XmippPickingSessionService:
             files.writeConfig(session.configPath, config)
         return {"boxSize": config.particleSize, "mode": config.mode}
 
-    def _updateConfigCounts(self, session, mapper, micrograph) -> None:
+    def _updateConfigCounts(self, session, mapper, micrograph, config=None) -> None:
         """Keep config.xmd present and current, as the desktop picker does."""
-        config = self._config(session)
+        config = config or self._config(session)
         manual = automatic = 0
         for item in session.micrographs(mapper):
             picks = files.readPos(session.posPath(item))
@@ -245,6 +337,164 @@ class XmippPickingSessionService:
         config.manualParticlesNum, config.autoParticlesNum = manual, automatic
         config.micrograph = os.path.splitext(files.posFileName(micrograph["fileName"]))[0]
         files.writeConfig(session.configPath, config)
+
+    # -- supervised picking --------------------------------------------------
+
+    def _classifier(self, session: PickingSession, mapper, config: files.PickerConfig):
+        from app.backend.runtime.xmipp_classifier_session import classifierSession
+        micrographs = [self._micrographPath(session, m) for m in session.micrographs(mapper)]
+        return classifierSession(session.folder, config.particleSize, micrographs, session.projectPath)
+
+    @staticmethod
+    def _micrographPath(session: PickingSession, micrograph: Dict[str, Any]) -> str:
+        fileName = micrograph["fileName"]
+        return fileName if os.path.isabs(fileName) else os.path.join(session.projectPath, fileName)
+
+    def _trainingRectangle(self, session, micrograph, manual, particleSize):
+        """As SupervisedPickerMicrograph.initParticlesRectangle: the picked area."""
+        from pwem.emlib.image import ImageHandler
+        width, height, _, _ = ImageHandler().getDimensions(self._micrographPath(session, micrograph))
+        xs, ys = [x for x, _ in manual], [y for _, y in manual]
+        radius = particleSize // 2
+        radius = radius + radius // 5
+        x, y = max(0, min(xs) - radius), max(0, min(ys) - radius)
+        return (x, y, min(max(xs) - x + radius, width - 1), min(max(ys) - y + radius, height - 1))
+
+    def writeTemplates(self, session: PickingSession, mapper, config: files.PickerConfig,
+                       allPicks: Optional[Dict[str, files.MicrographPicks]] = None) -> Optional[str]:
+        """Write templates.stk, as the desktop picker keeps it.
+
+        Xmipp's automatic picking requires it next to the trained model. Each
+        template is the average of the manual particles boxed from their
+        micrographs (the Java picker also aligns them while averaging).
+        """
+        import numpy as np
+        from pwem import emlib
+        from pwem.emlib.image import ImageHandler
+
+        size = int(config.particleSize)
+        half = size // 2
+        total = np.zeros((size, size), dtype=np.float64)
+        count = 0
+        for micrograph in session.micrographs(mapper):
+            picks = (allPicks or {}).get(micrograph["id"]) or files.readPos(session.posPath(micrograph))
+            if not picks.manual or count >= TEMPLATE_PARTICLES_MAXIMUM:
+                continue
+            data = ImageHandler().read(self._micrographPath(session, micrograph)).getData()
+            height, width = data.shape[-2:]
+            for x, y in picks.manual:
+                x0, y0 = int(x) - half, int(y) - half
+                if x0 < 0 or y0 < 0 or x0 + size > width or y0 + size > height:
+                    continue
+                box = data[y0:y0 + size, x0:x0 + size].astype(np.float64)
+                std = box.std()
+                total += (box - box.mean()) / std if std > 0 else box - box.mean()
+                count += 1
+                if count >= TEMPLATE_PARTICLES_MAXIMUM:
+                    break
+        if not count:
+            return None
+        average = (total / count).astype(np.float32)
+        path = os.path.join(session.folder, TEMPLATES_FILE)
+        image = emlib.Image()
+        image.setData(average)
+        for index in range(1, max(1, int(config.templatesNum)) + 1):
+            image.write("%d@%s" % (index, path))
+        return path
+
+    @staticmethod
+    def _insideRectangle(rectangle, x, y) -> bool:
+        rx, ry, rw, rh = rectangle
+        return rx <= x < rx + rw and ry <= y < ry + rh
+
+    def trainAndAutopick(self, mapper, projectId, protocolId, currentUser, micId) -> Dict[str, Any]:
+        """Train with every manual particle and autopick this micrograph (Java's Train)."""
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        micrograph = session.micrograph(mapper, micId)
+        with _folderLock(session.folder):
+            config = self._config(session)
+            allPicks = {m["id"]: files.readPos(session.posPath(m)) for m in session.micrographs(mapper)}
+            total = sum(len(p.manual) for p in allPicks.values())
+            if total < TRAINING_PARTICLES_MINIMUM:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=(
+                    "Pick at least %d particles by hand to train the picker (now %d)"
+                    % (TRAINING_PARTICLES_MINIMUM, total)))
+            picks = allPicks[micrograph["id"]]
+            if not picks.manual:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail="Pick some particles in this micrograph to train on it")
+            picks.state = "Supervised"
+            files.writePos(session.posPath(micrograph), picks)
+            # All micrographs with manual particles; the training one goes last.
+            rows = [(self._micrographPath(session, m), session.posPath(m))
+                    for m in session.micrographs(mapper)
+                    if allPicks[m["id"]].manual and m["id"] != micrograph["id"]]
+            rows.append((self._micrographPath(session, micrograph), session.posPath(micrograph)))
+            rectangle = self._trainingRectangle(session, micrograph, picks.manual, config.particleSize)
+            try:
+                classifier = self._classifier(session, mapper, config)
+                classifier.train(rows, rectangle)
+                classifier.trainedOn = (micrograph["id"], rectangle)
+                found = classifier.autopick(rows[-1][0], config.autopickPercent)
+            except ClassifierError as error:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
+            # Candidates inside the trained area are already picked by hand.
+            picks.automatic = [(x, y, -1.0, -1) if self._insideRectangle(rectangle, x, y) else (x, y, cost, 1)
+                               for x, y, cost in found]
+            picks.autopickPercent = config.autopickPercent
+            files.writePos(session.posPath(micrograph), picks)
+            config.mode = "Supervised"
+            self._updateConfigCounts(session, mapper, micrograph, config)
+            # Xmipp's automatic picking needs the templates next to the model.
+            self.writeTemplates(session, mapper, config, allPicks)
+        return self.listParticles(mapper, projectId, protocolId, currentUser, micId)
+
+    def correctAndAutopick(self, mapper, projectId, protocolId, currentUser, micId,
+                           nextMicId: Optional[str]) -> Dict[str, Any]:
+        """Learn from this micrograph's corrections and autopick the next one (Java's Next)."""
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        current = session.micrograph(mapper, micId)
+        nextMicrograph = session.micrograph(mapper, nextMicId) if nextMicId else None
+        with _folderLock(session.folder):
+            config = self._config(session)
+            if config.mode != "Supervised":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail="Train the picker first")
+            picks = files.readPos(session.posPath(current))
+            try:
+                classifier = self._classifier(session, mapper, config)
+                currentPath = self._micrographPath(session, current)
+                # correct() pairs the corrections with the candidates of the last
+                # autopick; only correct when they belong to this micrograph.
+                if picks.automatic and classifier.lastAutopicked == currentPath:
+                    trained = getattr(classifier, "trainedOn", None)
+                    rectangle = trained[1] if trained and trained[0] == current["id"] else None
+                    added = [(x, y) for x, y in picks.manual
+                             if rectangle is None or not self._insideRectangle(rectangle, x, y)]
+                    rows = [(x, y, cost, 1 if enabled != -1 and cost >= picks.threshold else -1)
+                            for x, y, cost, enabled in picks.automatic]
+                    classifier.correct(added, rows)
+                    picks.state = "Corrected"
+                    files.writePos(session.posPath(current), picks)
+                if nextMicrograph is not None:
+                    nextPicks = files.readPos(session.posPath(nextMicrograph))
+                    if nextPicks.state == "Available":
+                        found = classifier.autopick(self._micrographPath(session, nextMicrograph),
+                                                    config.autopickPercent)
+                        nextPicks.state = "Supervised"
+                        nextPicks.autopickPercent = config.autopickPercent
+                        nextPicks.automatic = [(x, y, cost, 1) for x, y, cost in found]
+                        files.writePos(session.posPath(nextMicrograph), nextPicks)
+            except ClassifierError as error:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
+            self._updateConfigCounts(session, mapper, nextMicrograph or current, config)
+        return {"state": picks.state,
+                "next": self.listParticles(mapper, projectId, protocolId, currentUser, nextMicId)
+                if nextMicId else None}
 
     # -- images --------------------------------------------------------------
 
@@ -278,6 +528,17 @@ class XmippPickingSessionService:
         if not os.path.isfile(session.configPath):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="There are no picked particles yet")
+        if interactive.readSession(session.folder) is not None:
+            # The protocol is running its picking step: it registers the
+            # coordinates itself, as with the desktop picker's button.
+            answer = interactive.requestRegisterCoordinates(session.folder)
+            if not answer.get("ok"):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                    detail=answer.get("error") or "The coordinates could not be created")
+            outputName = answer.get("outputName") or OUTPUT_PREFIX
+            return {"success": True, "outputName": outputName,
+                    "totalCoordinates": int(answer.get("totalCoordinates") or 0),
+                    "message": "The new set of coordinates has been created: %s" % outputName}
         project = self.projectService.loadPostgresqlRuntimeProjectForMutation(
             mapper=mapper, projectId=projectId, currentUser=currentUser)
         if not project:

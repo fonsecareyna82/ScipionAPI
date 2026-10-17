@@ -88,6 +88,7 @@ from app.backend.runtime.postgresql_scheduling_log_formatter import (
 from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
+from app.backend.runtime.web_interactive_picker import webInteractivePickers
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
     StaleCoordinatorRunError,
@@ -4212,7 +4213,9 @@ class RuntimePostgresqlProtocolWorker:
         self._startCoordinatorHeartbeat()
 
         try:
-            self.protocol.run()
+            # Interactive pickers open in the web instead of a desktop window.
+            with webInteractivePickers():
+                self.protocol.run()
 
         finally:
             self._stopCoordinatorHeartbeat()

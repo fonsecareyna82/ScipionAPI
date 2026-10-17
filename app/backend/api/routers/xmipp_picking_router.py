@@ -13,12 +13,14 @@ router = APIRouter(prefix="/projects", tags=["xmipp-picking"])
 
 
 class PickingPointPayload(BaseModel):
+    id: Optional[str] = None
     x: float
     y: float
 
 
 class PickingParticlesPayload(BaseModel):
     coordinates: List[PickingPointPayload] = Field(default_factory=list)
+    threshold: Optional[float] = None
 
 
 class PickingSettingsPayload(BaseModel):
@@ -78,7 +80,8 @@ def savePickingParticles(
     service: XmippPickingSessionService = Depends(getPickingService),
 ):
     return service.saveParticles(mapper, projectId, protocolId, currentUser, micId,
-                                 [point.dict() for point in payload.coordinates])
+                                 [point.dict() for point in payload.coordinates],
+                                 threshold=payload.threshold)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/image")
@@ -107,3 +110,60 @@ def createPickingCoordinates(
     service: XmippPickingSessionService = Depends(getPickingService),
 ):
     return service.createCoordinates(mapper, projectId, protocolId, currentUser)
+
+
+@router.get("/{projectId}/picking/open-sessions", response_model=Any)
+def listOpenPickingSessions(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """Picking protocols waiting for their picker to be opened in the web."""
+    return service.listOpenSessions(mapper, projectId, currentUser)
+
+
+@router.post("/{projectId}/protocols/{protocolId}/picking/close", response_model=Any)
+def closePickingSession(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """The picker was closed: the protocol's interactive step finishes."""
+    return service.closeWebSession(mapper, projectId, protocolId, currentUser)
+
+
+class PickingNextPayload(BaseModel):
+    nextMicId: Optional[str] = None
+
+
+@router.post("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/train",
+             response_model=Any)
+def trainPickingClassifier(
+    projectId: int,
+    protocolId: int,
+    micId: str,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """Train Xmipp's picker with the manual particles and autopick this micrograph."""
+    return service.trainAndAutopick(mapper, projectId, protocolId, currentUser, micId)
+
+
+@router.post("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/next",
+             response_model=Any)
+def correctAndAutopickNext(
+    projectId: int,
+    protocolId: int,
+    micId: str,
+    payload: PickingNextPayload,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """Learn from this micrograph's corrections and autopick the next one."""
+    return service.correctAndAutopick(mapper, projectId, protocolId, currentUser, micId,
+                                      payload.nextMicId)

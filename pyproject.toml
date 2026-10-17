@@ -60,3 +60,7 @@ version = {attr = "scipionapi_cli.version.__version__"}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["scipionapi_cli*", "app*"]
+
+[tool.setuptools.package-data]
+# Headless session of Xmipp's supervised picking classifier (run with java).
+"app.backend.runtime" = ["*.java"]

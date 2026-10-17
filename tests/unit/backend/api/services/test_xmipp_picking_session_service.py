@@ -71,9 +71,10 @@ def test_saving_replaces_manual_particles_and_keeps_automatic_ones(session):
     service, extra = session
     files.writePos(str(extra / "a_DW.pos"), files.MicrographPicks(
         state="Supervised", automatic=[(3, 4, 0.9, 1)]))
-    result = service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10.4, "y": 20.6}])
+    result = service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4",
+                                   [{"x": 10.4, "y": 20.6}, {"id": "a0", "x": 3, "y": 4}])
     picks = files.readPos(str(extra / "a_DW.pos"))
-    assert result == {"saved": 1, "state": "Supervised"}
+    assert result == {"saved": 2, "state": "Supervised"}
     assert picks.manual == [(10, 21)] and picks.automatic == [(3, 4, 0.9, 1)]
     config = files.readConfig(str(extra / "config.xmd"))
     assert (config.manualParticlesNum, config.autoParticlesNum, config.micrograph) == (1, 1, "a_DW")
@@ -116,3 +117,152 @@ def test_unknown_micrographs_and_bad_coordinates_are_rejected(session):
     with pytest.raises(HTTPException) as error:
         service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": "left"}])
     assert error.value.status_code == 422
+
+
+def test_automatic_particles_are_listed_with_their_score_unless_rejected(session):
+    service, extra = session
+    files.writePos(str(extra / "a_DW.pos"), files.MicrographPicks(
+        state="Supervised", threshold=0.3, manual=[(1, 2)],
+        automatic=[(3, 4, 0.9, 1), (5, 6, 0.8, -1), (7, 8, 0.2, 1)]))
+    listed = service.listParticles(Mapper(), 7, 116, {"id": 1}, "4")
+    assert [(p["id"], p.get("kind"), p.get("score")) for p in listed["coordinates"]] == [
+        ("m0", None, None), ("a0", "automatic", 0.9), ("a2", "automatic", 0.2)]
+    assert listed["threshold"] == 0.3 and listed["automaticTotal"] == 3
+
+
+def test_removed_automatic_particles_are_rejected_and_moved_ones_become_manual(session):
+    service, extra = session
+    files.writePos(str(extra / "a_DW.pos"), files.MicrographPicks(
+        state="Supervised", automatic=[(3, 4, 0.9, 1), (5, 6, 0.8, 1), (7, 8, 0.7, 1)]))
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4",
+                          [{"id": "a0", "x": 3, "y": 4}, {"id": "a2", "x": 70, "y": 80}], threshold=0.5)
+    picks = files.readPos(str(extra / "a_DW.pos"))
+    assert picks.manual == [(70, 80)]
+    assert picks.automatic == [(3, 4, 0.9, 1), (5, 6, 0.8, -1), (7, 8, 0.7, -1)]
+    assert picks.threshold == 0.5
+
+
+class FakeClassifier:
+    def __init__(self):
+        self.calls = []
+        self.lastAutopicked = None
+        self.trainedOn = None
+
+    def train(self, rows, rectangle):
+        self.calls.append(("train", [row[1].rsplit("/", 1)[-1] for row in rows], rectangle))
+
+    def autopick(self, micrograph, percent):
+        self.calls.append(("autopick", micrograph.rsplit("/", 1)[-1], percent))
+        self.lastAutopicked = micrograph
+        return [(1, 1, 0.9), (500, 500, 0.8)]
+
+    def correct(self, added, rows):
+        self.calls.append(("correct", list(added), list(rows)))
+
+
+@pytest.fixture
+def supervised(session, monkeypatch):
+    service, extra = session
+    classifier = FakeClassifier()
+    monkeypatch.setattr(service, "_classifier", lambda *args: classifier)
+    monkeypatch.setattr(service, "_trainingRectangle", lambda session, mic, manual, size: (0, 0, 100, 100))
+    classifier.templates = []
+    monkeypatch.setattr(service, "writeTemplates",
+                        lambda session, mapper, config, allPicks=None: classifier.templates.append(config.mode))
+    return service, extra, classifier
+
+
+def test_training_needs_enough_manual_particles(supervised):
+    service, extra, classifier = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 3)
+    with pytest.raises(HTTPException) as error:
+        service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    assert error.value.status_code == 409 and "at least 15" in error.value.detail
+    assert classifier.calls == []
+
+
+def test_train_uses_every_manual_micrograph_and_rejects_picks_in_the_trained_area(supervised):
+    service, extra, classifier = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "5", [{"x": 300, "y": 300}] * 5)
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 12)
+    listed = service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    assert classifier.calls[0] == ("train", ["b_DW.pos", "a_DW.pos"], (0, 0, 100, 100))
+    picks = files.readPos(str(extra / "a_DW.pos"))
+    assert picks.state == "Supervised"
+    assert picks.automatic == [(1, 1, -1.0, -1), (500, 500, 0.8, 1)]
+    assert [p["id"] for p in listed["coordinates"] if p.get("kind")] == ["a1"]
+    assert files.readConfig(str(extra / "config.xmd")).mode == "Supervised"
+    # Xmipp's automatic picking needs templates.stk next to the model.
+    assert classifier.templates == ["Supervised"]
+
+
+def _writeMicrograph(path, data):
+    from pwem import emlib
+    image = emlib.Image()
+    image.setData(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.write(str(path))
+
+
+def test_templates_average_the_manual_particles_inside_their_micrographs(session):
+    import numpy as np
+    from pwem.emlib.image import ImageHandler
+    service, extra = session
+    micrographs = extra.parent.parent / "000009_X" / "extra"
+    particle = np.zeros((200, 200), dtype=np.float32)
+    particle[95:105, 95:105] = 1.0
+    _writeMicrograph(micrographs / "a_DW.mrc", particle)
+    _writeMicrograph(micrographs / "b_DW.mrc", np.zeros((200, 200), dtype=np.float32))
+    service.saveSettings(Mapper(), 7, 116, {"id": 1}, particleSize=20)
+    # The second particle is too close to the border to be boxed.
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 100, "y": 100}, {"x": 5, "y": 5}])
+    path = service.writeTemplates(service.openSession(Mapper(), 7, 116, {"id": 1}),
+                                  Mapper(), files.readConfig(str(extra / "config.xmd")))
+    assert path == str(extra / "templates.stk")
+    assert ImageHandler().getDimensions(path)[:2] == (20, 20)
+    template = ImageHandler().read("1@" + path).getData()
+    assert template[10, 10] > template[0, 0]
+
+
+def test_closing_a_trained_session_without_templates_writes_them(session, monkeypatch):
+    service, extra = session
+    written = []
+    monkeypatch.setattr(service, "writeTemplates", lambda session, mapper, config, allPicks=None: written.append(1))
+    service.closeWebSession(Mapper(), 7, 116, {"id": 1})
+    assert written == []
+    (extra / "model_svm.txt").write_text("model")
+    service.closeWebSession(Mapper(), 7, 116, {"id": 1})
+    assert written == [1]
+
+
+def test_next_learns_from_corrections_and_autopicks_a_free_next_micrograph(supervised):
+    service, extra, classifier = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
+    service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    # The user rejects the automatic particle and adds one outside the trained area.
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4",
+                          [{"x": 10, "y": 10}] * 15 + [{"x": 700, "y": 700}])
+    result = service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", "5")
+    correct = [call for call in classifier.calls if call[0] == "correct"][0]
+    assert correct[1] == [(700, 700)]
+    assert correct[2] == [(1, 1, -1.0, -1), (500, 500, 0.8, -1)]
+    assert files.readPos(str(extra / "a_DW.pos")).state == "Corrected"
+    nextPicks = files.readPos(str(extra / "b_DW.pos"))
+    assert nextPicks.state == "Supervised" and len(nextPicks.automatic) == 2
+    assert result["state"] == "Corrected" and len(result["next"]["coordinates"]) == 2
+
+
+def test_next_does_not_correct_with_candidates_of_another_micrograph(supervised):
+    service, extra, classifier = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
+    service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    classifier.lastAutopicked = "/elsewhere/other.mrc"
+    service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", None)
+    assert not [call for call in classifier.calls if call[0] == "correct"]
+
+
+def test_next_requires_a_trained_picker(supervised):
+    service, extra, classifier = supervised
+    with pytest.raises(HTTPException) as error:
+        service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", "5")
+    assert error.value.status_code == 409
