@@ -127,6 +127,10 @@ ScipionWeb builds each plugin's desktop "Analyze results" viewer (`ProtocolViewe
 - Viewer workers are forked from a warm process (`protocol_viewer_warm_worker`, handled by `protocol_viewer_warm_pool`) that has already imported Scipion and the plugins: an action takes ~0.3 s instead of ~1.7 s. Each request still gets a fresh child process (killed with its group on timeout). The warm process restarts when the plugins or environment revision changes or a loaded module file changes (plugins edited in develop mode), and is warmed up when the web lists a protocol's viewers. If it cannot run a request, a one-shot worker does. Switch off with `SCIPION_PROTOCOL_VIEWER_WARM_WORKER=0` (unit tests do so by default).
 - Viewer handlers may write cache files in the protocol folder, as on the desktop (e.g. CL2D's `classes_scipion_level_XX.sqlite`). A handler that fails half-way can leave an empty one that later runs reuse.
 
+## Xmipp particle picking on the web
+
+`XmippProtParticlePicking`'s interactive step opens Xmipp's Java picker. The web offers the same session (`xmipp_picking_router`, `xmipp_picking_session_service`): it reads and writes the picker's own files in the protocol's `extra/` folder (`<micrograph>.pos` with `header`/`particles`/`particles_auto` blocks, and `config.xmd`) in exactly the Java format (`xmipp_picking_files`), so a session can move between the web and the desktop picker. Micrographs come from the protocol's stored `inputMicrographs` input; "create coordinates" reads the session with Xmipp's `readSetOfCoordinates`, as the desktop's coordinates button does. Supervised training (Xmipp's `AutoParticlePicking2`) is only reachable through JNI, and its `correct` needs the candidates of the previous autopick in memory, so it needs a long-lived session process per picking session.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.
