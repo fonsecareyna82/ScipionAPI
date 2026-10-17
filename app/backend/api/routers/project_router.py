@@ -2341,7 +2341,7 @@ def inspectProtocolViewerRuntimeForm(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    """Experimental admin-only, non-executable form inspection of trusted plugins."""
+    """The runtime form of a protocol viewer, for any user with project access."""
     if not isProtocolViewerRuntimePreviewAvailable(currentUser):
         raise HTTPException(status_code=404, detail="preview_unavailable")
     # Existing ownership/access checks precede plugin discovery and child spawn.
@@ -2357,7 +2357,7 @@ def inspectProtocolViewerRuntimeForm(
         )
     except ProtocolViewerRuntimePreviewHttpError as exc:
         status_code = {
-            "preview_disabled": 404, "admin_required": 403,
+            "preview_disabled": 404, "unauthenticated": 401,
             "invalid_identity": 422, "invalid_context": 422,
             "invalid_preview": 502,
         }.get(exc.code, 400)

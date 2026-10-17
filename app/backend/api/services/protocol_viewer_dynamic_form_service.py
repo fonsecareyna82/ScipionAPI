@@ -19,6 +19,7 @@ from app.backend.api.services.protocol_viewer_condition_contract_service import 
     validViewerConditionRule, referencedViewerFields,
 )
 
+from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
 from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
     resolvePersistedProtocolViewerCandidates,
 )
@@ -333,7 +334,7 @@ def evaluateProtocolViewerDynamicForm(
 
     Use only from an explicitly authenticated caller. No HTTP route is added.
     """
-    if os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') != '1':
+    if not viewerEvaluationEnabled():
         raise DynamicProtocolViewerFormError('evaluation_disabled')
     if not (_int_id(project_id) and _int_id(protocol_id) and
             type(viewer_id) is str and _VIEWER_ID.fullmatch(viewer_id)):

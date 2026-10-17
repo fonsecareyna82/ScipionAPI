@@ -1,13 +1,12 @@
 """Explicit HTTP admission policy for experimental ProtocolViewer runtime previews.
 
 This is an opt-in *trusted plugin* diagnostics pathway, not a sandbox or an
-execution permission. Callers must authenticate, be administrators, and have
-project access before any child process can be launched. The same admission
+execution permission. Callers must authenticate and have access to the
+project before any child process can be launched. The same admission
 gates the viewer actions (protocol_viewer_action_service).
 """
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Mapping
 from typing import Any, Callable, Optional
@@ -15,6 +14,7 @@ from typing import Any, Callable, Optional
 from app.backend.api.services.protocol_viewer_dynamic_form_service import (
     evaluateProtocolViewerDynamicForm,
 )
+from app.backend.api.services.protocol_viewer_settings_service import viewersOnWebEnabled
 
 _MAX_ID = 2147483647
 _VIEWER_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_.]{0,254}\Z')
@@ -31,10 +31,7 @@ def _valid_id(value: Any) -> bool:
 
 
 def _flags_enabled() -> bool:
-    return (
-        os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP') == '1'
-        and os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') == '1'
-    )
+    return viewersOnWebEnabled()
 
 
 def isProtocolViewerRuntimePreviewAvailable(current_user: Any) -> bool:
@@ -43,7 +40,6 @@ def isProtocolViewerRuntimePreviewAvailable(current_user: Any) -> bool:
         _flags_enabled()
         and isinstance(current_user, Mapping)
         and _valid_id(current_user.get('id'))
-        and str(current_user.get('role') or '').lower() == 'admin'
     )
 
 
@@ -60,7 +56,7 @@ def requestProtocolViewerRuntimePreview(
     if not _flags_enabled():
         raise ProtocolViewerRuntimePreviewHttpError('preview_disabled')
     if not isProtocolViewerRuntimePreviewAvailable(current_user):
-        raise ProtocolViewerRuntimePreviewHttpError('admin_required')
+        raise ProtocolViewerRuntimePreviewHttpError('unauthenticated')
     if (
         not _valid_id(project_id)
         or not _valid_id(protocol_id)

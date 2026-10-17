@@ -18,6 +18,7 @@ import re
 import sys
 from contextlib import contextmanager
 
+from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
 from app.backend.api.services.protocol_viewer_dynamic_form_worker import (
     _CONTROL_TYPES, loadRuntimeViewer, serializeRuntimeViewerDefinition,
 )
@@ -644,7 +645,7 @@ def _valid_request(request):
 
 def main() -> int:
     if (os.environ.get('SCIPION_VIEWER_FORM_CHILD') != '1' or
-            os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') != '1'):
+            not viewerEvaluationEnabled()):
         return 2
     raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
     if len(raw) > MAX_REQUEST:

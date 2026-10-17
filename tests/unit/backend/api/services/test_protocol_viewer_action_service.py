@@ -71,7 +71,7 @@ def test_nothing_runs_without_flag_access_or_an_applicable_viewer(monkeypatch):
     assert code_of(viewer_id='pwem.viewers.DataViewer') == 'viewer_not_applicable'
     assert code_of(action='not valid') == 'invalid_identity'
     assert code_of(values={'x': [1]}) == 'invalid_values'
-    monkeypatch.delenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL')
+    monkeypatch.setenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL', '0')
     assert code_of() == 'evaluation_disabled'
 
 

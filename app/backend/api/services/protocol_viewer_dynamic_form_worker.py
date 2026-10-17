@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 
+from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
 from app.backend.api.services.protocol_viewer_condition_contract_service import (
     compileViewerConditionRule, referencedViewerFields,
 )
@@ -533,7 +534,7 @@ def _evaluate(request: dict) -> dict:
 
 def main() -> int:
     if (os.environ.get('SCIPION_VIEWER_FORM_CHILD') != '1' or
-            os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') != '1'):
+            not viewerEvaluationEnabled()):
         return 2
     # Worker uses a fixed module, never eval()s request strings.
     raw = sys.stdin.buffer.read(_MAX_REQUEST + 1)

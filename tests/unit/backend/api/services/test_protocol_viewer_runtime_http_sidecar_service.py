@@ -207,7 +207,7 @@ def test_http_still_rejects_top_level_execution_claims(monkeypatch, key):
 
 
 def test_no_child_launch_when_http_disabled(monkeypatch):
-    monkeypatch.delenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP', raising=False)
+    monkeypatch.setenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP', '0')
     monkeypatch.setenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL', '1')
     hits = []
     with pytest.raises(svc().ProtocolViewerRuntimePreviewHttpError) as exc:

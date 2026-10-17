@@ -1,4 +1,4 @@
-"""RED 135: opt-in, admin-only HTTP admission for live viewer form preview."""
+"""Opt-in HTTP admission for runtime viewer forms: any authenticated user."""
 from __future__ import annotations
 
 import importlib
@@ -54,9 +54,15 @@ def call(monkeypatch, user=_UNSET, viewer='xmipp3.viewers.XmippCL2DViewer', resp
     return config, hits
 
 
-def test_feature_disabled_by_default_even_for_admin(monkeypatch):
+def test_viewers_are_enabled_by_default(monkeypatch):
     monkeypatch.delenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP', raising=False)
     monkeypatch.delenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL', raising=False)
+    assert svc().isProtocolViewerRuntimePreviewAvailable({'id': 8}) is True
+
+
+@pytest.mark.parametrize('value', ['0', 'false', 'OFF', ' no '])
+def test_server_can_switch_viewers_off(monkeypatch, value):
+    monkeypatch.setenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP', value)
     assert svc().isProtocolViewerRuntimePreviewAvailable(admin()) is False
     with pytest.raises(svc().ProtocolViewerRuntimePreviewHttpError) as exc:
         svc().requestProtocolViewerRuntimePreview(
@@ -66,30 +72,37 @@ def test_feature_disabled_by_default_even_for_admin(monkeypatch):
     assert exc.value.code == 'preview_disabled'
 
 
-@pytest.mark.parametrize('missing', [
+@pytest.mark.parametrize('switch', [
     'SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_HTTP',
     'SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL',
 ])
-def test_requires_both_explicit_flags(monkeypatch, missing):
+def test_either_switch_turns_viewers_off(monkeypatch, switch):
     enable(monkeypatch)
-    monkeypatch.delenv(missing)
+    monkeypatch.setenv(switch, '0')
     assert svc().isProtocolViewerRuntimePreviewAvailable(admin()) is False
 
 
 @pytest.mark.parametrize('user', [
-    {'id': 8, 'role': 'user'}, {'id': 8, 'role': 'editor'},
-    {'id': 8}, {'id': True, 'role': 'admin'}, None,
+    {'id': True, 'role': 'admin'}, {'id': 0}, {'id': '8'}, {}, None,
 ])
-def test_non_admins_and_invalid_users_never_spawn(monkeypatch, user):
+def test_unauthenticated_or_invalid_users_never_spawn(monkeypatch, user):
     request, hits = call(monkeypatch, user=user)
     assert svc().isProtocolViewerRuntimePreviewAvailable(user) is False
     with pytest.raises(svc().ProtocolViewerRuntimePreviewHttpError) as exc:
         svc().requestProtocolViewerRuntimePreview(**request)
-    assert exc.value.code == 'admin_required'
+    assert exc.value.code == 'unauthenticated'
     assert not hits
 
 
-def test_admin_availability_requires_both_flags(monkeypatch):
+@pytest.mark.parametrize('user', [
+    {'id': 8, 'role': 'user'}, {'id': 8, 'role': 'editor'}, {'id': 8},
+])
+def test_every_authenticated_user_can_use_viewers(monkeypatch, user):
+    enable(monkeypatch)
+    assert svc().isProtocolViewerRuntimePreviewAvailable(user) is True
+
+
+def test_availability_requires_both_flags(monkeypatch):
     enable(monkeypatch)
     assert svc().isProtocolViewerRuntimePreviewAvailable(admin()) is True
     assert svc().isProtocolViewerRuntimePreviewAvailable({'id': 8, 'role': 'ADMIN'}) is True
@@ -198,7 +211,7 @@ def test_errors_are_sanitized_not_worker_tracebacks():
     assert 'traceback' not in body
 
 
-def test_get_discovery_advertises_only_explicit_admin_preview():
+def test_get_discovery_advertises_runtime_viewers_per_user():
     source = _REPO_ROOT.joinpath('app/backend/api/routers/project_router.py').read_text()
     start = source.index('def listPersistedProtocolViewers(')
     end = source.index('@router.post(', start)
@@ -210,7 +223,7 @@ def test_get_discovery_advertises_only_explicit_admin_preview():
 
 def test_existing_dynamic_worker_remains_opt_in_not_action_executor():
     src = _REPO_ROOT.joinpath('app/backend/api/services/protocol_viewer_dynamic_form_service.py').read_text()
-    assert "SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL" in src
+    assert "viewerEvaluationEnabled()" in src
     assert 'def evaluateProtocolViewerDynamicForm(' in src
     assert '_getVisualizeDict(' not in src
     assert 'visualize(' not in src

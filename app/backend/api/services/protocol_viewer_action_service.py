@@ -14,6 +14,7 @@ from typing import Any, Mapping, Optional
 from app.backend.api.services.protocol_viewer_dynamic_form_service import (
     DynamicProtocolViewerFormError, _run_worker,
 )
+from app.backend.api.services.protocol_viewer_settings_service import viewerEvaluationEnabled
 from app.backend.api.services.protocol_viewer_file_token_service import (
     isSafeProjectRelativePath, signViewerFileToken,
 )
@@ -219,7 +220,7 @@ def runProtocolViewerAction(
     worker_runner=None,
 ) -> dict:
     """Authorize, then run the viewer handler for ``action`` in a child process."""
-    if os.environ.get('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL') != '1':
+    if not viewerEvaluationEnabled():
         raise ProtocolViewerActionError('evaluation_disabled')
     if not (_int_id(project_id) and _int_id(protocol_id)
             and type(viewer_id) is str and _VIEWER_ID.fullmatch(viewer_id)

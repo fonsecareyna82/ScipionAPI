@@ -85,8 +85,8 @@ def preview_runner(request, timeout):
             'webReady': False, 'renderable': False, 'executionAllowed': False}
 
 
-def test_disabled_by_default_even_with_matching_viewer(monkeypatch):
-    monkeypatch.delenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL', raising=False)
+def test_switched_off_server_runs_no_viewer_code(monkeypatch):
+    monkeypatch.setenv('SCIPION_EXPERIMENTAL_PROTOCOL_VIEWER_EVAL', '0')
     mapper, snap, viewer_id, _ = context()
     with pytest.raises(lib().DynamicProtocolViewerFormError) as exc:
         lib().evaluateProtocolViewerDynamicForm(mapper=mapper, current_user={'id': 8},
