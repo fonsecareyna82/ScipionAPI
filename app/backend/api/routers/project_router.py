@@ -72,6 +72,8 @@ from app.backend.mapper.tomogram_review_mapper import (
 
 logger = logging.getLogger(__name__)
 
+from app.backend.utils.tilt_series_stack import parseIndices as parseTiltStackIndices
+
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
@@ -2999,6 +3001,52 @@ def getTiltSeriesFrames(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load frames for tiltseries {tiltSeriesId}: {e}",
+        )
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/{tiltSeriesId}/stack",
+    response_model=None,
+    summary="Tilt images of a series reduced for the viewer, in one binary response",
+)
+def getTiltSeriesStack(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tiltSeriesId: str,
+    indices: Optional[str] = Query(
+        None,
+        description="Comma separated tilt indices, in the order to send them (at most 64). All of them if omitted.",
+    ),
+    maxDim: int = Query(1024, ge=128, le=2048, alias="maxDim"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        resp = service.renderTiltSeriesStackService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            indices=parseTiltStackIndices(indices, 64),
+            maxDim=maxDim,
+            mapper=mapper,
+            protocolIdIsScipionId=True,
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error rendering the stack of tilt series %s", tiltSeriesId)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to render the tilt series stack {tiltSeriesId}: {e}",
         )
 
 

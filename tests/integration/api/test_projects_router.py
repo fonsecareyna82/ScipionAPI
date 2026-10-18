@@ -1535,6 +1535,19 @@ def test_RenderTiltSeriesImageUsesProjectDbRow(projectClient, fakeProjectService
     }
 
 
+def test_GetTiltSeriesStackPassesTheTiltsAndTheSize(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/2/outputs/out/tiltseries/TS_1/stack?indices=4,2,x,4&maxDim=768")
+
+    assert response.status_code == 200
+    assert response.content == b"TSST"
+    assert fakeProjectService.lastRenderTiltSeriesStackCall == {
+        "tiltSeriesId": "TS_1",
+        "indices": [4, 2],
+        "maxDim": 768,
+        "protocolIdIsScipionId": True,
+    }
+
+
 def test_RenderTiltSeriesImagesBatchUsesProjectDbRow(
     projectClient,
     fakeProjectService,

@@ -2076,6 +2076,27 @@ class FakeProjectService:
         }
         return self.tiltSeriesBatchResult
 
+    def renderTiltSeriesStackService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tiltSeriesId,
+            indices=None,
+            maxDim=1024,
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ):
+        from fastapi import Response
+
+        self.lastRenderTiltSeriesStackCall = {
+            "tiltSeriesId": tiltSeriesId,
+            "indices": indices,
+            "maxDim": maxDim,
+            "protocolIdIsScipionId": protocolIdIsScipionId,
+        }
+        return Response(content=b"TSST", media_type="application/octet-stream")
+
     def renderCtfTomoPsdImageService(
             self,
             projectId,

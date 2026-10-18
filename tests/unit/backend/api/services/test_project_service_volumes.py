@@ -1312,3 +1312,37 @@ def test_GetVolumeData3dServiceBinaryReturns304WhenIfNoneMatchMatches(
     assert revalidated.status_code == 304
     assert revalidated.headers["ETag"] == etag
     assert len(readCalls) == 1  # the volume file is never re-read on a 304
+
+def test_TheTiltSeriesStackReducesTheAskedTiltsInTheirOrder(service, monkeypatch):
+    from app.backend.utils.tilt_series_stack import clearFrameCache, decodeTiltSeriesStack
+
+    clearFrameCache()
+    sources = [
+        {"index": index, "tiltAngle": float(index), "imagePath": __file__, "imageIndex": index,
+         "rot": 10.0 * index, "shiftX": 1.0, "shiftY": 2.0}
+        for index in range(1, 4)
+    ]
+    sources.append({"index": 9, "tiltAngle": 9.0, "rot": None, "shiftX": None, "shiftY": None, "error": "missing"})
+    reads = []
+
+    def readImage(path, imageIndex):
+        reads.append(imageIndex)
+        return np.full((40, 20), float(imageIndex), dtype=np.float32) + np.arange(20, dtype=np.float32)
+
+    monkeypatch.setattr(service, "_tiltSeriesFrameSources", lambda **kwargs: sources)
+    monkeypatch.setattr(service, "_readTiltImageArray", readImage)
+
+    response = service.renderTiltSeriesStackService(1, 2, "out", "TS_1", indices=[3, 9, 1], maxDim=20)
+    stack = decodeTiltSeriesStack(response.body)
+
+    assert response.media_type == "application/octet-stream"
+    assert [frame["index"] for frame in stack["frames"]] == [3, 9, 1]
+    assert stack["frames"][1]["error"] == "missing"
+    assert stack["frames"][0]["rot"] == 30.0
+    assert (stack["frames"][0]["width"], stack["frames"][0]["height"], stack["frames"][0]["binning"]) == (10, 20, 2)
+    assert reads == [3, 1]
+    assert stack["flipVertically"] is True
+
+    # The same tilts again come from memory.
+    service.renderTiltSeriesStackService(1, 2, "out", "TS_1", indices=[1], maxDim=20)
+    assert reads == [3, 1]

@@ -47,6 +47,12 @@ from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
 from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.tilt_series_stack import (
+    STACK_MEDIA_TYPE as TILT_STACK_MEDIA_TYPE,
+    cachedReducedTiltImage,
+    encodeTiltSeriesStack,
+    reduceTiltImage,
+)
 from app.backend.utils.volume_surface_mesh import (
     SURFACE_MESH_BINARY_MEDIA_TYPE,
     buildVolumeSurfaceMesh,
@@ -14545,6 +14551,170 @@ class ProjectService:
         )
 
         return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+    def _tiltSeriesFrameSources(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ) -> List[Dict[str, Any]]:
+        """Every tilt image of a series: its index, file, image in that file and alignment.
+
+        Resolved as renderTiltSeriesImageService resolves one, so both show the same image.
+        """
+        identity = {"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}
+        pgReader = self._getPostgresqlTiltSeriesReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            **identity,
+        )
+
+        if pgReader is not None:
+            payload = pgReader.getTiltSeriesFrames(tiltSeriesId)
+            if payload is not None:
+                resolver = None
+                if mapper is not None and getattr(mapper, "db", None) is not None:
+                    from app.backend.viewers.postgresql_path_resolver import (
+                        PostgresqlProjectPathResolver,
+                    )
+                    resolver = PostgresqlProjectPathResolver(db=mapper.db, projectId=projectId)
+
+                sources: List[Dict[str, Any]] = []
+                for position, frame in enumerate(payload.get("frames") or []):
+                    rawIndex = frame.get("index")
+                    index = int(rawIndex) if rawIndex is not None else position
+                    source: Dict[str, Any] = {
+                        "index": index,
+                        "tiltAngle": frame.get("tiltAngle"),
+                        "rot": frame.get("rot"),
+                        "shiftX": frame.get("shiftX"),
+                        "shiftY": frame.get("shiftY"),
+                    }
+                    try:
+                        imagePath, imageIndex = self._parseTiltSeriesFramePath(
+                            frame.get("path"),
+                            fallbackIndex=index,
+                        )
+                        if resolver is not None:
+                            resolvedPath = resolver.resolveExistingPath(imagePath)
+                            if resolvedPath is None:
+                                raise FileNotFoundError(f"Tilt image not found: {imagePath}")
+                            imagePath = resolvedPath
+                        source["imagePath"] = str(imagePath)
+                        source["imageIndex"] = int(imageIndex)
+                    except HTTPException as exc:
+                        source["error"] = str(exc.detail)
+                    except Exception as exc:
+                        source["error"] = str(exc)
+                    sources.append(source)
+                return sources
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="TiltSeries stack",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+                tiltSeriesId=tiltSeriesId,
+            )
+
+        protocol, setOfTiltSeries = self._resolveOutputForTiltSeries(
+            protocolId=protocolId,
+            outputName=outputName,
+            projectId=projectId,
+            mapper=mapper,
+            **identity,
+        )
+        ts = setOfTiltSeries.getItem('_tsId', tiltSeriesId)
+        if ts is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
+            )
+
+        sources = []
+        for ti in ts.iterItems():
+            index = int(ti.getIndex())
+            source = {
+                "index": index,
+                "tiltAngle": ti.getTiltAngle(),
+                "imagePath": os.path.abspath(ti.getFileName()),
+                "imageIndex": index,
+                "rot": None,
+                "shiftX": None,
+                "shiftY": None,
+            }
+            if ti.hasTransform():
+                transf = ti.getTransform()
+                _, _, rot = transf.getEulerAngles()
+                matrixValues = transf.getMatrixAsList()
+                source.update(rot=float(np.rad2deg(-rot)), shiftX=float(matrixValues[2]), shiftY=float(matrixValues[5]))
+            sources.append(source)
+        return sources
+
+    @staticmethod
+    def _readTiltImageArray(imagePath: str, imageIndex: int) -> np.ndarray:
+        reader = ImageReadersRegistry.open(str(imagePath))
+        try:
+            return np.asarray(reader.getImage(index=imageIndex))
+        except Exception:
+            return np.asarray(reader.getCentralImage())
+
+    def renderTiltSeriesStackService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tiltSeriesId: Union[int, str],
+            indices: Optional[Sequence[int]] = None,
+            maxDim: int = 1024,
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ) -> Response:
+        """Tilt images of a series reduced to maxDim, in one binary response (see tilt_series_stack)."""
+        sources = self._tiltSeriesFrameSources(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tiltSeriesId=tiltSeriesId,
+            mapper=mapper,
+            protocolIdIsScipionId=protocolIdIsScipionId,
+        )
+        if indices is not None:
+            byIndex = {source["index"]: source for source in sources}
+            sources = [byIndex[index] for index in indices if index in byIndex]
+
+        frames: List[Dict[str, Any]] = []
+        for source in sources:
+            frame = {key: source.get(key) for key in ("index", "tiltAngle", "rot", "shiftX", "shiftY")}
+            if "error" in source:
+                frame["error"] = source["error"]
+                frames.append(frame)
+                continue
+            try:
+                imagePath = source["imagePath"]
+                imageIndex = int(source["imageIndex"])
+                key = (os.path.abspath(imagePath), os.path.getmtime(imagePath), imageIndex, int(maxDim))
+                frame.update(cachedReducedTiltImage(
+                    key,
+                    lambda: reduceTiltImage(self._readTiltImageArray(imagePath, imageIndex), maxDim),
+                ))
+            except Exception as exc:
+                logger.warning("Could not reduce tilt image %s of %s: %s", source.get("index"), tiltSeriesId, exc)
+                frame["error"] = str(exc)
+            frames.append(frame)
+
+        body = encodeTiltSeriesStack(
+            {"tiltSeriesId": str(tiltSeriesId), "maxDim": int(maxDim), "flipVertically": True},
+            frames,
+        )
+        return Response(content=body, media_type=TILT_STACK_MEDIA_TYPE)
 
     def renderTiltSeriesImagesBatchService(
             self,
