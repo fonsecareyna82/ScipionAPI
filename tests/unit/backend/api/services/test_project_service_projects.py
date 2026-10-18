@@ -227,6 +227,10 @@ class FakeMapper:
         self.lastDeleteProjectCall = {"projectId": projectId, "userId": userId}
         return self.deleteProjectResult
 
+    def markProjectDeleting(self, projectId, ownerId):
+        self.lastDeleteProjectCall = {"projectId": projectId, "userId": ownerId}
+        return self.deleteProjectResult
+
     def shareProjectWithUser(self, projectId, targetUserId, permission):
         self.lastShareProjectWithUserCalls.append(
             {
@@ -473,6 +477,25 @@ def test_UpdateProjectRenamesLinkedProjectUsingOsRename(service, mapper, current
     }
 
 
+@pytest.fixture
+def scheduledRowDeletions(projectServiceModule, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(projectServiceModule, "scheduleProjectRowsDeletion", scheduled.append)
+    return scheduled
+
+
+def test_DeleteProjectHidesItAndDeletesItsRowsInTheBackground(service, mapper, currentUser, scheduledRowDeletions):
+    managedPath = Path(service.manager.getProjectPath("big-project"))
+    (managedPath / "Runs").mkdir(parents=True, exist_ok=True)
+    mapper.projectsById[(7, 1)] = {"id": 7, "name": str(managedPath), "ownerId": 1}
+
+    service.deleteProject(mapper, currentUser, 7)
+
+    assert mapper.lastDeleteProjectCall == {"projectId": 7, "userId": 1}
+    assert scheduledRowDeletions == [7]
+    assert not managedPath.exists()
+
+
 def test_DeleteProjectReturns404WhenProjectMissing(service, mapper, currentUser):
     with pytest.raises(HTTPException) as exc:
         service.deleteProject(mapper, currentUser, 1)
@@ -481,7 +504,7 @@ def test_DeleteProjectReturns404WhenProjectMissing(service, mapper, currentUser)
     assert exc.value.detail == "Project not found"
 
 
-def test_DeleteProjectUnregistersLinkedProjectAndRemovesSymlink(service, mapper, currentUser, tmp_path):
+def test_DeleteProjectUnregistersLinkedProjectAndRemovesSymlink(service, mapper, currentUser, tmp_path, scheduledRowDeletions):
     targetPath = tmp_path / "external-target"
     targetPath.mkdir(parents=True, exist_ok=True)
 
@@ -496,12 +519,12 @@ def test_DeleteProjectUnregistersLinkedProjectAndRemovesSymlink(service, mapper,
 
     result = service.deleteProject(mapper, currentUser, 1)
 
-    assert result == {"message": "Linked project unregistered successfully"}
+    assert result == {"message": "Linked project unregistered successfully", "deletingInBackground": True}
     assert linkPath.exists() is False
     assert mapper.lastDeleteProjectCall == {"projectId": 1, "userId": 1}
 
 
-def test_DeleteProjectUnregistersExternalProjectWithoutRemovingFolder(service, mapper, currentUser, tmp_path):
+def test_DeleteProjectUnregistersExternalProjectWithoutRemovingFolder(service, mapper, currentUser, tmp_path, scheduledRowDeletions):
     externalPath = tmp_path / "external-project"
     externalPath.mkdir(parents=True, exist_ok=True)
 
@@ -513,11 +536,11 @@ def test_DeleteProjectUnregistersExternalProjectWithoutRemovingFolder(service, m
 
     result = service.deleteProject(mapper, currentUser, 1)
 
-    assert result == {"message": "Project unregistered successfully"}
+    assert result == {"message": "Project unregistered successfully", "deletingInBackground": True}
     assert externalPath.exists() is True
 
 
-def test_DeleteProjectReturnsSuccessWhenManagedFolderAlreadyMissing(service, mapper, currentUser):
+def test_DeleteProjectReturnsSuccessWhenManagedFolderAlreadyMissing(service, mapper, currentUser, scheduledRowDeletions):
     managedPath = service.manager.getProjectPath("demo-missing")
 
     mapper.projectsById[(1, 1)] = {
@@ -528,10 +551,10 @@ def test_DeleteProjectReturnsSuccessWhenManagedFolderAlreadyMissing(service, map
 
     result = service.deleteProject(mapper, currentUser, 1)
 
-    assert result == {"message": "Project deleted successfully"}
+    assert result == {"message": "Project deleted successfully", "deletingInBackground": True}
 
 
-def test_DeleteProjectDeletesManagedFolder(service, mapper, currentUser):
+def test_DeleteProjectDeletesManagedFolder(service, mapper, currentUser, scheduledRowDeletions):
     managedPath = Path(service.manager.getProjectPath("demo-project"))
     managedPath.mkdir(parents=True, exist_ok=True)
 
@@ -543,9 +566,12 @@ def test_DeleteProjectDeletesManagedFolder(service, mapper, currentUser):
 
     result = service.deleteProject(mapper, currentUser, 1)
 
-    assert result == {"message": "Project deleted successfully"}
-    assert service.manager.deletedProjects == [str(managedPath)]
+    assert result == {"message": "Project deleted successfully", "deletingInBackground": True}
+    # Gone at once (moved to the trash), its files removed in the background.
     assert managedPath.exists() is False
+    from app.backend.utils.background_delete import TRASH_FOLDER, waitForBackgroundDeletes
+    waitForBackgroundDeletes(timeout=10)
+    assert list((managedPath.parent / TRASH_FOLDER).iterdir()) == []
 
 
 def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypatch, tmp_path):

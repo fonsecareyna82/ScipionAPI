@@ -214,6 +214,46 @@ _tiltSeriesPreviewCache = collections.OrderedDict()
 _TILT_SERIES_PREVIEW_CACHE_LIMIT = 160
 
 
+
+def _deleteProjectRows(projectId: int) -> None:
+    """Remove a project marked as being deleted, with its own database connection."""
+    from app.backend.database import getMapper
+
+    mapper = None
+    try:
+        mapper = getMapper()
+        mapper.deleteDeletingProject(int(projectId))
+        logger.info("Deleted the rows of project %s", projectId)
+    except Exception:
+        logger.exception("Could not delete the rows of project %s; retried at the next start", projectId)
+    finally:
+        if mapper is not None:
+            try:
+                mapper.db.close()
+            except Exception:
+                pass
+
+
+def scheduleProjectRowsDeletion(projectId: int) -> None:
+    from app.backend.utils.background_delete import _executor
+
+    _executor.submit(_deleteProjectRows, int(projectId))
+
+
+def resumePendingProjectDeletions(mapper) -> int:
+    """Finish the project deletions an earlier run left half done (call at start-up)."""
+    try:
+        projectIds = mapper.listDeletingProjectIds()
+    except Exception:
+        logger.exception("Could not list the projects being deleted")
+        return 0
+    for projectId in projectIds:
+        scheduleProjectRowsDeletion(projectId)
+    return len(projectIds)
+
+from app.backend.utils.background_delete import deleteInBackground
+
+
 class ProjectService:
     def __init__(self):
         self.projectsPath = self._resolveProjectsPath()
@@ -2799,6 +2839,15 @@ class ProjectService:
         return project
 
     def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
+        """Delete a project at once for the user; its data goes away in the background.
+
+        The project is hidden (marked as being deleted) and its folder is moved
+        to a trash folder right away; its database rows and its files are
+        removed afterwards, so a large project does not keep the request (and
+        the user) waiting.
+        """
+        from app.backend.utils.background_delete import deleteInBackground
+
         dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             raise HTTPException(
@@ -2810,8 +2859,7 @@ class ProjectService:
         isManagedEntry = self._isManagedProjectPath(projectPath)
         isLinkedEntry = self._isLinkedProjectPath(projectPath)
 
-        deleted = mapper.deleteProject(projectId, currentUser["id"])
-        if not deleted:
+        if not mapper.markProjectDeleting(projectId, currentUser["id"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
@@ -2822,30 +2870,21 @@ class ProjectService:
                 if os.path.lexists(projectPath):
                     os.unlink(projectPath)
             except Exception as e:
+                logger.exception("Could not remove the link of project %s", projectId)
+                scheduleProjectRowsDeletion(projectId)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Project was unregistered but the symbolic link could not be removed: {e}",
                 )
+            message = "Linked project unregistered successfully"
+        elif not isManagedEntry:
+            message = "Project unregistered successfully"
+        else:
+            deleteInBackground(projectPath)
+            message = "Project deleted successfully"
 
-            return {"message": "Linked project unregistered successfully"}
-
-        if not isManagedEntry:
-            return {"message": "Project unregistered successfully"}
-
-        if not os.path.exists(projectPath):
-            return {"message": "Project deleted successfully"}
-
-        try:
-            cwd = self.manager.PROJECTS
-            self.manager.deleteProject(projectPath)
-            os.chdir(cwd)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Project was unregistered but the managed project folder could not be removed: {e}",
-            )
-
-        return {"message": "Project deleted successfully"}
+        scheduleProjectRowsDeletion(projectId)
+        return {"message": message, "deletingInBackground": True}
 
     def _getProjectDisplayNameFromPostgresqlPath(self, storedProjectPath: Any) -> str:
         pathText = str(storedProjectPath or "").strip()
@@ -7343,8 +7382,11 @@ class ProjectService:
                         % workingDir
                     )
 
-                shutil.rmtree(
-                    workingDir
+                # Gone at once; its files are removed in the background
+                # (from the project's trash, not from Runs/).
+                deleteInBackground(
+                    workingDir,
+                    trashIn=workingDir.parent.parent,
                 )
 
                 deletedDirectories.append({

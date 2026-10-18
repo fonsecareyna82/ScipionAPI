@@ -1523,6 +1523,7 @@ class PostgresqlFlatMapper(Mapper):
                 ) AS "permission"
             FROM projects p
             WHERE p.id = %s
+              AND p.status IS DISTINCT FROM 'deleting'
               AND (
                   p."ownerId" = %s
                   OR EXISTS (
@@ -1705,6 +1706,7 @@ class PostgresqlFlatMapper(Mapper):
                     'owner'::text AS "permission"
                 FROM projects p
                 WHERE p."ownerId" = %s
+                  AND p.status IS DISTINCT FROM 'deleting'
 
                 UNION ALL
 
@@ -1718,6 +1720,7 @@ class PostgresqlFlatMapper(Mapper):
                   ON ps."projectId" = p.id
                 WHERE ps."userId" = %s
                   AND p."ownerId" <> %s
+                  AND p.status IS DISTINCT FROM 'deleting'
             ) AS sub
             ORDER BY COALESCE("updatedAt", "createdAt") DESC NULLS LAST,
                      id DESC
@@ -1798,6 +1801,40 @@ class PostgresqlFlatMapper(Mapper):
         params.extend([projectId, ownerId])
         self.db.execute(sql, tuple(params))
         return self.getProject(projectId, ownerId)
+
+    # A project being deleted is hidden at once (status 'deleting') while its
+    # rows are removed in the background; its name is changed so a new project
+    # can take the same one meanwhile.
+    DELETING_STATUS = "deleting"
+
+    def markProjectDeleting(self, projectId: int, ownerId: int) -> bool:
+        cursor = self.db.execute(
+            """
+            UPDATE projects
+               SET status = %s,
+                   name = name || '#deleting-' || id
+             WHERE id = %s
+               AND "ownerId" = %s
+               AND status IS DISTINCT FROM %s
+            """,
+            (self.DELETING_STATUS, int(projectId), int(ownerId), self.DELETING_STATUS),
+        )
+        return cursor.rowcount > 0
+
+    def listDeletingProjectIds(self) -> List[int]:
+        rows = self.db.fetchAll(
+            "SELECT id FROM projects WHERE status = %s ORDER BY id",
+            (self.DELETING_STATUS,),
+        ) or []
+        return [int(row["id"]) for row in rows]
+
+    def deleteDeletingProject(self, projectId: int) -> bool:
+        """Remove a project marked as being deleted, with everything that depends on it."""
+        cursor = self.db.execute(
+            "DELETE FROM projects WHERE id = %s AND status = %s",
+            (int(projectId), self.DELETING_STATUS),
+        )
+        return cursor.rowcount > 0
 
     def deleteProject(self, projectId: int, ownerId: int) -> bool:
         """Delete the project for a given owner."""

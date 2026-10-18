@@ -24,6 +24,7 @@
 # *
 # ******************************************************************************
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from app.backend.bootstrap import bootstrapEnv
@@ -177,9 +178,43 @@ serveWeb = _shouldServeWeb()
 webDistPath = _resolveWebDistPath()
 apiMountPath = _normalizeMountPath(os.getenv("API_MOUNT_PATH") or "/api")
 
+def resumeBackgroundDeletes():
+    """Finish the project deletions and trash removals an earlier run left half done."""
+    import logging
+    import threading
+    from pathlib import Path as _Path
+
+    def run():
+        log = logging.getLogger(__name__)
+        try:
+            from app.backend.api.services.project_service import ProjectService, resumePendingProjectDeletions
+            from app.backend.database import getMapper
+            from app.backend.utils.background_delete import TRASH_FOLDER, purgeTrash
+
+            mapper = getMapper()
+            try:
+                resumed = resumePendingProjectDeletions(mapper)
+            finally:
+                mapper.db.close()
+            if resumed:
+                log.info("Resuming the deletion of %s project(s)", resumed)
+            purgeTrash(_Path(ProjectService().manager.PROJECTS) / TRASH_FOLDER)
+        except Exception:
+            log.warning("Could not resume the background deletions", exc_info=True)
+
+    threading.Thread(target=run, name="resume-background-deletes", daemon=True).start()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    resumeBackgroundDeletes()
+    yield
+
+
 # alwaysMountApiUnderApiMountPath
 app = FastAPI(
     title="Scipion Web",
+    lifespan=lifespan,
     debug=True,
     docs_url=None,
     redoc_url=None,
@@ -187,6 +222,7 @@ app = FastAPI(
 )
 
 app.mount(apiMountPath, apiApp)
+
 
 
 @app.get("/health", include_in_schema=False)

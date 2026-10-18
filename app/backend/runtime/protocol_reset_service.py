@@ -359,6 +359,25 @@ class RuntimeProtocolResetService:
             "parentProtocolsModified": False,
         }
 
+    @staticmethod
+    def _cleanWorkingDirInBackground(protocol) -> None:
+        """protocol.cleanWorkingDir, without waiting: the folders go away at once, their files later."""
+        import os
+        from pathlib import Path
+
+        from app.backend.utils.background_delete import deleteInBackground
+
+        if not callable(getattr(protocol, "_getPath", None)) or not callable(getattr(protocol, "_getTmpPath", None)):
+            protocol.cleanWorkingDir()
+            return
+        workingDir = Path(protocol._getPath())
+        tmpFolder = protocol._getTmpPath()
+        # A scratch Tmp folder lives elsewhere: remove its target, then the link.
+        if os.path.islink(tmpFolder):
+            deleteInBackground(os.path.realpath(tmpFolder))
+            os.remove(tmpFolder)
+        deleteInBackground(workingDir, trashIn=workingDir.parent.parent)
+
     def _resetPostgresqlProtocol(
             self,
             *,
@@ -420,7 +439,7 @@ class RuntimeProtocolResetService:
             0,
         )
 
-        protocol.cleanWorkingDir()
+        self._cleanWorkingDirInBackground(protocol)
         protocol.makeWorkingDir()
 
         # Delete only relations created by this protocol.

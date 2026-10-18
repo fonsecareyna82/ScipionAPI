@@ -1105,6 +1105,7 @@ def duplicateProtocol(
 def deleteProtocol(
     projectId: int,
     payload: DeletePayload = None,
+    includeWorkflow: bool = Query(True, description="Rebuild and return the workflow afterwards"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -1144,7 +1145,7 @@ def deleteProtocol(
             mapper,
             projectId,
             currentUser,
-        )
+        ) if includeWorkflow else None
 
         if refreshedProject:
             workflow = refreshedProject.get("protocols", [])
@@ -1355,6 +1356,7 @@ def continueProtocolAll(
 def resetProtocolFrom(
     projectId: int,
     protocolId: int,
+    includeWorkflow: bool = Query(True, description="Rebuild and return the workflow afterwards"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -1379,7 +1381,7 @@ def resetProtocolFrom(
             mapper,
             projectId,
             currentUser,
-        )
+        ) if includeWorkflow else None
 
         if refreshedProject:
             workflow = refreshedProject.get("protocols", [])

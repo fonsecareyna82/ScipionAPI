@@ -155,6 +155,14 @@ The web tilt series viewer draws the tilts itself from `GET .../tiltseries/{id}/
 - `scheduler.py` draws the missing ones in a process pool (`SCIPION_THUMBNAIL_WORKERS`, default 2-4), jobs of `JOB_SIZE` outputs of one project (one project load each, `_runRenderThumbnailsJob` in `runtime/preview_process_executor.py`, `ThumbnailService.renderProtocolOutputThumbnailBytes`), never queuing an output twice. The image route waits up to 4 s, then answers 202; images whose URL names the current signature are `immutable`.
 The images are read as their original values and reduced before the contrast is set (`_read2dTile`, `_readImagePreview`, `_displayImage`; movies average a few frames). The old routes (`/thumbnail`, `/thumbnail-items`, `/output-thumbnails`) and their v2 cache remain for clients without the new ones.
 
+## Deleting projects, protocols and workflows
+
+Large deletions must not keep the request waiting:
+- Folders are removed with `utils/background_delete.deleteInBackground`: renamed into a `.scipion-trash` folder (instant; the project root for protocol folders, the projects folder for projects) and removed by a background thread. Protocol delete and reset (`RuntimeProtocolResetService._cleanWorkingDirInBackground`, instead of `protocol.cleanWorkingDir`) use it.
+- A project is first marked `status = 'deleting'` (and renamed `name#deleting-id`), which hides it from `getProject`/`listProjects`; its rows are deleted afterwards in the background with their own connection (`scheduleProjectRowsDeletion`). At start-up (`main.resumeBackgroundDeletes`) the pending project deletions are resumed and the projects trash is purged.
+- The cascading deletes find children by `protocolDbId`/`objectId`; migration `7a1c2e9d4f30` indexes those columns (without them each deleted protocol scanned whole tables).
+- `POST .../protocols/delete` and `.../reset-from` accept `includeWorkflow=false` to skip rebuilding the project afterwards (the web reloads it itself).
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.
