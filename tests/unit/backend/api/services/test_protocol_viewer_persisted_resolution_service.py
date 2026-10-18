@@ -78,6 +78,8 @@ def test_uses_real_persisted_identity_and_respects_specific_viewer_priority():
     assert answer["protocolId"] == "142"
     assert answer["protocolDbId"] == 812
     assert answer["protocolStatus"] == "finished"
+    # The web decides from the class whether Analyze results opens Xmipp's picker.
+    assert answer["protocolClassName"] == "Derived"
     assert answer["dataSource"] == "postgresql"
     assert answer["selectionMode"] == "persisted-protocol-class"
     assert [v["name"] for v in answer["viewers"]] == ["BDerivedViewer", "ABaseViewer"]

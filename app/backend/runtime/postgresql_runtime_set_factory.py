@@ -1952,10 +1952,15 @@ class PostgresqlRuntimeSetMixin:
         runtimeClone._postgresqlDetachedMapperFactoryWrapped = False
 
         if detachedConsumer:
-            # Scipion's Set.copy leaves the size out (a copy is usually filled
-            # again); a detached consumer reads the very same items.
+            # Scipion's Set.copy leaves the size and the stream state out (a
+            # copy is usually filled again); a detached consumer reads the very
+            # same items, so it reports the same size and whether more come.
             try:
                 runtimeClone._size.set(self.getSize())
+            except Exception:
+                pass
+            try:
+                runtimeClone.setStreamState(self.getStreamState())
             except Exception:
                 pass
 

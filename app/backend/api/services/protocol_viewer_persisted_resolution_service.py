@@ -99,6 +99,7 @@ def resolvePersistedProtocolViewerCandidates(
         "protocolId": str(protocol_id),
         "protocolDbId": row_db_id,
         "protocolStatus": str(row.get("status") or "").strip().lower(),
+        "protocolClassName": class_name.strip(),
         "dataSource": "postgresql",
         "selectionMode": "persisted-protocol-class",
         "instanceMaterialized": False,

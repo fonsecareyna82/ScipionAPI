@@ -3035,6 +3035,20 @@ def test_RuntimeSetDetachedConsumerCloneKeepsTheSize():
     detachedConsumer.releasePostgresqlDetachedConsumer()
 
 
+def test_RuntimeSetDetachedConsumerCloneKeepsTheStreamState():
+    # A streaming protocol must see its input still open while more items come.
+    for state in ("STREAM_OPEN", "STREAM_CLOSED"):
+        _, runtimeSet = buildRuntimeSet()
+        runtimeSet.setStreamState(getattr(runtimeSet, state))
+
+        detachedConsumer = runtimeSet.clone(
+            _postgresqlDetachedConsumer=True
+        )
+
+        assert detachedConsumer.getStreamState() == getattr(runtimeSet, state)
+        detachedConsumer.releasePostgresqlDetachedConsumer()
+
+
 def test_RuntimeSetDetachedConsumerCloneRemainsReadOnly():
     _, runtimeSet = buildRuntimeSet()
 
