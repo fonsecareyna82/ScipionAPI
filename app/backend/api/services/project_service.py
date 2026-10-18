@@ -53,6 +53,12 @@ from app.backend.utils.tilt_series_stack import (
     encodeTiltSeriesStack,
     reduceTiltImage,
 )
+from app.backend.utils.volume_stack import (
+    VOLUME_MEDIA_TYPE as VOLUME_STACK_MEDIA_TYPE,
+    cachedVolumeStack,
+    encodeVolumeStack,
+    reduceVolumeForViewer,
+)
 from app.backend.utils.volume_surface_mesh import (
     SURFACE_MESH_BINARY_MEDIA_TYPE,
     buildVolumeSurfaceMesh,
@@ -16158,6 +16164,84 @@ class ProjectService:
         )
 
         return self._storeCachedVolumeSliceResponse(cacheKey, response)
+
+    def _coords3dTomogramPath(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ) -> str:
+        """The file of a tomogram of a SetOfCoordinates3D, found as renderCoords3dTomogramSliceService finds it."""
+        identity = {"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}
+        pgReader = self._getPostgresqlCoords3dReaderIfAvailable(
+            mapper=mapper,
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            **identity,
+        )
+        if pgReader is not None:
+            tomogramInfo = pgReader.getTomogramFile(tomogramId)
+            volumePath = (tomogramInfo or {}).get("fileName")
+            if volumePath and os.path.exists(volumePath):
+                return str(volumePath)
+
+        if mapper is not None:
+            self._raisePostgresqlViewerUnavailable(
+                viewerName="Coordinates3D tomogram volume",
+                projectId=projectId,
+                protocolId=protocolId,
+                outputName=outputName,
+                reason=getattr(pgReader, "lastSkipReason", None) if pgReader is not None else "reader_not_available",
+            )
+
+        _protocol, setOfCoordinates3D = self._resolveOutputForCoordinates3d(
+            protocolId=protocolId,
+            outputName=outputName,
+            mapper=mapper,
+            projectId=projectId,
+            **identity,
+        )
+        try:
+            tomogram = self.tomoList[tomogramId] if self.tomoList else setOfCoordinates3D._getTomogram(tomogramId)
+        except Exception:
+            tomogram = None
+        volumePath = tomogram.getFileName() if tomogram is not None and callable(
+            getattr(tomogram, "getFileName", None)) else None
+        if not volumePath or not os.path.exists(volumePath):
+            raise HTTPException(status_code=404, detail="Tomogram file not found on disk")
+        return str(volumePath)
+
+    def renderCoords3dTomogramVolumeService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tomogramId: Union[int, str],
+            maxVoxels: int = 64_000_000,
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ) -> Response:
+        """The tomogram reduced for the viewer, in one binary response (see volume_stack)."""
+        from app.backend.utils.class_average_display import readVolumeForDisplay
+
+        volumePath = self._coords3dTomogramPath(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tomogramId=tomogramId,
+            mapper=mapper,
+            protocolIdIsScipionId=protocolIdIsScipionId,
+        )
+        key = (os.path.abspath(volumePath), os.path.getmtime(volumePath), int(maxVoxels))
+        body = cachedVolumeStack(
+            key,
+            lambda: encodeVolumeStack(reduceVolumeForViewer(readVolumeForDisplay(volumePath), int(maxVoxels))),
+        )
+        return Response(content=body, media_type=VOLUME_STACK_MEDIA_TYPE)
 
     def _renderTomogramSliceFromPath(
             self,

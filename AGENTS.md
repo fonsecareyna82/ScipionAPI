@@ -143,6 +143,10 @@ A form param's wizard is the one the desktop form opens (`Domain.findWizards(pro
 
 The web tilt series viewer draws the tilts itself from `GET .../tiltseries/{id}/stack?indices=&maxDim=` (`renderTiltSeriesStackService`, `utils/tilt_series_stack.py`): each tilt is reduced by block averaging from its float values, its mean and standard deviation are measured without outliers, and it is sent as 8 bits over mean +/- 5 std (`low`/`high` in the header), with its `rot`/`shiftX`/`shiftY`. The web loads it in chunks from the current tilt outwards, applies the contrast (a window in standard deviations, per tilt or for the whole series) and the alignment on a canvas, exactly as the previews place it (scipy rotation counterclockwise on screen, then the shift, then the vertical flip; checked against `ImageStack.transformSlice`). Frames are resolved like `renderTiltSeriesImageService` (`_tiltSeriesFrameSources`), so both show the same image. The PNG previews (`/tilt`, `/tilt/batch`) stay for an API without the stack.
 
+## Tomogram slices in the coordinates viewer
+
+`GET .../coords3d/tomograms/{id}/volume?maxVoxels=` (`renderCoords3dTomogramVolumeService`, `utils/volume_stack.py`) sends the tomogram reduced by block averaging to at most `maxVoxels` (default 64 M), as 8 bits over mean +/- 5 robust std, in one `TVOL` binary (z, y, x). MRC files are memory mapped and reduced a few planes at a time; the last few results are kept in memory. The web cuts every slice of every axis from it (`tomogram-slices.ts`, as `readVolumeSlice2d` cuts them: z rows y, y and x rows z) with one contrast window for the whole tomogram, and shows them as paletted BMP object URLs, so the SVG images and 3D plane textures work as before. The `/slice` route still serves the slices until the volume arrives.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

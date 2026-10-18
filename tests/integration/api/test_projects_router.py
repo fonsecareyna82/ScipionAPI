@@ -1535,6 +1535,18 @@ def test_RenderTiltSeriesImageUsesProjectDbRow(projectClient, fakeProjectService
     }
 
 
+def test_GetCoords3dTomogramVolumePassesTheVoxelBudget(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/2/outputs/out/coords3d/tomograms/7/volume?maxVoxels=8000000")
+
+    assert response.status_code == 200
+    assert response.content == b"TVOL"
+    assert fakeProjectService.lastRenderCoords3dTomogramVolumeCall == {
+        "tomogramId": "7",
+        "maxVoxels": 8_000_000,
+        "protocolIdIsScipionId": True,
+    }
+
+
 def test_GetTiltSeriesStackPassesTheTiltsAndTheSize(projectClient, fakeProjectService):
     response = projectClient.get("/projects/1/protocols/2/outputs/out/tiltseries/TS_1/stack?indices=4,2,x,4&maxDim=768")
 

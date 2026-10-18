@@ -213,17 +213,9 @@ def shrinkVolumeInSlabs(volume, maxDim: int) -> np.ndarray:
     Every axis is reduced by the same factor, but never below one voxel (a
     thin tomogram keeps its few planes).
     """
-    shape = volume.shape
-    factor = int(np.ceil(max(shape) / float(maxDim)))
-    if factor <= 1:
-        return np.asarray(volume, dtype=np.float32)
-    fz, fy, fx = (max(1, min(factor, side)) for side in shape)
-    z, y, x = shape[0] // fz * fz, shape[1] // fy * fy, shape[2] // fx * fx
-    reduced = np.empty((z // fz, y // fy, x // fx), dtype=np.float32)
-    for plane in range(z // fz):
-        slab = np.asarray(volume[plane * fz:(plane + 1) * fz, :y, :x], dtype=np.float32)
-        reduced[plane] = slab.reshape(fz, y // fy, fy, x // fx, fx).mean(axis=(0, 2, 4))
-    return reduced
+    from app.backend.utils.volume_stack import binVolume
+
+    return binVolume(volume, int(np.ceil(max(volume.shape) / float(maxDim))))
 
 
 def _finite(data: np.ndarray) -> np.ndarray:

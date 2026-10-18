@@ -3660,6 +3660,44 @@ def getCoordinates3dPoints(
 
 
 @router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}/volume",
+    response_model=None,
+    summary="The tomogram reduced for the viewer, which cuts its slices itself",
+)
+def getCoords3dTomogramVolume(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tomogramId: str,
+    maxVoxels: int = Query(64_000_000, ge=1_000_000, le=256_000_000, alias="maxVoxels"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        resp = service.renderCoords3dTomogramVolumeService(
+            projectId=projectId,
+            protocolId=protocolId,
+            outputName=outputName,
+            tomogramId=tomogramId,
+            maxVoxels=maxVoxels,
+            mapper=mapper,
+            protocolIdIsScipionId=True,
+        )
+        resp.headers["Vary"] = "Authorization"
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error reducing tomogram %s", tomogramId)
+        raise HTTPException(status_code=500, detail=f"Failed to read tomogram {tomogramId}: {e}")
+
+
+@router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}/slice",
     status_code=status.HTTP_200_OK,
 )

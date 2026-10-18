@@ -1346,3 +1346,26 @@ def test_TheTiltSeriesStackReducesTheAskedTiltsInTheirOrder(service, monkeypatch
     # The same tilts again come from memory.
     service.renderTiltSeriesStackService(1, 2, "out", "TS_1", indices=[1], maxDim=20)
     assert reads == [3, 1]
+
+
+def test_TheTomogramIsReducedOnceAndKept(service, monkeypatch, tmp_path):
+    import mrcfile
+    from app.backend.utils import volume_stack
+
+    volume_stack.clearVolumeStackCache()
+    path = tmp_path / "tomo.mrc"
+    with mrcfile.new(str(path)) as mrc:
+        mrc.set_data(np.random.default_rng(1).normal(size=(8, 16, 16)).astype(np.float32))
+    monkeypatch.setattr(service, "_coords3dTomogramPath", lambda **kwargs: str(path))
+    reads = []
+    import app.backend.utils.class_average_display as display
+    original = display.readVolumeForDisplay
+    monkeypatch.setattr(display, "readVolumeForDisplay", lambda *args: reads.append(1) or original(*args))
+
+    first = service.renderCoords3dTomogramVolumeService(1, 2, "out", "7", maxVoxels=1_000_000)
+    second = service.renderCoords3dTomogramVolumeService(1, 2, "out", "7", maxVoxels=1_000_000)
+
+    stack = volume_stack.decodeVolumeStack(first.body)
+    assert stack["data"].shape == (8, 16, 16)
+    assert second.body == first.body
+    assert reads == [1]

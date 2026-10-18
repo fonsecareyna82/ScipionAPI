@@ -2097,6 +2097,25 @@ class FakeProjectService:
         }
         return Response(content=b"TSST", media_type="application/octet-stream")
 
+    def renderCoords3dTomogramVolumeService(
+            self,
+            projectId,
+            protocolId,
+            outputName,
+            tomogramId,
+            maxVoxels=64_000_000,
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ):
+        from fastapi import Response
+
+        self.lastRenderCoords3dTomogramVolumeCall = {
+            "tomogramId": tomogramId,
+            "maxVoxels": maxVoxels,
+            "protocolIdIsScipionId": protocolIdIsScipionId,
+        }
+        return Response(content=b"TVOL", media_type="application/octet-stream")
+
     def renderCtfTomoPsdImageService(
             self,
             projectId,
