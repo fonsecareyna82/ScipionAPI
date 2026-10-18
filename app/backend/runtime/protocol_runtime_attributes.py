@@ -45,9 +45,34 @@ def _jsonValue(attribute) -> Any:
     return text if len(text) <= _MAX_STRING else None
 
 
+def outputNames(protocol) -> set:
+    """Names of the protocol's outputs, created or possible (an output can be a scalar,
+    e.g. crYOLO's ``boxsize``)."""
+    names = set()
+    try:
+        names.update(str(name) for name in (getattr(protocol, "_outputs", None) or []))
+    except Exception:
+        pass
+    try:
+        names.update(name for name, _ in protocol.iterOutputAttributes())
+    except Exception:
+        pass
+    # Outputs the protocol declares it may create (Protocol._possibleOutputs).
+    possible = getattr(type(protocol), "_possibleOutputs", None)
+    if isinstance(possible, dict):
+        names.update(str(name) for name in possible)
+    return names
+
+
 def collectRuntimeAttributes(protocol, definitionNames: Iterable[str]) -> Dict[str, Dict[str, Any]]:
-    """Scalar attributes of ``protocol`` that are neither form params nor managed."""
-    excluded = set(definitionNames) | MANAGED_PROTOCOL_ATTRIBUTES
+    """Scalar attributes of ``protocol`` that are neither form params, outputs nor managed.
+
+    Outputs are stored as outputs. Kept here, a scalar output would be restored
+    as a plain attribute before the next run, and plugins that create an
+    output only when the attribute is missing (``if not hasattr(self,
+    "boxsize")``) would never create it again.
+    """
+    excluded = set(definitionNames) | MANAGED_PROTOCOL_ATTRIBUTES | outputNames(protocol)
     result: Dict[str, Dict[str, Any]] = {}
     try:
         attributes = list(protocol.getAttributes())
@@ -65,12 +90,14 @@ def collectRuntimeAttributes(protocol, definitionNames: Iterable[str]) -> Dict[s
 
 
 def applyRuntimeAttributes(protocol, stored: Optional[Dict[str, Any]]) -> None:
-    """Restore stored scalar attributes; form params and managed ones are untouched."""
+    """Restore stored scalar attributes; form params, outputs and managed ones are untouched."""
     if not isinstance(stored, dict):
         return
+    outputs = outputNames(protocol)
     for name, entry in stored.items():
         if (not isinstance(name, str) or not name.isidentifier()
-                or name in MANAGED_PROTOCOL_ATTRIBUTES or not isinstance(entry, dict)):
+                or name in MANAGED_PROTOCOL_ATTRIBUTES or name in outputs
+                or not isinstance(entry, dict)):
             continue
         scalarClass = _SCALAR_CLASSES.get(entry.get("class"))
         if scalarClass is None:

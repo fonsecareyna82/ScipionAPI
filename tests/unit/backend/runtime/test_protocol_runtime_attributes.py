@@ -44,6 +44,34 @@ def test_runtime_scalars_are_collected_but_not_form_params_or_managed_state():
         assert excluded not in stored
 
 
+def test_scalar_outputs_are_not_kept_as_runtime_attributes():
+    # crYOLO creates its "boxsize" output only when the attribute is missing:
+    # restored as an attribute, the output would never be created again.
+    protocol = ranProtocol()
+    # What _defineOutputs leaves on the protocol.
+    protocol.boxsize = pwobject.Integer(185)
+    protocol._outputs.append("boxsize")
+    stored = collectRuntimeAttributes(protocol, protocol.getDefinitionDict().keys())
+    assert "boxsize" not in stored
+    assert stored["projectName"] == {"class": "String", "value": "P12"}
+
+
+class BoxSizeLikeProtocol(CryosparcLikeProtocol):
+    _possibleOutputs = {"boxSizeEven": pwobject.Integer}
+
+
+def test_possible_outputs_are_neither_kept_nor_restored():
+    protocol = BoxSizeLikeProtocol()
+    protocol.boxSizeEven = pwobject.Integer(184)
+    assert "boxSizeEven" not in collectRuntimeAttributes(protocol, protocol.getDefinitionDict().keys())
+    # Stored before outputs were excluded: not restored, so the run creates the output.
+    fresh = BoxSizeLikeProtocol()
+    applyRuntimeAttributes(fresh, {"boxSizeEven": {"class": "Integer", "value": 184},
+                                   "projectName": {"class": "String", "value": "P12"}})
+    assert not hasattr(fresh, "boxSizeEven")
+    assert fresh.projectName.get() == "P12"
+
+
 def test_stored_attributes_are_restored_on_a_freshly_built_protocol():
     original = ranProtocol()
     stored = collectRuntimeAttributes(original, original.getDefinitionDict().keys())
