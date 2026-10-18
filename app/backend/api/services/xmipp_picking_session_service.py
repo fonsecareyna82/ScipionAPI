@@ -8,11 +8,13 @@ reading the session files with Xmipp's readSetOfCoordinates.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from fastapi import HTTPException, Response, status
 
@@ -31,16 +33,29 @@ MAX_PARTICLES_PER_MICROGRAPH = 100000
 # Manual particles needed to train, as PickingClassifier.getTrainingParticlesMinimum.
 TRAINING_PARTICLES_MINIMUM = 15
 TEMPLATES_FILE = "templates.stk"
+TRAINED_ON_FILE = ".web_classifier_trained.json"
 TEMPLATE_PARTICLES_MAXIMUM = 2000
 
-# One writer at a time per session folder (the web may save while picking).
+LOCK_FILE = ".web_picker.lock"
+
+# One writer at a time per session folder (the web may save while picking):
+# a thread lock within this process, and a file lock across API processes.
 _folderLocks: Dict[str, threading.Lock] = {}
 _folderLocksGuard = threading.Lock()
 
 
-def _folderLock(folder: str) -> threading.Lock:
+@contextmanager
+def _folderLock(folder: str) -> Iterator[None]:
     with _folderLocksGuard:
-        return _folderLocks.setdefault(folder, threading.Lock())
+        lock = _folderLocks.setdefault(folder, threading.Lock())
+    with lock:
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, LOCK_FILE), "a") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class PickingSession:
@@ -341,9 +356,16 @@ class XmippPickingSessionService:
     # -- supervised picking --------------------------------------------------
 
     def _classifier(self, session: PickingSession, mapper, config: files.PickerConfig):
-        from app.backend.runtime.xmipp_classifier_session import classifierSession
+        """The session's classifier: with the protocol's waiting step if there is one."""
+        from app.backend.runtime import xmipp_classifier_session as classifiers
         micrographs = [self._micrographPath(session, m) for m in session.micrographs(mapper)]
-        return classifierSession(session.folder, config.particleSize, micrographs, session.projectPath)
+        if interactive.readSession(session.folder) is not None:
+            # A classifier this API process kept from before the launch is not used any more.
+            classifiers.closeClassifierSession(session.folder)
+            return classifiers.StepClassifier(session.folder, config.particleSize, micrographs,
+                                              session.projectPath)
+        return classifiers.classifierSession(session.folder, config.particleSize, micrographs,
+                                             session.projectPath)
 
     @staticmethod
     def _micrographPath(session: PickingSession, micrograph: Dict[str, Any]) -> str:
@@ -403,6 +425,43 @@ class XmippPickingSessionService:
         return path
 
     @staticmethod
+    def _candidatesInMemory(classifier, micrographPath: str, picks: files.MicrographPicks,
+                            config: files.PickerConfig) -> bool:
+        """Whether the classifier holds the candidates of this micrograph's autopick.
+
+        correct() pairs the corrections, by position, with the candidates of the
+        last autopick, which live only in the classifier's memory. A new
+        classifier process (after an idle close or an API restart) has none, so
+        the micrograph is autopicked again: with the same model it gives the
+        same candidates. If they differ (the model changed since), nothing is
+        corrected.
+        """
+        if classifier.lastAutopicked == micrographPath:
+            return True
+        if picks.state != "Supervised":
+            return False
+        found = classifier.autopick(micrographPath, picks.autopickPercent or config.autopickPercent)
+        return [(x, y) for x, y, _ in found] == [(x, y) for x, y, _, _ in picks.automatic]
+
+    @staticmethod
+    def _trainedOnPath(session: PickingSession) -> str:
+        return os.path.join(session.folder, TRAINED_ON_FILE)
+
+    def _writeTrainedOn(self, session: PickingSession, trainedOn) -> None:
+        """Keep the trained area on disk, so a new classifier process knows it."""
+        micId, rectangle = trainedOn
+        files.atomicWrite(self._trainedOnPath(session),
+                           json.dumps({"micId": str(micId), "rectangle": [int(v) for v in rectangle]}))
+
+    def _readTrainedOn(self, session: PickingSession):
+        try:
+            with open(self._trainedOnPath(session), "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            return str(value["micId"]), tuple(int(v) for v in value["rectangle"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    @staticmethod
     def _insideRectangle(rectangle, x, y) -> bool:
         rx, ry, rw, rh = rectangle
         return rx <= x < rx + rw and ry <= y < ry + rh
@@ -437,6 +496,7 @@ class XmippPickingSessionService:
                 classifier = self._classifier(session, mapper, config)
                 classifier.train(rows, rectangle)
                 classifier.trainedOn = (micrograph["id"], rectangle)
+                self._writeTrainedOn(session, classifier.trainedOn)
                 found = classifier.autopick(rows[-1][0], config.autopickPercent)
             except ClassifierError as error:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
@@ -470,8 +530,8 @@ class XmippPickingSessionService:
                 currentPath = self._micrographPath(session, current)
                 # correct() pairs the corrections with the candidates of the last
                 # autopick; only correct when they belong to this micrograph.
-                if picks.automatic and classifier.lastAutopicked == currentPath:
-                    trained = getattr(classifier, "trainedOn", None)
+                if picks.automatic and self._candidatesInMemory(classifier, currentPath, picks, config):
+                    trained = getattr(classifier, "trainedOn", None) or self._readTrainedOn(session)
                     rectangle = trained[1] if trained and trained[0] == current["id"] else None
                     added = [(x, y) for x, y in picks.manual
                              if rectangle is None or not self._insideRectangle(rectangle, x, y)]

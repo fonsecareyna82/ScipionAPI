@@ -7,6 +7,11 @@ picking session keeps one classifier process alive: XmippPickerSession.java,
 run without a GUI, answering one tab-separated command per line.
 The trained model itself lives in the session folder (``model_*`` files), so
 a new process continues from where an old one stopped.
+
+While the protocol's interactive step waits for the web picker, the process
+lives with that step, as the Java picker does on the desktop, and the API
+reaches it through the step (``StepClassifier``). Otherwise (a picker opened on
+a finished protocol) it lives in the API process.
 """
 from __future__ import annotations
 
@@ -164,3 +169,49 @@ def closeClassifierSession(folder: str) -> None:
         session = _sessions.pop(folder, None)
     if session is not None:
         session.close()
+
+
+class StepClassifier:
+    """The classifier kept alive by the protocol's waiting step, as seen from the API.
+
+    Same operations as ClassifierSession; each one is a request to the step.
+    """
+
+    def __init__(self, folder: str, particleSize: int, micrographs: Sequence[str], cwd: str):
+        self.folder = folder
+        self.particleSize = particleSize
+        self.micrographs = tuple(micrographs)
+        self.cwd = cwd
+        # Kept on disk by the caller: the step's process may outlive this object.
+        self.trainedOn: Optional[Tuple[str, Tuple[int, int, int, int]]] = None
+        self._lastAutopicked: Optional[str] = None
+        self._stateKnown = False
+
+    def _request(self, operation: str, **arguments):
+        from app.backend.runtime import web_interactive_picker as interactive
+        answer = interactive.requestClassifier(self.folder, dict(
+            arguments, operation=operation, particleSize=self.particleSize,
+            micrographs=list(self.micrographs), cwd=self.cwd), timeout=COMMAND_TIMEOUT)
+        if not answer.get("ok"):
+            raise ClassifierError(answer.get("error") or "The picking protocol did not answer")
+        self._lastAutopicked = answer.get("lastAutopicked")
+        self._stateKnown = True
+        return answer.get("result")
+
+    @property
+    def lastAutopicked(self) -> Optional[str]:
+        if not self._stateKnown:
+            self._request("state")
+        return self._lastAutopicked
+
+    def train(self, trainRows: Sequence[Tuple[str, str]], rectangle: Tuple[int, int, int, int]) -> None:
+        self._request("train", rows=[list(row) for row in trainRows], rectangle=list(rectangle))
+
+    def autopick(self, micrograph: str, percent: int) -> List[Tuple[int, int, float]]:
+        found = self._request("autopick", micrograph=micrograph, percent=int(percent)) or []
+        return [(int(x), int(y), float(cost)) for x, y, cost in found]
+
+    def correct(self, added: Sequence[Tuple[int, int]],
+                automatic: Sequence[Tuple[int, int, float, int]]) -> None:
+        self._request("correct", added=[list(point) for point in added],
+                      automatic=[list(row) for row in automatic])

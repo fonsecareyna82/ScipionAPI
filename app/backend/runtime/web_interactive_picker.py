@@ -9,17 +9,23 @@ through files in the session folder (``<extra>/.scipionweb_picker``):
   session.json          written and refreshed by the step while it waits
   register-<id>.json    the web asks the protocol to register coordinates;
                         the step answers in register-<id>.result.json
+  classifier-<id>.json  the web asks the supervised picking classifier (train,
+                        autopick, correct); answered in classifier-<id>.result.json
   close                 the web closed the picker: the step finishes
 
 The files live in the protocol folder, so this works with the protocol worker
-on any node that shares the project folder with the API.
+on any node that shares the project folder with the API, and with any number
+of API processes. Like the Java picker on the desktop, the classifier process
+lives with the step: it starts on the first request and ends with the step.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
+import threading
 import time
+import traceback
 import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -76,11 +82,20 @@ def requestClose(outputDir: str) -> bool:
 
 def requestRegisterCoordinates(outputDir: str, timeout: float = 600.0) -> Dict[str, Any]:
     """Ask the waiting step to run registerCoords; returns its answer."""
+    return _requestStep(outputDir, "register", {"coordsDir": outputDir}, timeout)
+
+
+def requestClassifier(outputDir: str, request: Dict[str, Any], timeout: float = 600.0) -> Dict[str, Any]:
+    """Ask the waiting step's picking classifier to run one operation; returns its answer."""
+    return _requestStep(outputDir, "classifier", request, timeout)
+
+
+def _requestStep(outputDir: str, kind: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
     folder = channelFolder(outputDir)
     requestId = uuid.uuid4().hex
-    request = os.path.join(folder, "register-%s.json" % requestId)
-    result = os.path.join(folder, "register-%s.result.json" % requestId)
-    _writeJson(request, {"id": requestId, "coordsDir": outputDir})
+    request = os.path.join(folder, "%s-%s.json" % (kind, requestId))
+    result = os.path.join(folder, "%s-%s.result.json" % (kind, requestId))
+    _writeJson(request, dict(payload, id=requestId))
     deadline = time.time() + timeout
     while time.time() < deadline:
         answer = _readJson(result)
@@ -92,7 +107,7 @@ def requestRegisterCoordinates(outputDir: str, timeout: float = 600.0) -> Dict[s
             return answer
         if readSession(outputDir) is None:
             break
-        time.sleep(0.2)
+        time.sleep(0.1)
     try:
         os.remove(request)
     except OSError:
@@ -111,6 +126,7 @@ class WebPickerProcess:
         self.returncode = None
         # Identifies this launch's session; a relaunch is a new session.
         self.sessionId = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:12])
+        self.classifier = None
 
     def start(self) -> "WebPickerProcess":
         os.makedirs(self.folder, exist_ok=True)
@@ -126,8 +142,10 @@ class WebPickerProcess:
         })
 
     def _serveRequests(self) -> None:
+        handlers = {"register": self._registerCoordinates, "classifier": self._runClassifier}
         for name in sorted(os.listdir(self.folder)):
-            if not (name.startswith("register-") and name.endswith(".json")) or name.endswith(".result.json"):
+            kind = name.split("-", 1)[0]
+            if kind not in handlers or not name.endswith(".json") or name.endswith(".result.json"):
                 continue
             path = os.path.join(self.folder, name)
             request = _readJson(path) or {}
@@ -137,31 +155,64 @@ class WebPickerProcess:
                 continue
             answer: Dict[str, Any] = {"id": request.get("id")}
             try:
-                before = set(name for name, _ in self.protocol.iterOutputAttributes())
-                self.protocol.registerCoords(self.outputDir)
-                created = [name for name, _ in self.protocol.iterOutputAttributes() if name not in before]
-                outputName = created[-1] if created else None
-                output = getattr(self.protocol, outputName, None) if outputName else None
-                answer.update(ok=True, outputName=outputName,
-                              totalCoordinates=int(output.getSize()) if output is not None else 0)
+                answer.update(handlers[kind](request), ok=True)
             except Exception as error:
-                import traceback
                 traceback.print_exc()
                 answer.update(ok=False, error=str(error) or type(error).__name__)
             _writeJson(os.path.join(self.folder, "%s.result.json" % name[:-len(".json")]), answer)
 
+    def _registerCoordinates(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        before = set(name for name, _ in self.protocol.iterOutputAttributes())
+        self.protocol.registerCoords(self.outputDir)
+        created = [name for name, _ in self.protocol.iterOutputAttributes() if name not in before]
+        outputName = created[-1] if created else None
+        output = getattr(self.protocol, outputName, None) if outputName else None
+        return {"outputName": outputName,
+                "totalCoordinates": int(output.getSize()) if output is not None else 0}
+
+    def _runClassifier(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """One operation of the supervised picking classifier, kept alive by this step."""
+        from app.backend.runtime import xmipp_classifier_session as classifiers
+        self.classifier = classifiers.classifierSession(
+            self.outputDir, int(request["particleSize"]), list(request["micrographs"]), request["cwd"])
+        operation = request["operation"]
+        result: Any = None
+        if operation == "train":
+            self.classifier.train([tuple(row) for row in request["rows"]], tuple(request["rectangle"]))
+        elif operation == "autopick":
+            result = self.classifier.autopick(request["micrograph"], int(request["percent"]))
+        elif operation == "correct":
+            self.classifier.correct([tuple(point) for point in request["added"]],
+                                    [tuple(row) for row in request["automatic"]])
+        elif operation != "state":
+            raise ValueError("Unknown classifier operation: %s" % operation)
+        return {"result": result, "lastAutopicked": self.classifier.lastAutopicked}
+
+    def _closeClassifier(self) -> None:
+        if self.classifier is not None:
+            from app.backend.runtime import xmipp_classifier_session as classifiers
+            classifiers.closeClassifierSession(self.outputDir)
+            self.classifier = None
+
+    def _keepAlive(self, stop: threading.Event) -> None:
+        # Separate from the requests: training may take longer than the web waits for a heartbeat.
+        while not stop.is_set():
+            self._heartbeat()
+            stop.wait(HEARTBEAT_SECONDS)
+
     def wait(self) -> int:
-        nextHeartbeat = 0.0
+        stop = threading.Event()
+        heartbeat = threading.Thread(target=self._keepAlive, args=(stop,), daemon=True)
+        heartbeat.start()
         try:
             while not os.path.exists(os.path.join(self.folder, CLOSE_FILE)):
-                now = time.time()
-                if now >= nextHeartbeat:
-                    self._heartbeat()
-                    nextHeartbeat = now + HEARTBEAT_SECONDS
                 self._serveRequests()
-                time.sleep(0.25)
+                time.sleep(0.1)
             self._serveRequests()
         finally:
+            stop.set()
+            heartbeat.join(HEARTBEAT_SECONDS + 1)
+            self._closeClassifier()
             for name in (SESSION_FILE, CLOSE_FILE):
                 try:
                     os.remove(os.path.join(self.folder, name))

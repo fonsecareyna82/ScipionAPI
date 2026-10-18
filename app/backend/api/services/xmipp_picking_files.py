@@ -141,7 +141,7 @@ def writePos(path: str, picks: MicrographPicks) -> None:
         lines.extend(_VALUE % int(x) + _VALUE % int(y) + _VALUE % _formatFloat(cost)
                      + _VALUE % (1 if enabled != -1 else -1) + "\n"
                      for x, y, cost, enabled in picks.automatic)
-    _atomicWrite(path, "".join(lines))
+    atomicWrite(path, "".join(lines))
 
 
 def readConfig(path: str) -> Optional[PickerConfig]:
@@ -183,10 +183,10 @@ def writeConfig(path: str, config: PickerConfig) -> None:
             + _VALUE % int(config.manualParticlesNum) + _VALUE % int(config.autoParticlesNum) + "\n"
             + "data_filters\nloop_\n_macroCmd\n_macroCmdArgs\n"
             + "".join(_VALUE % command + "%80s" % args + "\n" for command, args in config.filters))
-    _atomicWrite(path, text)
+    atomicWrite(path, text)
 
 
-def _atomicWrite(path: str, text: str) -> None:
+def atomicWrite(path: str, text: str) -> None:
     folder = os.path.dirname(path) or "."
     os.makedirs(folder, exist_ok=True)
     temporary = os.path.join(folder, ".%s.%d.tmp" % (os.path.basename(path), os.getpid()))

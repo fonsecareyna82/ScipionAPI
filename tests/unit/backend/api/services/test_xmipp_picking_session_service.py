@@ -147,6 +147,7 @@ class FakeClassifier:
         self.calls = []
         self.lastAutopicked = None
         self.trainedOn = None
+        self.found = [(1, 1, 0.9), (500, 500, 0.8)]
 
     def train(self, rows, rectangle):
         self.calls.append(("train", [row[1].rsplit("/", 1)[-1] for row in rows], rectangle))
@@ -154,7 +155,7 @@ class FakeClassifier:
     def autopick(self, micrograph, percent):
         self.calls.append(("autopick", micrograph.rsplit("/", 1)[-1], percent))
         self.lastAutopicked = micrograph
-        return [(1, 1, 0.9), (500, 500, 0.8)]
+        return list(self.found)
 
     def correct(self, added, rows):
         self.calls.append(("correct", list(added), list(rows)))
@@ -252,13 +253,46 @@ def test_next_learns_from_corrections_and_autopicks_a_free_next_micrograph(super
     assert result["state"] == "Corrected" and len(result["next"]["coordinates"]) == 2
 
 
-def test_next_does_not_correct_with_candidates_of_another_micrograph(supervised):
-    service, extra, classifier = supervised
+def _restartClassifier(service, monkeypatch):
+    """A new classifier process: same model on disk, nothing in memory."""
+    classifier = FakeClassifier()
+    monkeypatch.setattr(service, "_classifier", lambda *args: classifier)
+    return classifier
+
+
+def test_next_after_a_classifier_restart_autopicks_again_to_correct(supervised, monkeypatch):
+    service, extra, _ = supervised
     service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
     service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
-    classifier.lastAutopicked = "/elsewhere/other.mrc"
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4",
+                          [{"x": 10, "y": 10}] * 15 + [{"x": 700, "y": 700}])
+    classifier = _restartClassifier(service, monkeypatch)
     service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", None)
-    assert not [call for call in classifier.calls if call[0] == "correct"]
+    assert [call[0] for call in classifier.calls] == ["autopick", "correct"]
+    # The trained area is known from disk: its manual particles are not sent again.
+    assert classifier.calls[1][1] == [(700, 700)]
+    assert files.readPos(str(extra / "a_DW.pos")).state == "Corrected"
+
+
+def test_next_does_not_correct_when_the_candidates_changed(supervised, monkeypatch):
+    service, extra, _ = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
+    service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    classifier = _restartClassifier(service, monkeypatch)
+    classifier.found = [(2, 2, 0.9)]  # The model changed since this micrograph's autopick.
+    service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", None)
+    assert [call[0] for call in classifier.calls] == ["autopick"]
+    assert files.readPos(str(extra / "a_DW.pos")).state == "Supervised"
+
+
+def test_next_does_not_correct_a_micrograph_already_corrected(supervised, monkeypatch):
+    service, extra, _ = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
+    service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", None)
+    classifier = _restartClassifier(service, monkeypatch)
+    service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", None)
+    assert classifier.calls == []
 
 
 def test_next_requires_a_trained_picker(supervised):
@@ -266,3 +300,29 @@ def test_next_requires_a_trained_picker(supervised):
     with pytest.raises(HTTPException) as error:
         service.correctAndAutopick(Mapper(), 7, 116, {"id": 1}, "4", "5")
     assert error.value.status_code == 409
+
+
+def test_the_classifier_lives_with_the_waiting_step_while_it_waits(session, monkeypatch):
+    from app.backend.runtime import xmipp_classifier_session as classifiers
+    service, extra = session
+    closed = []
+    monkeypatch.setattr(classifiers, "closeClassifierSession", closed.append)
+    monkeypatch.setattr(classifiers, "classifierSession", lambda *args: "in this API process")
+    config = files.PickerConfig()
+    assert service._classifier(service.openSession(Mapper(), 7, 116, {"id": 1}), Mapper(), config) \
+        == "in this API process"
+    monkeypatch.setattr(module.interactive, "readSession", lambda folder: {"sessionId": "1"})
+    classifier = service._classifier(service.openSession(Mapper(), 7, 116, {"id": 1}), Mapper(), config)
+    assert isinstance(classifier, classifiers.StepClassifier)
+    assert classifier.folder == str(extra) and closed == [str(extra)]
+
+
+def test_the_session_folder_lock_also_holds_against_other_processes(tmp_path):
+    import fcntl
+    with module._folderLock(str(tmp_path)):
+        # Another open of the lock file stands for another API process.
+        with open(tmp_path / module.LOCK_FILE, "a") as other:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with open(tmp_path / module.LOCK_FILE, "a") as other:
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
