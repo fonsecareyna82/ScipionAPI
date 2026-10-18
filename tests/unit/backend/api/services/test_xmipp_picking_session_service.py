@@ -195,6 +195,13 @@ def test_train_uses_every_manual_micrograph_and_rejects_picks_in_the_trained_are
     assert files.readConfig(str(extra / "config.xmd")).mode == "Supervised"
     # Xmipp's automatic picking needs templates.stk next to the model.
     assert classifier.templates == ["Supervised"]
+    # As in the Java picker, the trained model fixes the particle size.
+    assert service.describeSession(Mapper(), 7, 116, {"id": 1})["boxSizeEditable"] is False
+    size = files.readConfig(str(extra / "config.xmd")).particleSize
+    with pytest.raises(HTTPException) as error:
+        service.saveSettings(Mapper(), 7, 116, {"id": 1}, particleSize=size + 10)
+    assert error.value.status_code == 409
+    assert service.saveSettings(Mapper(), 7, 116, {"id": 1}, particleSize=size)["boxSize"] == size
 
 
 def _writeMicrograph(path, data):
@@ -223,6 +230,12 @@ def test_templates_average_the_manual_particles_inside_their_micrographs(session
     assert ImageHandler().getDimensions(path)[:2] == (20, 20)
     template = ImageHandler().read("1@" + path).getData()
     assert template[10, 10] > template[0, 0]
+    # A new particle size replaces the templates of the old one.
+    service.saveSettings(Mapper(), 7, 116, {"id": 1}, particleSize=12)
+    service.writeTemplates(service.openSession(Mapper(), 7, 116, {"id": 1}),
+                           Mapper(), files.readConfig(str(extra / "config.xmd")))
+    assert ImageHandler().getDimensions(path)[:2] == (12, 12)
+    assert sorted(p.name for p in extra.iterdir() if "templates" in p.name) == ["templates.stk"]
 
 
 def test_closing_a_trained_session_without_templates_writes_them(session, monkeypatch):

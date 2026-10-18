@@ -190,6 +190,8 @@ class XmippPickingSessionService:
             "totalMicrographs": len(micrographs),
             "totalPicks": totalPicks,
             "boxSize": config.particleSize,
+            # As the Java picker, the trained model is tied to the particle size.
+            "boxSizeEditable": config.mode != "Supervised",
             "mode": config.mode,
             "autopickPercent": config.autopickPercent,
             # Open while the protocol's interactive step waits for the web.
@@ -331,6 +333,10 @@ class XmippPickingSessionService:
                 if not 2 <= int(particleSize) <= 4096:
                     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                                         detail="Invalid particle size")
+                if config.mode == "Supervised" and int(particleSize) != config.particleSize:
+                    # As the Java picker: the trained model is tied to the particle size.
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                        detail="The particle size cannot change once the picker is trained")
                 config.particleSize = int(particleSize)
             if not config.micrograph:
                 first = next(iter(session.micrographs(mapper)), None)
@@ -418,10 +424,18 @@ class XmippPickingSessionService:
             return None
         average = (total / count).astype(np.float32)
         path = os.path.join(session.folder, TEMPLATES_FILE)
+        # Written aside and then replaced: Xmipp cannot write into a stack of
+        # another size (the particle size may have changed since the last one).
+        temporary = os.path.join(session.folder, ".%s.%d.tmp.stk" % (TEMPLATES_FILE, os.getpid()))
         image = emlib.Image()
         image.setData(average)
-        for index in range(1, max(1, int(config.templatesNum)) + 1):
-            image.write("%d@%s" % (index, path))
+        try:
+            for index in range(1, max(1, int(config.templatesNum)) + 1):
+                image.write("%d@%s" % (index, temporary))
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
         return path
 
     @staticmethod
@@ -507,8 +521,12 @@ class XmippPickingSessionService:
             files.writePos(session.posPath(micrograph), picks)
             config.mode = "Supervised"
             self._updateConfigCounts(session, mapper, micrograph, config)
-            # Xmipp's automatic picking needs the templates next to the model.
-            self.writeTemplates(session, mapper, config, allPicks)
+            # Xmipp's automatic picking needs the templates next to the model;
+            # the training itself is done, so a failure here does not undo it.
+            try:
+                self.writeTemplates(session, mapper, config, allPicks)
+            except Exception:
+                logger.exception("Could not write the picking templates of %s", session.folder)
         return self.listParticles(mapper, projectId, protocolId, currentUser, micId)
 
     def correctAndAutopick(self, mapper, projectId, protocolId, currentUser, micId,
