@@ -404,13 +404,14 @@ def buildVolumeSurfaceMesh(
     verticesXyz = verts[:, [2, 1, 0]].astype(np.float32, copy=False)
     normalsXyz = normals[:, [2, 1, 0]].astype(np.float32, copy=False)
 
-    center = verticesXyz.mean(axis=0)
-    verticesXyz = verticesXyz - center
-
-    extent = np.ptp(verticesXyz, axis=0)
-    maxExtent = float(np.max(extent)) if extent.size else 1.0
-    if maxExtent > 0 and np.isfinite(maxExtent):
-        verticesXyz = verticesXyz / maxExtent
+    # Every level of a volume shares one frame: the center of the box, scaled
+    # by its largest side. Voxel i covers [i, i + 1) of the box, so the frame
+    # is the same for any reduction of the volume.
+    boxXyz = np.array(arr.shape[::-1], dtype=np.float64) * np.array(
+        [float(xSpacing), float(ySpacing), float(zSpacing)])
+    center = (boxXyz / 2 - 0.5 * np.array([float(xSpacing), float(ySpacing), float(zSpacing)])).astype(np.float32)
+    maxExtent = float(boxXyz.max())
+    verticesXyz = (verticesXyz - center) / maxExtent
 
     arrays = {
         "vertices": verticesXyz.reshape(-1).astype(np.float32),
@@ -437,6 +438,7 @@ def buildVolumeSurfaceMesh(
         **arrays,
         "center": center.astype(np.float32).tolist(),
         "scale": maxExtent,
+        "frame": "box",
     }
 
 

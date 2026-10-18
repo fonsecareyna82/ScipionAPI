@@ -47,3 +47,20 @@ def test_SmoothingKeepsTheNormalsPointingOutOfTheDensity():
         outward = vertices - vertices.mean(axis=0)
 
         assert np.mean((mesh["normals"].reshape(-1, 3) * outward).sum(axis=1) > 0) > 0.99
+
+
+def test_EveryLevelSharesTheFrameOfTheBox():
+    size = 32
+    zz, yy, xx = np.indices((size, size, size))
+    # A sphere off the center of the box, nearer the high X side.
+    volume = (10.0 - np.sqrt((zz - 15.5) ** 2 + (yy - 15.5) ** 2 + (xx - 21.5) ** 2)).astype(np.float32)
+
+    small = buildVolumeSurfaceMesh(volume, level=6.0, asArrays=True)
+    large = buildVolumeSurfaceMesh(volume, level=2.0, asArrays=True)
+
+    for mesh in (small, large):
+        assert mesh["frame"] == "box"
+        assert mesh["scale"] == size
+        assert np.allclose(mesh["center"], [15.5, 15.5, 15.5])
+        # The sphere stays at its place in the box: (21.5 - 15.5) / 32 along X.
+        assert np.allclose(mesh["vertices"].reshape(-1, 3).mean(axis=0), [6 / size, 0, 0], atol=0.01)

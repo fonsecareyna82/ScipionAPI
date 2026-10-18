@@ -163,6 +163,8 @@ _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
 # Surface meshes are far larger per entry than slice previews (marching-cubes
 # output, up to _VOLUME_SURFACE_MAX_TRIANGLES triangles), so this cache is
 # kept much smaller than the slice one to bound memory use.
+# Part of the surface cache key (and of its ETag): bump it when the mesh changes.
+_VOLUME_SURFACE_MESH_VERSION = 2
 _VOLUME_SURFACE_CACHE_LOCK = threading.Lock()
 _VOLUME_SURFACE_CACHE = collections.OrderedDict()
 _VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
@@ -12876,6 +12878,7 @@ class ProjectService:
             int(minComponentTriangles),
             int(smoothingIterations),
             str(meshFormat or "json"),
+            _VOLUME_SURFACE_MESH_VERSION,
         )
 
     def _getCachedVolumeSurfaceResponse(self, cacheKey) -> Optional[Response]:
