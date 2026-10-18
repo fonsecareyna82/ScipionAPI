@@ -1,3 +1,5 @@
+import json
+import struct
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -323,7 +325,9 @@ def buildVolumeSurfaceMesh(
     maxTriangles: int = 350000,
     minComponentTriangles: int = 0,
     smoothingIterations: int = 0,
+    asArrays: bool = False,
 ) -> Dict[str, Any]:
+    """The isosurface of the volume. Its arrays are lists, or numpy arrays with asArrays."""
     arr = _cleanVolume(volume)
     levelValue = _validateIsoLevel(arr, level)
 
@@ -384,10 +388,15 @@ def buildVolumeSurfaceMesh(
             effectiveSmoothingIterations,
         )
 
-        normals = _computeMeshVertexNormals(
+        smoothedNormals = _computeMeshVertexNormals(
             verts,
             faces,
         )
+        # The triangle winding gives the opposite orientation to the
+        # marching cubes normals: keep the orientation of the latter.
+        if float((smoothedNormals * normals).sum()) < 0:
+            smoothedNormals = -smoothedNormals
+        normals = smoothedNormals
 
     triangleCount = int(faces.shape[0])
 
@@ -403,6 +412,15 @@ def buildVolumeSurfaceMesh(
     if maxExtent > 0 and np.isfinite(maxExtent):
         verticesXyz = verticesXyz / maxExtent
 
+    arrays = {
+        "vertices": verticesXyz.reshape(-1).astype(np.float32),
+        "normals": normalsXyz.reshape(-1).astype(np.float32),
+        "indices": faces.reshape(-1).astype(np.uint32),
+        "values": np.asarray(values, dtype=np.float32).reshape(-1),
+    }
+    if not asArrays:
+        arrays = {name: values.tolist() for name, values in arrays.items()}
+
     return {
         "kind": "surfaceMesh",
         "level": float(levelValue),
@@ -416,10 +434,60 @@ def buildVolumeSurfaceMesh(
         "minComponentTriangles": int(minComponentTriangles),
         "removedComponents": int(removedComponents),
         "smoothingIterations": int(effectiveSmoothingIterations),
-        "vertices": verticesXyz.reshape(-1).astype(np.float32).tolist(),
-        "normals": normalsXyz.reshape(-1).astype(np.float32).tolist(),
-        "indices": faces.reshape(-1).astype(np.int32).tolist(),
-        "values": np.asarray(values, dtype=np.float32).reshape(-1).tolist(),
+        **arrays,
         "center": center.astype(np.float32).tolist(),
         "scale": maxExtent,
     }
+
+
+SURFACE_MESH_BINARY_MEDIA_TYPE = "application/octet-stream"
+SURFACE_MESH_BINARY_MAGIC = b"SMSH"
+_SURFACE_MESH_BINARY_ARRAYS = (
+    ("vertices", "float32"),
+    ("normals", "float32"),
+    ("indices", "uint32"),
+    ("values", "float32"),
+)
+
+
+def encodeSurfaceMeshBinary(mesh: Dict[str, Any]) -> bytes:
+    """A surface mesh as bytes: the magic, the header length (uint32), a JSON header and the arrays.
+
+    The arrays follow the header in the order the header lists them, little
+    endian. The header is padded with spaces so every array starts at a
+    multiple of 4 bytes and can be read in place.
+    """
+    arrays = []
+    descriptors = []
+    for name, dtype in _SURFACE_MESH_BINARY_ARRAYS:
+        values = np.ascontiguousarray(np.asarray(mesh.get(name, []), dtype=np.dtype(dtype).newbyteorder("<")).reshape(-1))
+        arrays.append(values)
+        descriptors.append({"name": name, "type": dtype, "length": int(values.size)})
+
+    header = {key: value for key, value in mesh.items() if key not in dict(_SURFACE_MESH_BINARY_ARRAYS)}
+    header["arrays"] = descriptors
+    headerBytes = json.dumps(header).encode("utf-8")
+    prefixLength = len(SURFACE_MESH_BINARY_MAGIC) + 4
+    headerBytes += b" " * (-(prefixLength + len(headerBytes)) % 4)
+
+    return b"".join([
+        SURFACE_MESH_BINARY_MAGIC,
+        struct.pack("<I", len(headerBytes)),
+        headerBytes,
+        *(values.tobytes() for values in arrays),
+    ])
+
+
+def decodeSurfaceMeshBinary(data: bytes) -> Dict[str, Any]:
+    """The mesh written by encodeSurfaceMeshBinary, with numpy arrays."""
+    if data[:4] != SURFACE_MESH_BINARY_MAGIC:
+        raise ValueError("Not a binary surface mesh")
+    (headerLength,) = struct.unpack("<I", data[4:8])
+    offset = 8 + headerLength
+    mesh = json.loads(data[8:offset].decode("utf-8"))
+    for descriptor in mesh.pop("arrays"):
+        dtype = np.dtype(descriptor["type"]).newbyteorder("<")
+        size = int(descriptor["length"]) * dtype.itemsize
+        mesh[descriptor["name"]] = np.frombuffer(data[offset:offset + size], dtype=dtype)
+        offset += size
+    return mesh

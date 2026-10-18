@@ -997,8 +997,8 @@ def test_RenderVolumeSlicesBatchServiceIgnoresMalformedItems(service, monkeypatc
 
 
 def _fakeBuildVolumeSurfaceMesh(callTracker):
-    def build(volumeSmall, level, maxTriangles, minComponentTriangles, smoothingIterations):
-        callTracker.append(1)
+    def build(volumeSmall, level, maxTriangles, minComponentTriangles, smoothingIterations, asArrays=False):
+        callTracker.append(asArrays)
         return {
             "kind": "surfaceMesh",
             "level": level,
@@ -1112,6 +1112,44 @@ def test_GetVolumeSurfaceMeshCachesResultForPostgresqlPath(
     assert len(buildCalls) == 1
     assert second.headers["X-Preview-Cache"] == "hit"
     assert second.body == first.body
+
+
+def test_GetVolumeSurfaceMeshInBinaryIsCachedApart(
+    projectServiceModule, service, monkeypatch, tmp_path,
+):
+    from app.backend.utils.volume_surface_mesh import decodeSurfaceMeshBinary
+
+    volumePath = tmp_path / "volume.mrc"
+    volumePath.write_text("placeholder", encoding="utf-8")
+
+    class FakePgVolumeReader:
+        lastSkipReason = None
+
+        def getVolumeFile(self, volumeId):
+            return {"fileName": str(volumePath), "path": str(volumePath)}
+
+        def getVolumeArray(self, volumeId):
+            return np.arange(64, dtype=np.float32).reshape((4, 4, 4)), {}, {}
+
+    monkeypatch.setattr(service, "_getPostgresqlVolumeReaderIfAvailable", lambda **kwargs: FakePgVolumeReader())
+    buildCalls: list = []
+    monkeypatch.setattr(projectServiceModule, "buildVolumeSurfaceMesh", _fakeBuildVolumeSurfaceMesh(buildCalls))
+    callKwargs = dict(projectId=1, protocolId=10, outputName="outputVolumes", volumeId=0, level=0.5,
+                      maxDim=64, method="binning", maxTriangles=1000, currentUser={"id": 1}, mapper=object())
+
+    asJson = service.getVolumeSurfaceMesh(**callKwargs)
+    binary = service.getVolumeSurfaceMesh(**callKwargs, meshFormat="binary")
+    cachedBinary = service.getVolumeSurfaceMesh(**callKwargs, meshFormat="binary")
+
+    assert buildCalls == [False, True]
+    assert asJson.media_type == "application/json"
+    assert binary.media_type == "application/octet-stream"
+    assert binary.headers["ETag"] != asJson.headers["ETag"]
+    assert cachedBinary.headers["X-Preview-Cache"] == "hit"
+    assert cachedBinary.body == binary.body
+    mesh = decodeSurfaceMeshBinary(binary.body)
+    assert mesh["level"] == 0.5
+    assert mesh["vertices"].tolist() == [0.0, 0.0, 0.0]
 
 
 def test_GetVolumeSurfaceMeshReturns304WhenIfNoneMatchMatches(

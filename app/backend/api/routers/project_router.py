@@ -2867,6 +2867,11 @@ def getVolumeSurfaceMesh(
         le=12,
         alias="smoothingIterations",
     ),
+    meshFormat: Literal["json", "binary"] = Query(
+        "json",
+        alias="format",
+        description="binary: a JSON header followed by the arrays as little-endian typed arrays.",
+    ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser: Dict[str, Any] = Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -2891,7 +2896,8 @@ def getVolumeSurfaceMesh(
                                             currentUser=currentUser,
                                             mapper=mapper,
                                             ifNoneMatch=ifNoneMatch,
-                                            protocolIdIsScipionId=True)
+                                            protocolIdIsScipionId=True,
+                                            meshFormat=meshFormat)
 
     except HTTPException:
         raise

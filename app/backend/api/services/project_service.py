@@ -47,7 +47,11 @@ from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
 from app.backend.utils.outputs_preview import OutputsPreview
-from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
+from app.backend.utils.volume_surface_mesh import (
+    SURFACE_MESH_BINARY_MEDIA_TYPE,
+    buildVolumeSurfaceMesh,
+    encodeSurfaceMeshBinary,
+)
 from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
 from app.backend.api.services.protocol_relation_service import (
     ProtocolRelationService,
@@ -12847,6 +12851,7 @@ class ProjectService:
             maxTriangles: int,
             minComponentTriangles: int,
             smoothingIterations: int,
+            meshFormat: str = "json",
     ):
         mtimeNs = None
         sizeBytes = None
@@ -12870,6 +12875,7 @@ class ProjectService:
             int(maxTriangles),
             int(minComponentTriangles),
             int(smoothingIterations),
+            str(meshFormat or "json"),
         )
 
     def _getCachedVolumeSurfaceResponse(self, cacheKey) -> Optional[Response]:
@@ -13593,7 +13599,9 @@ class ProjectService:
             ifNoneMatch: Optional[str] = None,
 
             protocolIdIsScipionId=False,
+            meshFormat: str = "json",
     ):
+        binaryMesh = meshFormat == "binary"
         effectiveMaxTriangles = min(
             _VOLUME_SURFACE_MAX_TRIANGLES,
             max(1000, int(maxTriangles or 220000)),
@@ -13630,6 +13638,7 @@ class ProjectService:
                 maxTriangles=effectiveMaxTriangles,
                 minComponentTriangles=effectiveMinComponentTriangles,
                 smoothingIterations=effectiveSmoothingIterations,
+                meshFormat=meshFormat,
             )
 
             # The ETag only depends on file stat + params, computed above
@@ -13664,6 +13673,7 @@ class ProjectService:
                     maxTriangles=effectiveMaxTriangles,
                     minComponentTriangles=effectiveMinComponentTriangles,
                     smoothingIterations=effectiveSmoothingIterations,
+                    **({"asArrays": True} if binaryMesh else {}),
                 )
 
                 mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
@@ -13674,7 +13684,7 @@ class ProjectService:
                 mesh["volumeId"] = str(volumeId)
                 mesh["outputName"] = outputName
 
-                response = JSONResponse(mesh)
+                response = self._surfaceMeshResponse(mesh, binaryMesh)
                 response = self._storeCachedVolumeSurfaceResponse(cacheKey, response)
                 response.headers["X-Debug-Auth"] = "ok"
                 response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -13718,6 +13728,7 @@ class ProjectService:
             maxTriangles=effectiveMaxTriangles,
             minComponentTriangles=effectiveMinComponentTriangles,
             smoothingIterations=effectiveSmoothingIterations,
+            meshFormat=meshFormat,
         )
 
         etag = self._etagFromCacheKey(cacheKey)
@@ -13750,6 +13761,7 @@ class ProjectService:
             maxTriangles=effectiveMaxTriangles,
             minComponentTriangles=effectiveMinComponentTriangles,
             smoothingIterations=effectiveSmoothingIterations,
+            **({"asArrays": True} if binaryMesh else {}),
         )
 
         mesh["sourceDims"] = [int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2])]
@@ -13762,12 +13774,18 @@ class ProjectService:
         mesh["volumeId"] = str(volumeId)
         mesh["outputName"] = outputName
 
-        response = JSONResponse(mesh)
+        response = self._surfaceMeshResponse(mesh, binaryMesh)
         response = self._storeCachedVolumeSurfaceResponse(cacheKey, response)
         response.headers["X-Debug-Auth"] = "ok"
         response.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
         response.headers["Vary"] = "Authorization"
         return response
+
+    @staticmethod
+    def _surfaceMeshResponse(mesh, binaryMesh: bool) -> Response:
+        if binaryMesh:
+            return Response(content=encodeSurfaceMeshBinary(mesh), media_type=SURFACE_MESH_BINARY_MEDIA_TYPE)
+        return JSONResponse(mesh)
 
     def _centerCrop3d(self, fshift: np.ndarray, targetShape: Tuple[int, int, int]) -> np.ndarray:
         """Crop a centered 3D Fourier volume to targetShape (tz, ty, tx)."""

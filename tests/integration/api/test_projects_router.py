@@ -1457,6 +1457,7 @@ def test_GetVolumeSurfaceMeshUsesProjectDbRow(projectClient, fakeProjectService)
     assert fakeProjectService.lastGetProjectDbRowCall is not None
     assert fakeProjectService.lastGetProjectByIdCall is None
     assert fakeProjectService.lastGetVolumeSurfaceMeshCall == {
+        "meshFormat": "json",
         "projectId": 1,
         "protocolId": 2,
         "outputName": "out",
@@ -1474,6 +1475,13 @@ def test_GetVolumeSurfaceMeshUsesProjectDbRow(projectClient, fakeProjectService)
         },
         "mapper": fakeProjectService.lastGetVolumeSurfaceMeshCall["mapper"],
     }
+
+
+def test_GetVolumeSurfaceMeshPassesTheBinaryFormat(projectClient, fakeProjectService):
+    response = projectClient.get("/projects/1/protocols/2/outputs/out/volumes/vol-1/surface?format=binary")
+
+    assert response.status_code == 200
+    assert fakeProjectService.lastGetVolumeSurfaceMeshCall["meshFormat"] == "binary"
 
 
 @pytest.mark.parametrize(

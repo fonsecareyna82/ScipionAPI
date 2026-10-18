@@ -1958,8 +1958,10 @@ class FakeProjectService:
             smoothingIterations=0,
             ifNoneMatch=None,
             protocolIdIsScipionId=False,
+            meshFormat="json",
     ):
         self.lastGetVolumeSurfaceMeshCall = {
+            "meshFormat": meshFormat,
             "projectId": projectId,
             "protocolId": protocolId,
             "outputName": outputName,
