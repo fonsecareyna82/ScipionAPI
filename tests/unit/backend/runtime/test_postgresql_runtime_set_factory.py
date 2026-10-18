@@ -3022,6 +3022,19 @@ def test_RuntimeSetDetachedConsumerCloneDetachesLinkedPostgresqlSetPointer():
     assert runtimeClone._postgresqlOwnsDetachedRuntimeSets is False
 
 
+def test_RuntimeSetDetachedConsumerCloneKeepsTheSize():
+    # Protocols and wizards read the input size (e.g. classes = particles / 200).
+    _, runtimeSet = buildRuntimeSet()
+    runtimeSet._size.set(3616)
+
+    detachedConsumer = runtimeSet.clone(
+        _postgresqlDetachedConsumer=True
+    )
+
+    assert detachedConsumer.getSize() == 3616
+    detachedConsumer.releasePostgresqlDetachedConsumer()
+
+
 def test_RuntimeSetDetachedConsumerCloneRemainsReadOnly():
     _, runtimeSet = buildRuntimeSet()
 

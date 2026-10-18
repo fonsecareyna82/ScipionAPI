@@ -1952,6 +1952,13 @@ class PostgresqlRuntimeSetMixin:
         runtimeClone._postgresqlDetachedMapperFactoryWrapped = False
 
         if detachedConsumer:
+            # Scipion's Set.copy leaves the size out (a copy is usually filled
+            # again); a detached consumer reads the very same items.
+            try:
+                runtimeClone._size.set(self.getSize())
+            except Exception:
+                pass
+
             detachedRuntimeSets[id(self)] = runtimeClone
 
             runtimeClone._configurePostgresqlDetachedConsumer(
