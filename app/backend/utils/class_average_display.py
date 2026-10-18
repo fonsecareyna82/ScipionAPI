@@ -114,13 +114,16 @@ def shrinkVolume(volume, maxDim: int = _VOLUME_MAX_DIM) -> np.ndarray:
                                       x // factor, factor).mean(axis=(1, 3, 5))
 
 
-def _surface(volume, size: int, massFraction: float, smoothing: float) -> np.ndarray:
-    """A lit isosurface seen along Z: the densest connected body of the volume."""
+def _surface(volume, size: int, massFraction: float, smoothing: float, largestBody: bool = True) -> np.ndarray:
+    """A lit isosurface seen along Z: the densest connected body of the volume (or all of them)."""
     from scipy import ndimage
 
     data = _gaussian(volume, smoothing)
     threshold = float(np.quantile(data, 1 - massFraction))
-    labels, count = ndimage.label(data > threshold)
+    if threshold >= float(data.max()):
+        # Few distinct values (a binary mask): the surface between them.
+        threshold = 0.5 * (float(data.min()) + float(data.max()))
+    labels, count = ndimage.label(data > threshold) if largestBody else (None, 0)
     if count > 1:
         sizes = ndimage.sum(np.ones_like(data), labels, index=range(1, count + 1))
         body = labels == (int(np.argmax(sizes)) + 1)
@@ -184,3 +187,65 @@ def readClassRepresentative(filePath: str, index: Optional[int]) -> np.ndarray:
     if isinstance(images, list):
         images = images[0] if len(images) == 1 else np.stack(images)
     return np.asarray(images)
+
+
+_MRC_EXTENSIONS = (".mrc", ".mrcs", ".map", ".st", ".ali", ".rec")
+
+
+def readVolumeForDisplay(filePath: str, index: Optional[int] = None):
+    """The volume of a file, memory mapped when possible (tomograms can be large).
+
+    ``index`` (1-based) selects one volume of a stack of volumes.
+    """
+    path = str(filePath)
+    if path.lower().endswith(_MRC_EXTENSIONS):
+        import mrcfile
+        data = mrcfile.mmap(path, mode="r", permissive=True).data
+        if data.ndim == 4 and index:
+            data = data[index - 1]
+        return data
+    return readClassRepresentative(path, index)
+
+
+def shrinkVolumeInSlabs(volume, maxDim: int) -> np.ndarray:
+    """shrinkVolume reading a few planes at a time, for memory mapped volumes.
+
+    Every axis is reduced by the same factor, but never below one voxel (a
+    thin tomogram keeps its few planes).
+    """
+    shape = volume.shape
+    factor = int(np.ceil(max(shape) / float(maxDim)))
+    if factor <= 1:
+        return np.asarray(volume, dtype=np.float32)
+    fz, fy, fx = (max(1, min(factor, side)) for side in shape)
+    z, y, x = shape[0] // fz * fz, shape[1] // fy * fy, shape[2] // fx * fx
+    reduced = np.empty((z // fz, y // fy, x // fx), dtype=np.float32)
+    for plane in range(z // fz):
+        slab = np.asarray(volume[plane * fz:(plane + 1) * fz, :y, :x], dtype=np.float32)
+        reduced[plane] = slab.reshape(fz, y // fy, fy, x // fx, fx).mean(axis=(0, 2, 4))
+    return reduced
+
+
+def _finite(data: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(data)
+    if finite.all():
+        return data
+    return np.where(finite, data, np.median(data[finite]) if finite.any() else 0.0).astype(np.float32)
+
+
+def renderVolumeImage(volume, size: int, view: str = "slice") -> Optional[np.ndarray]:
+    """A display image of any volume (map, tomogram, mask): a lit surface (RGB),
+    its projection or its central slice. None when it is not 3D."""
+    from app.backend.utils.image_display import reduceForDisplay, toDisplayUint8
+
+    if getattr(volume, "ndim", 0) != 3 or min(volume.shape) < 2:
+        return None
+    if view == "slice":
+        central = _finite(np.asarray(volume[volume.shape[0] // 2], dtype=np.float32))
+        return toDisplayUint8(reduceForDisplay(central, size))
+    if view == "projection":
+        reduced = _finite(shrinkVolumeInSlabs(volume, min(max(int(size), _VOLUME_MAX_DIM), 256)))
+        return toDisplayUint8(reduceForDisplay(reduced.sum(axis=0), size))
+    reduced = _finite(shrinkVolumeInSlabs(volume, _VOLUME_MAX_DIM))
+    # Every body: a map or a mask may hold several on purpose.
+    return _surface(reduced.astype(np.float64), size, _SURFACE_MASS_FRACTION, smoothing=1.0, largestBody=False)

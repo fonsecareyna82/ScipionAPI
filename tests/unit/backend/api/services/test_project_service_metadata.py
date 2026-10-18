@@ -2932,3 +2932,34 @@ def test_ViewerFileTokenOpensTheSignedProjectFileInsteadOfAnOutput(
             projectId=8, protocolId=115, outputName=token, mapper=object(),
         )
     assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("volumeView,channels", [("surface", 3), ("projection", 0), ("slice", 0)])
+def test_VolumeMetadataCellsAreDrawnAsTheChosenView(service, monkeypatch, tmp_path, volumeView, channels):
+    import io
+    import mrcfile
+    from PIL import Image as PILImage
+
+    zz, yy, xx = np.indices((32, 32, 32)) - 15.5
+    path = tmp_path / "mask.mrc"
+    with mrcfile.new(str(path)) as mrc:
+        mrc.set_data((np.sqrt(zz ** 2 + yy ** 2 + xx ** 2) < 9).astype(np.float32))
+
+    table = FakeTable(name="objects", alias="Volumes", columns=[FakeColumn("_filename", "Image", ImageRenderer())])
+    manager = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(1, [str(path)])]},
+        fileName="postgresql://project/1/protocol/10/output/outputMask",
+    )
+    patchOpenMetadataTable(service, monkeypatch, manager, table)
+
+    response = service.renderMetadataImageCellService(
+        projectId=1, protocolId=10, outputName="outputMask", tableName="objects", rowId=None, rowIndex=0,
+        columnName="_filename", size=64, applyTransform=False, inline=True, fmt="png",
+        contrastMode="volume", volumeView=volumeView,
+    )
+    image = np.asarray(PILImage.open(io.BytesIO(response.body)))
+
+    assert response.media_type == "image/png"
+    assert (image.ndim == 3 and image.shape[-1] == channels) if channels else image.ndim == 2
+    assert image.std() > 10

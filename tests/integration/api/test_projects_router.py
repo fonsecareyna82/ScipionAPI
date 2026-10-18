@@ -1813,7 +1813,7 @@ def test_GetFscRowsUsesProjectDbRowAndPassesCurrentUser(
 # Contrast mode for metadata image endpoints (RED: HTTP contract)
 # -----------------------------------------------------------------------------
 
-@pytest.mark.parametrize("contrastMode", ["enhanced", "original"])
+@pytest.mark.parametrize("contrastMode", ["enhanced", "volume", "original"])
 def test_MetadataContrastModeHttpSingleImage(
     projectClient, fakeProjectService, monkeypatch, contrastMode,
 ):
@@ -1838,7 +1838,7 @@ def test_MetadataContrastModeHttpSingleImage(
     assert calls[0].get("contrastMode", "original") == contrastMode
 
 
-@pytest.mark.parametrize("contrastMode", ["enhanced", "original"])
+@pytest.mark.parametrize("contrastMode", ["enhanced", "volume", "original"])
 def test_MetadataContrastModeHttpBatchImages(
     projectClient, fakeProjectService, monkeypatch, contrastMode,
 ):

@@ -18101,7 +18101,7 @@ class ProjectService:
             contrastMode: str = "original",
             volumeView: str = "surface",
     ):
-        enhanced = str(contrastMode or "original").strip().lower() == "enhanced"
+        enhanced = str(contrastMode or "original").strip().lower() in ("enhanced", "volume")
         return (
             int(projectId),
             int(protocolId),
@@ -18500,6 +18500,39 @@ class ProjectService:
                 if classResponse is not None:
                     return classResponse
 
+        # Volumes (maps, tomograms, masks): a surface, a projection or the
+        # central slice, as chosen in the viewer.
+        if (
+                str(contrastMode or "original").strip().lower() == "volume"
+                and isinstance(rawValue, str)
+                and rawValue.strip()
+        ):
+            indexText, _, pathText = rawValue.strip().rpartition("@")
+            try:
+                volumeIndex = int(float(indexText)) if indexText else 0
+            except ValueError:
+                volumeIndex, pathText = 0, rawValue.strip()
+            volumePath = None
+            if pathResolver is not None:
+                resolvedText = pathResolver.resolveExistingPath(pathText)
+                volumePath = LocalPath(resolvedText) if resolvedText else None
+            if volumePath is None:
+                for candidate in ([LocalPath(pathText)] if LocalPath(pathText).is_absolute() else
+                                  [metaDir / pathText if metaDir is not None else None,
+                                   LocalPath(self.currentProject.getPath()) / pathText
+                                   if self.currentProject is not None else None]):
+                    if candidate is not None and candidate.exists():
+                        volumePath = candidate
+                        break
+            if volumePath is not None:
+                volumeResponse = self._renderVolumeCell(
+                    volumePath, volumeIndex, size=size, fmt=fmt, inline=inline, volumeView=volumeView,
+                    tableName=tableName, columnName=columnName,
+                    fileId=rowId if rowId is not None else (rowIndex if rowIndex is not None else idx0 + 1),
+                )
+                if volumeResponse is not None:
+                    return volumeResponse
+
         if hasattr(renderer, "setSize"):
             renderer.setSize(size)
         if hasattr(renderer, "setApplyTransformation"):
@@ -18808,6 +18841,36 @@ class ProjectService:
         return Response(content=buffer.getvalue(), media_type=mediaType, headers=headers)
 
     @staticmethod
+    def _renderVolumeCell(filePath, index, *, size: int, fmt: str, inline: bool,
+                          volumeView: str, tableName: str, columnName: str, fileId) -> Optional[Response]:
+        """A volume of a metadata cell drawn as volumeView; None for 2D images or errors (normal path)."""
+        from PIL import Image as PILImage
+        from app.backend.utils.class_average_display import (
+            VOLUME_VIEWS, readVolumeForDisplay, renderVolumeImage,
+        )
+        try:
+            volume = readVolumeForDisplay(str(filePath), index if index and index > 0 else None)
+            pixels = renderVolumeImage(volume, size, volumeView if volumeView in VOLUME_VIEWS else "slice")
+        except Exception:
+            logger.warning("Could not render volume %s (index %s); using the preview",
+                           filePath, index, exc_info=True)
+            return None
+        if pixels is None:
+            return None
+        fmtLower = (fmt or "png").lower()
+        pilFormat, mediaType = {"jpg": ("JPEG", "image/jpeg"), "jpeg": ("JPEG", "image/jpeg"),
+                                "webp": ("WEBP", "image/webp")}.get(fmtLower, ("PNG", "image/png"))
+        buffer = io.BytesIO()
+        saveKw = {"quality": 90} if pilFormat in ("JPEG", "WEBP") else {}
+        PILImage.fromarray(pixels, mode="RGB" if pixels.ndim == 3 else "L").save(buffer, format=pilFormat, **saveKw)
+        disposition = "inline" if inline else "attachment"
+        headers = {
+            "Content-Disposition": f'{disposition}; filename="{tableName}_{columnName}_{fileId}.{fmtLower}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+        return Response(content=buffer.getvalue(), media_type=mediaType, headers=headers)
+
+    @staticmethod
     def _enhanceMetadataClassPreviewResponse(previewResponse: Response) -> Response:
         """Enhance a decoded preview *for display only*, retaining its format.
 
@@ -18954,7 +19017,7 @@ class ProjectService:
                     **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                     # Each cell uses the contrast-aware cache key.
                     **({"contrastMode": contrastMode, "volumeView": volumeView}
-                       if str(contrastMode).strip().lower() == "enhanced" else {}),
+                       if str(contrastMode).strip().lower() in ("enhanced", "volume") else {}),
                 )
 
                 body = getattr(response, "body", None) or b""

@@ -4571,11 +4571,12 @@ def renderMetadataImageCell(
     ),
     sortBy: str = Query("id", description="Sort column for legacy positional image reads"),
     asc: bool = Query(True, description="Sort direction for positional image reads"),
-    contrastMode: Literal["original", "enhanced"] = Query(
-        "original", description="Contrast mode for class-average images."
+    contrastMode: Literal["original", "enhanced", "volume"] = Query(
+        "original",
+        description="enhanced: class-average images; volume: volumes drawn as volumeView.",
     ),
     volumeView: Literal["surface", "projection", "slice"] = Query(
-        "surface", description="How enhanced 3D class representatives are drawn."
+        "surface", description="How 3D class representatives and volumes are drawn."
     ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
@@ -4607,7 +4608,7 @@ def renderMetadataImageCell(
         ifNoneMatch=ifNoneMatch,
         protocolIdIsScipionId=True,
         # Preserve legacy calls for Original; Enhanced is opt-in.
-        **({"contrastMode": contrastMode, "volumeView": volumeView} if contrastMode == "enhanced" else {}),
+        **({"contrastMode": contrastMode, "volumeView": volumeView} if contrastMode != "original" else {}),
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -4629,7 +4630,7 @@ class MetadataImageBatchRenderRequest(BaseModel):
     fmt: str = "png"
     sortBy: str = "id"
     asc: bool = True
-    contrastMode: Literal["original", "enhanced"] = "original"
+    contrastMode: Literal["original", "enhanced", "volume"] = "original"
     volumeView: Literal["surface", "projection", "slice"] = "surface"
 
 
@@ -4672,7 +4673,7 @@ def renderMetadataImageCellsBatch(
         mapper=mapper,
         protocolIdIsScipionId=True,
         **({"contrastMode": payload.contrastMode, "volumeView": payload.volumeView}
-           if payload.contrastMode == "enhanced" else {}),
+           if payload.contrastMode != "original" else {}),
     )
 
     resp = JSONResponse(result)
