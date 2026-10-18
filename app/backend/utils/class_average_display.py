@@ -28,6 +28,10 @@ _SIGNAL_PERCENTILE = 99.7
 _CLASS_SMOOTHING = 0.8
 # The background is measured outside this fraction of the image radius.
 _BACKGROUND_RADIUS = 0.75
+# The background noise counts as at least this fraction of the spread of the
+# particle area: a background a mask flattened (the solvent of a map) would
+# otherwise blow its rounding ripples up into a checkered pattern.
+_MIN_NOISE_FRACTION = 0.3
 # Volumes are reduced to at most this size per side before rendering.
 _VOLUME_MAX_DIM = 128
 # The surface encloses the densest fraction of the volume.
@@ -81,7 +85,12 @@ def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING) -
     ring = valid & (distance > _BACKGROUND_RADIUS * radius)
     background = data[ring] if ring.sum() > 50 else data[valid]
     center = float(np.median(background))
-    noise = float(1.4826 * np.median(np.abs(background - center))) or float(data[valid].std()) or 1.0
+    noise = float(1.4826 * np.median(np.abs(background - center)))
+    inner = data[valid & (distance <= _BACKGROUND_RADIUS * radius)]
+    if inner.size > 50:
+        q1, q3 = np.percentile(inner, [25, 75])
+        noise = max(noise, _MIN_NOISE_FRACTION * float(q3 - q1) / 1.349)
+    noise = noise or float(data[valid].std()) or 1.0
     scaled = (data - center) / noise
 
     # Two linear pieces: the noise below its mean goes from black to the

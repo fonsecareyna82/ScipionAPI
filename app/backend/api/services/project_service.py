@@ -194,7 +194,7 @@ _METADATA_IMAGE_CACHE_LOCK = threading.Lock()
 _METADATA_IMAGE_CACHE = collections.OrderedDict()
 _METADATA_IMAGE_CACHE_MAX_ITEMS = 512
 # Bumped when class representatives are drawn differently (see class_average_display).
-CLASS_DISPLAY_VERSION = 2
+CLASS_DISPLAY_VERSION = 3
 
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
@@ -18958,7 +18958,8 @@ class ProjectService:
         pilFormat, mediaType = {"jpg": ("JPEG", "image/jpeg"), "jpeg": ("JPEG", "image/jpeg"),
                                 "webp": ("WEBP", "image/webp")}.get(fmtLower, ("PNG", "image/png"))
         buffer = io.BytesIO()
-        PILImage.fromarray(pixels, mode="RGB" if pixels.ndim == 3 else "L").save(buffer, format=pilFormat)
+        PILImage.fromarray(pixels, mode="RGB" if pixels.ndim == 3 else "L").save(
+            buffer, format=pilFormat, **({"quality": 90} if pilFormat in ("WEBP", "JPEG") else {}))
         disposition = "inline" if inline else "attachment"
         headers = {
             "Content-Disposition": f'{disposition}; filename="{tableName}_{columnName}_{fileId}.{fmtLower}"',

@@ -34,6 +34,18 @@ def test_the_area_a_plugin_masked_shows_as_background():
     assert image[32, 32] > image[0, 0] + 80
 
 
+def test_a_flattened_background_does_not_turn_into_a_checkered_pattern():
+    # A map's solvent, masked to almost zero: only tiny ripples are left there.
+    image = classAverage(signal=4, seed=3)
+    yy, xx = np.mgrid[:64, :64]
+    outside = np.hypot(yy - 32, xx - 32) > 22
+    image[outside] = 1e-4 * np.sin(xx[outside] * 0.6) * np.cos(yy[outside] * 0.5)
+    shown = display.displayClassAverage(image, 64).astype(float)
+    corner = shown[2:10, 26:38]
+    assert corner.std() < 4
+    assert shown[28:36, 28:36].mean() > corner.mean() + 60
+
+
 def test_invalid_images_do_not_fail():
     assert display.displayClassAverage(np.full((32, 32), np.nan), 16).shape == (16, 16)
     assert display.displayClassAverage(np.zeros((32, 32)), 16).shape == (16, 16)
