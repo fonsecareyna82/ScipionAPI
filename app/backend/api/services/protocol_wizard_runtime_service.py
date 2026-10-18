@@ -74,3 +74,56 @@ def runProtocolWizard(*, mapper: Any, currentUser: Mapping[str, Any], projectId:
     reply['wizardId'] = request['wizardId']
     reply['paramName'] = request['paramName']
     return reply
+
+
+VIEWER_WORKER_MODULE = 'app.backend.api.services.protocol_viewer_wizard_worker'
+
+
+def runProtocolViewerWizard(*, mapper: Any, currentUser: Mapping[str, Any], projectId: int,
+                            protocolId: int, payload, snapshot, workerRunner=None) -> Dict[str, Any]:
+    """Run a wizard of a viewer's form (e.g. a color scale), as the desktop viewer form does."""
+    from app.backend.api.services.protocol_viewer_action_service import _VIEWER_ID, _valid_values
+    from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
+        resolvePersistedProtocolViewerCandidates)
+    from app.backend.api.services.protocol_viewer_wizard_worker import (
+        MAX_REPLY as VIEWER_MAX_REPLY, MAX_REQUEST as VIEWER_MAX_REQUEST,
+        REPLY_MARKER as VIEWER_REPLY_MARKER, validRequest as validViewerRequest)
+
+    if not viewerEvaluationEnabled():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail='Running plugin code is disabled on this server')
+    userId = currentUser.get('id') if isinstance(currentUser, Mapping) else None
+    if not userId or not mapper.getProject(projectId=projectId, userId=userId):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Project not found')
+    viewerId = str(payload.viewerId or '')
+    values = dict(payload.values or {})
+    if not _VIEWER_ID.fullmatch(viewerId) or not _valid_values(values):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail='Invalid viewer wizard request')
+    candidates = resolvePersistedProtocolViewerCandidates(
+        mapper=mapper, project_id=projectId, protocol_id=protocolId, snapshot=snapshot)
+    if not any(item.get('id') == viewerId and item.get('viewerKind') == 'protocol-form'
+               for item in candidates['viewers']):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Viewer not applicable')
+    request = {
+        'projectId': int(projectId), 'protocolId': int(protocolId),
+        'protocolDbId': candidates['protocolDbId'], 'viewerId': viewerId, 'values': values,
+        'paramName': str(payload.paramName or '').strip(), 'wizardId': str(payload.wizardId or '').strip(),
+        'answers': list(payload.answers or []), 'preview': payload.preview,
+    }
+    if not validViewerRequest(request):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail='Invalid viewer wizard request')
+    runner = workerRunner or (lambda value, timeout: _run_worker(
+        value, timeout, module=VIEWER_WORKER_MODULE, marker=VIEWER_REPLY_MARKER,
+        max_request=VIEWER_MAX_REQUEST, max_reply=VIEWER_MAX_REPLY))
+    try:
+        reply = runner(request, wizardTimeoutSeconds())
+    except DynamicProtocolViewerFormError as exc:
+        code, detail = _WORKER_ERRORS.get(exc.code, (status.HTTP_502_BAD_GATEWAY, 'The wizard failed'))
+        raise HTTPException(status_code=code, detail=detail)
+    if not isinstance(reply, dict) or reply.get('status') not in REPLY_STATUSES:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Invalid wizard reply')
+    reply['wizardId'] = request['wizardId']
+    reply['paramName'] = request['paramName']
+    return reply

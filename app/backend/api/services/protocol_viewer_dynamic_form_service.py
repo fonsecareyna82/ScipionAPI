@@ -242,7 +242,28 @@ def _validated_reply(payload: Any, request: dict) -> dict:
         result['conditionalFields'] = conditional_fields
     if actions is not None:
         result['actions'] = actions
+    wizards = _validate_wizards(payload, visible_fields, conditional_fields)
+    if wizards is not None:
+        result['wizards'] = wizards
     return result
+
+
+_WIZARD_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+')
+
+
+def _validate_wizards(payload, visible_fields, conditional_fields):
+    """{field: wizard id} for fields of the same form; None for older workers."""
+    if 'wizards' not in payload:
+        return None
+    wizards = payload['wizards']
+    names = {field['name'] for _, _, field in visible_fields}
+    names.update(entry['field']['name'] for entry in conditional_fields or ())
+    if (type(wizards) is not dict or len(wizards) > 96 or any(
+            type(name) is not str or name not in names or type(wizard) is not str
+            or len(wizard) > 512 or not _WIZARD_ID.fullmatch(wizard)
+            for name, wizard in wizards.items())):
+        raise DynamicProtocolViewerFormError('invalid_worker_schema')
+    return dict(wizards)
 
 
 def _validate_actions(payload, visible_fields, conditional_fields):

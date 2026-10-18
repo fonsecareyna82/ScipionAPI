@@ -115,6 +115,16 @@ class ProtocolWizardRunRequest(BaseModel):
     preview: Optional[Dict[str, Any]] = None
 
 
+class ProtocolViewerWizardRunRequest(BaseModel):
+    """Run a wizard of a protocol viewer's form, with the viewer form's values."""
+    viewerId: str
+    values: Dict[str, Any] = Field(default_factory=dict)
+    paramName: str
+    wizardId: str
+    answers: List[Dict[str, Any]] = Field(default_factory=list)
+    preview: Optional[Dict[str, Any]] = None
+
+
 class ProtocolRelationCandidatesRequest(BaseModel):
     protocolClassName: str
     paramName: str

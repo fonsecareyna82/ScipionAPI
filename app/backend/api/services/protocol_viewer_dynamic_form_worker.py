@@ -191,6 +191,13 @@ def serializeRuntimeViewerDefinition(
             # its default/help/label, and don't count it as an omitted field.
             if type(name) is str and name in inherited:
                 continue
+            # A Line only puts its params side by side (e.g. a color scale)
+            # and is named after its label:
+            # they are fields of the enclosing group.
+            from pyworkflow.protocol.params import Line
+            if isinstance(param, Line):
+                output.extend(fields(param, section_label, group_label))
+                continue
             if type(name) is not str or not name.isidentifier() or len(name) > 128:
                 omitted += 1
                 continue
@@ -507,6 +514,18 @@ def viewerActionNames(viewer):
                   if type(name) is str and name.isidentifier() and len(name) <= 128)
 
 
+def viewerWizards(viewer):
+    """{field: wizard id}: the wizards the desktop viewer form offers (e.g. a color scale)."""
+    from pyworkflow import Config
+    from app.backend.api.services.protocol_wizard_runtime_worker import desktopWizards, wizardIdentity
+    try:
+        wizards = desktopWizards(Config.getDomain(), viewer)
+    except Exception:
+        return {}
+    return {name: wizardIdentity(wizard) for name, wizard in wizards.items()
+            if type(name) is str and name.isidentifier() and len(name) <= 128}
+
+
 def _serialized_field_names(schema):
     names = set()
     for section in schema['sections']:
@@ -525,6 +544,8 @@ def _evaluate(request: dict) -> dict:
         fields = _serialized_field_names(schema)
         schema['actions'] = [name for name in viewerActionNames(context.viewer)
                              if name in fields]
+        schema['wizards'] = {name: wizardId for name, wizardId in viewerWizards(context.viewer).items()
+                             if name in fields}
     return {'ok': True, 'status': 'runtime-preview', 'source': 'isolated-worker',
             'projectId': request['projectId'], 'protocolId': str(request['protocolId']),
             'viewerId': request['viewerId'],

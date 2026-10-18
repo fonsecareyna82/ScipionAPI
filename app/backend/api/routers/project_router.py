@@ -36,8 +36,9 @@ from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, P
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
                                                     ProjectImportIn, ProjectImportOut,
                                                     ProtocolRelationCandidatesRequest, ProtocolRelationCandidatesResponse,
-                                                    ProtocolWizardRunRequest,)
-from app.backend.api.services.protocol_wizard_runtime_service import runProtocolWizard
+                                                    ProtocolWizardRunRequest, ProtocolViewerWizardRunRequest,)
+from app.backend.api.services.protocol_wizard_runtime_service import (
+    runProtocolViewerWizard, runProtocolWizard)
 from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
     PersistedProtocolViewerError,
     resolvePersistedProtocolViewerCandidates,
@@ -2434,6 +2435,26 @@ def runProtocolViewerActionRoute(
             status_code=_PROTOCOL_VIEWER_ACTION_STATUS.get(exc.code, 502),
             detail={"code": exc.code, "messages": exc.messages},
         ) from None
+    except PersistedProtocolViewerError as exc:
+        raise HTTPException(status_code=404 if exc.code == "not_found" else 409,
+                            detail={"code": exc.code, "messages": []}) from None
+
+
+@router.post("/{projectId}/protocols/{protocolId}/viewers/wizard", response_model=Any)
+def runProtocolViewerWizardRoute(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolViewerWizardRunRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """Run a wizard of a viewer's form (e.g. a color scale); replies as /wizards/run."""
+    if not isProtocolViewerRuntimePreviewAvailable(currentUser):
+        raise HTTPException(status_code=404, detail="viewer_actions_unavailable")
+    try:
+        return runProtocolViewerWizard(
+            mapper=mapper, currentUser=currentUser, projectId=projectId, protocolId=protocolId,
+            payload=payload, snapshot=getScipionViewerResolutionSnapshot())
     except PersistedProtocolViewerError as exc:
         raise HTTPException(status_code=404 if exc.code == "not_found" else 409,
                             detail={"code": exc.code, "messages": []}) from None
