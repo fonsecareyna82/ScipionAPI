@@ -338,6 +338,35 @@ def test_BuildWizardReadyProtocolCreatesNewProtocolWhenProtocolIdIsMissing(
     assert projectService.runtimeCalls == []
 
 
+def test_scalars_that_may_point_to_an_output_take_their_value(
+    wizardService,
+    currentProject,
+    mapper,
+):
+    # e.g. cryoSPARC's mask diameters: {"pointerMode": False, "value": ...}.
+    protocol = FakeProtocol(objId=None, className="ProtCryo2D")
+    diameter, outer, linked = FakeParam(label="Diameter"), FakeParam(label="Outer"), FakeParam(label="Linked")
+    protocol.addParam("diameter", diameter)
+    protocol.addParam("outer", outer)
+    protocol.addParam("linked", linked)
+    currentProject.protocolFactories["ProtCryo2D"] = FakeProtocolFactory(protocol)
+
+    wizardService._buildWizardReadyProtocol(
+        protocolId=None,
+        protocolClassName="ProtCryo2D",
+        formValues={
+            "diameter": {"pointerMode": False, "value": 140},
+            "outer": {"pointerMode": False, "value": ""},
+            "linked": {"pointerMode": True, "value": "12.outputValue"},
+        },
+        mapper=mapper,
+        projectId=1,
+    )
+
+    assert diameter.get() == 140
+    assert outer.get() is None and linked.get() is None
+
+
 def test_BuildWizardReadyProtocolRaisesWhenNewProtocolClassIsMissing(
     wizardService,
     mapper,
@@ -353,216 +382,6 @@ def test_BuildWizardReadyProtocolRaisesWhenNewProtocolClassIsMissing(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == "Protocol class 'MissingProtocol' not found"
-
-
-def test_ExecuteProtocolWizardResolvesPostgresqlProtocolId(
-    protocolWizardServiceModule,
-    wizardService,
-    currentProject,
-    projectService,
-    mapper,
-    monkeypatch,
-):
-    protocol = FakeProtocol(objId=10, className="ProtWizardTarget")
-    iterationsParam = FakeParam(label="Iterations")
-    protocol.addParam("iterations", iterationsParam)
-
-    currentProject.protocols[10] = protocol
-    projectService.runtimeProtocolIdByDbId[500] = 10
-
-    descriptor = {
-        "id": "tests.FakeWizardClass",
-        "kind": "compute",
-        "targetParams": ["boxSize"],
-    }
-
-    monkeypatch.setattr(
-        wizardService,
-        "_resolveWizardDescriptorForParam",
-        lambda protocol, paramName, wizardId: descriptor,
-    )
-    monkeypatch.setattr(
-        wizardService,
-        "_getWizardClassById",
-        lambda wizardId: FakeWizardClass,
-    )
-
-    handlerCalls = []
-
-    def fakeExecuteWizardHandler(
-        kind,
-        wizardClass,
-        protocol,
-        paramName,
-        descriptor,
-        wizardInputs,
-        currentProject,
-        projectId,
-    ):
-        handlerCalls.append({
-            "kind": kind,
-            "wizardClass": wizardClass,
-            "protocol": protocol,
-            "paramName": paramName,
-            "descriptor": descriptor,
-            "wizardInputs": wizardInputs,
-            "currentProject": currentProject,
-            "projectId": projectId,
-        })
-        return {
-            "paramUpdates": {
-                "boxSize": 128,
-            },
-            "message": "Box size computed",
-            "preview": {
-                "enabled": True,
-            },
-        }
-
-    monkeypatch.setattr(
-        protocolWizardServiceModule,
-        "executeWizardHandler",
-        fakeExecuteWizardHandler,
-    )
-
-    payload = FakePayload(
-        protocolId=500,
-        protocolClassName="ProtWizardTarget",
-        formValues={
-            "iterations": 7,
-        },
-        paramName="boxSize",
-        wizardId="tests.FakeWizardClass",
-        wizardInputs={
-            "diameter": 180,
-        },
-    )
-
-    result = wizardService.executeProtocolWizard(
-        mapper=mapper,
-        projectId=1,
-        currentUser={"id": 1},
-        payload=payload,
-    )
-
-    assert result == {
-        "success": True,
-        "wizardId": "tests.FakeWizardClass",
-        "kind": "compute",
-        "paramUpdates": {
-            "boxSize": 128,
-        },
-        "message": "Box size computed",
-        "preview": {
-            "enabled": True,
-        },
-    }
-
-    assert projectService.loadPostgresqlRuntimeProjectCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 1,
-            "currentUser": {"id": 1},
-        }
-    ]
-    assert wizardService.currentProject is currentProject
-
-    assert projectService.runtimeCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 1,
-            "protocolId": 500,
-        }
-    ]
-
-    assert currentProject.fixedProtocolParams == [protocol]
-    assert iterationsParam.get() == 7
-    assert protocol.attributeValues["iterations"] == 7
-
-    assert handlerCalls == [
-        {
-            "kind": "compute",
-            "wizardClass": FakeWizardClass,
-            "protocol": protocol,
-            "paramName": "boxSize",
-            "descriptor": descriptor,
-            "wizardInputs": {
-                "diameter": 180,
-            },
-            "currentProject": currentProject,
-            "projectId": 1,
-        }
-    ]
-
-
-def test_ExecuteProtocolWizardReturns404WhenProjectDoesNotExist(
-    wizardService,
-    projectService,
-    mapper,
-):
-    projectService.projectRow = None
-
-    payload = FakePayload(
-        protocolId=500,
-        protocolClassName="ProtWizardTarget",
-        formValues={},
-        paramName="boxSize",
-        wizardId="tests.FakeWizardClass",
-        wizardInputs={},
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        wizardService.executeProtocolWizard(
-            mapper=mapper,
-            projectId=1,
-            currentUser={"id": 1},
-            payload=payload,
-        )
-
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "Project not found"
-    assert projectService.loadPostgresqlRuntimeProjectCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 1,
-            "currentUser": {"id": 1},
-        }
-    ]
-
-
-def test_ExecuteProtocolWizardFailsWhenRuntimeProjectWasNotLoaded(
-        wizardService,
-        projectService,
-        mapper,
-):
-    projectService.currentProject = None
-
-    payload = FakePayload(
-        protocolId=None,
-        protocolClassName="FakeProtocol",
-        paramName="radius",
-        wizardId="fake.wizard.Wizard",
-        formValues={},
-        wizardInputs={},
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        wizardService.executeProtocolWizard(
-            mapper=mapper,
-            projectId=1,
-            currentUser={"id": 1},
-            payload=payload,
-        )
-
-    assert exc.value.status_code == 500
-    assert exc.value.detail == "PostgreSQL runtime project was not loaded"
-    assert projectService.loadPostgresqlRuntimeProjectCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 1,
-            "currentUser": {"id": 1},
-        }
-    ]
 
 
 def test_BuildWizardReadyProtocolUsesScipionIdWhenRouteIdentityIsExplicit(

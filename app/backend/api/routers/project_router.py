@@ -34,9 +34,10 @@ from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn, ProtocolTag
 from app.backend.database import getMapperDependency as getMapper
 from app.backend.api.schemas.project_schema import (ProjectCreate, ProjectOut, ProjectUpdate, ProjectShareCreate,
                                                     ApplyWorkflowToProjectRequest, TiltSeriesNewSetRequest,
-                                                    ProjectImportIn, ProtocolWizardExecuteResponse,
-                                                    ProtocolWizardExecuteRequest, ProjectImportOut,
-                                                    ProtocolRelationCandidatesRequest, ProtocolRelationCandidatesResponse,)
+                                                    ProjectImportIn, ProjectImportOut,
+                                                    ProtocolRelationCandidatesRequest, ProtocolRelationCandidatesResponse,
+                                                    ProtocolWizardRunRequest,)
+from app.backend.api.services.protocol_wizard_runtime_service import runProtocolWizard
 from app.backend.api.services.protocol_viewer_persisted_resolution_service import (
     PersistedProtocolViewerError,
     resolvePersistedProtocolViewerCandidates,
@@ -5497,21 +5498,19 @@ def resolveProtocolRelationCandidatesRoute(
 # *****************************************
 # Wizards routers
 # *****************************************
-@router.post(
-    "/{projectId}/wizards/execute",
-    response_model=ProtocolWizardExecuteResponse,
-)
-def executeProtocolWizardRoute(
+@router.post("/{projectId}/wizards/run", response_model=Any)
+def runProtocolWizardRoute(
     projectId: int,
-    payload: ProtocolWizardExecuteRequest,
+    payload: ProtocolWizardRunRequest,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
-    service: ProjectService = Depends(getProjectService),
 ):
-    return service.executeProtocolWizard(
-        mapper=mapper,
-        projectId=projectId,
-        currentUser=currentUser,
-        payload=payload,
-        protocolIdIsScipionId=True,
-    )
+    """Run the wizard the desktop form opens for a param, with its dialogs on the web.
+
+    Replies one of: ``done`` (paramUpdates, messages, items), ``dialog`` (a
+    dialog to show; send its answer appended to ``answers``), ``preview``
+    (images for ``preview``), ``cancelled``, ``invalid``, ``unsupported`` or
+    ``failed``.
+    """
+    return runProtocolWizard(mapper=mapper, currentUser=currentUser, projectId=projectId,
+                             payload=payload)

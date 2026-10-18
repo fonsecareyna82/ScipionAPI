@@ -104,24 +104,15 @@ class ApplyWorkflowToProjectRequest(BaseModel):
     workflowId: str
 
 
-class ProtocolWizardInputOption(BaseModel):
-    value: str
-    label: str
-
-
-class ProtocolWizardInputSchema(BaseModel):
-    type: Literal["select"]
-    paramName: str
-    options: List[ProtocolWizardInputOption] = Field(default_factory=list)
-
-
-class ProtocolWizardExecuteRequest(BaseModel):
+class ProtocolWizardRunRequest(BaseModel):
+    """Run a form wizard: the answers to its dialogs so far, or a preview to compute."""
     protocolId: Optional[int] = None
     protocolClassName: str
     paramName: str
     wizardId: str
     formValues: Dict[str, Any] = Field(default_factory=dict)
-    wizardInputs: Dict[str, Any] = Field(default_factory=dict)
+    answers: List[Dict[str, Any]] = Field(default_factory=list)
+    preview: Optional[Dict[str, Any]] = None
 
 
 class ProtocolRelationCandidatesRequest(BaseModel):
@@ -138,115 +129,3 @@ class ProtocolRelationCandidatesResponse(BaseModel):
     values: List[str] = Field(
         default_factory=list
     )
-
-
-class WizardInputFieldResponse(BaseModel):
-    name: str
-    label: str
-    kind: str
-    value: Optional[Any] = None
-    min: Optional[float] = None
-    max: Optional[float] = None
-    step: Optional[float] = None
-
-
-class WizardInputSchemaResponse(BaseModel):
-    type: str
-    paramName: str
-    title: Optional[str] = None
-    fields: Optional[List[WizardInputFieldResponse]] = None
-
-
-class WizardPreviewResponse(BaseModel):
-    imageUrl: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-
-
-class WizardViewerItemResponse(BaseModel):
-    id: str
-    label: str
-    index: int
-
-
-class WizardViewerPreviewResponse(BaseModel):
-    imageUrl: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    caption: Optional[str] = None
-    sourceWidth: Optional[int] = None
-    sourceHeight: Optional[int] = None
-
-
-class WizardViewerStateResponse(BaseModel):
-    items: List[WizardViewerItemResponse] = Field(default_factory=list)
-    selectedIndex: int = 1
-
-    radius: Optional[int] = None
-    radiusMin: Optional[int] = None
-    radiusMax: Optional[int] = None
-    radiusStep: Optional[int] = None
-    radiusAngstrom: Optional[float] = None
-
-    innerRadius: Optional[int] = None
-    outerRadius: Optional[int] = None
-    innerRadiusMin: Optional[int] = None
-    outerRadiusMin: Optional[int] = None
-    innerRadiusAngstrom: Optional[float] = None
-    outerRadiusAngstrom: Optional[float] = None
-    primaryParam: Optional[str] = None
-    secondaryParam: Optional[str] = None
-
-    downsample: Optional[float] = None
-    downsampleMin: Optional[float] = None
-    downsampleMax: Optional[float] = None
-    downsampleStep: Optional[float] = None
-
-    lowFreq: Optional[float] = None
-    lowFreqMin: Optional[float] = None
-    lowFreqMax: Optional[float] = None
-
-    highFreq: Optional[float] = None
-    highFreqMin: Optional[float] = None
-    highFreqMax: Optional[float] = None
-
-    decay: Optional[float] = None
-    decayMin: Optional[float] = None
-    decayMax: Optional[float] = None
-
-    freqStep: Optional[float] = None
-    showInAngstroms: Optional[bool] = None
-    freqInAngstrom: Optional[bool] = None
-    unitLabel: Optional[str] = None
-    filterMode: Optional[str] = None
-
-    downsampleParam: Optional[str] = None
-    lowFreqParam: Optional[str] = None
-    highFreqParam: Optional[str] = None
-    decayParam: Optional[str] = None
-
-    autoDownsampling: Optional[bool] = None
-    autoDownsampleValue: Optional[float] = None
-
-    samplingRate: Optional[float] = None
-    preview: Optional[WizardViewerPreviewResponse] = None
-
-    micrographPreview: Optional[WizardViewerPreviewResponse] = None
-    psdPreview: Optional[WizardViewerPreviewResponse] = None
-    originalPreview: Optional[WizardViewerPreviewResponse] = None
-    filteredPreview: Optional[WizardViewerPreviewResponse] = None
-
-
-class ProtocolWizardExecuteResponse(BaseModel):
-    success: bool
-    wizardId: str
-    kind: str
-    paramUpdates: Dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-
-    availableValues: Optional[List[Union[str, Dict[str, Any]]]] = None
-
-    requiresUserInput: bool = False
-    inputSchema: Optional[WizardInputSchemaResponse] = None
-    preview: Optional[WizardPreviewResponse] = None
-    viewerState: Optional[Dict[str, Any]] = None

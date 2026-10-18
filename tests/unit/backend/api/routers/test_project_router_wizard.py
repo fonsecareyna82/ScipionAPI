@@ -26,74 +26,21 @@
 import importlib
 
 
-class FakeProjectService:
-    def __init__(self):
-        self.executeProtocolWizardCalls = []
-
-    def getProjectById(self, *args, **kwargs):
-        raise AssertionError("Wizard router must not load the legacy Scipion project")
-
-    def executeProtocolWizard(
-            self,
-            mapper,
-            projectId,
-            currentUser,
-            payload,
-            protocolIdIsScipionId=False,
-    ):
-        self.protocolIdIsScipionId = protocolIdIsScipionId
-        self.executeProtocolWizardCalls.append({
-            "mapper": mapper,
-            "projectId": projectId,
-            "currentUser": currentUser,
-            "payload": payload,
-        })
-
-        return {
-            "success": True,
-            "wizardId": "tests.FakeWizard",
-            "kind": "compute",
-            "paramUpdates": {
-                "boxSize": 128,
-            },
-            "message": "Wizard executed successfully",
-        }
-
-
-def test_ExecuteProtocolWizardRouteDelegatesWithoutLegacyProjectLoad(authTestEnv):
+def test_the_wizard_route_runs_the_wizard_for_the_signed_in_user(authTestEnv, monkeypatch):
     projectRouterModule = importlib.import_module(
         "app.backend.api.routers.project_router"
     )
+    calls = []
 
-    mapper = object()
-    payload = object()
-    currentUser = {"id": 7}
-    service = FakeProjectService()
+    def runProtocolWizard(**kwargs):
+        calls.append(kwargs)
+        return {"status": "done", "paramUpdates": {"boxSize": 128}, "messages": []}
 
-    result = projectRouterModule.executeProtocolWizardRoute(
-        projectId=11,
-        payload=payload,
-        currentUser=currentUser,
-        mapper=mapper,
-        service=service,
-    )
+    monkeypatch.setattr(projectRouterModule, "runProtocolWizard", runProtocolWizard)
+    mapper, payload, currentUser = object(), object(), {"id": 7}
 
-    assert result == {
-        "success": True,
-        "wizardId": "tests.FakeWizard",
-        "kind": "compute",
-        "paramUpdates": {
-            "boxSize": 128,
-        },
-        "message": "Wizard executed successfully",
-    }
+    result = projectRouterModule.runProtocolWizardRoute(
+        projectId=11, payload=payload, currentUser=currentUser, mapper=mapper)
 
-    assert service.protocolIdIsScipionId is True
-    assert service.executeProtocolWizardCalls == [
-        {
-            "mapper": mapper,
-            "projectId": 11,
-            "currentUser": currentUser,
-            "payload": payload,
-        }
-    ]
+    assert result["paramUpdates"] == {"boxSize": 128}
+    assert calls == [{"mapper": mapper, "currentUser": currentUser, "projectId": 11, "payload": payload}]

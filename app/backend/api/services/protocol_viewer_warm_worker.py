@@ -25,6 +25,7 @@ import sys
 ALLOWED_MODULES = frozenset({
     'app.backend.api.services.protocol_viewer_dynamic_form_worker',
     'app.backend.api.services.protocol_viewer_action_worker',
+    'app.backend.api.services.protocol_wizard_runtime_worker',
 })
 PRELOAD_SWITCH = 'SCIPION_VIEWER_WARM_PRELOAD'
 TEST_MODULES_SWITCH = 'SCIPION_VIEWER_WARM_TEST_MODULES'

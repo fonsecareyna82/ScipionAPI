@@ -49,9 +49,6 @@ from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 from app.backend.utils.outputs_preview import OutputsPreview
 from app.backend.utils.volume_surface_mesh import buildVolumeSurfaceMesh
 from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
-from app.backend.api.services.protocol_wizard_service import (
-    ProtocolWizardService,
-)
 from app.backend.api.services.protocol_relation_service import (
     ProtocolRelationService,
 )
@@ -19998,25 +19995,4 @@ class ProjectService:
                         or {}
                 ),
             )
-        )
-
-    # -------------------------------
-    # Wizards methods
-    # -------------------------------
-    def executeProtocolWizard(
-            self,
-            mapper: PostgresqlFlatMapper,
-            projectId: int,
-            currentUser: dict,
-            payload,
-    ) -> Dict[str, Any]:
-        wizardService = ProtocolWizardService(
-            currentProject=self.currentProject,
-            projectService=self,
-        )
-        return wizardService.executeProtocolWizard(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            payload=payload,
         )
