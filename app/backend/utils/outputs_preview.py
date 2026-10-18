@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response, JSONResponse
 from tomo.objects import SetOfTiltSeries
 
+from app.backend.utils.image_display import reduceForDisplay, toDisplayUint8
 from app.backend.utils.constants import (
     TEXT_FILE_EXTENSIONS,
     SQLITE_EXTENSIONS,
@@ -687,50 +688,38 @@ class OutputsPreview(FileHandlers):
                 detail=f"Could not open image file: {e}",
             )
 
-        # Try first image, fallback to central if needed
+        # The original values (not an 8-bit image): the image is reduced and
+        # its contrast set from them (see image_display).
         try:
             if index is None:
-                pilImg = reader.getCentralImage(pilImage=True)
+                original = reader.getCentralImage()
             else:
-                pilImg = reader.getImage(index=index, pilImage=True)
+                original = reader.getImage(index=index)
         except Exception:
             try:
-                pilImg = reader.getCentralImage(pilImage=True)
+                original = reader.getCentralImage()
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Could not read image from file: {e}",
                 )
 
-        # Keep original dimensions to be able to rescale shifts
-        try:
-            origWidth, origHeight = pilImg.size
-        except Exception:
-            # Fallback in case PIL image is not standard
-            arr = np.asarray(pilImg)
-            if arr.ndim >= 2:
-                origHeight, origWidth = arr.shape[0], arr.shape[1]
-            else:
-                origWidth, origHeight = 1, 1
-
-        # Build thumbnail/tile
-        tile = self._pilTo2dTile(reader, pilImg, thumbSize=size)
+        original = np.squeeze(np.asarray(original))
+        if original.ndim != 2 or original.size == 0:
+            raise HTTPException(
+                status_code=500,
+                detail="Empty or invalid image tile",
+            )
+        origHeight, origWidth = original.shape
+        tile = reduceForDisplay(original, size)
 
         # Apply alignment transforms in thumbnail space if requested
         if (
                 applyTransform
                 and rot is not None
                 and shifts is not None
-                and tile is not None
-                and origWidth > 0
-                and origHeight > 0
         ):
-            # tile is a 2D array: (h, w) or (h, w, 1)
-            tileArr = np.asarray(tile)
-            if tileArr.ndim == 2:
-                tileHeight, tileWidth = tileArr.shape
-            else:
-                tileHeight, tileWidth = tileArr.shape[0], tileArr.shape[1]
+            tileHeight, tileWidth = tile.shape
 
             # Scale shifts from original size to thumbnail size
             scaleX = tileWidth / float(origWidth)
@@ -738,8 +727,10 @@ class OutputsPreview(FileHandlers):
 
             scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
 
-            # Apply transform on the thumbnail
-            tile = reader.transformSlice(tileArr, scaledShifts, rot, mode=ROT_MODE.CONDITIONAL)
+            # Apply transform on the thumbnail, before quantizing it
+            tile = reader.transformSlice(tile, scaledShifts, rot, mode=ROT_MODE.CONDITIONAL)
+
+        tile = toDisplayUint8(tile)
 
         # Apply flip at the end to match viewer orientation
         tile = reader.flipSlice(tile)
@@ -758,7 +749,8 @@ class OutputsPreview(FileHandlers):
         elif fmtLower == "webp":
             pilFormat = "WEBP"
             mediaType = "image/webp"
-            saveKw = {"quality": int(quality or 75)}
+            # Noisy images (micrographs, tilts) blur and block at lower qualities.
+            saveKw = {"quality": max(int(quality or 75), 90)}
         else:
             pilFormat = "PNG"
             mediaType = "image/png"
