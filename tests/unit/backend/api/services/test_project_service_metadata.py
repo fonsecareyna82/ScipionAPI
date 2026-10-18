@@ -2963,3 +2963,24 @@ def test_VolumeMetadataCellsAreDrawnAsTheChosenView(service, monkeypatch, tmp_pa
     assert response.media_type == "image/png"
     assert (image.ndim == 3 and image.shape[-1] == channels) if channels else image.ndim == 2
     assert image.std() > 10
+
+
+def test_MetadataImageCacheIsBoundedByMemory(projectServiceModule, service, monkeypatch):
+    from fastapi.responses import Response
+
+    monkeypatch.setattr(projectServiceModule, "_METADATA_IMAGE_CACHE", __import__("collections").OrderedDict())
+    monkeypatch.setattr(projectServiceModule, "_metadataImageCacheBytes", 0)
+    monkeypatch.setattr(projectServiceModule, "_METADATA_IMAGE_CACHE_MAX_BYTES", 250)
+    monkeypatch.setattr(projectServiceModule, "_METADATA_IMAGE_CACHE_MAX_ITEM_BYTES", 120)
+
+    for key in range(4):
+        service._storeCachedMetadataImageResponse(key, Response(content=b"x" * 100, media_type="image/png"))
+    # Only what fits in the memory bound stays, the newest images.
+    assert list(projectServiceModule._METADATA_IMAGE_CACHE) == [2, 3]
+    assert projectServiceModule._metadataImageCacheBytes == 200
+
+    # A full resolution image too big for the cache is served but not kept.
+    big = service._storeCachedMetadataImageResponse("big", Response(content=b"x" * 200, media_type="image/png"))
+    assert big.headers["X-Preview-Cache"] == "skip"
+    assert "big" not in projectServiceModule._METADATA_IMAGE_CACHE
+    assert service._getCachedMetadataImageResponse(3).body == b"x" * 100

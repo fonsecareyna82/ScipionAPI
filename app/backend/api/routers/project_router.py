@@ -4591,8 +4591,8 @@ def renderMetadataImageCell(
     size: int = Query(
         256,
         ge=16,
-        le=2048,
-        description="Target thumbnail size in pixels.",
+        le=4096,
+        description="Target size in pixels (the longest side; images are never enlarged past their own size).",
     ),
     applyTransform: bool = Query(
         False,

@@ -193,6 +193,11 @@ _VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=36
 _METADATA_IMAGE_CACHE_LOCK = threading.Lock()
 _METADATA_IMAGE_CACHE = collections.OrderedDict()
 _METADATA_IMAGE_CACHE_MAX_ITEMS = 512
+# Memory bound of the cache; a full resolution image larger than the item
+# limit is not kept (the browser keeps it).
+_METADATA_IMAGE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_METADATA_IMAGE_CACHE_MAX_ITEM_BYTES = 8 * 1024 * 1024
+_metadataImageCacheBytes = 0
 # Bumped when class representatives are drawn differently (see class_average_display).
 CLASS_DISPLAY_VERSION = 3
 
@@ -18277,16 +18282,29 @@ class ProjectService:
         headers.pop("Content-Length", None)
         mediaType = getattr(response, "media_type", None) or headers.get("content-type")
 
+        global _metadataImageCacheBytes
+        body = bytes(body)
+        if len(body) > _METADATA_IMAGE_CACHE_MAX_ITEM_BYTES:
+            response.headers["X-Preview-Cache"] = "skip"
+            self._exposeHeader(response.headers, "X-Preview-Cache")
+            return response
+
         with _METADATA_IMAGE_CACHE_LOCK:
+            previous = _METADATA_IMAGE_CACHE.pop(cacheKey, None)
+            if previous is not None:
+                _metadataImageCacheBytes -= len(previous["body"])
             _METADATA_IMAGE_CACHE[cacheKey] = {
-                "body": bytes(body),
+                "body": body,
                 "headers": headers,
                 "mediaType": mediaType,
             }
-            _METADATA_IMAGE_CACHE.move_to_end(cacheKey)
+            _metadataImageCacheBytes += len(body)
 
-            while len(_METADATA_IMAGE_CACHE) > _METADATA_IMAGE_CACHE_MAX_ITEMS:
-                _METADATA_IMAGE_CACHE.popitem(last=False)
+            while _METADATA_IMAGE_CACHE and (
+                    len(_METADATA_IMAGE_CACHE) > _METADATA_IMAGE_CACHE_MAX_ITEMS
+                    or _metadataImageCacheBytes > _METADATA_IMAGE_CACHE_MAX_BYTES):
+                _, evicted = _METADATA_IMAGE_CACHE.popitem(last=False)
+                _metadataImageCacheBytes -= len(evicted["body"])
 
         response.headers["X-Preview-Cache"] = "miss"
         self._exposeHeader(response.headers, "X-Preview-Cache")
