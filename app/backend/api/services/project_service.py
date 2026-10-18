@@ -175,6 +175,8 @@ _VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=36
 _METADATA_IMAGE_CACHE_LOCK = threading.Lock()
 _METADATA_IMAGE_CACHE = collections.OrderedDict()
 _METADATA_IMAGE_CACHE_MAX_ITEMS = 512
+# Bumped when class representatives are drawn differently (see class_average_display).
+CLASS_DISPLAY_VERSION = 2
 
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
@@ -17906,7 +17908,9 @@ class ProjectService:
             sortBy: str,
             asc: bool,
             contrastMode: str = "original",
+            volumeView: str = "surface",
     ):
+        enhanced = str(contrastMode or "original").strip().lower() == "enhanced"
         return (
             int(projectId),
             int(protocolId),
@@ -17921,6 +17925,9 @@ class ProjectService:
             str(sortBy or "id"),
             bool(asc),
             str(contrastMode or "original").strip().lower(),
+            # Class display version and 3D view: a new rendering is a new image
+            # (also for the browser, whose ETag comes from this key).
+            (CLASS_DISPLAY_VERSION, str(volumeView or "surface")) if enhanced else None,
         )
 
     def _getCachedMetadataImageResponse(self, cacheKey) -> Optional[Response]:
@@ -17989,6 +17996,7 @@ class ProjectService:
 
             protocolIdIsScipionId=False,
             contrastMode: str = "original",
+            volumeView: str = "surface",
     ) -> Response:
         """
         Thin ETag/cache wrapper around renderMetadataImageCellService --
@@ -18012,6 +18020,7 @@ class ProjectService:
             sortBy=sortBy,
             asc=asc,
             contrastMode=contrastMode,
+            volumeView=volumeView,
         )
 
         etag = self._etagFromCacheKey(cacheKey)
@@ -18047,6 +18056,7 @@ class ProjectService:
             sortBy=sortBy,
             asc=asc,
             contrastMode=contrastMode,
+            volumeView=volumeView,
             **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
@@ -18118,6 +18128,7 @@ class ProjectService:
 
             protocolIdIsScipionId=False,
             contrastMode: str = "original",
+            volumeView: str = "surface",
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
@@ -18264,6 +18275,39 @@ class ProjectService:
         rawValue = rowValues[colIndex]
         column = columns[colIndex]
         renderer = column.getRenderer()
+        enhancedClasses = (
+                str(contrastMode or "original").strip().lower() == "enhanced"
+                and self._isMetadataClassAverageOutput(objMgr, table)
+        )
+
+        # Class representatives ("N@stack.mrcs" or a volume file): drawn from
+        # their original data, not from the renderer's 8-bit image.
+        if enhancedClasses and isinstance(rawValue, str) and rawValue.strip():
+            indexText, _, pathText = rawValue.strip().rpartition("@")
+            try:
+                classIndex = int(float(indexText)) if indexText else 0
+            except ValueError:
+                classIndex, pathText = 0, rawValue.strip()
+            classPath = None
+            if pathResolver is not None:
+                resolvedText = pathResolver.resolveExistingPath(pathText)
+                classPath = LocalPath(resolvedText) if resolvedText else None
+            if classPath is None:
+                for candidate in ([LocalPath(pathText)] if LocalPath(pathText).is_absolute() else
+                                  [metaDir / pathText if metaDir is not None else None,
+                                   LocalPath(self.currentProject.getPath()) / pathText
+                                   if self.currentProject is not None else None]):
+                    if candidate is not None and candidate.exists():
+                        classPath = candidate
+                        break
+            if classPath is not None:
+                classResponse = self._renderClassRepresentative(
+                    classPath, classIndex, size=size, fmt=fmt, inline=inline, volumeView=volumeView,
+                    tableName=tableName, columnName=columnName,
+                    fileId=rowId if rowId is not None else (rowIndex if rowIndex is not None else idx0 + 1),
+                )
+                if classResponse is not None:
+                    return classResponse
 
         if hasattr(renderer, "setSize"):
             renderer.setSize(size)
@@ -18404,6 +18448,17 @@ class ProjectService:
                                     )
                                     useScipionPreview = True
 
+                            if useScipionPreview and enhancedClasses:
+                                # Class representatives: from their original
+                                # data (see class_average_display).
+                                classResponse = self._renderClassRepresentative(
+                                    resolvedPath, imageIndex, size=size, fmt=fmt, inline=inline,
+                                    volumeView=volumeView, tableName=tableName, columnName=columnName,
+                                    fileId=rowId if rowId is not None else (rowIndex if rowIndex is not None else idx0 + 1),
+                                )
+                                if classResponse is not None:
+                                    return classResponse
+
                             if useScipionPreview:
                                 # Scipion metadata references are 1-based:
                                 # 1@stack.mrcs selects image 0 in the reader.
@@ -18530,6 +18585,38 @@ class ProjectService:
         return Response(content=buf.getvalue(), media_type=mediaType, headers=headers)
 
     @staticmethod
+    def _renderClassRepresentative(filePath, index, *, size: int, fmt: str, inline: bool,
+                                   volumeView: str, tableName: str, columnName: str,
+                                   fileId) -> Optional[Response]:
+        """A class representative (2D average or 3D volume) for display; None to fall back."""
+        from PIL import Image as PILImage
+        from app.backend.utils.class_average_display import (
+            VOLUME_VIEWS, displayClassAverage, readClassRepresentative, renderClassVolume,
+        )
+        try:
+            data = np.squeeze(readClassRepresentative(str(filePath), index if index and index > 0 else None))
+            if data.ndim == 3:
+                view = volumeView if volumeView in VOLUME_VIEWS else "surface"
+                pixels = renderClassVolume(data, size, view)
+            else:
+                pixels = displayClassAverage(data, size)
+        except Exception:
+            logger.warning("Could not render class representative %s (index %s); using the preview",
+                           filePath, index, exc_info=True)
+            return None
+        fmtLower = (fmt or "png").lower()
+        pilFormat, mediaType = {"jpg": ("JPEG", "image/jpeg"), "jpeg": ("JPEG", "image/jpeg"),
+                                "webp": ("WEBP", "image/webp")}.get(fmtLower, ("PNG", "image/png"))
+        buffer = io.BytesIO()
+        PILImage.fromarray(pixels, mode="RGB" if pixels.ndim == 3 else "L").save(buffer, format=pilFormat)
+        disposition = "inline" if inline else "attachment"
+        headers = {
+            "Content-Disposition": f'{disposition}; filename="{tableName}_{columnName}_{fileId}.{fmtLower}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        }
+        return Response(content=buffer.getvalue(), media_type=mediaType, headers=headers)
+
+    @staticmethod
     def _enhanceMetadataClassPreviewResponse(previewResponse: Response) -> Response:
         """Enhance a decoded preview *for display only*, retaining its format.
 
@@ -18615,6 +18702,7 @@ class ProjectService:
 
             protocolIdIsScipionId=False,
             contrastMode: str = "original",
+            volumeView: str = "surface",
     ) -> Dict[str, Any]:
         # renderMetadataImageCellsBatchService -- reuses
         # renderMetadataImageCellCachedService (and its existing per-cell
@@ -18674,7 +18762,7 @@ class ProjectService:
                     asc=asc,
                     **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                     # Each cell uses the contrast-aware cache key.
-                    **({"contrastMode": contrastMode}
+                    **({"contrastMode": contrastMode, "volumeView": volumeView}
                        if str(contrastMode).strip().lower() == "enhanced" else {}),
                 )
 

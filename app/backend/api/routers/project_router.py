@@ -4520,6 +4520,9 @@ def renderMetadataImageCell(
     contrastMode: Literal["original", "enhanced"] = Query(
         "original", description="Contrast mode for class-average images."
     ),
+    volumeView: Literal["surface", "projection", "slice"] = Query(
+        "surface", description="How enhanced 3D class representatives are drawn."
+    ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -4550,7 +4553,7 @@ def renderMetadataImageCell(
         ifNoneMatch=ifNoneMatch,
         protocolIdIsScipionId=True,
         # Preserve legacy calls for Original; Enhanced is opt-in.
-        **({"contrastMode": contrastMode} if contrastMode == "enhanced" else {}),
+        **({"contrastMode": contrastMode, "volumeView": volumeView} if contrastMode == "enhanced" else {}),
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -4573,6 +4576,7 @@ class MetadataImageBatchRenderRequest(BaseModel):
     sortBy: str = "id"
     asc: bool = True
     contrastMode: Literal["original", "enhanced"] = "original"
+    volumeView: Literal["surface", "projection", "slice"] = "surface"
 
 
 @router.post(
@@ -4613,7 +4617,7 @@ def renderMetadataImageCellsBatch(
         asc=payload.asc,
         mapper=mapper,
         protocolIdIsScipionId=True,
-        **({"contrastMode": payload.contrastMode}
+        **({"contrastMode": payload.contrastMode, "volumeView": payload.volumeView}
            if payload.contrastMode == "enhanced" else {}),
     )
 
