@@ -1535,6 +1535,30 @@ def test_RenderTiltSeriesImageUsesProjectDbRow(projectClient, fakeProjectService
     }
 
 
+def test_ProjectThumbnailsAreListedWithoutLoadingTheProject(projectClient, fakeProjectService, monkeypatch):
+    from app.backend.thumbnails import service as thumbnailService
+
+    calls = []
+    fakeProjectService.projectDbRowResult = {"id": 1, "name": "/projects/p1"}
+    monkeypatch.setattr(thumbnailService, "listProjectThumbnails",
+                        lambda mapper, **kwargs: calls.append(kwargs) or {"groups": []})
+
+    response = projectClient.get("/projects/1/thumbnails?scope=graph&size=300")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert calls[0]["projectPath"] == "/projects/p1"
+    assert calls[0]["scope"] == "graph" and calls[0]["size"] == 300
+
+
+def test_OutputThumbnailImagesNeedTheProject(projectClient, fakeProjectService):
+    fakeProjectService.projectDbRowResult = None
+
+    response = projectClient.get("/projects/1/protocols/10/outputs/outputMicrographs/thumbnail-image?size=256&sig=abc")
+
+    assert response.status_code == 404
+
+
 def test_GetCoords3dTomogramVolumePassesTheVoxelBudget(projectClient, fakeProjectService):
     response = projectClient.get("/projects/1/protocols/2/outputs/out/coords3d/tomograms/7/volume?maxVoxels=8000000")
 

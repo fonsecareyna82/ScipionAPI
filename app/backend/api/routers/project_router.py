@@ -5165,6 +5165,73 @@ def _clearThumbnailProjectContext(service: ProjectService) -> None:
 
 
 @router.get(
+    "/{projectId}/thumbnails",
+    response_model=Any,
+    summary="The thumbnails of a project's card or of every output, without loading the project",
+)
+def listProjectThumbnails(
+    projectId: int,
+    scope: Literal["card", "graph"] = Query("card"),
+    size: int = Query(256, ge=64, le=2048),
+    maxProtocols: int = Query(6, ge=1, le=24),
+    maxOutputsPerProtocol: int = Query(2, ge=1, le=12),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.thumbnails.service import listProjectThumbnails as listThumbnails
+
+    dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not dbProj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = listThumbnails(
+        mapper,
+        projectId=projectId,
+        projectPath=dbProj["name"],
+        userId=int(currentUser["id"]),
+        scope=scope,
+        size=size,
+        maxProtocols=maxProtocols,
+        maxOutputsPerProtocol=maxOutputsPerProtocol,
+    )
+    return JSONResponse(payload, headers={"Cache-Control": "no-store", "Vary": "Authorization"})
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/thumbnail-image",
+    response_model=None,
+    summary="The thumbnail image of an output (202 while it is being drawn)",
+)
+def getOutputThumbnailImage(
+    projectId: int,
+    protocolId: str,
+    outputName: str,
+    size: int = Query(256, ge=64, le=2048),
+    sig: Optional[str] = Query(None, max_length=64),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.thumbnails.service import outputThumbnailImage
+
+    dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not dbProj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    response = outputThumbnailImage(
+        mapper,
+        projectId=projectId,
+        projectPath=dbProj["name"],
+        userId=int(currentUser["id"]),
+        protocolId=protocolId,
+        outputName=outputName,
+        size=size,
+        signature=sig,
+    )
+    response.headers["Vary"] = "Authorization"
+    return response
+
+
+@router.get(
     "/{projectId}/thumbnail",
     response_model=None,
     status_code=status.HTTP_200_OK,

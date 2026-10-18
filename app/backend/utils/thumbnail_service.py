@@ -64,6 +64,7 @@ from tomo.objects import (
     SetOfLandmarkModels,
 )
 
+from app.backend.utils.image_display import reduceForDisplay, toDisplayUint8
 from app.backend.utils.constants import maxThumbSize
 from app.backend.utils.volume_utils import readVolumeArray3d
 
@@ -104,6 +105,136 @@ logger = logging.getLogger(__name__)
 _thumbnailBuildLocksGuard = threading.Lock()
 _thumbnailBuildLocks: Dict[str, threading.Lock] = {}
 
+
+
+def scoreOutputClass(outputName: str, className: str, sizeHint: Optional[int],
+                     renderableFallback: bool = False) -> int:
+    """How good an output is for a thumbnail, from its name, class and size (0: not shown).
+
+    Shared by ThumbnailService and the thumbnail catalog, which only knows the
+    class name and size stored in the database.
+    """
+    name = (outputName or "").strip().lower()
+    className = (className or "").lower()
+
+    if any(token in name for token in ("discard", "tmp", "temp", "aux", "debug")):
+        return 0
+
+    if sizeHint is not None and sizeHint <= 0:
+        return 0
+
+    if "setofmicrograph" in className or "micrograph" in className:
+        score = 175
+    elif "setofmovies" in className or ("movie" in className and "particle" not in className):
+        score = 174
+    elif "classessubtomogram" in className or "classsubtomogram" in className:
+        score = 176
+    elif "averagesubtomogram" in className or "subtomogram" in className:
+        score = 170
+    elif "class2d" in className or "average" in className:
+        score = 182
+    elif (
+            "setofclassesstructflex" in className
+            or "classstructflex" in className
+            or "setofatomstructflex" in className
+            or "atomstructflex" in className
+    ):
+        score = 119
+    elif (
+            "setofclassesflex" in className
+            or className == "classflex"
+            or "setofvolumesflex" in className
+            or "volumeflex" in className
+    ):
+        score = 166
+    elif "setofparticlesflex" in className or "particleflex" in className:
+        score = 168
+    elif "class3d" in className:
+        score = 176
+    elif (
+            "volumemask" in className
+            or className == "mask"
+            or "setofmask" in className
+    ):
+        score = 145
+    elif "setofparticle" in className or "particle" in className:
+        score = 168
+    elif "ctftomo" in className or "setofctftomo" in className:
+        score = 156
+    elif (
+            "setofctf" in className
+            or "ctfmodel" in className
+            or (className == "ctf")
+    ):
+        score = 154
+    elif "setofdefocusgroup" in className or "defocusgroup" in className:
+        score = 146
+    elif "setoftomomask" in className or "tomomask" in className:
+        score = 162
+    elif "setofvolume" in className or "volume" in className:
+        score = 164
+    elif "tomogram" in className:
+        score = 164
+    elif "landmark" in className:
+        score = 124
+    elif "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
+        score = 129
+    elif "setoftiltseriesm" in className or "tiltseriesm" in className:
+        score = 148
+    elif "setoftiltseries" in className or "tiltseries" in className:
+        score = 150
+    elif "setofmeshes" in className or "mesh" in className:
+        score = 127
+    elif "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
+        score = 128
+    elif "setofcoordinate" in className or "coordinate" in className:
+        score = 126
+    elif (
+            "setofatomstruct" in className
+            or "atomstruct" in className
+            or "setofpdb" in className
+            or className == "pdbfile"
+            or className == "pdb"
+    ):
+        score = 118
+    elif (
+            "setofsequence" in className
+            or className == "sequence"
+            or "sequence" in className
+    ):
+        score = 116
+
+    elif (
+            "setofnormalmode" in className
+            or "normalmode" in className
+            or "setofprincipalcomponent" in className
+            or "principalcomponent" in className
+    ):
+        score = 114
+
+    elif "fsc" in className:
+        score = 112
+    elif renderableFallback:
+        score = 70
+    else:
+        score = 0
+
+    if (
+            "mask" in className
+            and "tomomask" not in className
+            and "volumemask" not in className
+            and className != "mask"
+            and "setofmask" not in className
+    ):
+        score -= 35
+
+    if name.startswith("output"):
+        score += 10
+
+    if sizeHint is not None:
+        score += min(int(sizeHint), 8)
+
+    return max(score, 0)
 
 class ThumbnailService:
     CACHE_VERSION = "v2"
@@ -948,6 +1079,51 @@ class ThumbnailService:
                 "exists": True,
             }
 
+    def renderProtocolOutputThumbnailBytes(
+            self,
+            protocolId: int,
+            outputName: str,
+            size: int,
+    ) -> Tuple[Optional[bytes], Optional[str]]:
+        """The thumbnail of one output as WebP bytes, or (None, reason). Nothing is cached here."""
+        try:
+            protocol = self.currentProject.getProtocol(int(protocolId))
+        except Exception:
+            protocol = None
+        if protocol is None:
+            return None, "Protocol not found"
+
+        output = self._findProtocolOutput(protocol=protocol, outputName=outputName)
+        if output is None:
+            return None, "Output not found"
+
+        outputClassName = self._getOutputClassName(output)
+        previewImage: Optional[Image.Image] = None
+        try:
+            previewImage = self._renderProtocolPreviewImage(
+                protocol=protocol,
+                output=output,
+                outputName=outputName,
+                outputClassName=outputClassName,
+                size=size,
+            )
+        except Exception:
+            logger.debug("Output thumbnail render failed. protocolId=%s output=%s", protocolId, outputName,
+                         exc_info=True)
+        if previewImage is None:
+            try:
+                previewImage = self._renderGenericPreview(protocol, output, size=size)
+            except Exception:
+                logger.debug("Generic output thumbnail render failed. protocolId=%s output=%s", protocolId,
+                             outputName, exc_info=True)
+        if previewImage is None:
+            return None, "Thumbnail not available"
+
+        thumbnail = self._finalizeProtocolThumbnail(previewImage=previewImage, size=size, protocolId=int(protocolId))
+        buffer = io.BytesIO()
+        thumbnail.convert("RGB").save(buffer, format="WEBP", quality=90, method=4)
+        return buffer.getvalue(), None
+
     # ------------------------------------------------------------------
     # Candidate selection
     # ------------------------------------------------------------------
@@ -1115,128 +1291,12 @@ class ThumbnailService:
         return 10
 
     def _scoreOutput(self, outputName: str, output: Any) -> int:
-        name = (outputName or "").strip().lower()
-        className = self._getOutputClassName(output).lower()
-
-        if any(token in name for token in ("discard", "tmp", "temp", "aux", "debug")):
-            return 0
-
-        sizeHint = self._safeOutputSize(output)
-        if sizeHint is not None and sizeHint <= 0:
-            return 0
-
-        if "setofmicrograph" in className or "micrograph" in className:
-            score = 175
-        elif "setofmovies" in className or ("movie" in className and "particle" not in className):
-            score = 174
-        elif "classessubtomogram" in className or "classsubtomogram" in className:
-            score = 176
-        elif "averagesubtomogram" in className or "subtomogram" in className:
-            score = 170
-        elif "class2d" in className or "average" in className:
-            score = 182
-        elif (
-                "setofclassesstructflex" in className
-                or "classstructflex" in className
-                or "setofatomstructflex" in className
-                or "atomstructflex" in className
-        ):
-            score = 119
-        elif (
-                "setofclassesflex" in className
-                or className == "classflex"
-                or "setofvolumesflex" in className
-                or "volumeflex" in className
-        ):
-            score = 166
-        elif "setofparticlesflex" in className or "particleflex" in className:
-            score = 168
-        elif "class3d" in className:
-            score = 176
-        elif (
-                "volumemask" in className
-                or className == "mask"
-                or "setofmask" in className
-        ):
-            score = 145
-        elif "setofparticle" in className or "particle" in className:
-            score = 168
-        elif "ctftomo" in className or "setofctftomo" in className:
-            score = 156
-        elif (
-                "setofctf" in className
-                or "ctfmodel" in className
-                or (className == "ctf")
-        ):
-            score = 154
-        elif "setofdefocusgroup" in className or "defocusgroup" in className:
-            score = 146
-        elif "setoftomomask" in className or "tomomask" in className:
-            score = 162
-        elif "setofvolume" in className or "volume" in className:
-            score = 164
-        elif "tomogram" in className:
-            score = 164
-        elif "landmark" in className:
-            score = 124
-        elif "setoftiltseriescoordinate" in className or "tiltseriescoordinate" in className:
-            score = 129
-        elif "setoftiltseriesm" in className or "tiltseriesm" in className:
-            score = 148
-        elif "setoftiltseries" in className or "tiltseries" in className:
-            score = 150
-        elif "setofmeshes" in className or "mesh" in className:
-            score = 127
-        elif "coordinate3d" in className or "coordinates3d" in className or "setofcoordinates3d" in className:
-            score = 128
-        elif "setofcoordinate" in className or "coordinate" in className:
-            score = 126
-        elif (
-                "setofatomstruct" in className
-                or "atomstruct" in className
-                or "setofpdb" in className
-                or className == "pdbfile"
-                or className == "pdb"
-        ):
-            score = 118
-        elif (
-                "setofsequence" in className
-                or className == "sequence"
-                or "sequence" in className
-        ):
-            score = 116
-
-        elif (
-                "setofnormalmode" in className
-                or "normalmode" in className
-                or "setofprincipalcomponent" in className
-                or "principalcomponent" in className
-        ):
-            score = 114
-
-        elif "fsc" in className:
-            score = 112
-        elif self._looksRenderableOutput(output):
-            score = 70
-        else:
-            score = 0
-
-        if (
-                "mask" in className
-                and "tomomask" not in className
-                and "volumemask" not in className
-                and className != "mask"
-                and "setofmask" not in className
-        ):
-            score -= 35
-
-        if name.startswith("output"):
-            score += 10
-
-        if sizeHint is not None:
-            score += min(int(sizeHint), 8)
-
-        return max(score, 0)
+        return scoreOutputClass(
+            outputName,
+            self._getOutputClassName(output),
+            self._safeOutputSize(output),
+            renderableFallback=self._looksRenderableOutput(output),
+        )
 
     def listProtocolThumbnailItems(
             self,
@@ -9201,23 +9261,23 @@ class ThumbnailService:
                 candidateIndexes.append(index - 1)
         candidateIndexes.append(0)
 
-        image = None
+        data = None
         for idx in self._uniqueInts(candidateIndexes):
             try:
-                image = reader.getImage(index=idx, pilImage=True)
-                if image is not None:
+                data = reader.getImage(index=idx)
+                if data is not None:
                     break
             except Exception:
                 continue
 
-        if image is None:
+        if data is None:
             try:
-                image = reader.getCentralImage(pilImage=True)
+                data = reader.getCentralImage()
             except Exception:
-                image = None
-        if image is None:
+                data = None
+        if data is None:
             return None
-        return self._normalizePilImage(image)
+        return self._displayImage(data)
 
     def _readMoviePreviewFromPath(
             self,
@@ -9272,19 +9332,15 @@ class ThumbnailService:
 
         try:
             reader = ImageReadersRegistry.open(str(resolvedPath))
-
-            try:
-                image = reader.getCentralImage(pilImage=True)
-                if image is not None:
-                    return self._normalizePilImage(image)
-            except Exception:
-                pass
+            averaged = self._averageMovieFrames(reader)
+            if averaged is not None:
+                return averaged
 
             for idx in self._uniqueInts(candidateIndexes):
                 try:
-                    image = reader.getImage(index=idx, pilImage=True)
-                    if image is not None:
-                        return self._normalizePilImage(image)
+                    data = reader.getImage(index=idx)
+                    if data is not None:
+                        return self._displayImage(data)
                 except Exception:
                     continue
 
@@ -9328,6 +9384,35 @@ class ThumbnailService:
 
         return None
 
+    # Images are read as their original values, reduced, then shown over a
+    # robust contrast window (image_display): never stretched to 8 bits first.
+    PREVIEW_READ_SIZE = 1024
+    MOVIE_FRAMES_AVERAGED = 4
+
+    def _displayImage(self, data, size: Optional[int] = None) -> Optional[Image.Image]:
+        try:
+            pixels = toDisplayUint8(reduceForDisplay(data, size or self.PREVIEW_READ_SIZE))
+        except Exception:
+            return None
+        return Image.fromarray(pixels, mode="L")
+
+    def _averageMovieFrames(self, reader) -> Optional[Image.Image]:
+        """The mean of a few frames spread over the movie: a single frame is mostly noise."""
+        try:
+            frames = reader.getImages()
+        except Exception:
+            return None
+        if isinstance(frames, np.ndarray):
+            frames = list(frames) if frames.ndim == 3 else [frames]
+        if not frames:
+            return None
+        picks = np.unique(np.linspace(0, len(frames) - 1, min(self.MOVIE_FRAMES_AVERAGED, len(frames))).astype(int))
+        total = None
+        for pick in picks:
+            reduced = reduceForDisplay(frames[int(pick)], self.PREVIEW_READ_SIZE)
+            total = reduced.astype(np.float64) if total is None else total + reduced
+        return Image.fromarray(toDisplayUint8(total / len(picks)), mode="L")
+
     def _read2dTile(
         self,
         filePath: Path,
@@ -9342,27 +9427,30 @@ class ThumbnailService:
         except Exception:
             return None
 
-        pilImg = None
+        data = None
         try:
             if sliceIndex is not None:
                 idx0 = max(0, int(sliceIndex) - 1)
-                pilImg = imageStack.getImage(index=idx0, pilImage=True)
+                data = imageStack.getImage(index=idx0)
             elif preferCentral:
                 try:
-                    pilImg = imageStack.getCentralImage(pilImage=True)
+                    data = imageStack.getCentralImage()
                 except Exception:
-                    pilImg = imageStack.getImage(index=0, pilImage=True)
+                    data = imageStack.getImage(index=0)
             else:
                 try:
-                    pilImg = imageStack.getImage(index=0, pilImage=True)
+                    data = imageStack.getImage(index=0)
                 except Exception:
-                    pilImg = imageStack.getCentralImage(pilImage=True)
+                    data = imageStack.getCentralImage()
         except Exception:
-            pilImg = None
+            data = None
 
-        if pilImg is None:
+        if data is None:
             return None
-        return self._pilTo2dTile(imageStack, pilImg, thumbSize=thumbSize)
+        try:
+            return toDisplayUint8(reduceForDisplay(data, thumbSize))
+        except Exception:
+            return None
 
     def _pilTo2dTile(self, imageStack, pilImg, thumbSize=maxThumbSize) -> Optional[np.ndarray]:
         try:

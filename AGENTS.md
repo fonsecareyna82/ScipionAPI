@@ -147,6 +147,14 @@ The web tilt series viewer draws the tilts itself from `GET .../tiltseries/{id}/
 
 `GET .../coords3d/tomograms/{id}/volume?maxVoxels=` (`renderCoords3dTomogramVolumeService`, `utils/volume_stack.py`) sends the tomogram reduced by block averaging to at most `maxVoxels` (default 64 M), as 8 bits over mean +/- 5 robust std, in one `TVOL` binary (z, y, x). MRC files are memory mapped and reduced a few planes at a time; the last few results are kept in memory. The web cuts every slice of every axis from it (`tomogram-slices.ts`, as `readVolumeSlice2d` cuts them: z rows y, y and x rows z) with one contrast window for the whole tomogram, and shows them as paletted BMP object URLs, so the SVG images and 3D plane textures work as before. The `/slice` route still serves the slices until the volume arrives.
 
+## Protocol output thumbnails (project cards, graph nodes)
+
+`GET /projects/{id}/thumbnails?scope=card|graph&size=` lists the thumbnails and `GET .../outputs/{name}/thumbnail-image?size=&sig=` serves one (`app/backend/thumbnails/`). Neither loads the project nor takes `_thumbnailProjectLock`:
+- `catalog.py` reads the outputs from the database (`loadPersistedOutputSummariesByProtocolId` + `protocols`), scores them with `scoreOutputClass` (shared with `ThumbnailService._scoreOutput`) and signs each one with its class, `updatedAt`, `itemsCount` and `maxItemId` (+ `RENDER_VERSION`; bump it when thumbnails are drawn differently). A growing (streaming) output gets a new signature, hence a new thumbnail.
+- `store.py`: `<project>/.thumbnail_cache/v3/p<protocolId>/<output>_<size>_<sig>.webp` (+ `.missing` when it cannot be drawn); sizes snap to `SIZES`; writing one drops the older signatures. Checking a thumbnail is a file stat.
+- `scheduler.py` draws the missing ones in a process pool (`SCIPION_THUMBNAIL_WORKERS`, default 2-4), jobs of `JOB_SIZE` outputs of one project (one project load each, `_runRenderThumbnailsJob` in `runtime/preview_process_executor.py`, `ThumbnailService.renderProtocolOutputThumbnailBytes`), never queuing an output twice. The image route waits up to 4 s, then answers 202; images whose URL names the current signature are `immutable`.
+The images are read as their original values and reduced before the contrast is set (`_read2dTile`, `_readImagePreview`, `_displayImage`; movies average a few frames). The old routes (`/thumbnail`, `/thumbnail-items`, `/output-thumbnails`) and their v2 cache remain for clients without the new ones.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

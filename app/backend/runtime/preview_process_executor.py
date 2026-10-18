@@ -410,6 +410,46 @@ def _runOutputThumbnailsBatchJob(
     return response
 
 
+def _thumbnailServiceForProject(service, mapper, projectId: int, userId: int):
+    dbProj = service.getProjectDbRow(mapper, projectId, {"id": int(userId)})
+    if not dbProj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    service.loadProjectForThumbnails(dbProj, mapper=mapper)
+    return service._getThumbnailService()
+
+
+def _runRenderThumbnailsJob(service, mapper, job: Dict[str, Any]):
+    """Draw the thumbnails of some outputs of one project into the signed cache (thumbnails.store)."""
+    from pathlib import Path
+
+    from app.backend.thumbnails import store
+
+    projectId = int(job["projectId"])
+    thumbnails = _thumbnailServiceForProject(service, mapper, projectId, int(job["userId"]))
+    results = []
+    for item in job.get("items") or []:
+        imagePath = Path(item["path"])
+        if store.isReady(imagePath):
+            results.append({"path": str(imagePath), "ready": True})
+            continue
+        try:
+            data, reason = thumbnails.renderProtocolOutputThumbnailBytes(
+                protocolId=int(item["protocolId"]),
+                outputName=str(item["outputName"]),
+                size=int(item["size"]),
+            )
+        except Exception as error:
+            logger.exception("Thumbnail render failed. projectId=%s item=%s", projectId, item)
+            data, reason = None, str(error)
+        if data:
+            store.writeImage(imagePath, data)
+            results.append({"path": str(imagePath), "ready": True})
+        else:
+            store.writeMissing(imagePath, reason or "Thumbnail not available")
+            results.append({"path": str(imagePath), "ready": False, "reason": reason})
+    return results
+
+
 def _runPreviewJob(
     job: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -430,6 +470,13 @@ def _runPreviewJob(
 
         if operation == "output-preview":
             value = _runOutputPreviewJob(
+                service,
+                mapper,
+                job,
+            )
+
+        elif operation == "render-thumbnails":
+            value = _runRenderThumbnailsJob(
                 service,
                 mapper,
                 job,
