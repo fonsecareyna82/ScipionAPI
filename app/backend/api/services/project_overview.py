@@ -8,15 +8,11 @@ a while on big projects, so it is computed in a background thread and kept in
 memory; the answer says when it was computed and whether a new count runs.
 Symbolic links are not followed: Scipion links the inputs of a protocol to
 the outputs of another, which are counted where they are.
-
-The ``tmp`` folder of a finished protocol only holds intermediate files, so
-it can be emptied to free space (see ``cleanProtocolTmp``).
 """
 from __future__ import annotations
 
 import logging
 import os
-import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -30,8 +26,6 @@ logger = logging.getLogger(__name__)
 LIVE_STATUSES = ("launched", "running", "scheduled")
 FAILED_STATUSES = ("failed", "aborted")
 LIST_LIMIT = 10
-# Statuses whose tmp folder may be emptied: the run is over and succeeded.
-CLEANABLE_STATUSES = ("finished",)
 DISK_USAGE_MAX_AGE_SECONDS = 15 * 60
 
 PROJECT_RUNS_SQL = """
@@ -188,22 +182,6 @@ class DiskUsageCache:
         payload["computing"] = computing
         return payload
 
-    def forget(self, projectId: int, protocolId: Optional[str] = None) -> None:
-        """Drop a count that is no longer true (e.g. after emptying a tmp folder)."""
-        with self._lock:
-            result = self._results.get(int(projectId))
-            if result is None:
-                return
-            if protocolId is None:
-                self._results.pop(int(projectId), None)
-                return
-            for item in result.get("protocols", []):
-                if item["protocolId"] == str(protocolId):
-                    result["totalBytes"] -= item["tmpBytes"]
-                    item["bytes"] -= item["tmpBytes"]
-                    item["tmpBytes"] = 0
-                    item["tmpFiles"] = 0
-
     def _compute(self, projectId: int, projectPath: str, protocols: List[Dict[str, Any]]) -> None:
         try:
             items = []
@@ -215,7 +193,6 @@ class DiskUsageCache:
                 if not folder.is_dir():
                     continue
                 size, files = folderUsage(folder)
-                tmpSize, tmpFiles = folderUsage(folder / "tmp") if (folder / "tmp").is_dir() else (0, 0)
                 items.append({
                     "protocolId": str(protocol["protocolId"]),
                     "protocolClassName": str(protocol["protocolClassName"]),
@@ -223,8 +200,6 @@ class DiskUsageCache:
                     "status": str(protocol.get("status") or ""),
                     "bytes": size,
                     "files": files,
-                    "tmpBytes": tmpSize,
-                    "tmpFiles": tmpFiles,
                 })
             items.sort(key=lambda item: item["bytes"], reverse=True)
             computedAt = datetime.now(timezone.utc)
@@ -255,33 +230,3 @@ PROJECT_PROTOCOLS_SQL = """
 
 def projectProtocols(mapper, projectId: int) -> List[Dict[str, Any]]:
     return [dict(row) for row in (mapper.db.fetchAll(PROJECT_PROTOCOLS_SQL, (int(projectId),)) or [])]
-
-
-class CleanTmpRefused(Exception):
-    """The tmp folder of that protocol may not be emptied."""
-
-
-def cleanProtocolTmp(projectPath: str, protocol: Dict[str, Any]) -> Dict[str, Any]:
-    """Empty the tmp folder of a finished protocol; the folder itself stays."""
-    status = str(protocol.get("status") or "").lower()
-    if status not in CLEANABLE_STATUSES:
-        raise CleanTmpRefused("Only the tmp folder of a finished protocol can be emptied (this one is %s)." % (status or "unknown"))
-    folder = protocolFolder(projectPath, protocol["protocolId"], protocol["protocolClassName"])
-    tmp = folder / "tmp"
-    if tmp.is_symlink() or not tmp.is_dir():
-        return {"freedBytes": 0, "removedFiles": 0}
-    root = folder.resolve()
-    if tmp.resolve().parent != root:
-        raise CleanTmpRefused("The tmp folder is not inside the protocol folder.")
-    freed, files = folderUsage(tmp)
-    for entry in os.scandir(tmp):
-        path = Path(entry.path)
-        if entry.is_dir(follow_symlinks=False):
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-    left, leftFiles = folderUsage(tmp)
-    return {"freedBytes": max(0, freed - left), "removedFiles": max(0, files - leftFiles)}

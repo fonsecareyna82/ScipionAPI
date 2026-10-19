@@ -1,4 +1,4 @@
-"""What spans every project of a user: protocol activity (to notify when runs end) and search.
+"""What spans every project of a user: protocol activity (to notify when runs end).
 
 A run ends when its protocol reaches a final or waiting status (finished,
 failed, aborted, interactive). The moment it ended is the end of its last
@@ -81,53 +81,3 @@ def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Option
                     "endedAt": endedAt.isoformat() if hasattr(endedAt, "isoformat") else str(endedAt or ""),
                 })
     return {"now": now.isoformat(), "live": live, "events": events}
-
-
-# -- search (command palette) ---------------------------------------------------
-
-SEARCH_LIMIT = 30
-
-PROTOCOL_SEARCH_SQL = """
-    SELECT p."projectId", p."protocolId", p."protocolClassName", p.status,
-           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label
-      FROM protocols p
-     WHERE p."projectId" = ANY(%s)
-       AND (p.params->>'runName' ILIKE %s OR p."protocolClassName" ILIKE %s OR p."protocolId" = %s)
-     ORDER BY
-           CASE WHEN p."protocolId" = %s THEN 0
-                WHEN p.params->>'runName' ILIKE %s THEN 1 ELSE 2 END,
-           p."updatedAt" DESC NULLS LAST
-     LIMIT %s
-"""
-
-
-def _escapeLike(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def search(mapper, userId: int, query: str, limit: int = SEARCH_LIMIT) -> Dict[str, Any]:
-    """Projects and protocols of the user whose name, label, class or id match the query."""
-    text = " ".join(str(query or "").split())[:120]
-    projects = _accessibleProjects(mapper, userId)
-    if not text or not projects:
-        return {"projects": [], "protocols": []}
-    lowered = text.lower()
-    matchingProjects = [
-        {"projectId": projectId, "projectName": _projectName(row)}
-        for projectId, row in projects.items()
-        if lowered in _projectName(row).lower()
-    ]
-    matchingProjects.sort(key=lambda item: (not item["projectName"].lower().startswith(lowered), item["projectName"].lower()))
-    contains = "%" + _escapeLike(text) + "%"
-    startsWith = _escapeLike(text) + "%"
-    rows = mapper.db.fetchAll(PROTOCOL_SEARCH_SQL, (
-        sorted(projects), contains, contains, text, text, startsWith, int(limit))) or []
-    protocols = [{
-        "projectId": int(row["projectId"]),
-        "projectName": _projectName(projects.get(int(row["projectId"]), {})),
-        "protocolId": str(row["protocolId"]),
-        "protocolClassName": str(row.get("protocolClassName") or ""),
-        "label": str(row.get("label") or ""),
-        "status": str(row.get("status") or "").lower(),
-    } for row in rows]
-    return {"projects": matchingProjects[:limit], "protocols": protocols}

@@ -46,14 +46,3 @@ def test_ended_runs_come_from_their_last_step(connection):
                                (now - timedelta(hours=2), now))
     rows = connection.exec_driver_sql(PROTOCOL_ACTIVITY_SQL, ([7], list(ENDED_STATUSES), now - timedelta(minutes=1), 50)).mappings().all()
     assert [(row["protocolId"], row["label"]) for row in rows] == [("5", "ProtB")]
-
-
-def test_search_orders_by_id_then_label_start(connection):
-    from app.backend.api.services.workspace_service import PROTOCOL_SEARCH_SQL
-    now = datetime.now(timezone.utc)
-    connection.exec_driver_sql('''INSERT INTO protocols (id, "projectId", "protocolId", "protocolClassName", status, params, "updatedAt") VALUES
-        (1, 7, '4', 'XmippProtCTFMicrographs', 'finished', '{"runName": "xmipp ctf"}', %s),
-        (2, 7, '5', 'ProtCTFFind', 'finished', '{"runName": "ctffind 4"}', %s),
-        (3, 7, '6', 'ProtOther', 'saved', '{"runName": "other"}', %s)''', (now, now, now))
-    rows = connection.exec_driver_sql(PROTOCOL_SEARCH_SQL, ([7], "%ctf%", "%ctf%", "ctf", "ctf", "ctf%", 30)).mappings().all()
-    assert [row["protocolId"] for row in rows] == ["5", "4"]

@@ -175,6 +175,14 @@ Writes go inside the project, or, in the import area, only as `.json` files outs
 
 Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-link` (authenticated, checked against the same boundary) returns a signed link (`fs_download_token`, HMAC with `SECRET_KEY`, bound to the absolute file, user and project, valid 2 hours) to `GET .../fs/download-file?token=`, which needs no bearer token. The browser's own download manager then streams the file to disk, shows progress and resumes it with range requests (Starlette `FileResponse`) when the connection drops, e.g. over a VPN. `fs/download` also streams now instead of reading whole files into memory. Signed links are only as safe as `SECRET_KEY`: it must be set in production (it also signs the JWTs).
 
+## Workspace, overview, disk usage and launch history
+
+- `/workspace` router (`api/services/workspace_service.py`), cross-project, so it is not under `/projects/{projectId}` (an int route there would swallow it):
+  - `GET /workspace/protocol-activity?since=`: runs that ended in any of the user's projects. Clients pass the server `now` of their previous answer, the lookback is capped to 6 h, and the end time is the last step's `endTime`.
+- `GET /projects/{p}/overview` (`project_overview.projectOverview`): runs by status; running, failed, recent and longest runs. Run times come from the protocol steps (first `initTime` to last `endTime`).
+- `GET /projects/{p}/disk-usage`: walks `Runs/<id>_<class>` without following symbolic links. The count runs in a background thread and is cached in memory for 15 min, per process. While it runs, the answer has `computing: true`. `?refresh=true` counts again.
+- `protocol_launches` table (migration `4e8b1d2c7a55`): `ProjectService.launchProtocol` stores the protocol's persisted `params` after every successful launch, restart, continue or schedule (keys starting with `_` are dropped), with the user and the mode. Recording never fails a launch: a database that is not migrated only loses the history. Read it with `GET /projects/{p}/protocols/{id}/launches`.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

@@ -48,6 +48,7 @@ from app.backend.api.routers.settings_router import router as settingsRouter
 from app.backend.api.routers.coords2d_router import router as coords2dRouter
 from app.backend.api.routers.xmipp_picking_router import router as xmippPickingRouter
 from app.backend.api.routers.system_router import router as systemRouter
+from app.backend.api.routers.workspace_router import router as workspaceRouter
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHttpException
@@ -140,6 +141,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(coords2dRouter)
     apiApp.include_router(xmippPickingRouter)
     apiApp.include_router(systemRouter)
+    apiApp.include_router(workspaceRouter)
 
     @apiApp.get("/health")
     def health_check():

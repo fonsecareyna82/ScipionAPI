@@ -5186,6 +5186,66 @@ def getProjectRevision(
 
 
 @router.get(
+    "/{projectId}/overview",
+    response_model=Any,
+    summary="The project at a glance: runs by status, running, failed and recent runs, run times",
+)
+def getProjectOverview(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import project_overview
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = project_overview.projectOverview(mapper, projectId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/disk-usage",
+    response_model=Any,
+    summary="Disk usage of the project's protocols, counted in the background",
+)
+def getProjectDiskUsage(
+    projectId: int,
+    refresh: bool = Query(False, description="Count again even if the last count is recent."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import project_overview
+
+    dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not dbProj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = project_overview.diskUsageCache.get(
+        projectId, str(dbProj["name"]), project_overview.projectProtocols(mapper, projectId), refresh=refresh)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/protocols/{protocolId}/launches",
+    response_model=Any,
+    summary="The parameters of every launch of a protocol, newest first",
+)
+def listProtocolLaunches(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import protocol_history
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"launches": protocol_history.listLaunches(mapper, projectId, protocolId)}
+
+
+@router.get(
     "/{projectId}/thumbnails",
     response_model=Any,
     summary="The thumbnails of a project's card or of every output, without loading the project",

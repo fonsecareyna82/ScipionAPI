@@ -6616,6 +6616,17 @@ class ProjectService:
                     projectId=projectId,
                 )
 
+                # recordLaunchParameters
+                from app.backend.api.services import protocol_history
+
+                protocol_history.recordLaunch(
+                    mapper,
+                    projectId,
+                    result.get("protocolId") or protocolId,
+                    currentUserId,
+                    executeMode,
+                )
+
             return result
 
         try:

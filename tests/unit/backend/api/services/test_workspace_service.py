@@ -59,22 +59,3 @@ def test_an_old_since_is_capped_and_users_without_projects_get_nothing():
     empty = Db(rows=[{"projectId": 1}])
     assert workspace.protocolActivity(Mapper([], empty), 3, NOW, now=NOW)["events"] == []
     assert empty.calls == []
-
-
-def test_search_finds_projects_and_protocols_of_the_user():
-    db = Db(rows=[{"projectId": 9, "protocolId": "12", "protocolClassName": "ProtImportTs", "status": "FINISHED",
-                   "label": "import tilt series"}])
-    found = workspace.search(Mapper(PROJECTS, db), 3, "  tomo  ")
-    assert found["projects"] == [{"projectId": 9, "projectName": "Tomo"}]
-    assert found["protocols"] == [{"projectId": 9, "projectName": "Tomo", "protocolId": "12",
-                                   "protocolClassName": "ProtImportTs", "label": "import tilt series",
-                                   "status": "finished"}]
-    projectIds, contains, classContains, exactId, exactIdAgain, startsWith, limit = db.calls[-1][1]
-    assert (projectIds, contains, startsWith, exactId) == ([7, 9], "%tomo%", "tomo%", "tomo")
-
-
-def test_search_treats_wildcards_as_text_and_needs_a_query():
-    db = Db(rows=[])
-    workspace.search(Mapper(PROJECTS, db), 3, "50%_done")
-    assert db.calls[-1][1][1] == "%50\\%\\_done%"
-    assert workspace.search(Mapper(PROJECTS, Db(rows=[])), 3, "   ") == {"projects": [], "protocols": []}
