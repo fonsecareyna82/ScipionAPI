@@ -173,6 +173,8 @@ The web's file browser (`RemoteFileDialog`) reads `GET /projects/{p}/protocols/{
 
 Writes go inside the project, or, in the import area, only as `.json` files outside hidden folders (exported workflows); never with `scope=filesystem`. The start-path answer includes `projectRootAbs` so the browser can offer the project folder. Listings come from `os.scandir` with `mtime` and `isLink`; text previews show at most 1 MB (the end of a log, the start of anything else, marked `X-Preview-Truncated`); `.star`, `.xmd`, `.csv` and `.tsv` preview as tables (`utils/star_table.py`: every `data_` block, its first 200 rows and how many there are, reading the file line by line).
 
+Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-link` (authenticated, checked against the same boundary) returns a signed link (`fs_download_token`, HMAC with `SECRET_KEY`, bound to the absolute file, user and project, valid 2 hours) to `GET .../fs/download-file?token=`, which needs no bearer token. The browser's own download manager then streams the file to disk, shows progress and resumes it with range requests (Starlette `FileResponse`) when the connection drops, e.g. over a VPN. `fs/download` also streams now instead of reading whole files into memory. Signed links are only as safe as `SECRET_KEY`: it must be set in production (it also signs the JWTs).
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

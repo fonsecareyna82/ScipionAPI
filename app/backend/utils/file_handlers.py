@@ -37,6 +37,7 @@ from typing import Union, Dict, Any, Optional
 
 import numpy as np
 from fastapi import HTTPException, Response
+from fastapi.responses import FileResponse
 from PIL import Image
 
 from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, IMAGES_FILE_EXTENSIONS, maxThumbSize
@@ -330,30 +331,26 @@ class FileHandlers:
                     headers={**baseHeaders, **previewHeaders},
                 )
 
-            rawBytes = filePath.read_bytes()
             meta = {
                 "name": filePath.name,
                 "mime": mediaType,
                 "sizeBytes": filePath.stat().st_size,
             }
-            baseHeaders = {
-                "Content-Disposition": f'inline; filename="{filePath.name}"'
-            }
             previewHeaders = self._buildPreviewHeaders(meta)
-            return Response(
-                content=rawBytes,
+            # Sent in chunks: a big file never sits whole in memory.
+            return FileResponse(
+                str(filePath),
                 media_type=mediaType,
-                headers={**baseHeaders, **previewHeaders},
+                filename=filePath.name,
+                content_disposition_type="inline",
+                headers=previewHeaders,
             )
 
-        mediaType = self._guessMime(filePath)
-        return Response(
-            content=filePath.read_bytes(),
-            media_type=mediaType,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filePath.name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
+        return FileResponse(
+            str(filePath),
+            media_type=self._guessMime(filePath),
+            filename=filePath.name,
+            headers={"Access-Control-Expose-Headers": "Content-Disposition"},
         )
 
     def previewRemoteEntryUnderRoot(

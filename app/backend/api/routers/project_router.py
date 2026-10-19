@@ -1929,6 +1929,59 @@ def previewProtocolImageFile(
     return FileHandlers(None).previewImageFileUnderRoot(browser.root, path, inline)
 
 
+class FsDownloadLinkRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    scope: Literal["project", "filesystem"] = "project"
+
+
+@router.post("/{projectId}/protocols/{protocolId}/fs/download-link", response_model=Any)
+def createFsDownloadLink(
+    projectId: int,
+    protocolId: Union[int, str],
+    payload: FsDownloadLinkRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """A short-lived signed link to download one file with the browser's own download manager."""
+    from app.backend.api.services import fs_download_token
+
+    browser = _fsBrowserRoot(projectId, protocolId, payload.scope, currentUser, mapper, service)
+    target = FileHandlers(None)._resolveWithinRoot(browser.root, payload.path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    grant = fs_download_token.signDownload(str(target), int(currentUser["id"]), int(projectId))
+    token = fs_download_token.encodeGrant(grant)
+    return {
+        "url": f"/projects/{projectId}/protocols/{quote(str(protocolId), safe='')}/fs/download-file?token={token}",
+        "expiresAt": grant.expiresAt,
+        "name": target.name,
+        "size": target.stat().st_size,
+    }
+
+
+@router.get("/{projectId}/protocols/{protocolId}/fs/download-file", response_model=None)
+def downloadFsFile(
+    projectId: int,
+    protocolId: Union[int, str],
+    token: str = Query(..., description="A link from fs/download-link"),
+):
+    """Download a file of a signed link (no bearer token: a plain browser download).
+
+    Sent in chunks, with range requests, so big files neither fill the server's
+    memory nor start over when the connection drops.
+    """
+    from app.backend.api.services import fs_download_token
+
+    grant = fs_download_token.readDownloadToken(token, projectId)
+    if grant is None:
+        raise HTTPException(status_code=403, detail="The download link is invalid or has expired")
+    if not os.path.isfile(grant.path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(grant.path, filename=os.path.basename(grant.path),
+                        headers={"Cache-Control": "private, no-store"})
+
+
 @router.post(
     "/{projectId}/protocols/export",
     response_model=Any,
