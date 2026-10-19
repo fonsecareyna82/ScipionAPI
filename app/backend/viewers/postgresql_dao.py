@@ -35,7 +35,6 @@
 import ast
 import json
 import logging
-import re
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -1372,50 +1371,10 @@ class PostgresqlDAO(IDAO):
         return [value]
 
     def _toNumpyMatrix(self, value: Any):
-        if isinstance(value, numpy.ndarray):
-            return value
+        from app.backend.utils.matrix_values import parseMatrix
 
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return numpy.array([])
-
-            parsed = None
-
-            try:
-                parsed = json.loads(text)
-            except Exception:
-                parsed = None
-
-            if parsed is None:
-                try:
-                    parsed = ast.literal_eval(text)
-                except Exception:
-                    parsed = None
-
-            if parsed is None:
-                rowTexts = re.findall(r"\[([^\[\]]+)\]", text)
-                rows = []
-
-                for rowText in rowTexts:
-                    numbers = re.findall(
-                        r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?",
-                        rowText,
-                    )
-                    if numbers:
-                        rows.append([float(number) for number in numbers])
-
-                parsed = rows
-
-            try:
-                return numpy.asarray(parsed, dtype=float)
-            except Exception:
-                return numpy.array([])
-
-        try:
-            return numpy.asarray(value, dtype=float)
-        except Exception:
-            return numpy.array([])
+        parsed = parseMatrix(value)
+        return numpy.array([]) if parsed is None else parsed
 
     def _sortValue(self, value: Any):
         if value is None:

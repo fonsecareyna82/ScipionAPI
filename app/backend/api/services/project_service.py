@@ -17289,17 +17289,13 @@ class ProjectService:
             }
 
         if clsName == "MatrixRender":
-            try:
-                rendered = renderer.render(rawValue, rowValues)
-            except Exception:
-                rendered = rawValue
-            if isinstance(rendered, np.ndarray):
-                renderedVal = rendered.tolist()
-            else:
-                renderedVal = rendered
+            from app.backend.utils.matrix_values import matrixForJson
+
+            decimals = getattr(renderer, "getDecimalsNumber", lambda: 2)()
             return {
                 "kind": "matrix",
-                "value": renderedVal,
+                # None when the object has no matrix (e.g. particles not aligned).
+                "value": matrixForJson(rawValue, decimals),
             }
 
         try:
