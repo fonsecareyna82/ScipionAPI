@@ -40,6 +40,8 @@ def workflowFileService(tmp_path, monkeypatch):
         "SCIPION_IMPORT_BROWSER_ROOT",
         str(browserRoot),
     )
+    # The import root may only be under its ceiling (/home by default).
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
 
     service = object.__new__(ProjectService)
     service.currentProject = None

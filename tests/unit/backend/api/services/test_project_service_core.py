@@ -249,6 +249,10 @@ def test_GetGlobalFsBrowserRootUsesEnvironment(projectService, monkeypatch, tmp_
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
 
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
+
     resolved = projectService._getGlobalFsBrowserRoot()
 
     assert resolved == browserRoot.resolve()

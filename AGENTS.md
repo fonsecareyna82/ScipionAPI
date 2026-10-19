@@ -163,6 +163,16 @@ Large deletions must not keep the request waiting:
 - The cascading deletes find children by `protocolDbId`/`objectId`; migration `7a1c2e9d4f30` indexes those columns (without them each deleted protocol scanned whole tables).
 - `POST .../protocols/delete` and `.../reset-from` accept `includeWorkflow=false` to skip rebuilding the project afterwards (the web reloads it itself).
 
+## Remote file browser (`fs/*` routes)
+
+The web's file browser (`RemoteFileDialog`) reads `GET /projects/{p}/protocols/{id}/fs/start-path|list|preview|preview2|download` and writes with `POST .../fs/write`. Where it may look is decided in one place, `api/services/fs_browser.py`:
+
+- `scope=project` (default): the project folder; browsing starts in the protocol folder (`<project>/Runs/%06d_<class>`, taken from the database, so no request loads the project; a protocol never run starts in the project folder). Symbolic links under it may lead elsewhere, as Scipion links its inputs.
+- `scope=filesystem`: the whole filesystem, read only, starting in the protocol folder. Protocol forms use it for their path parameters, because imports read data from other disks; the picked path is kept relative to the project when it is inside it and absolute otherwise.
+- import (project and protocol ids `-1`): projects and workflows to import, under `SCIPION_IMPORT_BROWSER_ROOT`, never above `SCIPION_IMPORT_BROWSER_CEILING` (`/home`); a project elsewhere has to be copied under it first.
+
+Writes go inside the project, or, in the import area, only as `.json` files outside hidden folders (exported workflows); never with `scope=filesystem`. The start-path answer includes `projectRootAbs` so the browser can offer the project folder. Listings come from `os.scandir` with `mtime` and `isLink`; text previews show at most 1 MB (the end of a log, the start of anything else, marked `X-Preview-Truncated`); `.star`, `.xmd`, `.csv` and `.tsv` preview as tables (`utils/star_table.py`: every `data_` block, its first 200 rows and how many there are, reading the file line by line).
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

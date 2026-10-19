@@ -88,6 +88,8 @@ def test_GetProtocolPathUsesImportBrowserRootForUnpersistedProtocol(handlers, mo
     browserRoot = tmp_path / "home"
     browserRoot.mkdir()
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+    # The import root may only be under its ceiling (/home by default).
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     result = handlers.getProtocolPath("fake-protocol-id-for-browser-paths-resolution")
 
     assert result["rootAbs"] == str(browserRoot.resolve())
@@ -432,3 +434,17 @@ def test_PreviewRemoteEntryUnderRootUnreadableSqliteReturnsDatabasePayload(handl
     assert payload["meta"]["readable"] is False
     assert payload["database"]["tables"] == []
     assert payload["database"]["warnings"]
+
+def test_listing_gives_dates_and_marks_links_including_broken_ones(tmp_path):
+    from app.backend.utils.file_handlers import FileHandlers
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "a.mrc").write_bytes(b"1234")
+    (tmp_path / "linked").symlink_to(tmp_path / "data")
+    (tmp_path / "broken").symlink_to(tmp_path / "missing")
+    items = {item["name"]: item for item in FileHandlers(None).listRemoteDirectoryUnderRoot(tmp_path, "")}
+    assert items["data"]["isDir"] and not items["data"]["isLink"] and items["data"]["mtime"]
+    assert items["linked"]["isDir"] and items["linked"]["isLink"]
+    assert not items["broken"]["isDir"] and items["broken"]["isLink"] and items["broken"]["size"] is None
+    inside = FileHandlers(None).listRemoteDirectoryUnderRoot(tmp_path, "linked")
+    assert [(i["name"], i["path"], i["size"]) for i in inside] == [("a.mrc", "linked/a.mrc", 4)]

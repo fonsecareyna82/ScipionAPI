@@ -4,13 +4,9 @@ from pathlib import Path
 import pytest
 
 
+# The file browser routes (fs/*) resolve the protocol by its Scipion id in the
+# database themselves (fs_browser.resolveBrowserRoot), see test_fs_browser.
 ROUTER_STRICT_SERVICE_CALLS = {
-    "getProtocolPath": {"getProtocolPath"},
-    "listProtocolDir": {"listProtocolDir"},
-    "previewProtocolText": {"previewProtocolTextFile"},
-    "previewRemoteEntry": {"previewRemoteEntry"},
-    "previewProtocolImageFile": {"previewProtocolImageFile"},
-    "writeRemoteFile": {"writeRemoteFileService"},
     "resolveAnalyzeViewer": {"resolveAnalyzeViewerDecision"},
     "listOutputVolumes": {"listOutputVolumesService"},
     "getVolumeInfo": {"getVolumeInfoService"},

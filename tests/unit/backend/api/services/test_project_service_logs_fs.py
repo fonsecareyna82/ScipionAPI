@@ -377,6 +377,10 @@ def test_GetProtocolPathReturnsGlobalBrowserPayload(service, monkeypatch, tmp_pa
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
 
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
+
     result = service.getProtocolPath("-1")
 
     assert result == {
@@ -405,6 +409,8 @@ def test_GetProtocolPathReturnsImportBrowserRootForUnpersistedProtocol(service, 
     browserRoot = tmp_path / "home"
     browserRoot.mkdir()
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+    # The import root may only be under its ceiling (/home by default).
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     result = service.getProtocolPath(protocolId)
 
     assert result == {
@@ -420,6 +426,8 @@ def test_ListProtocolDirUsesImportBrowserRootForUnpersistedProtocol(service, mon
     inputDir = browserRoot / "input"
     inputDir.mkdir()
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+    # The import root may only be under its ceiling (/home by default).
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     result = service.listProtocolDir(protocolId="None", path="")
 
     assert len(result) == 1
@@ -434,6 +442,8 @@ def test_PreviewRemoteEntryUsesImportBrowserRootForUnpersistedProtocol(service, 
     inputFile = browserRoot / "movies.txt"
     inputFile.write_text("movie_001.mrc", encoding="utf-8")
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+    # The import root may only be under its ceiling (/home by default).
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     response = service.previewRemoteEntry(protocolId="None", path="movies.txt")
 
     assert response.status_code == 200
@@ -453,6 +463,10 @@ def test_ListProtocolDirDelegatesToGlobalBrowser(projectServiceModule, service, 
     browserRoot.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
 
     result = service.listProtocolDir(protocolId="-1", path="data")
@@ -487,6 +501,10 @@ def test_PreviewProtocolTextFileDelegatesToGlobalBrowser(projectServiceModule, s
     browserRoot.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
 
     result = service.previewProtocolTextFile(protocolId="-1", path="notes.txt")
@@ -521,6 +539,10 @@ def test_PreviewRemoteEntryDelegatesToGlobalBrowser(projectServiceModule, servic
     browserRoot.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
 
     result = service.previewRemoteEntry(protocolId="-1", path="image.png")
@@ -555,6 +577,10 @@ def test_PreviewProtocolImageFileDelegatesToGlobalBrowser(projectServiceModule, 
     browserRoot.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("SCIPION_IMPORT_BROWSER_ROOT", str(browserRoot))
+
+    # The import root may only be under its ceiling (/home by default).
+
+    monkeypatch.setenv("SCIPION_IMPORT_BROWSER_CEILING", str(browserRoot))
     monkeypatch.setattr(projectServiceModule, "FileHandlers", FakeFileHandlers)
 
     result = service.previewProtocolImageFile(protocolId="-1", path="preview.webp", inline=True)

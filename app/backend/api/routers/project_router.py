@@ -73,6 +73,7 @@ from app.backend.mapper.tomogram_review_mapper import (
 logger = logging.getLogger(__name__)
 
 from app.backend.utils.tilt_series_stack import parseIndices as parseTiltStackIndices
+from app.backend.utils.file_handlers import FileHandlers
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -1835,145 +1836,97 @@ def pollProtocolLogs(
 #                FS REMOTE: list / preview / download
 # ======================================================================
 
-def _isGlobalFsBrowserMode(projectId: int, protocolId: Union[int, str]) -> bool:
-    return str(projectId).strip() == "-1" and str(protocolId).strip() == "-1"
+def _fsBrowserRoot(projectId: int, protocolId: Union[int, str], scope: str, currentUser,
+                   mapper: PostgresqlFlatMapper, service: ProjectService):
+    """The browsing boundary of a file browser request (see fs_browser).
 
+    Only the user's access to the project is checked: the protocol folder
+    comes from the database, so browsing never loads the project.
+    """
+    from app.backend.api.services import fs_browser
 
-def _ensureProjectForFsRequest(
-    projectId: int,
-    protocolId: Union[int, str],
-    currentUser,
-    mapper: PostgresqlFlatMapper,
-    service: ProjectService,
-    *,
-    refresh: bool = True,
-    checkPid: bool = True,
-):
-    if _isGlobalFsBrowserMode(projectId, protocolId):
-        return None
-
-    project = (
-        service
-        .loadPostgresqlRuntimeProjectForMutation(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-        )
-    )
-    if not project:
+    if fs_browser.isImportMode(projectId, protocolId):
+        return fs_browser.resolveBrowserRoot(mapper, projectId, protocolId, None)
+    dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not dbProj:
         raise HTTPException(status_code=404, detail="Project not found")
+    return fs_browser.resolveBrowserRoot(mapper, projectId, protocolId, str(dbProj["name"]), scope)
 
-    return project
+
+_FS_SCOPE = Query(
+    "project",
+    description="project: inside the project folder; filesystem: the whole filesystem (read only).",
+)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/start-path", response_model=Any)
 def getProtocolPath(
     projectId: int,
     protocolId: str,
+    scope: Literal["project", "filesystem"] = _FS_SCOPE,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.getProtocolPath(
-        protocolId=protocolId,
-        mapper=mapper,
-        projectId=projectId,
-        protocolIdIsScipionId=True,
-    )
+    return _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service).toDict()
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/list", response_model=Any)
 def listProtocolDir(
     projectId: int,
     protocolId: Union[int, str],
-    path: str = Query(
-        "",
-        description=(
-            "Path relative to the browser root (rootAbs). "
-            "Empty string lists root. Absolute paths are accepted only for legacy clients "
-            "and must be under rootAbs."
-        ),
-    ),
+    path: str = Query("", description="Path relative to the browser root (rootAbs); empty lists the root."),
+    scope: Literal["project", "filesystem"] = _FS_SCOPE,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.listProtocolDir(
-        protocolId=protocolId,
-        path=path,
-        mapper=mapper,
-        projectId=projectId,
-        protocolIdIsScipionId=True,
-    )
+    browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    return FileHandlers(None).listRemoteDirectoryUnderRoot(browser.root, path)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
 def previewProtocolText(
     projectId: int,
     protocolId: Union[int, str],
-    path: str = Query(..., description="Relative file path inside protocol root"),
+    path: str = Query(..., description="File path relative to the browser root"),
+    scope: Literal["project", "filesystem"] = _FS_SCOPE,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolTextFile(
-        protocolId=protocolId,
-        path=path,
-        mapper=mapper,
-        projectId=projectId,
-        protocolIdIsScipionId=True,
-    )
+    browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    return FileHandlers(None).previewTextFileUnderRoot(browser.root, path)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview", response_model=None)
 def previewRemoteEntry(
     projectId: int,
     protocolId: Union[int, str],
-    path: str = Query(..., description="Relative file path inside protocol root"),
+    path: str = Query(..., description="File path relative to the browser root"),
+    scope: Literal["project", "filesystem"] = _FS_SCOPE,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(
-        projectId,
-        protocolId,
-        currentUser,
-        mapper,
-        service,
-        refresh=False,
-        checkPid=False,
-    )
-    return service.previewRemoteEntry(
-        protocolId=protocolId,
-        path=path,
-        mapper=mapper,
-        projectId=projectId,
-        protocolIdIsScipionId=True,
-    )
+    browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    return FileHandlers(None).previewRemoteEntryUnderRoot(
+        browser.root, path, databaseInspector=service._inspectScipionSqliteDatabase)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/download", response_model=None)
 def previewProtocolImageFile(
     projectId: int,
     protocolId: Union[int, str],
-    path: str = Query(..., description="Relative file path inside protocol root"),
+    path: str = Query(..., description="File path relative to the browser root"),
     inline: bool = Query(False, description="If true, send Content-Disposition inline"),
+    scope: Literal["project", "filesystem"] = _FS_SCOPE,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(projectId, protocolId, currentUser, mapper, service)
-    return service.previewProtocolImageFile(
-        protocolId=protocolId,
-        path=path,
-        inline=inline,
-        mapper=mapper,
-        projectId=projectId,
-        protocolIdIsScipionId=True,
-    )
+    browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    return FileHandlers(None).previewImageFileUnderRoot(browser.root, path, inline)
 
 
 @router.post(
@@ -2120,32 +2073,28 @@ def writeRemoteFile(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    _ensureProjectForFsRequest(
-        projectId,
-        protocolId,
-        currentUser,
-        mapper,
-        service,
-        refresh=False,
-        checkPid=False,
-    )
+    """Write a text file: inside the project, or a JSON file in the import area (see fs_browser)."""
+    from app.backend.api.services import fs_browser
 
+    browser = _fsBrowserRoot(projectId, protocolId, "project", currentUser, mapper, service)
+    targetPath = fs_browser.writableTarget(browser, getattr(payload, "path", ""))
+    if targetPath.exists() and targetPath.is_dir():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Destination path points to a directory")
+    content = "" if payload.content is None else str(payload.content)
     try:
-        return service.writeRemoteFileService(
-            protocolId=protocolId,
-            payload=payload,
-            mapper=mapper,
-            projectId=projectId,
-            protocolIdIsScipionId=True,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
+        targetPath.parent.mkdir(parents=True, exist_ok=True)
+        targetPath.write_text(content, encoding="utf-8")
+    except OSError as e:
         logger.exception("Error in writeRemoteFile: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to write remote file: {e}",
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to write remote file: {e}")
+    return {
+        "success": True,
+        "path": str(targetPath),
+        "size": targetPath.stat().st_size,
+        "mimeType": getattr(payload, "mimeType", None) or "application/json",
+    }
 
 
 @router.get(

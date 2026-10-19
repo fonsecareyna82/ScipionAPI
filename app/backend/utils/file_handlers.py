@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import os
 import json
+import csv
 import sqlite3
 import mimetypes
 from urllib.parse import quote
@@ -39,6 +40,11 @@ from fastapi import HTTPException, Response
 from PIL import Image
 
 from app.backend.utils.constants import TEXT_FILE_EXTENSIONS, IMAGES_FILE_EXTENSIONS, maxThumbSize
+from app.backend.utils.star_table import TABLE_FORMATS, readMetadataTableFile
+
+# Text previews show at most this much of a file: the end of a log, the start of anything else.
+TEXT_PREVIEW_BYTES = 1 * 1024 * 1024
+LOG_FILE_EXTENSIONS = {".log", ".stdout", ".stderr", ".out", ".err"}
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 
 # Color maps for volume thumbnails
@@ -84,17 +90,18 @@ class FileHandlers:
             protocolAbsPath = os.path.abspath(protocol.getPath())
             rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
         else:
-            protocolAbsPath = os.path.abspath(os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home"))
+            from app.backend.api.services.fs_browser import importRoot
+            protocolAbsPath = str(importRoot())
             rootAbsPath = protocolAbsPath
-        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
+        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else protocolAbsPath
 
         startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
         if startRelPath == ".":
             startRelPath = ""
 
-        # Clamp: never allow a startPath that would escape rootAbs
+        # Clamp: never a startPath that escapes rootAbs, and never a wider root.
         if startRelPath.startswith(".."):
-            rootAbsPath = "/home"
+            rootAbsPath = protocolAbsPath
             startRelPath = ""
 
         return {
@@ -134,7 +141,9 @@ class FileHandlers:
         Resolve the absolute root folder boundary for browsing.
         """
         info = self.getProtocolPath(str(protocolId))
-        rootAbs = (info.get("rootAbs") or "/home").strip()
+        rootAbs = (info.get("rootAbs") or "").strip()
+        if not rootAbs:
+            raise HTTPException(status_code=404, detail="Browser root not found")
 
         p = FsPath(rootAbs).resolve()
         if not p.exists() or not p.is_dir():
@@ -171,33 +180,42 @@ class FileHandlers:
             raise HTTPException(status_code=400, detail="Not a directory")
 
         items: list[Dict[str, Any]] = []
+        targetText = str(target)
+        rootText = str(rootPath)
 
         try:
-            for child in target.iterdir():
-                try:
-                    isDir = child.is_dir()
-                except OSError:
-                    continue
-
-                relPath = self._relFromRoot(rootPath, child)
-                absPath = str(child.absolute()).replace("\\", "/")
-
-                item: Dict[str, Any] = {
-                    "name": child.name,
-                    "path": relPath,
-                    "absPath": absPath,
-                    "isDir": isDir,
-                }
-
-                if not isDir:
+            # scandir reuses what the directory read returns: big folders list fast.
+            with os.scandir(targetText) as entries:
+                for child in entries:
                     try:
-                        item["size"] = child.stat().st_size
+                        isLink = child.is_symlink()
+                        isDir = child.is_dir()
                     except OSError:
-                        item["size"] = None
+                        continue
 
-                    item["mime"] = self._guessMime(child)
+                    absPath = os.path.join(targetText, child.name).replace("\\", "/")
+                    relPath = os.path.relpath(absPath, rootText).replace("\\", "/")
+                    item: Dict[str, Any] = {
+                        "name": child.name,
+                        "path": "" if relPath == "." else relPath,
+                        "absPath": absPath,
+                        "isDir": isDir,
+                        "isLink": isLink,
+                    }
+                    try:
+                        info = child.stat()
+                        item["mtime"] = info.st_mtime
+                        if not isDir:
+                            item["size"] = info.st_size
+                    except OSError:
+                        # A broken link: shown, without size or date.
+                        item["mtime"] = None
+                        if not isDir:
+                            item["size"] = None
+                    if not isDir:
+                        item["mime"] = self._guessMime(FsPath(child.name))
 
-                items.append(item)
+                    items.append(item)
 
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
@@ -235,30 +253,39 @@ class FileHandlers:
                 detail="Preview not available for this file type",
             )
 
-        maxBytes = 1 * 1024 * 1024
         try:
             size = filePath.stat().st_size
-            if size > maxBytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail="File too large to preview",
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-
+        except OSError:
+            size = 0
+        truncated = size > TEXT_PREVIEW_BYTES
         try:
-            text = filePath.read_text(encoding="utf-8", errors="ignore")
+            with open(filePath, "rb") as handle:
+                if truncated and suffix in LOG_FILE_EXTENSIONS:
+                    # The end of a log is what matters while a protocol runs or after it fails.
+                    handle.seek(size - TEXT_PREVIEW_BYTES)
+                    data = handle.read(TEXT_PREVIEW_BYTES)
+                    data = data[data.find(b"\n") + 1:] if b"\n" in data else data
+                else:
+                    data = handle.read(TEXT_PREVIEW_BYTES)
+                    if truncated and b"\n" in data:
+                        data = data[:data.rfind(b"\n") + 1]
+            text = data.decode("utf-8", errors="ignore")
         except Exception:
             raise HTTPException(
                 status_code=500,
                 detail="Could not read file as text",
             )
 
+        headers = {}
+        if truncated:
+            headers["X-Preview-Truncated"] = "true"
+            headers["X-Preview-Note"] = ("Showing the end of the file" if suffix in LOG_FILE_EXTENSIONS
+                                         else "Showing the start of the file")
+            headers["Access-Control-Expose-Headers"] = "X-Preview-Truncated, X-Preview-Note"
         return Response(
             content=text,
             media_type="text/plain; charset=utf-8",
+            headers=headers,
         )
 
     def previewImageFileUnderRoot(self, root: Union[str, FsPath], path: str, inline: bool) -> Response:
@@ -369,10 +396,16 @@ class FileHandlers:
         except Exception:
             sizeBytes = None
 
+        if suffix in TABLE_FORMATS:
+            tableResponse = self._previewMetadataTable(filePath, mime, sizeBytes)
+            if tableResponse is not None:
+                return tableResponse
+
         textual = (
                 mime.startswith("text/")
                 or mime in ("application/json", "application/xml", "application/x-yaml", "text/x-log")
                 or suffix in TEXT_FILE_EXTENSIONS
+                or suffix in TABLE_FORMATS
         )
 
         if textual:
@@ -382,6 +415,9 @@ class FileHandlers:
                 "mime": mime,
                 "sizeBytes": sizeBytes,
             }
+            if resp.headers.get("X-Preview-Truncated"):
+                meta["note"] = resp.headers.get("X-Preview-Note")
+                meta["truncated"] = True
             return self._attachPreviewContract(
                 resp,
                 kind="text",
@@ -479,6 +515,23 @@ class FileHandlers:
             name=filePath.name,
             meta=meta,
         )
+
+    def _previewMetadataTable(self, filePath: FsPath, mime: str, sizeBytes) -> Optional[Response]:
+        """A STAR/XMD/CSV/TSV file as its tables; None when it holds none (it is shown as text)."""
+        try:
+            table = readMetadataTableFile(str(filePath))
+        except (OSError, ValueError, csv.Error):
+            return None
+        if not table.blocks:
+            return None
+        payload = table.toDict()
+        truncated = table.incomplete or any(block.truncated for block in table.blocks)
+        meta = {"name": filePath.name, "mime": mime, "sizeBytes": sizeBytes, "truncated": truncated}
+        response = Response(content=json.dumps(payload), media_type="application/json")
+        if truncated:
+            response.headers["X-Preview-Truncated"] = "true"
+        return self._attachPreviewContract(response, kind="table", name=filePath.name, meta=meta,
+                                           responseMime="application/json")
 
     @staticmethod
     def _normalizeRelPath(relPath: str) -> str:

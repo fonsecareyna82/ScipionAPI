@@ -8176,8 +8176,9 @@ class ProjectService:
         return protocolToken in {"", "none", "null", "undefined", self._UNSAVED_FS_PROTOCOL_ID}
 
     def _getGlobalFsBrowserRoot(self) -> Path:
-        raw = os.environ.get("SCIPION_IMPORT_BROWSER_ROOT", "/home")
-        return Path(raw).expanduser().resolve()
+        # Projects and workflows are imported from under /home at most (see fs_browser).
+        from app.backend.api.services.fs_browser import importRoot
+        return importRoot()
 
     def inspectWorkflowFile(
             self,
@@ -9029,14 +9030,15 @@ class ProjectService:
             protocolAbsPath = os.path.abspath(protocol.getPath())
             rootAbsPath = self._inferProjectRootAbs(protocolAbsPath)
 
-        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else "/home"
+        rootAbsPath = os.path.abspath(rootAbsPath) if rootAbsPath else protocolAbsPath
 
         startRelPath = os.path.relpath(protocolAbsPath, rootAbsPath)
         if startRelPath == ".":
             startRelPath = ""
 
         if startRelPath.startswith(".."):
-            rootAbsPath = "/home"
+            # Never a wider root: the protocol folder itself.
+            rootAbsPath = protocolAbsPath
             startRelPath = ""
 
         return {
@@ -9088,20 +9090,6 @@ class ProjectService:
             raise HTTPException(status_code=404, detail="Protocol path not found")
 
         return FsPath(rootAbs).resolve()
-
-    @staticmethod
-    def _guardJoin(root: FsPath, relPath: str) -> FsPath:
-        """
-        Join root + relPath, resolve, and ensure it stays inside root.
-        """
-        rel = (relPath or "").strip().lstrip("/\\")
-        target = (root / rel).resolve()
-        try:
-            target.relative_to(root)
-        except Exception:
-            if not target.exists():
-                raise HTTPException(status_code=400, detail="Invalid path")
-        return target
 
     @staticmethod
     def _guessMime(p: FsPath) -> str:
