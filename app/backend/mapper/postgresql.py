@@ -797,6 +797,22 @@ class PostgresqlDb:
             raise firstError
 
 
+# What the project graph shows of each protocol: identity, class, status,
+# label and relations. It changes when protocols are added, deleted, renamed,
+# relaunched or rewired from another tab or by another user; it does not change
+# while protocols only run (their progress is refreshed on its own).
+PROJECT_REVISION_SQL = """
+    SELECT COUNT(*) AS protocols,
+           md5(COALESCE(string_agg(
+               "protocolId" || '|' || "protocolClassName" || '|' || COALESCE(status, '') || '|'
+               || COALESCE(params->>'runName', '') || '|' || array_to_string("parentIds", ',')
+               || '|' || array_to_string("childIds", ','),
+               ';' ORDER BY "protocolId"), '')) AS revision
+      FROM protocols
+     WHERE "projectId" = %s
+"""
+
+
 class PostgresqlFlatMapper(Mapper):
     """Flat mapper to handle Users, Projects and Protocols in PostgreSQL."""
 
@@ -1820,6 +1836,11 @@ class PostgresqlFlatMapper(Mapper):
             (self.DELETING_STATUS, int(projectId), int(ownerId), self.DELETING_STATUS),
         )
         return cursor.rowcount > 0
+
+    def getProjectRevision(self, projectId: int) -> Dict[str, Any]:
+        """A fingerprint of what the project graph shows (see PROJECT_REVISION_SQL)."""
+        row = self.db.fetchOne(PROJECT_REVISION_SQL, (int(projectId),)) or {}
+        return {"revision": str(row.get("revision") or ""), "protocols": int(row.get("protocols") or 0)}
 
     def listDeletingProjectIds(self) -> List[int]:
         rows = self.db.fetchAll(

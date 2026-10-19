@@ -5167,6 +5167,23 @@ def _clearThumbnailProjectContext(service: ProjectService) -> None:
 
 
 @router.get(
+    "/{projectId}/revision",
+    response_model=Any,
+    summary="A fingerprint of the project graph, to tell cheaply whether it changed",
+)
+def getProjectRevision(
+    projectId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = mapper.getProjectRevision(projectId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
     "/{projectId}/thumbnails",
     response_model=Any,
     summary="The thumbnails of a project's card or of every output, without loading the project",
