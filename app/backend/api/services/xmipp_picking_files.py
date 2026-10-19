@@ -51,7 +51,29 @@ class PickerConfig:
     mode: str = "Manual"
     manualParticlesNum: int = 0
     autoParticlesNum: int = 0
-    filters: List[Tuple[str, str]] = field(default_factory=list)
+    # As stored in config.xmd (IJCommand's encoding). A new session, or a
+    # config.xmd without a filters block, has the picker's default filters.
+    filters: List[Tuple[str, str]] = field(default_factory=lambda: [
+        (encodeFilterText(command), encodeFilterText(options) or "NULL") for command, options in DEFAULT_FILTERS])
+
+    def imageFilters(self) -> List[Tuple[str, str]]:
+        """The ImageJ filters the picker applies to the micrographs (command, options)."""
+        return [(decodeFilterText(command), "" if args == "NULL" else decodeFilterText(args))
+                for command, args in self.filters if command]
+
+
+# As ParticlePicker when config.xmd has no filters.
+DEFAULT_FILTERS = (("Gaussian Blur...", "sigma=2"), ("Enhance Contrast", "saturated=0.4"))
+
+
+def decodeFilterText(text: str) -> str:
+    """A filter command or options as stored by IJCommand (spaces as '_', '_' as '&')."""
+    return str(text or "").replace("_", " ").replace("&", "_")
+
+
+def encodeFilterText(text: str) -> str:
+    """As IJCommand.getMdCommand."""
+    return str(text or "").replace("_", "&").replace(" ", "_")
 
 
 def posFileName(micrographFile: str) -> str:
@@ -161,6 +183,8 @@ def readConfig(path: str) -> Optional[PickerConfig]:
         config.mode = mode if mode in PICKER_MODES else "Manual"
         config.manualParticlesNum = _int(row.get("manualParticlesNum"))
         config.autoParticlesNum = _int(row.get("autoParticlesNum"))
+    if "filters" in blocks:
+        config.filters = []
     labels, rows = blocks.get("filters", ([], []))
     for row in rows:
         values = dict(zip(labels, row))

@@ -125,6 +125,21 @@ class FakeClassifier:
     def correct(self, added, automatic):
         self.calls.append(("correct", added, automatic))
 
+    def setFilters(self, filters):
+        self.calls.append(("filters", filters))
+
+    def rebuildTemplates(self, size, number, templatesFile, particles):
+        self.calls.append(("templates", size, number, templatesFile, particles))
+        return len(particles)
+
+    def addToTemplates(self, size, number, templatesFile, micrograph, x, y):
+        self.calls.append(("addTemplate", micrograph, x, y))
+        return 1
+
+    def center(self, size, number, templatesFile, micrograph, x, y):
+        self.calls.append(("center", micrograph, x, y))
+        return x + 2, y - 1
+
 
 @pytest.fixture
 def stepClassifier(monkeypatch):
@@ -161,6 +176,25 @@ def test_the_api_reaches_the_classifier_kept_alive_by_the_waiting_step(tmp_path,
     thread.join(5)
     # The classifier ends with the step, as the Java picker does.
     assert fake.closed
+
+
+def test_templates_and_centering_run_in_the_classifier_of_the_waiting_step(tmp_path, stepClassifier):
+    from app.backend.runtime.xmipp_classifier_session import StepClassifier
+    fake, _ = stepClassifier
+    thread, _ = startStep(tmp_path, FakeProtocol())
+    classifier = StepClassifier(str(tmp_path), 33, ["/p/a.mrc"], "/p")
+    classifier.setFilters([("Gaussian Blur...", "sigma=2")])
+    assert classifier.rebuildTemplates(33, 1, "/e/templates.stk", [("/p/a.mrc", 5, 6)]) == 1
+    assert classifier.addToTemplates(33, 1, "/e/templates.stk", "/p/a.mrc", 7, 8) == 1
+    assert classifier.center(33, 1, "/e/templates.stk", "/p/a.mrc", 10, 10) == (12, 9)
+    assert fake.calls == [("filters", [("Gaussian Blur...", "sigma=2")]),
+                          ("templates", 33, 1, "/e/templates.stk", [("/p/a.mrc", 5, 6)]),
+                          ("filters", [("Gaussian Blur...", "sigma=2")]),
+                          ("addTemplate", "/p/a.mrc", 7, 8),
+                          ("filters", [("Gaussian Blur...", "sigma=2")]),
+                          ("center", "/p/a.mrc", 10, 10)]
+    picker.requestClose(str(tmp_path))
+    thread.join(5)
 
 
 def test_classifier_errors_reach_the_api(tmp_path, stepClassifier):

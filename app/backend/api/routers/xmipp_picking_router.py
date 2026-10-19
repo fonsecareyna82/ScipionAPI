@@ -25,6 +25,14 @@ class PickingParticlesPayload(BaseModel):
 
 class PickingSettingsPayload(BaseModel):
     particleSize: Optional[int] = None
+    templatesNum: Optional[int] = None
+    autopickPercent: Optional[int] = None
+
+
+class PickingPickPayload(BaseModel):
+    x: float
+    y: float
+    center: bool = True
 
 
 def getPickingService() -> XmippPickingSessionService:
@@ -52,7 +60,49 @@ def savePickingSettings(
     service: XmippPickingSessionService = Depends(getPickingService),
 ):
     return service.saveSettings(mapper, projectId, protocolId, currentUser,
-                                particleSize=payload.particleSize)
+                                particleSize=payload.particleSize, templatesNum=payload.templatesNum,
+                                autopickPercent=payload.autopickPercent)
+
+
+@router.post("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/pick", response_model=Any)
+def pickParticle(
+    projectId: int,
+    protocolId: int,
+    micId: str,
+    payload: PickingPickPayload,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """A particle just picked: where it goes once centered, and it joins the templates."""
+    return service.pickParticle(mapper, projectId, protocolId, currentUser, micId,
+                                payload.x, payload.y, center=payload.center)
+
+
+@router.post("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/moved", response_model=Any)
+def particleMoved(
+    projectId: int,
+    protocolId: int,
+    micId: str,
+    payload: PickingPointPayload,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    """A manual particle moved by the user joins the templates."""
+    return service.particleMoved(mapper, projectId, protocolId, currentUser, micId, payload.x, payload.y)
+
+
+@router.get("/{projectId}/protocols/{protocolId}/picking/templates/image")
+def getPickingTemplatesImage(
+    projectId: int,
+    protocolId: int,
+    size: int = Query(128, ge=32, le=512),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: XmippPickingSessionService = Depends(getPickingService),
+):
+    return service.renderTemplatesImage(mapper, projectId, protocolId, currentUser, size=size)
 
 
 @router.get("/{projectId}/protocols/{protocolId}/picking/micrographs/{micId}/coordinates",

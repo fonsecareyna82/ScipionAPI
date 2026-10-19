@@ -59,6 +59,7 @@ class ClassifierSession:
         self.trainedOn: Optional[Tuple[str, Tuple[int, int, int, int]]] = None
         self.lastUsed = time.time()
         self._lock = threading.Lock()
+        self._filters: Optional[Tuple[Tuple[str, str], ...]] = None
         command, env = javaCommand()
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -123,6 +124,39 @@ class ClassifierSession:
         with open(autoFile, "w", encoding="utf-8") as handle:
             handle.write("".join("%d %d %r %d\n" % row for row in automatic))
         self.call("correct", manualFile, autoFile)
+
+    # -- templates and centering (as SupervisedParticlePicker) ---------------
+
+    def setFilters(self, filters: Sequence[Tuple[str, str]]) -> None:
+        """The picker's ImageJ filters, applied to the micrographs particles are boxed from."""
+        filters = tuple((str(command), str(options)) for command, options in filters)
+        if filters == self._filters:
+            return
+        filtersFile = os.path.join(self.folder, ".web_classifier_filters.txt")
+        with open(filtersFile, "w", encoding="utf-8") as handle:
+            handle.write("".join("%s\t%s\n" % filter for filter in filters))
+        self.call("filters", filtersFile)
+        self._filters = filters
+
+    def rebuildTemplates(self, size: int, number: int, templatesFile: str,
+                         particles: Sequence[Tuple[str, int, int]]) -> int:
+        """Templates from these manual particles (as UpdateTemplatesTask); returns how many were used."""
+        particlesFile = os.path.join(self.folder, ".web_classifier_template_particles.txt")
+        with open(particlesFile, "w", encoding="utf-8") as handle:
+            handle.write("".join("%s\t%d\t%d\n" % (mic, int(x), int(y)) for mic, x, y in particles))
+        return int(self.call("templates", int(size), int(number), templatesFile, particlesFile)[0])
+
+    def addToTemplates(self, size: int, number: int, templatesFile: str,
+                       micrograph: str, x: int, y: int) -> int:
+        """Add a picked particle to the templates; returns how many templates are filled."""
+        return int(self.call("addtemplate", int(size), int(number), templatesFile, micrograph,
+                             int(x), int(y))[0])
+
+    def center(self, size: int, number: int, templatesFile: str,
+               micrograph: str, x: int, y: int) -> Tuple[int, int]:
+        """The particle moved to the best shift against the templates (if under a quarter of the box)."""
+        answer = self.call("center", int(size), int(number), templatesFile, micrograph, int(x), int(y))
+        return int(answer[0]), int(answer[1])
 
     def close(self) -> None:
         try:
@@ -215,3 +249,28 @@ class StepClassifier:
                 automatic: Sequence[Tuple[int, int, float, int]]) -> None:
         self._request("correct", added=[list(point) for point in added],
                       automatic=[list(row) for row in automatic])
+
+    def setFilters(self, filters: Sequence[Tuple[str, str]]) -> None:
+        self._filters = [list(filter) for filter in filters]
+
+    def _templatesRequest(self, operation: str, **arguments):
+        return self._request(operation, filters=getattr(self, "_filters", None), **arguments)
+
+    def rebuildTemplates(self, size: int, number: int, templatesFile: str,
+                         particles: Sequence[Tuple[str, int, int]]) -> int:
+        return int(self._templatesRequest("templates", size=int(size), number=int(number),
+                                          templatesFile=templatesFile,
+                                          particles=[list(p) for p in particles]))
+
+    def addToTemplates(self, size: int, number: int, templatesFile: str,
+                       micrograph: str, x: int, y: int) -> int:
+        return int(self._templatesRequest("addTemplate", size=int(size), number=int(number),
+                                          templatesFile=templatesFile, micrograph=micrograph,
+                                          x=int(x), y=int(y)))
+
+    def center(self, size: int, number: int, templatesFile: str,
+               micrograph: str, x: int, y: int) -> Tuple[int, int]:
+        cx, cy = self._templatesRequest("center", size=int(size), number=int(number),
+                                        templatesFile=templatesFile, micrograph=micrograph,
+                                        x=int(x), y=int(y))
+        return int(cx), int(cy)

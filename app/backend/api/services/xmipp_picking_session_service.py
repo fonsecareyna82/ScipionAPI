@@ -35,6 +35,9 @@ TRAINING_PARTICLES_MINIMUM = 15
 TEMPLATES_FILE = "templates.stk"
 TRAINED_ON_FILE = ".web_classifier_trained.json"
 TEMPLATE_PARTICLES_MAXIMUM = 2000
+# Manual particles sent to rebuild the templates (the picker itself uses 50, or 10 big ones).
+TEMPLATE_REBUILD_PARTICLES = 200
+TEMPLATES_NUMBER_MAXIMUM = 20
 
 LOCK_FILE = ".web_picker.lock"
 
@@ -194,6 +197,8 @@ class XmippPickingSessionService:
             "boxSizeEditable": config.mode != "Supervised",
             "mode": config.mode,
             "autopickPercent": config.autopickPercent,
+            "templatesNum": config.templatesNum,
+            "templatesReady": os.path.exists(os.path.join(session.folder, TEMPLATES_FILE)),
             # Open while the protocol's interactive step waits for the web.
             "webSession": {"open": interactive.readSession(session.folder) is not None},
         }
@@ -244,7 +249,7 @@ class XmippPickingSessionService:
             return
         try:
             with _folderLock(session.folder):
-                self.writeTemplates(session, mapper, self._config(session))
+                self._writeTemplatesFile(session, mapper, self._config(session))
         except Exception:
             logger.exception("Could not write the picking templates of %s", session.folder)
 
@@ -325,10 +330,23 @@ class XmippPickingSessionService:
         return {"saved": len(manual) + sum(1 for *_, e in automatic if e != -1), "state": picks.state}
 
     def saveSettings(self, mapper, projectId, protocolId, currentUser,
-                     particleSize: Optional[int] = None) -> Dict[str, Any]:
+                     particleSize: Optional[int] = None, templatesNum: Optional[int] = None,
+                     autopickPercent: Optional[int] = None) -> Dict[str, Any]:
         session = self.openSession(mapper, projectId, protocolId, currentUser)
         with _folderLock(session.folder):
             config = self._config(session)
+            previous = (config.particleSize, config.templatesNum)
+            if templatesNum is not None:
+                if not 1 <= int(templatesNum) <= TEMPLATES_NUMBER_MAXIMUM:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                        detail="The number of templates must be between 1 and %d"
+                                        % TEMPLATES_NUMBER_MAXIMUM)
+                config.templatesNum = int(templatesNum)
+            if autopickPercent is not None:
+                if not 1 <= int(autopickPercent) <= 100:
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                        detail="The explored percentage must be between 1 and 100")
+                config.autopickPercent = int(autopickPercent)
             if particleSize is not None:
                 if not 2 <= int(particleSize) <= 4096:
                     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -345,7 +363,11 @@ class XmippPickingSessionService:
                                         detail="The input micrographs are empty")
                 config.micrograph = os.path.splitext(files.posFileName(first["fileName"]))[0]
             files.writeConfig(session.configPath, config)
-        return {"boxSize": config.particleSize, "mode": config.mode}
+            # As the Java picker: in manual mode, new templates for a new size or number.
+            if (config.particleSize, config.templatesNum) != previous and config.mode == "Manual":
+                self._rebuildTemplatesQuietly(session, mapper, config)
+        return {"boxSize": config.particleSize, "mode": config.mode,
+                "templatesNum": config.templatesNum, "autopickPercent": config.autopickPercent}
 
     def _updateConfigCounts(self, session, mapper, micrograph, config=None) -> None:
         """Keep config.xmd present and current, as the desktop picker does."""
@@ -523,10 +545,11 @@ class XmippPickingSessionService:
             self._updateConfigCounts(session, mapper, micrograph, config)
             # Xmipp's automatic picking needs the templates next to the model;
             # the training itself is done, so a failure here does not undo it.
-            try:
-                self.writeTemplates(session, mapper, config, allPicks)
-            except Exception:
-                logger.exception("Could not write the picking templates of %s", session.folder)
+            if not os.path.exists(os.path.join(session.folder, TEMPLATES_FILE)):
+                try:
+                    self._writeTemplatesFile(session, mapper, config, allPicks)
+                except Exception:
+                    logger.exception("Could not write the picking templates of %s", session.folder)
         return self.listParticles(mapper, projectId, protocolId, currentUser, micId)
 
     def correctAndAutopick(self, mapper, projectId, protocolId, currentUser, micId,
@@ -573,6 +596,150 @@ class XmippPickingSessionService:
         return {"state": picks.state,
                 "next": self.listParticles(mapper, projectId, protocolId, currentUser, nextMicId)
                 if nextMicId else None}
+
+    # -- templates and centering ---------------------------------------------
+    #
+    # As SupervisedParticlePicker: in manual mode every particle picked or
+    # moved goes into the templates (templates.stk, their aligned averages),
+    # and a new particle moves to its best shift against the templates'
+    # radial average once there are more manual particles than templates.
+    # Both run in Xmipp's Java bindings, in the session's classifier process.
+
+    def _templatesPath(self, session: PickingSession) -> str:
+        return os.path.join(session.folder, TEMPLATES_FILE)
+
+    def _templatesClassifier(self, session: PickingSession, mapper, config: files.PickerConfig):
+        classifier = self._classifier(session, mapper, config)
+        classifier.setFilters(config.imageFilters())
+        return classifier
+
+    def _manualParticles(self, session: PickingSession, mapper, allPicks=None, limit=None):
+        """(micrograph path, x, y) of the manual particles, in the picker's order."""
+        particles = []
+        for micrograph in session.micrographs(mapper):
+            picks = (allPicks or {}).get(micrograph["id"]) or files.readPos(session.posPath(micrograph))
+            path = self._micrographPath(session, micrograph)
+            for x, y in picks.manual:
+                particles.append((path, int(x), int(y)))
+                if limit is not None and len(particles) >= limit:
+                    return particles
+        return particles
+
+    def _rebuildTemplates(self, session, mapper, config, allPicks=None) -> int:
+        particles = self._manualParticles(session, mapper, allPicks, TEMPLATE_REBUILD_PARTICLES)
+        if os.path.exists(self._templatesPath(session)):
+            os.remove(self._templatesPath(session))  # A stack of another size or number cannot be reused.
+        if not particles:
+            return 0
+        classifier = self._templatesClassifier(session, mapper, config)
+        return classifier.rebuildTemplates(config.particleSize, config.templatesNum,
+                                           self._templatesPath(session), particles)
+
+    def _rebuildTemplatesQuietly(self, session, mapper, config) -> None:
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+        try:
+            self._rebuildTemplates(session, mapper, config)
+        except (ClassifierError, OSError):
+            logger.exception("Could not rebuild the picking templates of %s", session.folder)
+
+    def _writeTemplatesFile(self, session, mapper, config, allPicks=None) -> None:
+        """templates.stk as the picker builds it; a plain average if the bindings fail."""
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+        try:
+            if self._rebuildTemplates(session, mapper, config, allPicks) and os.path.exists(
+                    self._templatesPath(session)):
+                return
+        except ClassifierError:
+            logger.exception("Could not build the picking templates of %s; averaging them", session.folder)
+        self.writeTemplates(session, mapper, config, allPicks)
+
+    def pickParticle(self, mapper, projectId, protocolId, currentUser, micId, x, y,
+                     center: bool = True) -> Dict[str, Any]:
+        """A particle just picked: centered on the templates and added to them (as the Java picker).
+
+        Returns where the particle goes; the particle itself is saved with the
+        micrograph's particles.
+        """
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        micrograph = session.micrograph(mapper, micId)
+        x, y = int(round(float(x))), int(round(float(y)))
+        with _folderLock(session.folder):
+            config = self._config(session)
+            path = self._micrographPath(session, micrograph)
+            templatesFile = self._templatesPath(session)
+            centered = False
+            try:
+                classifier = self._templatesClassifier(session, mapper, config)
+                saved = self._manualParticles(session, mapper)
+                if not os.path.exists(templatesFile) and saved and config.mode == "Manual":
+                    # A session picked before the templates were kept: build them first.
+                    self._rebuildTemplates(session, mapper, config)
+                # The new particle counts too, as in SupervisedParticlePicker.centerParticle.
+                if center and len(saved) + 1 > config.templatesNum:
+                    cx, cy = classifier.center(config.particleSize, config.templatesNum, templatesFile, path, x, y)
+                    centered = (cx, cy) != (x, y)
+                    x, y = cx, cy
+                filled = None
+                if config.mode == "Manual":
+                    filled = classifier.addToTemplates(config.particleSize, config.templatesNum,
+                                                       templatesFile, path, x, y)
+            except ClassifierError as error:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
+        return {"x": x, "y": y, "centered": centered, "templatesFilled": filled,
+                "templatesReady": os.path.exists(templatesFile)}
+
+    def particleMoved(self, mapper, projectId, protocolId, currentUser, micId, x, y) -> Dict[str, Any]:
+        """A manual particle moved by the user goes into the templates (manual mode, as in Java)."""
+        from app.backend.runtime.xmipp_classifier_session import ClassifierError
+
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        micrograph = session.micrograph(mapper, micId)
+        with _folderLock(session.folder):
+            config = self._config(session)
+            if config.mode != "Manual":
+                return {"templatesFilled": None, "templatesReady": os.path.exists(self._templatesPath(session))}
+            try:
+                filled = self._templatesClassifier(session, mapper, config).addToTemplates(
+                    config.particleSize, config.templatesNum, self._templatesPath(session),
+                    self._micrographPath(session, micrograph), int(round(float(x))), int(round(float(y))))
+            except ClassifierError as error:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
+        return {"templatesFilled": filled, "templatesReady": os.path.exists(self._templatesPath(session))}
+
+    def renderTemplatesImage(self, mapper, projectId, protocolId, currentUser, size: int = 128) -> Response:
+        """The templates side by side (PNG), as the picker's Templates window shows them."""
+        import io
+        import numpy as np
+        from PIL import Image
+        from pwem.emlib.image import ImageHandler
+
+        session = self.openSession(mapper, projectId, protocolId, currentUser)
+        path = self._templatesPath(session)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="There are no templates yet")
+        config = self._config(session)
+        tiles = []
+        for index in range(1, max(1, int(config.templatesNum)) + 1):
+            try:
+                data = np.squeeze(ImageHandler().read("%d@%s" % (index, path)).getData()).astype(np.float64)
+            except Exception:
+                break
+            std = data.std()
+            unit = np.clip(0.5 + (data - data.mean()) / (6 * std), 0, 1) if std > 0 else np.full(data.shape, 0.5)
+            tiles.append(Image.fromarray((unit * 255).astype(np.uint8)).resize((size, size), Image.LANCZOS))
+        if not tiles:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="There are no templates yet")
+        gap = 6
+        strip = Image.new("L", (len(tiles) * size + (len(tiles) - 1) * gap, size), 255)
+        for index, tile in enumerate(tiles):
+            strip.paste(tile, (index * (size + gap), 0))
+        buffer = io.BytesIO()
+        strip.save(buffer, format="PNG")
+        return Response(content=buffer.getvalue(), media_type="image/png",
+                        headers={"Cache-Control": "no-store", "X-Templates-Count": str(len(tiles)),
+                                 "Access-Control-Expose-Headers": "X-Templates-Count"})
 
     # -- images --------------------------------------------------------------
 

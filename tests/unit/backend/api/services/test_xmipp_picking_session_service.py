@@ -160,6 +160,29 @@ class FakeClassifier:
     def correct(self, added, rows):
         self.calls.append(("correct", list(added), list(rows)))
 
+    # Templates and centering, as the Java bindings do them.
+    filters = None
+    shift = (0, 0)
+
+    def setFilters(self, filters):
+        self.filters = list(filters)
+
+    def rebuildTemplates(self, size, number, templatesFile, particles):
+        self.calls.append(("templates", size, number, len(particles)))
+        with open(templatesFile, "w") as handle:
+            handle.write("templates")
+        return min(len(particles), 50)
+
+    def addToTemplates(self, size, number, templatesFile, micrograph, x, y):
+        self.calls.append(("addTemplate", micrograph.rsplit("/", 1)[-1], x, y))
+        with open(templatesFile, "w") as handle:
+            handle.write("templates")
+        return number
+
+    def center(self, size, number, templatesFile, micrograph, x, y):
+        self.calls.append(("center", micrograph.rsplit("/", 1)[-1], x, y))
+        return x + self.shift[0], y + self.shift[1]
+
 
 @pytest.fixture
 def supervised(session, monkeypatch):
@@ -193,8 +216,10 @@ def test_train_uses_every_manual_micrograph_and_rejects_picks_in_the_trained_are
     assert picks.automatic == [(1, 1, -1.0, -1), (500, 500, 0.8, 1)]
     assert [p["id"] for p in listed["coordinates"] if p.get("kind")] == ["a1"]
     assert files.readConfig(str(extra / "config.xmd")).mode == "Supervised"
-    # Xmipp's automatic picking needs templates.stk next to the model.
-    assert classifier.templates == ["Supervised"]
+    # Xmipp's automatic picking needs templates.stk next to the model: built
+    # by the bindings from the manual particles (not the plain average).
+    assert [call for call in classifier.calls if call[0] == "templates"][0][3] == 17
+    assert classifier.templates == []
     # As in the Java picker, the trained model fixes the particle size.
     assert service.describeSession(Mapper(), 7, 116, {"id": 1})["boxSizeEditable"] is False
     size = files.readConfig(str(extra / "config.xmd")).particleSize
@@ -339,3 +364,79 @@ def test_the_session_folder_lock_also_holds_against_other_processes(tmp_path):
                 fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     with open(tmp_path / module.LOCK_FILE, "a") as other:
         fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_a_picked_particle_is_centered_once_there_are_more_particles_than_templates(supervised):
+    service, extra, classifier = supervised
+    classifier.shift = (3, -2)
+    # The first particle fills the only template: nothing to center on yet.
+    first = service.pickParticle(Mapper(), 7, 116, {"id": 1}, "4", 50, 60)
+    assert (first["x"], first["y"], first["centered"]) == (50, 60, False)
+    assert ("addTemplate", "a_DW.mrc", 50, 60) in classifier.calls
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 50, "y": 60}])
+    second = service.pickParticle(Mapper(), 7, 116, {"id": 1}, "4", 120, 130)
+    assert (second["x"], second["y"], second["centered"]) == (123, 128, True)
+    # It joins the templates where it was centered.
+    assert classifier.calls[-1] == ("addTemplate", "a_DW.mrc", 123, 128)
+    # The picker's default filters, as config.xmd has none of its own.
+    assert classifier.filters == [("Gaussian Blur...", "sigma=2"), ("Enhance Contrast", "saturated=0.4")]
+
+
+def test_centering_can_be_turned_off_and_supervised_mode_keeps_the_templates(supervised):
+    service, extra, classifier = supervised
+    classifier.shift = (3, -2)
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 15)
+    unchanged = service.pickParticle(Mapper(), 7, 116, {"id": 1}, "4", 80, 90, center=False)
+    assert (unchanged["x"], unchanged["y"]) == (80, 90)
+    assert not [call for call in classifier.calls if call[0] == "center"]
+    service.trainAndAutopick(Mapper(), 7, 116, {"id": 1}, "4")
+    classifier.calls.clear()
+    picked = service.pickParticle(Mapper(), 7, 116, {"id": 1}, "4", 80, 90)
+    assert (picked["x"], picked["y"]) == (83, 88)
+    # As the Java picker, only manual mode changes the templates.
+    assert not [call for call in classifier.calls if call[0] == "addTemplate"]
+    assert service.particleMoved(Mapper(), 7, 116, {"id": 1}, "4", 20, 20)["templatesFilled"] is None
+
+
+def test_a_moved_manual_particle_joins_the_templates(supervised):
+    service, extra, classifier = supervised
+    moved = service.particleMoved(Mapper(), 7, 116, {"id": 1}, "4", 33.6, 44.2)
+    assert classifier.calls[-1] == ("addTemplate", "a_DW.mrc", 34, 44)
+    assert moved["templatesReady"] is True
+
+
+def test_new_size_or_number_of_templates_rebuilds_them_and_settings_are_checked(supervised):
+    service, extra, classifier = supervised
+    service.saveParticles(Mapper(), 7, 116, {"id": 1}, "4", [{"x": 10, "y": 10}] * 3)
+    saved = service.saveSettings(Mapper(), 7, 116, {"id": 1}, templatesNum=3, autopickPercent=70)
+    assert (saved["templatesNum"], saved["autopickPercent"]) == (3, 70)
+    config = files.readConfig(str(extra / "config.xmd"))
+    assert (config.templatesNum, config.autopickPercent) == (3, 70)
+    assert classifier.calls[-1][0] == "templates" and classifier.calls[-1][2:] == (3, 3)
+    assert service.describeSession(Mapper(), 7, 116, {"id": 1})["templatesNum"] == 3
+    for invalid in ({"templatesNum": 0}, {"templatesNum": 21}, {"autopickPercent": 0}, {"autopickPercent": 101}):
+        with pytest.raises(HTTPException) as error:
+            service.saveSettings(Mapper(), 7, 116, {"id": 1}, **invalid)
+        assert error.value.status_code == 422
+
+
+def test_the_templates_image_shows_every_template(session):
+    import numpy as np
+    from PIL import Image
+    import io
+    from pwem import emlib
+    service, extra = session
+    with pytest.raises(HTTPException) as error:
+        service.renderTemplatesImage(Mapper(), 7, 116, {"id": 1})
+    assert error.value.status_code == 404
+    service.saveSettings(Mapper(), 7, 116, {"id": 1}, templatesNum=2)
+    image = emlib.Image()
+    for index in (1, 2):
+        data = np.zeros((16, 16), dtype=np.float32)
+        data[4:12, 4:12] = index
+        image.setData(data)
+        image.write("%d@%s" % (index, extra / "templates.stk"))
+    response = service.renderTemplatesImage(Mapper(), 7, 116, {"id": 1}, size=64)
+    assert response.headers["X-Templates-Count"] == "2"
+    strip = Image.open(io.BytesIO(response.body))
+    assert strip.size == (2 * 64 + 6, 64)

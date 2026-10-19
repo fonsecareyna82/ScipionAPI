@@ -58,3 +58,20 @@ def test_config_needs_the_current_micrograph(tmp_path):
     import pytest
     with pytest.raises(ValueError):
         files.writeConfig(str(tmp_path / "config.xmd"), files.PickerConfig(micrograph=""))
+
+
+def test_the_picker_filters_are_read_as_imagej_commands(tmp_path):
+    path = tmp_path / "config.xmd"
+    config = files.PickerConfig(micrograph="a_DW")
+    assert config.imageFilters() == list(files.DEFAULT_FILTERS)
+    # Written as the Java picker writes its defaults.
+    assert config.filters == [("Gaussian_Blur...", "sigma=2"), ("Enhance_Contrast", "saturated=0.4")]
+    config.filters = [("Gaussian_Blur...", "sigma=3"), ("Invert_LUT", "NULL"), ("Bandpass_Filter...", "filter&large=40")]
+    files.writeConfig(str(path), config)
+    stored = files.readConfig(str(path))
+    assert stored.imageFilters() == [("Gaussian Blur...", "sigma=3"), ("Invert LUT", ""),
+                                     ("Bandpass Filter...", "filter_large=40")]
+    # A filters block without filters means no filters, not the defaults.
+    stored.filters = []
+    files.writeConfig(str(path), stored)
+    assert files.readConfig(str(path)).imageFilters() == []

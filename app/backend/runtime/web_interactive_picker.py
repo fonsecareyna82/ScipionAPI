@@ -184,6 +184,19 @@ class WebPickerProcess:
         elif operation == "correct":
             self.classifier.correct([tuple(point) for point in request["added"]],
                                     [tuple(row) for row in request["automatic"]])
+        elif operation in ("templates", "addTemplate", "center"):
+            if request.get("filters") is not None:
+                self.classifier.setFilters([tuple(filter) for filter in request["filters"]])
+            size, number, templatesFile = int(request["size"]), int(request["number"]), request["templatesFile"]
+            if operation == "templates":
+                result = self.classifier.rebuildTemplates(
+                    size, number, templatesFile, [tuple(p) for p in request["particles"]])
+            elif operation == "addTemplate":
+                result = self.classifier.addToTemplates(
+                    size, number, templatesFile, request["micrograph"], int(request["x"]), int(request["y"]))
+            else:
+                result = list(self.classifier.center(
+                    size, number, templatesFile, request["micrograph"], int(request["x"]), int(request["y"])))
         elif operation != "state":
             raise ValueError("Unknown classifier operation: %s" % operation)
         return {"result": result, "lastAutopicked": self.classifier.lastAutopicked}
