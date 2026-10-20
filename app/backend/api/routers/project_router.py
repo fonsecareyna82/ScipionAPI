@@ -4932,18 +4932,12 @@ def createProjectTag(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    try:
-        return service.createProjectTag(
-            mapper=mapper,
-            projectId=projectId,
-            currentUser=currentUser,
-            payload=payload,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Error in createProjectTag: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to create tag: {e}")
+    return service.createProjectTag(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        payload=payload,
+    )
 
 
 @router.put(
@@ -4990,8 +4984,9 @@ def deleteProjectTag(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    ok = service.deleteProjectTag(mapper=mapper, projectId=projectId, tagId=tagId, currentUser=currentUser)
-    return {"success": bool(ok)}
+    if not service.deleteProjectTag(mapper=mapper, projectId=projectId, tagId=tagId, currentUser=currentUser):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return {"success": True}
 
 
 @router.get(

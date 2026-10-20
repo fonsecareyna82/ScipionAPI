@@ -420,7 +420,8 @@ def test_ProtocolTagsUseScipionIdWhenRouteIdentityIsExplicit(
         protocolIdIsScipionId=True,
     )
 
-    assert listed["protocolDbId"] == 500
+    # The route id stays the Scipion id; the database id is only used inside (see the mapper calls).
+    assert listed["protocolId"] == "10"
     assert updated["protocolDbId"] == 500
     assert mapper.getCalls == [{
         "projectId": 1,

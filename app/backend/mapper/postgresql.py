@@ -87,6 +87,10 @@ def canStageCopyRows(rows) -> bool:
     return True
 
 
+class ProtocolTagConflict(Exception):
+    """The tag id is in use, or the project already has a tag with that title."""
+
+
 def _toJsonParam(value: Any) -> Any:
     # toJsonParam
     if isinstance(value, (dict, list)):
@@ -1036,38 +1040,39 @@ class PostgresqlFlatMapper(Mapper):
             """
         )
 
-        # Create ProjectTags
+        # Create ProjectTags (the same schema as the alembic migrations)
         self.db.execute("""
-                          CREATE TABLE IF NOT EXISTS protocol_tags (
-                          id TEXT PRIMARY KEY,
-                          "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                          title TEXT NOT NULL,
-                          description TEXT,
-                          color TEXT,
-                          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                          "updatedAt" TIMESTAMPTZ
-                        );
-                        
-                        CREATE UNIQUE INDEX IF NOT EXISTS protocol_tags_project_title_ux
-                          ON protocol_tags("projectId", lower(title));
-                        """)
+            CREATE TABLE IF NOT EXISTS protocol_tags (
+                id TEXT PRIMARY KEY,
+                "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                description TEXT,
+                color TEXT,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_protocol_tags_projectid
+              ON protocol_tags ("projectId");
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_protocol_tags_project_lower_title
+              ON protocol_tags ("projectId", lower(title));
+            """)
 
         self.db.execute("""
-                          CREATE TABLE IF NOT EXISTS protocol_tag_assignments (
-                              "projectId" INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                              "protocolDbId" INTEGER NOT NULL REFERENCES protocols(id) ON DELETE CASCADE,
-                              "tagId" TEXT NOT NULL REFERENCES protocol_tags(id) ON DELETE CASCADE,
-                              "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                              PRIMARY KEY ("projectId", "protocolDbId", "tagId")
-                            );
-                        
-                        CREATE INDEX IF NOT EXISTS protocol_tag_assignments_by_tag
-                          ON protocol_tag_assignments("projectId", "tagId");
-                        
-                        CREATE INDEX IF NOT EXISTS protocol_tag_assignments_by_protocol
-                          ON protocol_tag_assignments("projectId", "protocolDbId");
+            CREATE TABLE IF NOT EXISTS protocol_tag_assignments (
+                "protocolDbId" INTEGER NOT NULL REFERENCES protocols(id) ON DELETE CASCADE,
+                "tagId" TEXT NOT NULL REFERENCES protocol_tags(id) ON DELETE CASCADE,
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT pk_protocol_tag_assignments PRIMARY KEY ("protocolDbId", "tagId")
+            );
 
-                               """)
+            CREATE INDEX IF NOT EXISTS "idx_protocol_tag_assignments_tagId"
+              ON protocol_tag_assignments ("tagId");
+
+            CREATE INDEX IF NOT EXISTS "idx_protocol_tag_assignments_protocolDbId"
+              ON protocol_tag_assignments ("protocolDbId");
+            """)
         # CreateUserSettingsTable
         self.db.execute(
             """
@@ -1118,11 +1123,12 @@ class PostgresqlFlatMapper(Mapper):
     # Tags Methods
     # -----------------------------
 
+    TAG_COLUMNS = 'id, "projectId", title, description, color, "createdAt", "updatedAt"'
+
     def listProtocolTags(self, projectId: int) -> List[Dict[str, Any]]:
         # listProtocolTags
         return self.db.fetchAll(
-            """
-            SELECT id, "projectId", title, description, color, "createdAt", "updatedAt"
+            "SELECT " + self.TAG_COLUMNS + """
               FROM protocol_tags
              WHERE "projectId" = %s
              ORDER BY lower(title) ASC
@@ -1130,33 +1136,46 @@ class PostgresqlFlatMapper(Mapper):
             (projectId,),
         )
 
-    def upsertProtocolTag(self, projectId: int, tag: Dict[str, Any]) -> Dict[str, Any]:
-        # upsertProtocolTag
-        tagId = (tag or {}).get("id")
-        title = (tag or {}).get("title")
+    def getProtocolTag(self, projectId: int, tagId: str) -> Optional[Dict[str, Any]]:
+        return self.db.fetchOne(
+            "SELECT " + self.TAG_COLUMNS + ' FROM protocol_tags WHERE id = %s AND "projectId" = %s',
+            (str(tagId), projectId),
+        )
 
-        if not tagId:
-            raise ValueError("Missing required field: tag.id")
-        if not title:
-            raise ValueError("Missing required field: tag.title")
-
-        description = (tag or {}).get("description")
-        color = (tag or {}).get("color")
-
-        cur = self.db.execute(
+    def insertProtocolTag(self, projectId: int, tag: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a tag; TagConflict when its id is taken (in any project) or its title is in use here."""
+        # insertProtocolTag
+        tagId = str((tag or {}).get("id") or "").strip()
+        title = str((tag or {}).get("title") or "").strip()
+        if not tagId or not title:
+            raise ValueError("A tag needs an id and a title")
+        row = self.db.execute(
             """
             INSERT INTO protocol_tags (id, "projectId", title, description, color)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id)
-            DO UPDATE SET
-                title = EXCLUDED.title,
-                description = EXCLUDED.description,
-                color = EXCLUDED.color,
-                "updatedAt" = NOW()
-            RETURNING id, "projectId", title, description, color, "createdAt", "updatedAt"
-            """,
-            (str(tagId), projectId, title, description, color),
-        )
+            ON CONFLICT DO NOTHING
+            RETURNING """ + self.TAG_COLUMNS,
+            (tagId, projectId, title, tag.get("description"), tag.get("color")),
+        ).fetchone()
+        if row is None:
+            raise ProtocolTagConflict(tagId)
+        return row
+
+    def updateProtocolTag(self, projectId: int, tagId: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Change the given fields of a tag of the project; None when it is not there."""
+        # updateProtocolTag
+        allowed = [name for name in ("title", "description", "color") if name in (fields or {})]
+        if not allowed:
+            return self.getProtocolTag(projectId, tagId)
+        assignments = ", ".join("%s = %%s" % name for name in allowed)
+        try:
+            cur = self.db.execute(
+                "UPDATE protocol_tags SET " + assignments + ', "updatedAt" = NOW()'
+                ' WHERE id = %s AND "projectId" = %s RETURNING ' + self.TAG_COLUMNS,
+                tuple(fields[name] for name in allowed) + (str(tagId), projectId),
+            )
+        except psycopg2.errors.UniqueViolation as error:
+            raise ProtocolTagConflict(tagId) from error
         return cur.fetchone()
 
     def deleteProtocolTag(self, projectId: int, tagId: str) -> bool:
@@ -1178,6 +1197,7 @@ class PostgresqlFlatMapper(Mapper):
             SELECT pta."tagId"
               FROM protocol_tag_assignments pta
               JOIN protocols p ON p.id = pta."protocolDbId"
+              JOIN protocol_tags pt ON pt.id = pta."tagId" AND pt."projectId" = p."projectId"
              WHERE p."projectId" = %s
                AND pta."protocolDbId" = %s
              ORDER BY pta."tagId" ASC
@@ -1187,75 +1207,148 @@ class PostgresqlFlatMapper(Mapper):
         return [r["tagId"] for r in rows if r.get("tagId")]
 
     def setProtocolTagIdsByProtocolDbId(self, projectId: int, protocolDbId: int, tagIds: List[str]) -> dict:
+        """Replace the tags of a protocol, in one transaction.
+
+        Only tags of the same project are kept (one deleted meanwhile, or of
+        another project, is left out), and the protocol row is locked so
+        concurrent changes of the same protocol apply one after the other.
+        """
         # setProtocolTagIdsByProtocolDbId
-        clean = sorted({str(t).strip() for t in (tagIds or []) if str(t).strip()})
+        requested = sorted({str(t).strip() for t in (tagIds or []) if str(t).strip()})
 
-        row = self.db.fetchOne(
-            """
-            SELECT id, "protocolId"
-              FROM protocols
-             WHERE id = %s
-               AND "projectId" = %s
-            """,
-            (int(protocolDbId), projectId),
-        )
-        if not row:
-            raise Exception("Protocol not found in project")
-
-        self.db.execute(
-            """
-            DELETE FROM protocol_tag_assignments
-             WHERE "protocolDbId" = %s
-            """,
-            (int(protocolDbId),),
-        )
-
-        if clean:
-            self.db.execute(
+        with self.db.transaction():
+            row = self.db.fetchOne(
                 """
-                INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
-                SELECT %s, x
-                  FROM unnest(%s::text[]) AS x
-                ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
+                SELECT id, "protocolId"
+                  FROM protocols
+                 WHERE id = %s
+                   AND "projectId" = %s
+                   FOR UPDATE
                 """,
-                (int(protocolDbId), clean),
+                (int(protocolDbId), projectId),
             )
+            if not row:
+                raise LookupError("Protocol not found in project")
+
+            clean: List[str] = []
+            if requested:
+                clean = sorted(
+                    r["id"] for r in (self.db.fetchAll(
+                        'SELECT id FROM protocol_tags WHERE "projectId" = %s AND id = ANY(%s)',
+                        (projectId, requested),
+                    ) or [])
+                )
+
+            self.db.execute(
+                'DELETE FROM protocol_tag_assignments WHERE "protocolDbId" = %s',
+                (int(protocolDbId),),
+            )
+
+            if clean:
+                self.db.execute(
+                    """
+                    INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
+                    SELECT %s, x
+                      FROM unnest(%s::text[]) AS x
+                    ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
+                    """,
+                    (int(protocolDbId), clean),
+                )
 
         return {
             "protocolId": str(row["protocolId"]),
-            "protocolDbId": int(protocolDbId),
             "tagIds": clean,
+            "ignoredTagIds": [t for t in requested if t not in clean],
         }
 
-    def setProtocolTagIds(self, projectId: int, protocolId: int, tagIds: List[str]) -> dict:
-        # setProtocolTagIds
-        row = self.db.fetchOne(
+    def copyProtocolTagAssignments(self, projectId: int, sourceProtocolDbId: int, targetProtocolDbId: int) -> int:
+        """Give a protocol the tags of another protocol of the same project (a duplicate)."""
+        cur = self.db.execute(
             """
-            SELECT id
-              FROM protocols
-             WHERE "protocolId" = %s
-               AND "projectId" = %s
+            INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
+            SELECT %s, pta."tagId"
+              FROM protocol_tag_assignments pta
+              JOIN protocol_tags pt ON pt.id = pta."tagId" AND pt."projectId" = %s
+             WHERE pta."protocolDbId" = %s
+            ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
             """,
-            (str(protocolId), projectId),
+            (int(targetProtocolDbId), projectId, int(sourceProtocolDbId)),
         )
-        if not row:
-            raise Exception("Protocol not found in project")
+        return cur.rowcount
 
-        return self.setProtocolTagIdsByProtocolDbId(
-            projectId=projectId,
-            protocolDbId=int(row["id"]),
-            tagIds=tagIds,
+    def getProtocolTagsByProtocolId(self, projectId: int, protocolIds: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """The tags (title, description, colour) of some protocols of a project, by protocol id."""
+        rows = self.db.fetchAll(
+            """
+            SELECT p."protocolId", pt.id, pt.title, pt.description, pt.color
+              FROM protocols p
+              JOIN protocol_tag_assignments pta ON pta."protocolDbId" = p.id
+              JOIN protocol_tags pt ON pt.id = pta."tagId" AND pt."projectId" = p."projectId"
+             WHERE p."projectId" = %s
+               AND p."protocolId" = ANY(%s)
+             ORDER BY p."protocolId", lower(pt.title)
+            """,
+            (projectId, [str(p) for p in protocolIds or []]),
+        ) or []
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            result.setdefault(str(r["protocolId"]), []).append(
+                {"id": r["id"], "title": r["title"], "description": r.get("description"), "color": r.get("color")}
+            )
+        return result
+
+    def ensureProtocolTag(self, projectId: int, title: str, description=None, color=None) -> str:
+        """The id of the project's tag with this title (any case), created when there is none."""
+        title = str(title or "").strip()
+        if not title:
+            raise ValueError("A tag needs a title")
+        for _attempt in range(2):
+            row = self.db.fetchOne(
+                'SELECT id FROM protocol_tags WHERE "projectId" = %s AND lower(title) = lower(%s)',
+                (projectId, title),
+            )
+            if row:
+                return str(row["id"])
+            created = self.db.execute(
+                """
+                INSERT INTO protocol_tags (id, "projectId", title, description, color)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                (str(uuid4()), projectId, title, description, color),
+            ).fetchone()
+            if created:
+                return str(created["id"])
+        raise ProtocolTagConflict(title)
+
+    def addProtocolTagAssignments(self, projectId: int, protocolDbId: int, tagIds: List[str]) -> int:
+        """Add tags of the project to a protocol, keeping the ones it has."""
+        clean = sorted({str(t).strip() for t in (tagIds or []) if str(t).strip()})
+        if not clean:
+            return 0
+        cur = self.db.execute(
+            """
+            INSERT INTO protocol_tag_assignments ("protocolDbId", "tagId")
+            SELECT p.id, pt.id
+              FROM protocols p
+              JOIN protocol_tags pt ON pt."projectId" = p."projectId" AND pt.id = ANY(%s)
+             WHERE p.id = %s AND p."projectId" = %s
+            ON CONFLICT ("protocolDbId", "tagId") DO NOTHING
+            """,
+            (clean, int(protocolDbId), projectId),
         )
+        return cur.rowcount
 
     def getProjectProtocolTagIdsByProtocolId(self, projectId: int, includeEmpty: bool = False) -> Dict[str, List[str]]:
+        """The tag ids of every protocol of a project (only tags of that project)."""
         # getProjectProtocolTagIdsByProtocolId
         rows = self.db.fetchAll(
             """
             SELECT
                 p."protocolId" AS "protocolId",
                 COALESCE(
-                    array_agg(DISTINCT pta."tagId" ORDER BY pta."tagId")
-                    FILTER (WHERE pta."tagId" IS NOT NULL),
+                    array_agg(pt.id ORDER BY pt.id) FILTER (WHERE pt.id IS NOT NULL),
                     ARRAY[]::text[]
                 ) AS "tagIds"
             FROM protocols p

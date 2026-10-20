@@ -197,6 +197,13 @@ class RuntimeProtocolDuplicateService:
                 duplicatedProtocolDbId=duplicatedProtocolDbId,
             )
 
+            self.copyProtocolTags(
+                mapper=mapper,
+                projectId=projectId,
+                sourceProtocolDbId=sourceProtocolDbId,
+                duplicatedProtocolDbId=duplicatedProtocolDbId,
+            )
+
         if not self.hasDuplicatedProtocols(duplicateState):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -291,6 +298,24 @@ class RuntimeProtocolDuplicateService:
             "Protocol was duplicated successfully",
             **resultPayload,
         )
+
+    @staticmethod
+    def copyProtocolTags(*, mapper, projectId: int, sourceProtocolDbId: int, duplicatedProtocolDbId: int) -> None:
+        """A duplicate keeps the tags of its source. Failing to copy them never fails the duplicate."""
+        copyTags = getattr(mapper, "copyProtocolTagAssignments", None)
+        if not callable(copyTags):
+            return
+        try:
+            copyTags(
+                projectId=projectId,
+                sourceProtocolDbId=int(sourceProtocolDbId),
+                targetProtocolDbId=int(duplicatedProtocolDbId),
+            )
+        except Exception:
+            logger.warning(
+                "The tags of protocol %s were not copied to its duplicate %s (project %s)",
+                sourceProtocolDbId, duplicatedProtocolDbId, projectId, exc_info=True,
+            )
 
     @staticmethod
     def _getScipionObjectId(obj) -> Optional[int]:

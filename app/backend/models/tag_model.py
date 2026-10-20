@@ -23,11 +23,13 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
-from sqlalchemy import Column, DateTime, Index, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Text, func
 from app.backend.database import Base
 
 
 class ProtocolTag(Base):
+    """A tag of a project's protocols. Titles are unique per project, in any case."""
+
     __tablename__ = "protocol_tags"
 
     id = Column(Text, primary_key=True)
@@ -36,8 +38,14 @@ class ProtocolTag(Base):
     color = Column(Text, nullable=True)
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updatedAt = Column(DateTime(timezone=True), nullable=True)
+    projectId = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE", name="fk_protocol_tags_projectid"),
+        nullable=False,
+    )
 
     __table_args__ = (
-        # uniqueTitleCaseInsensitive
-        Index("ux_protocol_tags_lower_title", func.lower(title), unique=True),
+        Index("idx_protocol_tags_projectid", "projectId"),
+        # uniqueTitlePerProjectCaseInsensitive
+        Index("ux_protocol_tags_project_lower_title", "projectId", func.lower(title), unique=True),
     )

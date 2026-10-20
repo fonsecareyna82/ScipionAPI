@@ -121,6 +121,12 @@ from app.backend.mapper.postgresql import (
     POSTGRESQL_PROTOCOL_ID_START,
     POSTGRESQL_RUNTIME_OBJECT_ID_START,
     PostgresqlFlatMapper,
+    ProtocolTagConflict,
+)
+from app.backend.api.schemas.tags_schema import (
+    COLOR_PATTERN as TAG_COLOR_PATTERN,
+    MAX_TAGS_PER_PROTOCOL,
+    TITLE_MAX as TAG_TITLE_MAX,
 )
 from pyworkflow.config import Config
 from pyworkflow.project import Manager, Project as ScipionProject
@@ -10556,6 +10562,67 @@ class ProjectService:
 
         return workflowPayload
 
+    # Tags travel inside each exported protocol, by title: Scipion ignores keys it does not
+    # know, and the project that imports them may have other tag ids.
+    WORKFLOW_TAGS_KEY = "scipionWebTags"
+
+    def _addTagsToExportedWorkflow(self, mapper, projectId: int, workflow: Any) -> None:
+        getTags = getattr(mapper, "getProtocolTagsByProtocolId", None)
+        items = self._getWorkflowProtocolItems(workflow)
+        if not callable(getTags) or not items:
+            return
+        try:
+            protocolIds = [self._getWorkflowProtocolId(item, index) for index, item in enumerate(items)]
+            tagsByProtocolId = getTags(projectId=projectId, protocolIds=protocolIds)
+        except Exception:
+            logger.warning("The tags of the exported protocols of project %s were left out", projectId, exc_info=True)
+            return
+        for protocolId, item in zip(protocolIds, items):
+            tags = tagsByProtocolId.get(str(protocolId))
+            if tags:
+                item[self.WORKFLOW_TAGS_KEY] = [
+                    {"title": tag["title"], "description": tag.get("description"), "color": tag.get("color")}
+                    for tag in tags
+                ]
+
+    def _applyImportedWorkflowTags(self, mapper, projectId: int, workflowContent: Any, created: List[Dict[str, str]]) -> None:
+        """Give each imported protocol the tags it had: the project's tag with that title, or a new one."""
+        ensureTag = getattr(mapper, "ensureProtocolTag", None)
+        addTags = getattr(mapper, "addProtocolTagAssignments", None)
+        if not callable(ensureTag) or not callable(addTags):
+            return
+        tagsBySourceId: Dict[str, List[Dict[str, Any]]] = {}
+        for index, item in enumerate(self._getWorkflowProtocolItems(workflowContent)):
+            tags = item.get(self.WORKFLOW_TAGS_KEY)
+            if isinstance(tags, list) and tags:
+                tagsBySourceId[self._getWorkflowProtocolId(item, index)] = tags
+        for pair in created or []:
+            tags = tagsBySourceId.get(str(pair.get("sourceId")))
+            if not tags:
+                continue
+            try:
+                protocolDbId = self._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                    mapper=mapper, projectId=projectId, protocolId=pair["newId"],
+                )
+                if protocolDbId is None:
+                    continue
+                tagIds = []
+                for tag in tags[:MAX_TAGS_PER_PROTOCOL]:
+                    title = str((tag or {}).get("title") or "").strip()[:TAG_TITLE_MAX] if isinstance(tag, dict) else ""
+                    if not title:
+                        continue
+                    color = tag.get("color")
+                    tagIds.append(ensureTag(
+                        projectId=projectId,
+                        title=title,
+                        description=tag.get("description"),
+                        color=color if isinstance(color, str) and TAG_COLOR_PATTERN.match(color) else None,
+                    ))
+                addTags(projectId=projectId, protocolDbId=int(protocolDbId), tagIds=tagIds)
+            except Exception:
+                logger.warning("The tags of imported protocol %s (project %s) were not applied",
+                               pair.get("newId"), projectId, exc_info=True)
+
     def exportWorkflowProtocolsService(
             self,
             mapper: PostgresqlFlatMapper,
@@ -10599,6 +10666,7 @@ class ProjectService:
 
         rawExport = self.currentProject.getProtocolsJson(protocolList)
         workflow = self._decodeExportJsonPayload(rawExport)
+        self._addTagsToExportedWorkflow(mapper, projectId, workflow)
         metadata = self._buildWorkflowPluginMetadata(protocolList)
         metadata["sourceProjectId"] = projectId
         metadata["sourceProtocolIds"] = protocolIds
@@ -10799,6 +10867,8 @@ class ProjectService:
             )
 
         if created:
+            self._applyImportedWorkflowTags(mapper, projectId, workflowContent, created)
+
             self._touchProjectModificationTime(
                 mapper=mapper,
                 projectId=projectId,
@@ -20149,6 +20219,13 @@ class ProjectService:
     # -----------------------------
     # Tags Service Methods
     # -----------------------------
+    def _touchProjectAfterTagChange(self, mapper, projectId: int) -> None:
+        """The change is saved already: failing to touch the project must not report it as failed."""
+        try:
+            self._touchProjectModificationTime(mapper=mapper, projectId=projectId)
+        except Exception:
+            logger.warning("Could not update the modification time of project %s", projectId, exc_info=True)
+
     def listProjectTags(
         self,
         mapper,
@@ -20156,19 +20233,7 @@ class ProjectService:
         currentUser: dict,
     ) -> List[Dict[str, Any]]:
         # listProjectTags
-        listFn = getattr(mapper, "listProjectTags", None)
-        if callable(listFn):
-            return listFn(projectId=projectId)
-
-        # mapperMethodFallback: keep backward compatibility with older mapper name
-        legacyListFn = getattr(mapper, "listProtocolTags", None)
-        if callable(legacyListFn):
-            return legacyListFn(projectId=projectId)
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Mapper does not implement listProjectTags",
-        )
+        return mapper.listProtocolTags(projectId=projectId)
 
     def createProjectTag(
         self,
@@ -20182,34 +20247,26 @@ class ProjectService:
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
 
-        tagId = (payload.id or "").strip() if getattr(payload, "id", None) else ""
-        if not tagId:
-            tagId = str(uuid4())
-
         tag = {
-            "id": tagId,
+            "id": (getattr(payload, "id", None) or "").strip() or str(uuid4()),
             "title": title,
             "description": getattr(payload, "description", None),
             "color": getattr(payload, "color", None),
         }
 
         try:
-            result = mapper.upsertProtocolTag(
-                projectId=projectId,
-                tag=tag,
-            )
-
-            self._touchProjectModificationTime(
-                mapper=mapper,
-                projectId=projectId,
-            )
-
-            return result
-        except Exception as e:
+            result = mapper.insertProtocolTag(projectId=projectId, tag=tag)
+        except ProtocolTagConflict:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create tag: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail='A tag named "%s" already exists in this project, or its id is in use' % title,
             )
+        except Exception:
+            logger.exception("Failed to create a tag in project %s", projectId)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create the tag")
+
+        self._touchProjectAfterTagChange(mapper, projectId)
+        return result
 
     def updateProjectTag(
         self,
@@ -20224,54 +20281,34 @@ class ProjectService:
         if not tagId:
             raise HTTPException(status_code=400, detail="tagId is required")
 
-        existing = None
-        for t in self.listProjectTags(mapper=mapper, projectId=projectId, currentUser=currentUser):
-            if str(t.get("id", "")).strip() == tagId:
-                existing = t
-                break
-
-        if not existing:
-            raise HTTPException(status_code=404, detail="Tag not found")
-
-        nextTitle = getattr(payload, "title", None)
-        if nextTitle is None:
-            nextTitle = existing.get("title")
-        nextTitle = (nextTitle or "").strip()
-        if not nextTitle:
-            raise HTTPException(status_code=400, detail="title cannot be empty")
-
-        nextDescription = getattr(payload, "description", None)
-        if nextDescription is None:
-            nextDescription = existing.get("description")
-
-        nextColor = getattr(payload, "color", None)
-        if nextColor is None:
-            nextColor = existing.get("color")
-
-        tag = {
-            "id": tagId,
-            "title": nextTitle,
-            "description": nextDescription,
-            "color": nextColor,
-        }
+        # Only the fields sent change: description and color can be cleared.
+        sent = set(getattr(payload, "__fields_set__", set()) or set())
+        fields: Dict[str, Any] = {}
+        if "title" in sent:
+            title = (getattr(payload, "title", None) or "").strip()
+            if not title:
+                raise HTTPException(status_code=400, detail="title cannot be empty")
+            fields["title"] = title
+        for name in ("description", "color"):
+            if name in sent:
+                fields[name] = getattr(payload, name, None) or None
 
         try:
-            result = mapper.upsertProtocolTag(
-                projectId=projectId,
-                tag=tag,
-            )
-
-            self._touchProjectModificationTime(
-                mapper=mapper,
-                projectId=projectId,
-            )
-
-            return result
-        except Exception as e:
+            result = mapper.updateProtocolTag(projectId=projectId, tagId=tagId, fields=fields)
+        except ProtocolTagConflict:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update tag: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail='A tag named "%s" already exists in this project' % fields.get("title", ""),
             )
+        except Exception:
+            logger.exception("Failed to update tag %s of project %s", tagId, projectId)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update the tag")
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Tag not found")
+
+        self._touchProjectAfterTagChange(mapper, projectId)
+        return result
 
     def deleteProjectTag(
         self,
@@ -20287,25 +20324,27 @@ class ProjectService:
 
         # cascadeBehavior: protocol_tag_assignments(tagId) has ON DELETE CASCADE
         try:
-            deleted = bool(
-                mapper.deleteProtocolTag(
-                    projectId=projectId,
-                    tagId=tagId,
-                )
-            )
+            deleted = bool(mapper.deleteProtocolTag(projectId=projectId, tagId=tagId))
+        except Exception:
+            logger.exception("Failed to delete tag %s of project %s", tagId, projectId)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to delete the tag")
 
-            if deleted:
-                self._touchProjectModificationTime(
-                    mapper=mapper,
-                    projectId=projectId,
-                )
+        if deleted:
+            self._touchProjectAfterTagChange(mapper, projectId)
+        return deleted
 
-            return deleted
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete tag: {e}",
+    def _resolveTagProtocolDbId(self, mapper, projectId: int, protocolId, protocolIdIsScipionId: bool) -> int:
+        if protocolIdIsScipionId:
+            protocolDbId = self._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
+                mapper=mapper, projectId=projectId, protocolId=protocolId,
             )
+        else:
+            protocolDbId = self._resolvePostgresqlProtocolDbId(
+                mapper=mapper, projectId=projectId, protocolId=protocolId,
+            )
+        if protocolDbId is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Protocol not found: %s" % protocolId)
+        return int(protocolDbId)
 
     def listProtocolTags(
             self,
@@ -20313,47 +20352,16 @@ class ProjectService:
             projectId: int,
             protocolId: int,
             currentUser: dict,
-                protocolIdIsScipionId=False,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
         # listProtocolTags
-        if protocolIdIsScipionId:
-            protocolDbId = (
-                self
-                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-            )
-        else:
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
-
+        protocolDbId = self._resolveTagProtocolDbId(mapper, projectId, protocolId, protocolIdIsScipionId)
         try:
-            tagIds = mapper.getProtocolTagIds(
-                projectId=projectId,
-                protocolDbId=protocolDbId,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to list protocol tags: {e}",
-            )
-
-        return {
-            "protocolId": str(protocolId),
-            "protocolDbId": protocolDbId,
-            "tagIds": tagIds,
-        }
+            tagIds = mapper.getProtocolTagIds(projectId=projectId, protocolDbId=protocolDbId)
+        except Exception:
+            logger.exception("Failed to list the tags of protocol %s of project %s", protocolId, projectId)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list the protocol tags")
+        return {"protocolId": str(protocolId), "tagIds": tagIds}
 
     def setProtocolTags(
             self,
@@ -20362,63 +20370,24 @@ class ProjectService:
             protocolId: int,
             tagIds: List[str],
             currentUser: dict,
-                protocolIdIsScipionId=False,
+            protocolIdIsScipionId=False,
     ) -> Dict[str, Any]:
+        """Replace a protocol's tags. Tags not in the project (deleted meanwhile) are left out
+        and listed in ``ignoredTagIds``; ``tagIds`` is what the protocol has now."""
         # setProtocolTags
-        if protocolIdIsScipionId:
-            protocolDbId = (
-                self
-                ._resolvePostgresqlProtocolDbIdFromScipionProtocolId(
-                    mapper=mapper,
-                    projectId=projectId,
-                    protocolId=protocolId,
-                )
-            )
-        else:
-            protocolDbId = self._resolvePostgresqlProtocolDbId(
-                mapper=mapper,
-                projectId=projectId,
-                protocolId=protocolId,
-            )
-
-        if protocolDbId is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Protocol not found in PostgreSQL: {protocolId}",
-            )
-
+        protocolDbId = self._resolveTagProtocolDbId(mapper, projectId, protocolId, protocolIdIsScipionId)
         try:
-            setByDbId = getattr(
-                mapper,
-                "setProtocolTagIdsByProtocolDbId",
-                None,
+            result = mapper.setProtocolTagIdsByProtocolDbId(
+                projectId=projectId, protocolDbId=protocolDbId, tagIds=tagIds or [],
             )
+        except LookupError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Protocol not found: %s" % protocolId)
+        except Exception:
+            logger.exception("Failed to set the tags of protocol %s of project %s", protocolId, projectId)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to set the protocol tags")
 
-            if callable(setByDbId):
-                result = setByDbId(
-                    projectId=projectId,
-                    protocolDbId=protocolDbId,
-                    tagIds=tagIds or [],
-                )
-
-            else:
-                result = mapper.setProtocolTagIds(
-                    projectId=projectId,
-                    protocolId=int(protocolId),
-                    tagIds=tagIds or [],
-                )
-
-            self._touchProjectModificationTime(
-                mapper=mapper,
-                projectId=projectId,
-            )
-
-            return result
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to set protocol tags: {e}",
-            )
+        self._touchProjectAfterTagChange(mapper, projectId)
+        return result
 
     def getContextMenuVisibilityPolicy(self) -> dict:
         return {

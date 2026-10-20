@@ -183,6 +183,23 @@ Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-
 - `GET /projects/{p}/disk-usage`: walks `Runs/<id>_<class>` without following symbolic links. The count runs in a background thread and is cached in memory for 15 min, per process. While it runs, the answer has `computing: true`. `?refresh=true` counts again.
 - `protocol_launches` table (migration `4e8b1d2c7a55`): `ProjectService.launchProtocol` stores the protocol's persisted `params` after every successful launch, restart, continue or schedule (keys starting with `_` are dropped), with the user and the mode. Recording never fails a launch: a database that is not migrated only loses the history. Read it with `GET /projects/{p}/protocols/{id}/launches`.
 
+## Protocol tags
+
+Tags belong to a project. Every collaborator of a shared project may edit them. Titles are unique per project, in any case (`ux_protocol_tags_project_lower_title`). Tag ids are global, and the client may choose them.
+
+- Create: `insertProtocolTag` never overwrites. An id in use (in any project) or a title in use raises `ProtocolTagConflict`, which becomes a 409 with a clean message.
+- Update: changes only the fields sent; null clears description and color.
+- Validation: `tags_schema.py` checks title ≤ 80, hex colours and tag id format.
+- `PUT .../protocols/{id}/tags` (`setProtocolTagIdsByProtocolDbId`):
+  - runs in one transaction, with the protocol row locked;
+  - keeps only tags of the project and returns what the protocol has now (`tagIds`), plus `ignoredTagIds`.
+  - The graph query only reports tags of the protocol's project.
+- Copies:
+  - duplicating a protocol copies its tags (`copyProtocolTagAssignments`);
+  - exported workflows carry each protocol's tags by title under the `scipionWebTags` key, which Scipion ignores;
+  - import or paste reuses the target project's tag with that title, or creates it (`ensureProtocolTag`).
+- The SQLAlchemy model `tag_model.py` matches the migrated schema, and a test checks this. Keep it in sync so `alembic --autogenerate` never proposes dropping `projectId`.
+
 ## Known gotchas
 
 - **`pyproject.toml` currently pulls `scipion-pyworkflow`, `scipion-em`,and `scipion-app` from Yunior's fork `devel` branches rather than the official Scipion repositories. This is intentional while the fork remains ahead of upstream.

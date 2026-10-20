@@ -114,7 +114,7 @@ class FakeMapper:
         self.raiseOnSetProtocolTagIdsByProtocolDbId = None
         self.projectTags = []
 
-    def listProjectTags(self, projectId):
+    def listProtocolTags(self, projectId):
         return list(self.projectTags)
 
     def getProtocolTagIds(self, projectId, protocolDbId):
@@ -151,52 +151,6 @@ class FakeMapper:
             "protocolDbId": int(protocolDbId),
             "tagIds": cleanTagIds,
         }
-
-    def setProtocolTagIds(self, projectId, protocolId, tagIds):
-        self.setProtocolTagIdsCalls.append({
-            "projectId": projectId,
-            "protocolId": protocolId,
-            "tagIds": list(tagIds or []),
-        })
-
-        for row in self.db.protocolRows:
-            if row["projectId"] == int(projectId) and row["protocolId"] == str(protocolId):
-                return self.setProtocolTagIdsByProtocolDbId(
-                    projectId=projectId,
-                    protocolDbId=row["id"],
-                    tagIds=tagIds,
-                )
-
-        raise Exception("Protocol not found in project")
-
-
-class FakeMapperWithoutDbIdSetter(FakeMapper):
-    setProtocolTagIdsByProtocolDbId = None
-
-    def setProtocolTagIds(self, projectId, protocolId, tagIds):
-        self.setProtocolTagIdsCalls.append({
-            "projectId": projectId,
-            "protocolId": protocolId,
-            "tagIds": list(tagIds or []),
-        })
-
-        for row in self.db.protocolRows:
-            if row["projectId"] == int(projectId) and row["protocolId"] == str(protocolId):
-                cleanTagIds = sorted({
-                    str(tagId).strip()
-                    for tagId in (tagIds or [])
-                    if str(tagId).strip()
-                })
-
-                self.protocolTagIdsByProtocolDbId[int(row["id"])] = cleanTagIds
-
-                return {
-                    "protocolId": str(row["protocolId"]),
-                    "protocolDbId": int(row["id"]),
-                    "tagIds": cleanTagIds,
-                }
-
-        raise Exception("Protocol not found in project")
 
 
 @pytest.fixture
@@ -261,7 +215,6 @@ def test_ListProtocolTagsResolvesPostgresqlProtocolDbId(
 
     assert result == {
         "protocolId": "500",
-        "protocolDbId": 500,
         "tagIds": ["good", "selected"],
     }
 
@@ -304,7 +257,6 @@ def test_ListProtocolTagsAlsoAcceptsRuntimeProtocolId(
 
     assert result == {
         "protocolId": "10",
-        "protocolDbId": 500,
         "tagIds": ["movie-alignment"],
     }
 
@@ -332,7 +284,7 @@ def test_ListProtocolTagsRaises404WhenProtocolCannotBeResolved(
         )
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found in PostgreSQL: 999"
+    assert exc.value.detail == "Protocol not found: 999"
     assert mapper.getProtocolTagIdsCalls == []
 
 
@@ -353,7 +305,7 @@ def test_ListProtocolTagsWrapsMapperErrors(
         )
 
     assert exc.value.status_code == 500
-    assert exc.value.detail == "Failed to list protocol tags: database error"
+    assert exc.value.detail == "Failed to list the protocol tags"
 
     assert mapper.getProtocolTagIdsCalls == [
         {
@@ -457,7 +409,7 @@ def test_SetProtocolTagsRaises404WhenProtocolCannotBeResolved(
         )
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Protocol not found in PostgreSQL: 999"
+    assert exc.value.detail == "Protocol not found: 999"
     assert mapper.setProtocolTagIdsByProtocolDbIdCalls == []
     assert mapper.setProtocolTagIdsCalls == []
 
@@ -480,43 +432,12 @@ def test_SetProtocolTagsWrapsMapperErrors(
         )
 
     assert exc.value.status_code == 500
-    assert exc.value.detail == "Failed to set protocol tags: write failed"
+    assert exc.value.detail == "Failed to set the protocol tags"
 
     assert mapper.setProtocolTagIdsByProtocolDbIdCalls == [
         {
             "projectId": 1,
             "protocolDbId": 500,
-            "tagIds": ["good"],
-        }
-    ]
-
-
-def test_SetProtocolTagsFallsBackToRuntimeSetterWhenDbIdSetterIsMissing(
-    projectServiceModule,
-    currentUser,
-):
-    service = projectServiceModule.ProjectService()
-    mapper = FakeMapperWithoutDbIdSetter()
-    mapper.db.addProtocol(projectId=1, protocolDbId=500, protocolId=10)
-
-    result = service.setProtocolTags(
-        mapper=mapper,
-        projectId=1,
-        protocolId=10,
-        tagIds=["good"],
-        currentUser=currentUser,
-    )
-
-    assert result == {
-        "protocolId": "10",
-        "protocolDbId": 500,
-        "tagIds": ["good"],
-    }
-
-    assert mapper.setProtocolTagIdsCalls == [
-        {
-            "projectId": 1,
-            "protocolId": 10,
             "tagIds": ["good"],
         }
     ]
