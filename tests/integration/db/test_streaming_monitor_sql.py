@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-from app.backend.api.services.streaming_monitor import (GET_SETTINGS_SQL, INPUT_REFS_SQL, MOVIE_SHIFTS_SQL,
+from app.backend.api.services.streaming_monitor import (FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, MOVIE_SHIFTS_SQL,
                                                         OUTPUT_SETS_SQL, SAVE_SETTINGS_SQL, SERIES_ITEMS_SQL,
                                                         SET_RATES_SQL)
 
@@ -88,13 +88,21 @@ def test_rates_series_and_shifts_of_the_items(connection):
 
     window = timedelta(minutes=10)
     rates = {row["setId"]: row for row in connection.exec_driver_sql(
-        SET_RATES_SQL, (now - window, now - 2 * window, now - window, [30, 21])).mappings().all()}
-    series = connection.exec_driver_sql(SERIES_ITEMS_SQL, (30, 1, 2)).mappings().all()
+        SET_RATES_SQL, (now - window, now - 2 * window, now - window, [30, 21], 10)).mappings().all()}
+    sampled = connection.exec_driver_sql(
+        SET_RATES_SQL, (now - window, now - 2 * window, now - window, [30], 2)).mappings().one()
+    rowIds = {itemId: rowId for rowId, itemId in connection.exec_driver_sql(
+        'SELECT id, "scipionItemId" FROM scipion_set_items WHERE "setId" = 30').all()}
+    series = connection.exec_driver_sql(SERIES_ITEMS_SQL, (30, rowIds[1], 2)).mappings().all()
+    first = connection.exec_driver_sql(FIRST_ROW_SQL, (30,)).mappings().one()
     shifts = connection.exec_driver_sql(MOVIE_SHIFTS_SQL, (21, [3, 4])).mappings().all()
 
     assert (rates[30]["lastWindow"], rates[30]["previousWindow"]) == (2, 1)
-    assert rates[30]["firstAt"] == now - timedelta(minutes=25)
+    assert rates[30]["oldest"] == now - timedelta(minutes=25) and rates[30]["sampled"] == 4
+    # Only the newest items are looked at: items 4 (no creation, its row time) and 3
+    assert sampled["sampled"] == 2 and sampled["lastWindow"] == 2
     assert [(row["scipionItemId"], row["values"]["_defocusU"]) for row in series] == [(2, 2000.0), (3, 3000.0)]
+    assert [row["rowId"] for row in series] == [rowIds[2], rowIds[3]] and first["firstRowId"] == rowIds[1]
     assert [(row["scipionItemId"], row["values"]) for row in shifts] == [(3, {"_alignment._xshifts": "0,1"})]
 
 

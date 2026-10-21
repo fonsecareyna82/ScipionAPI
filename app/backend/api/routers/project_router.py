@@ -5208,7 +5208,7 @@ def getProjectStreamingMonitor(
     projectId: int,
     ctfSetId: Optional[int] = Query(None, description="The CTF output to follow; the newest one by default."),
     afterSetId: Optional[int] = Query(None, description="The CTF output of the points the caller has."),
-    afterItemId: Optional[int] = Query(None, description="The last point the caller has."),
+    afterRowId: Optional[int] = Query(None, description="The cursor of the last answer: what the caller has."),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -5218,7 +5218,7 @@ def getProjectStreamingMonitor(
     if not service.getProjectDbRow(mapper, projectId, currentUser):
         raise HTTPException(status_code=404, detail="Project not found")
     payload = streaming_monitor.streamingMonitor(mapper, projectId, ctfSetId=ctfSetId, afterSetId=afterSetId,
-                                                 afterItemId=afterItemId)
+                                                 afterRowId=afterRowId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

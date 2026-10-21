@@ -20,11 +20,12 @@ def ref(protocolId, parentProtocolId, parentOutputName):
     return {"protocolId": protocolId, "parentProtocolId": parentProtocolId, "parentOutputName": parentOutputName}
 
 
-def ctfItem(itemId, defocusU=20000.0, defocusV=19500.0, resolution=4.0, minutes=0, extra=None):
+def ctfItem(itemId, defocusU=20000.0, defocusV=19500.0, resolution=4.0, minutes=0, extra=None, rowId=None):
+    """A CTF row; its row id says when it was written (by default in the order of the item ids)."""
     values = {"_defocusU": defocusU, "_defocusV": defocusV, "_resolution": resolution, "_fitQuality": 0.2}
     values.update(extra or {})
-    return {"scipionItemId": itemId, "enabled": True, "label": "mic_%03d" % itemId,
-            "time": NOW - timedelta(minutes=minutes), "values": values}
+    return {"rowId": rowId if rowId is not None else 100 + itemId, "scipionItemId": itemId, "enabled": True,
+            "label": "mic_%03d" % itemId, "time": NOW - timedelta(minutes=minutes), "values": values}
 
 
 class Db:
@@ -39,6 +40,8 @@ class Db:
         self.shiftsSetIds = []
 
     def fetchOne(self, query, params):
+        if query == monitor.FIRST_ROW_SQL:
+            return {"firstRowId": min((item["rowId"] for item in self.items), default=None)}
         assert query == monitor.GET_SETTINGS_SQL
         if isinstance(self.settings, Exception):
             raise self.settings
@@ -54,10 +57,10 @@ class Db:
         if query == monitor.INPUT_REFS_SQL:
             return self.refs
         if query == monitor.SET_RATES_SQL:
-            return [row for row in self.rates if row["setId"] in params[-1]]
+            return [row for row in self.rates if row["setId"] in params[3]]
         if query == monitor.SERIES_ITEMS_SQL:
             _, after, limit = params
-            return [item for item in self.items if item["scipionItemId"] > after][:limit]
+            return sorted((item for item in self.items if item["rowId"] > after), key=lambda item: item["rowId"])[:limit]
         if query == monitor.MOVIE_SHIFTS_SQL:
             self.shiftsSetIds.append(params[0])
             return [movie for movie in self.movies if movie["scipionItemId"] in params[1]]
@@ -124,9 +127,8 @@ def test_tomography_outputs_are_not_followed():
 
 
 def test_rates_count_the_items_of_the_last_minutes_with_their_trend():
-    rates = [{"setId": 30, "lastWindow": 30, "previousWindow": 20, "firstAt": NOW - timedelta(hours=1),
-              "lastAt": NOW},
-             {"setId": 20, "lastWindow": 20, "previousWindow": 20, "firstAt": None, "lastAt": None}]
+    rates = [{"setId": 30, "lastWindow": 30, "previousWindow": 20, "sampled": 80, "oldest": NOW - timedelta(hours=1)},
+             {"setId": 20, "lastWindow": 20, "previousWindow": 20, "sampled": 90, "oldest": NOW - timedelta(hours=1)}]
     payload = monitor.streamingMonitor(Mapper(preprocessing(rates=rates)), 7, now=NOW)
 
     stages = {stage["stage"]: stage for stage in payload["stages"]}
@@ -138,11 +140,11 @@ def test_rates_count_the_items_of_the_last_minutes_with_their_trend():
 def test_the_series_is_read_after_the_last_point_the_caller_has():
     items = [ctfItem(i) for i in range(1, 6)]
     first = monitor.streamingMonitor(Mapper(preprocessing(items=items)), 7, now=NOW)["series"]
-    following = monitor.streamingMonitor(Mapper(preprocessing(items=items)), 7, afterSetId=30, afterItemId=3,
+    following = monitor.streamingMonitor(Mapper(preprocessing(items=items)), 7, afterSetId=30, afterRowId=103,
                                          now=NOW)["series"]
 
     assert [point["id"] for point in first["points"]] == [1, 2, 3, 4, 5]
-    assert first["setId"] == 30 and first["lastItemId"] == 5 and first["reset"] is False
+    assert first["setId"] == 30 and first["lastRowId"] == 105 and first["reset"] is False
     assert [point["id"] for point in following["points"]] == [4, 5]
     point = first["points"][0]
     assert point["defocusU"] == 20000.0 and point["astigmatism"] == 500.0 and point["resolution"] == 4.0
@@ -150,17 +152,18 @@ def test_the_series_is_read_after_the_last_point_the_caller_has():
 
 
 def test_nothing_new_keeps_the_last_point():
-    series = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, afterSetId=30, afterItemId=1,
+    series = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, afterSetId=30, afterRowId=101,
                                       now=NOW)["series"]
 
-    assert series["points"] == [] and series["lastItemId"] == 1 and series["reset"] is False
+    assert series["points"] == [] and series["lastRowId"] == 101 and series["reset"] is False
 
 
-@pytest.mark.parametrize("afterSetId, afterItemId", [(99, 3), (30, 500)])
-def test_a_rebuilt_ctf_output_starts_the_series_again(afterSetId, afterItemId):
+@pytest.mark.parametrize("afterSetId, afterRowId", [(99, 103), (30, 50)])
+def test_a_rebuilt_ctf_output_starts_the_series_again(afterSetId, afterRowId):
+    """Another output, or one whose rows were all written again (all above the cursor)."""
     items = [ctfItem(i) for i in range(1, 4)]
     series = monitor.streamingMonitor(Mapper(preprocessing(items=items)), 7, afterSetId=afterSetId,
-                                      afterItemId=afterItemId, now=NOW)["series"]
+                                      afterRowId=afterRowId, now=NOW)["series"]
 
     assert series["reset"] is True
     assert [point["id"] for point in series["points"]] == [1, 2, 3]
@@ -326,7 +329,7 @@ def test_before_the_ctf_the_micrographs_give_their_drift():
                                               "_alignment._yshifts": "0,4"}}]
     db = preprocessing(movies=movies)
     db.outputs = [o for o in db.outputs if o["setClassName"] in ("SetOfMovies", "SetOfMicrographs")]
-    db.items = [{"scipionItemId": 1, "enabled": True, "label": "mic_001", "time": NOW, "values": {}}]
+    db.items = [{"rowId": 1, "scipionItemId": 1, "enabled": True, "label": "mic_001", "time": NOW, "values": {}}]
 
     series = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["series"]
 
@@ -336,7 +339,29 @@ def test_before_the_ctf_the_micrographs_give_their_drift():
 
 
 def test_the_series_starts_again_from_the_ctf_once_there_is_one():
-    series = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, afterSetId=20, afterItemId=1,
+    series = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, afterSetId=20, afterRowId=1,
                                       now=NOW)["series"]
 
     assert series["kind"] == "ctf" and series["reset"] is True and [p["id"] for p in series["points"]] == [1]
+
+
+def test_an_item_written_after_one_with_a_higher_id_is_still_read():
+    """Parallel steps: micrograph 5 is estimated before 3, which is written later."""
+    db = preprocessing(items=[ctfItem(5, rowId=101)])
+    first = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["series"]
+    db.items.append(ctfItem(3, rowId=102))
+
+    following = monitor.streamingMonitor(Mapper(db), 7, afterSetId=30, afterRowId=first["lastRowId"], now=NOW)["series"]
+
+    assert [p["id"] for p in first["points"]] == [5] and first["lastRowId"] == 101
+    assert [p["id"] for p in following["points"]] == [3] and following["reset"] is False
+
+
+def test_a_set_growing_faster_than_the_sample_gets_the_rate_of_the_sample():
+    """5000 particles in the last 5 minutes: the sample does not reach the window before."""
+    rates = [{"setId": 50, "lastWindow": monitor.RATE_SAMPLE, "previousWindow": 0, "sampled": monitor.RATE_SAMPLE,
+              "oldest": NOW - timedelta(minutes=5)}]
+    payload = monitor.streamingMonitor(Mapper(preprocessing(rates=rates)), 7, now=NOW)
+
+    particles = next(s for s in payload["stages"] if s["stage"] == "particles")
+    assert particles["perMinute"] == 1000.0 and particles["trend"] == "steady"

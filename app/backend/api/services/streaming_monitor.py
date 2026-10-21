@@ -8,7 +8,7 @@ With several CTF outputs the most recently updated one is followed unless the ca
 Counts come from the counters every Set keeps in its properties, so they cost nothing; the rates count the
 items of each Set created in the last minutes. The quality series are read incrementally: the caller passes
 the last item it has and gets the next ones, so a long session is never read again. A Set that was rebuilt
-(another setId, or fewer items than the caller has seen) starts the series again.
+(another setId, or rows all written again) starts the series again.
 
 The time of an item is when it was written to its Set, that is, when it was processed: Scipion keeps no
 acquisition time for movies or micrographs.
@@ -62,25 +62,40 @@ INPUT_REFS_SQL = """
      WHERE "projectId" = %s AND "parentProtocolId" IS NOT NULL
 """
 
-# Items of each Set created in the last window and in the one before, and the first and last item times.
+# Items of each Set created in the last window and in the one before. Only the newest items of each Set are
+# looked at (through its (setId, scipionItemId) index), so a poll costs the same at the start of a session
+# and after a million particles.
+RATE_SAMPLE = 5000
 SET_RATES_SQL = """
-    SELECT "setId",
-           COUNT(*) FILTER (WHERE COALESCE(creation, "createdAt") >= %s) AS "lastWindow",
-           COUNT(*) FILTER (WHERE COALESCE(creation, "createdAt") >= %s
-                              AND COALESCE(creation, "createdAt") < %s) AS "previousWindow",
-           MIN(COALESCE(creation, "createdAt")) AS "firstAt",
-           MAX(COALESCE(creation, "createdAt")) AS "lastAt"
-      FROM scipion_set_items
-     WHERE "setId" = ANY(%s)
-     GROUP BY "setId"
+    SELECT sets."setId",
+           COUNT(recent.t) FILTER (WHERE recent.t >= %s) AS "lastWindow",
+           COUNT(recent.t) FILTER (WHERE recent.t >= %s AND recent.t < %s) AS "previousWindow",
+           COUNT(recent.t) AS "sampled",
+           MIN(recent.t) AS "oldest"
+      FROM UNNEST(%s::int[]) AS sets("setId")
+      CROSS JOIN LATERAL (
+            SELECT COALESCE(i.creation, i."createdAt") AS t
+              FROM scipion_set_items i
+             WHERE i."setId" = sets."setId"
+             ORDER BY i."scipionItemId" DESC
+             LIMIT %s
+      ) recent
+     GROUP BY sets."setId"
 """
 
+# Rows are read in the order they were written (their row id), not by item id: parallel steps finish items
+# out of order, and an item with a lower id written later must still be read.
 SERIES_ITEMS_SQL = """
-    SELECT "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
+    SELECT id AS "rowId", "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
       FROM scipion_set_items
-     WHERE "setId" = %s AND "scipionItemId" > %s
-     ORDER BY "scipionItemId"
+     WHERE "setId" = %s AND id > %s
+     ORDER BY id
      LIMIT %s
+"""
+
+# A Set whose rows were all written again (a full sync) has no row left at or below the caller's cursor.
+FIRST_ROW_SQL = """
+    SELECT MIN(id) AS "firstRowId" FROM scipion_set_items WHERE "setId" = %s
 """
 
 GET_SETTINGS_SQL = """
@@ -116,6 +131,12 @@ def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
     if "setofparticles" in text:
         return "particles"
     return None
+
+
+def _aware(value):
+    if value is not None and hasattr(value, "tzinfo") and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _iso(value) -> Optional[str]:
@@ -257,20 +278,26 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
     if not setIds:
         return {}
     window = timedelta(minutes=RATE_WINDOW_MINUTES)
-    rows = mapper.db.fetchAll(SET_RATES_SQL, (now - window, now - 2 * window, now - window, list(setIds))) or []
+    rows = mapper.db.fetchAll(SET_RATES_SQL, (now - window, now - 2 * window, now - window, list(setIds),
+                                              RATE_SAMPLE)) or []
     rates = {}
     for row in rows:
         last = int(row.get("lastWindow") or 0)
         previous = int(row.get("previousWindow") or 0)
-        perMinute = last / float(RATE_WINDOW_MINUTES)
+        oldest = _aware(row.get("oldest"))
+        if int(row.get("sampled") or 0) >= RATE_SAMPLE and oldest is not None and oldest > now - 2 * window:
+            # So many items came that the sample does not reach back two windows: the rate is the sample's
+            # own, and there is nothing to compare it with.
+            minutes = max((now - oldest).total_seconds() / 60.0, 1.0 / 60)
+            rates[int(row["setId"])] = {"perMinute": RATE_SAMPLE / minutes, "trend": "steady"}
+            continue
         trend = "steady"
         if previous == 0 and last > 0:
             trend = "up"
         elif previous > 0:
             change = (last - previous) / float(previous)
             trend = "up" if change > RATE_TREND_THRESHOLD else "down" if change < -RATE_TREND_THRESHOLD else "steady"
-        rates[int(row["setId"])] = {"perMinute": perMinute, "trend": trend,
-                                    "firstAt": _iso(row.get("firstAt")), "lastAt": _iso(row.get("lastAt"))}
+        rates[int(row["setId"])] = {"perMinute": last / float(RATE_WINDOW_MINUTES), "trend": trend}
     return rates
 
 
@@ -282,8 +309,7 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]]) 
         if output is None:
             continue
         entry = {key: value for key, value in output.items() if not key.startswith("_")}
-        entry.update(rates.get(output["setId"], {"perMinute": 0.0, "trend": "steady", "firstAt": None,
-                                                 "lastAt": None}))
+        entry.update(rates.get(output["setId"], {"perMinute": 0.0, "trend": "steady"}))
         # What the stage before produced that this one has not yet: the backlog. Coordinates and particles
         # come many per micrograph, so they are not compared.
         entry["behind"] = (max(0, previous["items"] - output["items"])
@@ -466,16 +492,18 @@ def alertsOf(point: Dict[str, Any], thresholds: Dict[str, Optional[float]]) -> L
     return alerts
 
 
-def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int], afterItemId: Optional[int],
+def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int], afterRowId: Optional[int],
             thresholds: Dict[str, Optional[float]]) -> Dict[str, Any]:
     """The points of the CTF output; before there is one, of the micrographs, with their drift only."""
     base = chain.get("ctf") or chain.get("micrographs")
     if base is None:
-        return {"setId": None, "kind": None, "reset": afterSetId is not None, "lastItemId": None, "more": False,
+        return {"setId": None, "kind": None, "reset": afterSetId is not None, "lastRowId": None, "more": False,
                 "points": []}
-    reset = afterSetId != base["setId"] or (afterItemId is not None and base["maxItemId"] is not None
-                                            and afterItemId > base["maxItemId"])
-    after = 0 if reset or afterItemId is None else int(afterItemId)
+    reset = afterSetId != base["setId"]
+    if not reset and afterRowId is not None:
+        first = (mapper.db.fetchOne(FIRST_ROW_SQL, (base["setId"],)) or {}).get("firstRowId")
+        reset = first is not None and int(first) > int(afterRowId)
+    after = 0 if reset or afterRowId is None else int(afterRowId)
     rows = mapper.db.fetchAll(SERIES_ITEMS_SQL, (base["setId"], after, SERIES_BATCH)) or []
     drifts = _movieDrifts(mapper, chain.get("alignedMovies"), [int(row["scipionItemId"]) for row in rows])
     isCtf = base["stage"] == "ctf"
@@ -507,14 +535,14 @@ def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
         "setId": base["setId"],
         "kind": base["stage"],
         "reset": bool(reset and afterSetId is not None),
-        "lastItemId": points[-1]["id"] if points else (None if reset else afterItemId),
+        "lastRowId": int(rows[-1]["rowId"]) if rows else (None if reset else afterRowId),
         "more": len(rows) >= SERIES_BATCH,
         "points": points,
     }
 
 
 def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, afterSetId: Optional[int] = None,
-                     afterItemId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
+                     afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
@@ -530,5 +558,5 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                         "outputName": output["outputName"]}
                        for output in sorted((o for o in outputs if o["stage"] == "ctf"), key=lambda o: o["setId"])],
         "thresholds": limits,
-        "series": _series(mapper, chain, afterSetId, afterItemId, limits),
+        "series": _series(mapper, chain, afterSetId, afterRowId, limits),
     }

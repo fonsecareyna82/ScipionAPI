@@ -50,12 +50,12 @@ def test_the_overview_needs_access_and_is_never_cached(authTestEnv, tmp_path):
 
 def test_the_streaming_monitor_needs_access_and_is_never_cached(authTestEnv, tmp_path):
     router = importlib.import_module("app.backend.api.routers.project_router")
-    response = router.getProjectStreamingMonitor(projectId=4, ctfSetId=None, afterSetId=None, afterItemId=None,
+    response = router.getProjectStreamingMonitor(projectId=4, ctfSetId=None, afterSetId=None, afterRowId=None,
                                                  currentUser={"id": 1}, mapper=Mapper(), service=Service(tmp_path))
     assert json.loads(response.body)["stages"] == []
     assert response.headers["Cache-Control"] == "no-store"
     with pytest.raises(HTTPException) as error:
-        router.getProjectStreamingMonitor(projectId=4, ctfSetId=None, afterSetId=None, afterItemId=None,
+        router.getProjectStreamingMonitor(projectId=4, ctfSetId=None, afterSetId=None, afterRowId=None,
                                           currentUser={"id": 1}, mapper=Mapper(), service=Service())
     assert error.value.status_code == 404
 
