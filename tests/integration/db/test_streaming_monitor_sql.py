@@ -7,7 +7,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-from app.backend.api.services.streaming_monitor import (FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, MOVIE_SHIFTS_SQL,
+from app.backend.api.services.workspace_service import LIVE_PROJECTS_SQL
+
+from app.backend.api.services.streaming_monitor import (FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, LATEST_ROWS_SQL,
+                                                        CLASSES_SQL, MIC_COUNTS_SQL, MOVIE_SHIFTS_SQL,
                                                         OUTPUT_SETS_SQL, SAVE_SETTINGS_SQL, SERIES_ITEMS_SQL,
                                                         SET_RATES_SQL)
 
@@ -34,6 +37,8 @@ def connection(postgresqlMigratedEnv):
                 conn.exec_driver_sql('''CREATE TABLE scipion_set_items (id serial PRIMARY KEY, "setId" int,
                     "scipionItemId" int, enabled boolean, label text, creation timestamptz,
                     "values" jsonb, "createdAt" timestamptz NOT NULL DEFAULT NOW())''')
+                conn.exec_driver_sql('''CREATE TABLE scipion_set_tables (id serial PRIMARY KEY, "setId" int,
+                    "parentItemId" int, "tableKind" text, properties jsonb)''')
                 conn.exec_driver_sql('''CREATE TABLE project_monitor_settings ("projectId" int PRIMARY KEY,
                     settings jsonb NOT NULL DEFAULT '{}', "updatedBy" int,
                     "updatedAt" timestamptz NOT NULL DEFAULT NOW())''')
@@ -103,6 +108,8 @@ def test_rates_series_and_shifts_of_the_items(connection):
     assert sampled["sampled"] == 2 and sampled["lastWindow"] == 2
     assert [(row["scipionItemId"], row["values"]["_defocusU"]) for row in series] == [(2, 2000.0), (3, 3000.0)]
     assert [row["rowId"] for row in series] == [rowIds[2], rowIds[3]] and first["firstRowId"] == rowIds[1]
+    latest = connection.exec_driver_sql(LATEST_ROWS_SQL, (30, 2)).mappings().all()
+    assert [row["scipionItemId"] for row in latest] == [4, 3]
     assert [(row["scipionItemId"], row["values"]) for row in shifts] == [(3, {"_alignment._xshifts": "0,1"})]
 
 
@@ -115,3 +122,48 @@ def test_thresholds_are_kept_once_per_project(connection):
 
     assert row["settings"] == {"thresholds": {"maxAstigmatism": None}} and count == 1
     assert connection.exec_driver_sql(GET_SETTINGS_SQL, (8,)).first() is None
+
+
+def test_projects_with_a_protocol_running(connection):
+    connection.exec_driver_sql('''INSERT INTO protocols ("projectId", "protocolId", "protocolClassName", status, params)
+        VALUES (7, '2', 'A', 'RUNNING', '{}'), (7, '3', 'B', 'running', '{}'), (8, '4', 'C', 'finished', '{}'),
+               (9, '5', 'D', 'scheduled', '{}'), (10, '6', 'E', 'launched', '{}')''')
+
+    rows = connection.exec_driver_sql(LIVE_PROJECTS_SQL, ([7, 8, 9], ["launched", "running", "scheduled"], 5)).all()
+
+    assert [row[0] for row in rows] == [7, 9]
+
+
+def test_items_are_counted_per_micrograph_after_a_row(connection):
+    rows = [(40, {"_micId": 1, "_x": 10}), (40, {"_micId": 1, "_x": 20}), (40, {"_micId": 2, "_x": 5}),
+            (50, {"_coordinate._micId": 2}), (40, {"_x": 7})]
+    for setId, values in rows:
+        connection.exec_driver_sql('''INSERT INTO scipion_set_items ("setId", "scipionItemId", enabled, "values")
+            VALUES (%s, 1, TRUE, %s)''', (setId, json.dumps(values)))
+    rowIds = [row[0] for row in connection.exec_driver_sql("SELECT id FROM scipion_set_items ORDER BY id").all()]
+
+    counted = {row["mic"]: (row["n"], row["lastRowId"]) for row in connection.exec_driver_sql(
+        MIC_COUNTS_SQL, (40, 0, 10)).mappings().all()}
+    after = {row["mic"]: row["n"] for row in connection.exec_driver_sql(
+        MIC_COUNTS_SQL, (40, rowIds[1], 10)).mappings().all()}
+    particles = {row["mic"]: row["n"] for row in connection.exec_driver_sql(
+        MIC_COUNTS_SQL, (50, 0, 10)).mappings().all()}
+    chunk = sum(row["n"] for row in connection.exec_driver_sql(MIC_COUNTS_SQL, (40, 0, 2)).mappings().all())
+
+    assert counted == {"1": (2, rowIds[1]), "2": (1, rowIds[2]), None: (1, rowIds[4])}
+    assert after == {"2": 1, None: 1} and particles == {"2": 1} and chunk == 2
+
+
+def test_classes_with_the_particles_of_each(connection):
+    for classId, size in ((1, 40), (2, 7), (3, None)):
+        values = {"_size": size} if size is not None else {}
+        connection.exec_driver_sql('''INSERT INTO scipion_set_items ("setId", "scipionItemId", enabled, "values")
+            VALUES (90, %s, TRUE, %s)''', (classId, json.dumps(values)))
+    # The child table counter wins over _size; a class without one keeps its _size
+    connection.exec_driver_sql('''INSERT INTO scipion_set_tables ("setId", "parentItemId", "tableKind", properties)
+        VALUES (90, 1, 'child', '{"itemsCount": 45}'), (90, 1, 'root', '{"itemsCount": 999}'),
+               (90, 3, 'child', '{"itemsCount": 2}')''')
+
+    rows = {row["classId"]: row["particles"] for row in connection.exec_driver_sql(CLASSES_SQL, (90,)).mappings().all()}
+
+    assert rows == {1: 45, 2: 7, 3: 2}

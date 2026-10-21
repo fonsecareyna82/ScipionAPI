@@ -18296,6 +18296,7 @@ class ProjectService:
             asc: bool,
             contrastMode: str = "original",
             volumeView: str = "surface",
+            version: Optional[str] = None,
     ):
         enhanced = str(contrastMode or "original").strip().lower() in ("enhanced", "volume")
         return (
@@ -18315,6 +18316,8 @@ class ProjectService:
             # Class display version and 3D view: a new rendering is a new image
             # (also for the browser, whose ETag comes from this key).
             (CLASS_DISPLAY_VERSION, str(volumeView or "surface")) if enhanced else None,
+            # What the caller knows of the image file: a streaming protocol rewrites its class averages in place
+            None if version is None else str(version),
         )
 
     def _getCachedMetadataImageResponse(self, cacheKey) -> Optional[Response]:
@@ -18397,6 +18400,7 @@ class ProjectService:
             protocolIdIsScipionId=False,
             contrastMode: str = "original",
             volumeView: str = "surface",
+            version: Optional[str] = None,
     ) -> Response:
         """
         Thin ETag/cache wrapper around renderMetadataImageCellService --
@@ -18421,6 +18425,7 @@ class ProjectService:
             asc=asc,
             contrastMode=contrastMode,
             volumeView=volumeView,
+            version=version,
         )
 
         etag = self._etagFromCacheKey(cacheKey)

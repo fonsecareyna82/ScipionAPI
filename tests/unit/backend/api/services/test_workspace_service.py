@@ -1,6 +1,8 @@
 """Protocol activity over the projects of a user."""
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.backend.api.services import workspace_service as workspace
 
 
@@ -59,3 +61,53 @@ def test_an_old_since_is_capped_and_users_without_projects_get_nothing():
     empty = Db(rows=[{"projectId": 1}])
     assert workspace.protocolActivity(Mapper([], empty), 3, NOW, now=NOW)["events"] == []
     assert empty.calls == []
+
+
+
+class StreamingDb(Db):
+    """One project (7) streams; its activity has no ended run."""
+
+    def fetchAll(self, query, params):
+        self.calls.append(("all", params))
+        if query == workspace.LIVE_PROJECTS_SQL:
+            return [{"projectId": 7}]
+        return []
+
+
+def test_streaming_projects_tell_when_micrographs_go_past_a_monitor_threshold(monkeypatch):
+    from app.backend.api.services import streaming_monitor
+    started = NOW - timedelta(seconds=10)
+    monkeypatch.setattr(streaming_monitor, "alertsSince", lambda mapper, projectId, since: [{
+        "kind": "maxAstigmatism", "text": "Astigmatism above 1000 Å", "startedAt": started.isoformat(),
+        "micrographName": "mic_012", "count": 3, "ongoing": True, "protocolId": "5",
+        "protocolClassName": "CistemProtCTFFind"}])
+
+    payload = workspace.protocolActivity(Mapper(PROJECTS, StreamingDb([], live=1)), 3, NOW - timedelta(seconds=30),
+                                         now=NOW)
+
+    assert payload["events"] == [{
+        "projectId": 7, "projectName": "Workflow_2D", "protocolId": "5", "protocolClassName": "CistemProtCTFFind",
+        "label": "Astigmatism above 1000 Å: mic_012 and 2 more", "status": "alert", "threshold": "maxAstigmatism",
+        "endedAt": started.isoformat(),
+    }]
+
+
+def test_a_monitor_that_cannot_be_read_does_not_stop_the_activity(monkeypatch):
+    from app.backend.api.services import streaming_monitor
+
+    def broken(mapper, projectId, since):
+        raise RuntimeError("no such table")
+
+    monkeypatch.setattr(streaming_monitor, "alertsSince", broken)
+
+    payload = workspace.protocolActivity(Mapper(PROJECTS, StreamingDb([], live=1)), 3, NOW - timedelta(seconds=30),
+                                         now=NOW)
+
+    assert payload["events"] == [] and payload["live"] == 1
+
+
+def test_nothing_running_looks_at_no_monitor(monkeypatch):
+    from app.backend.api.services import streaming_monitor
+    monkeypatch.setattr(streaming_monitor, "alertsSince", lambda *args: pytest.fail("No monitor to read"))
+
+    workspace.protocolActivity(Mapper(PROJECTS, StreamingDb([], live=0)), 3, NOW - timedelta(seconds=30), now=NOW)

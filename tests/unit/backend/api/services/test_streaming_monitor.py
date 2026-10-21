@@ -8,6 +8,16 @@ from app.backend.api.services import streaming_monitor as monitor
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def noCaches():
+    """The alert runs and micrograph counts are kept per process: every test starts without them."""
+    monitor._alertCache.clear()
+    monitor._micCounts.clear()
+    yield
+    monitor._alertCache.clear()
+    monitor._micCounts.clear()
+
+
 def output(setId, protocolId, outputName, setClassName, items, streamState=1, updatedAt=None, maxItemId=None):
     return {"setId": setId, "protocolId": protocolId, "protocolClassName": "Prot%s" % protocolId,
             "status": "running", "label": "run %s" % protocolId, "outputName": outputName,
@@ -31,8 +41,11 @@ def ctfItem(itemId, defocusU=20000.0, defocusV=19500.0, resolution=4.0, minutes=
 class Db:
     """Answers each monitor query with its rows; the series rows are filtered as the query would."""
 
-    def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None):
+    def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=()):
         self.outputs, self.refs, self.rates = list(outputs), list(refs), list(rates)
+        # Rows of the coordinates and particles Sets: (setId, rowId, micrograph id)
+        self.picks = list(picks)
+        self.classes = list(classes)
         self.items, self.movies = list(items), list(movies)
         self.settings = settings
         self.calls = []
@@ -41,7 +54,9 @@ class Db:
 
     def fetchOne(self, query, params):
         if query == monitor.FIRST_ROW_SQL:
-            return {"firstRowId": min((item["rowId"] for item in self.items), default=None)}
+            rows = [rowId for setId, rowId, _ in self.picks if setId == params[0]] if any(
+                setId == params[0] for setId, _, _ in self.picks) else [item["rowId"] for item in self.items]
+            return {"firstRowId": min(rows, default=None)}
         assert query == monitor.GET_SETTINGS_SQL
         if isinstance(self.settings, Exception):
             raise self.settings
@@ -61,6 +76,20 @@ class Db:
         if query == monitor.SERIES_ITEMS_SQL:
             _, after, limit = params
             return sorted((item for item in self.items if item["rowId"] > after), key=lambda item: item["rowId"])[:limit]
+        if query == monitor.MIC_COUNTS_SQL:
+            setId, after, limit = params
+            chunk = sorted((row for row in self.picks if row[0] == setId and row[1] > after), key=lambda row: row[1])[:limit]
+            grouped = {}
+            for _, rowId, mic in chunk:
+                count, last = grouped.get(mic, (0, 0))
+                grouped[mic] = (count + 1, max(last, rowId))
+            return [{"mic": None if mic is None else str(mic), "n": n, "lastRowId": last}
+                    for mic, (n, last) in grouped.items()]
+        if query == monitor.CLASSES_SQL:
+            return list(self.classes)
+        if query == monitor.LATEST_ROWS_SQL:
+            setId, limit = params
+            return sorted(self.items, key=lambda item: item["rowId"], reverse=True)[:limit]
         if query == monitor.MOVIE_SHIFTS_SQL:
             self.shiftsSetIds.append(params[0])
             return [movie for movie in self.movies if movie["scipionItemId"] in params[1]]
@@ -94,7 +123,8 @@ def test_the_chain_follows_what_the_ctf_read():
         ("movies", 10), ("micrographs", 20), ("ctf", 30), ("coordinates", 40), ("particles", 50)]
     assert payload["streaming"] is True
     behind = {stage["stage"]: stage["behind"] for stage in payload["stages"]}
-    assert behind == {"movies": None, "micrographs": 10, "ctf": 10, "coordinates": None, "particles": None}
+    # Nothing picked yet: every micrograph with a CTF waits for picking
+    assert behind == {"movies": None, "micrographs": 10, "ctf": 10, "coordinates": 80, "particles": 0}
 
 
 def test_the_newest_ctf_is_followed_unless_another_is_asked_for():
@@ -365,3 +395,138 @@ def test_a_set_growing_faster_than_the_sample_gets_the_rate_of_the_sample():
 
     particles = next(s for s in payload["stages"] if s["stage"] == "particles")
     assert particles["perMinute"] == 1000.0 and particles["trend"] == "steady"
+
+
+ASTIGMATIC = dict(defocusU=21500.0, defocusV=20000.0)  # 1500 A, past the 1000 A default
+
+
+def test_alert_runs_group_consecutive_micrographs_past_a_threshold():
+    points = [{"id": 1, "alerts": ["maxAstigmatism"]}, {"id": 2, "alerts": ["maxAstigmatism"]},
+              {"id": 3, "alerts": [], "failed": True}, {"id": 4, "alerts": ["maxAstigmatism"]},
+              {"id": 5, "alerts": []}, {"id": 6, "alerts": ["maxTotalDrift"]}]
+
+    runs = monitor.alertRuns(points)
+
+    assert [(r["kind"], r["first"]["id"], r["count"], r["ongoing"]) for r in runs] == [
+        ("maxAstigmatism", 1, 3, False), ("maxTotalDrift", 6, 1, True)]
+
+
+def test_the_bell_hears_of_the_runs_that_started_since_its_last_call():
+    items = [ctfItem(1, minutes=30), ctfItem(2, minutes=20, **ASTIGMATIC), ctfItem(3, minutes=10, **ASTIGMATIC),
+             ctfItem(4, minutes=5), ctfItem(5, minutes=1, defocusU=45000.0, defocusV=44800.0)]
+    db = preprocessing(items=items)
+
+    recent = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=15))
+    monitor._alertCache.clear()
+    older = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=25))
+
+    assert [(r["kind"], r["micrographName"], r["count"]) for r in recent] == [("maxDefocus", "mic_005", 1)]
+    assert [(r["kind"], r["micrographName"], r["count"]) for r in older] == [
+        ("maxAstigmatism", "mic_002", 2), ("maxDefocus", "mic_005", 1)]
+    assert recent[0]["text"] == "Defocus above 40000 Å" and recent[0]["protocolId"] == "3"
+
+
+def test_a_run_that_may_have_started_before_the_window_is_not_announced(monkeypatch):
+    monkeypatch.setattr(monitor, "ALERT_WINDOW", 2)
+    items = [ctfItem(1, **ASTIGMATIC), ctfItem(2, **ASTIGMATIC), ctfItem(3, **ASTIGMATIC)]
+
+    assert monitor.projectAlertRuns(Mapper(preprocessing(items=items)), 7) == []
+
+
+def test_the_alerts_of_a_project_are_worked_out_once_for_every_open_tab():
+    db = preprocessing(items=[ctfItem(1, **ASTIGMATIC)])
+
+    first = monitor.projectAlertRuns(Mapper(db), 7)
+    calls = len(db.calls)
+    again = monitor.projectAlertRuns(Mapper(db), 7)
+
+    assert again == first and len(db.calls) == calls
+
+
+def picks(setId, micsAndCounts, firstRow=1):
+    """Rows of a coordinates or particles Set: ``count`` rows for each micrograph, in this order."""
+    rows, rowId = [], firstRow
+    for mic, count in micsAndCounts:
+        for _ in range(count):
+            rows.append((setId, rowId, mic))
+            rowId += 1
+    return rows
+
+
+def test_the_coordinates_of_each_micrograph_are_counted_and_only_the_changes_sent_again():
+    db = preprocessing(items=[ctfItem(1), ctfItem(2)], picks=picks(40, [(1, 3), (2, 2)]))
+    first = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["picking"]
+    db.picks += picks(40, [(2, 4), (3, 1)], firstRow=6)
+    following = monitor.streamingMonitor(Mapper(db), 7, afterPickSetId=40, afterPickRowId=first["lastRowId"],
+                                         now=NOW)["picking"]
+
+    assert first == {"setId": 40, "reset": False, "lastRowId": 5, "complete": True, "counts": {"1": 3, "2": 2}}
+    assert following["counts"] == {"2": 6, "3": 1} and following["lastRowId"] == 10
+
+
+def test_the_backlog_of_picking_and_extraction_is_in_micrographs():
+    """80 CTFs; 3 micrographs picked; 2 of them extracted."""
+    db = preprocessing(picks=picks(40, [(1, 3), (2, 2), (3, 1)]) + picks(50, [(1, 3), (2, 2)], firstRow=100))
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert (stages["coordinates"]["micrographs"], stages["coordinates"]["behind"]) == (3, 77)
+    assert (stages["particles"]["micrographs"], stages["particles"]["behind"]) == (2, 1)
+    assert stages["coordinates"]["counting"] is False
+
+
+def test_a_long_session_is_counted_in_chunks_and_has_no_backlog_until_counted(monkeypatch):
+    monkeypatch.setattr(monitor, "MIC_COUNT_CHUNK", 4)
+    db = preprocessing(picks=picks(40, [(1, 3), (2, 3)]))
+
+    first = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+    second = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert first["coordinates"]["counting"] is True and first["coordinates"]["behind"] is None
+    assert second["coordinates"]["counting"] is False and second["coordinates"]["micrographs"] == 2
+
+
+def test_a_rebuilt_coordinates_output_is_counted_again():
+    db = preprocessing(picks=picks(40, [(1, 3)]))
+    monitor.countByMicrograph(Mapper(db), 40)
+    db.picks = picks(40, [(1, 2)], firstRow=50)
+
+    assert monitor.countByMicrograph(Mapper(db), 40)["counts"] == {1: 2}
+
+
+def test_too_few_particles_is_an_alert_only_when_the_project_sets_it():
+    db = preprocessing(items=[ctfItem(1), ctfItem(2)], picks=picks(40, [(1, 2), (2, 50)]))
+    without = monitor.projectAlertRuns(Mapper(db), 7)
+    monitor._alertCache.clear()
+    db.settings = {"thresholds": {"minParticles": 10}}
+    withThreshold = monitor.projectAlertRuns(Mapper(db), 7)
+
+    assert without == []
+    assert [(r["kind"], r["micrographName"], r["text"]) for r in withThreshold] == [
+        ("minParticles", "mic_001", "Fewer than 10 particles picked")]
+
+
+def classified(db, classes):
+    """alignPCA-2D (9) classifies the extracted particles (5) into classes."""
+    db.outputs.append(output(90, "9", "outputClasses", "SetOfClasses2D", len(classes)))
+    db.refs.append(ref("9", "5", "outputParticles"))
+    db.classes = [{"classId": classId, "enabled": True, "particles": particles} for classId, particles in classes]
+    return db
+
+
+def test_2d_classes_follow_the_particles_with_their_sizes_biggest_first():
+    payload = monitor.streamingMonitor(Mapper(classified(preprocessing(), [(1, 1200), (2, 3000), (3, 100)])), 7,
+                                       now=NOW)
+
+    stage = payload["stages"][-1]
+    assert (stage["stage"], stage["items"], stage["particles"], stage["behind"]) == ("classes2d", 3, 4300, 500)
+    assert stage["perMinute"] is None and stage["trend"] is None
+    classes = payload["classes"]
+    assert [(c["id"], c["particles"]) for c in classes["classes"]] == [(2, 3000), (1, 1200), (3, 100)]
+    assert (classes["setId"], classes["protocolId"], classes["outputName"]) == (90, "9", "outputClasses")
+    assert classes["version"] == NOW.isoformat()
+
+
+def test_a_stream_without_2d_classes_has_none():
+    payload = monitor.streamingMonitor(Mapper(preprocessing()), 7, now=NOW)
+
+    assert payload["classes"] is None and all(s["stage"] != "classes2d" for s in payload["stages"])

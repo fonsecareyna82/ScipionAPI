@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -41,9 +43,10 @@ DEFAULT_THRESHOLDS: Dict[str, Optional[float]] = {
     "maxResolution": None,    # A, the CTF fit resolution; no default alert
     "maxFrameShift": 10.0,    # A, between two consecutive frames
     "maxTotalDrift": 45.0,    # A, the whole path of the movie
+    "minParticles": None,     # coordinates picked on a micrograph; depends on the sample, no default alert
 }
 
-STAGES = ("movies", "micrographs", "ctf", "coordinates", "particles")
+STAGES = ("movies", "micrographs", "ctf", "coordinates", "particles", "classes2d")
 
 OUTPUT_SETS_SQL = """
     SELECT s.id AS "setId", p."protocolId", p."protocolClassName",
@@ -109,6 +112,17 @@ SAVE_SETTINGS_SQL = """
        SET settings = EXCLUDED.settings, "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = NOW()
 """
 
+# The classes of a SetOfClasses2D (its root rows) with the particles of each: the counter of its child table,
+# kept by every flush, so no particle is read.
+CLASSES_SQL = """
+    SELECT i."scipionItemId" AS "classId", i.enabled,
+           COALESCE((t.properties ->> 'itemsCount')::bigint, (i."values" ->> '_size')::bigint, 0) AS particles
+      FROM scipion_set_items i
+      LEFT JOIN scipion_set_tables t
+        ON t."setId" = i."setId" AND t."parentItemId" = i."scipionItemId" AND t."tableKind" = 'child'
+     WHERE i."setId" = %s
+"""
+
 MOVIE_SHIFTS_SQL = """
     SELECT "scipionItemId", "values"
       FROM scipion_set_items
@@ -130,6 +144,8 @@ def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
         return "coordinates"
     if "setofparticles" in text:
         return "particles"
+    if "setofclasses2d" in text:
+        return "classes2d"
     return None
 
 
@@ -264,6 +280,9 @@ def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
             particles = _newest(readers(coordinates, "particles"))
             if particles is not None:
                 chain["particles"] = particles
+                classes = _newest(readers(particles, "classes2d"))
+                if classes is not None:
+                    chain["classes2d"] = classes
     else:
         # Nothing aligned yet: the movies as they arrive, from an import rather than from an alignment
         movies = [output for output in outputs if output["stage"] == "movies"]
@@ -301,22 +320,64 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
     return rates
 
 
-def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
+            micCounts: Dict[str, Dict[str, Any]], classes: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """The stages and their backlog: what the stage before produced that this one has not yet. Coordinates
+    and particles come many per micrograph, so theirs is in micrographs: the ones not picked yet (a
+    micrograph where nothing was picked counts as waiting), and the picked ones not extracted yet."""
     stages = []
     previous = None
+    previousMicrographs = None
     for stage in STAGES:
         output = chain.get(stage)
         if output is None:
             continue
         entry = {key: value for key, value in output.items() if not key.startswith("_")}
         entry.update(rates.get(output["setId"], {"perMinute": 0.0, "trend": "steady"}))
-        # What the stage before produced that this one has not yet: the backlog. Coordinates and particles
-        # come many per micrograph, so they are not compared.
-        entry["behind"] = (max(0, previous["items"] - output["items"])
-                           if previous is not None and stage in ("micrographs", "ctf") else None)
+        counted = micCounts.get(stage)
+        entry["behind"] = None
+        if stage == "classes2d":
+            # Classes are made in rounds: their rows are classes, and the particles waiting for the next round
+            # are what was extracted and not classified (particles left out of every class stay waiting).
+            entry.update({"perMinute": None, "trend": None})
+            classified = (classes or {}).get("particles")
+            entry["particles"] = classified
+            if classified is not None and previous is not None and previous["stage"] == "particles":
+                entry["behind"] = max(0, previous["items"] - classified)
+        elif stage in ("micrographs", "ctf") and previous is not None:
+            entry["behind"] = max(0, previous["items"] - output["items"])
+        elif counted is not None:
+            entry["micrographs"] = len(counted["counts"])
+            entry["counting"] = not counted["complete"]
+            if previousMicrographs is not None and counted["complete"]:
+                entry["behind"] = max(0, previousMicrographs - len(counted["counts"]))
         stages.append(entry)
         previous = output
+        if stage in ("micrographs", "ctf"):
+            previousMicrographs = output["items"]
+        elif counted is not None:
+            previousMicrographs = len(counted["counts"]) if counted["complete"] else None
     return stages
+
+
+def _classes(mapper, chain: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The 2D classes of the stream, biggest first, and the particles classified so far. ``version`` changes
+    when the classes do: their averages are rewritten in place every round, so it keys their images."""
+    output = chain.get("classes2d")
+    if output is None:
+        return None
+    rows = mapper.db.fetchAll(CLASSES_SQL, (output["setId"],)) or []
+    classes = sorted(({"id": int(row["classId"]), "particles": int(row.get("particles") or 0),
+                       "enabled": row.get("enabled") is not False} for row in rows),
+                     key=lambda item: (-item["particles"], item["id"]))
+    return {
+        "setId": output["setId"],
+        "protocolId": output["protocolId"],
+        "outputName": output["outputName"],
+        "version": _iso(output["_updatedAt"]),
+        "particles": sum(item["particles"] for item in classes),
+        "classes": classes,
+    }
 
 
 # -- quality series -------------------------------------------------------------
@@ -489,22 +550,17 @@ def alertsOf(point: Dict[str, Any], thresholds: Dict[str, Optional[float]]) -> L
         alerts.append("maxFrameShift")
     if above("totalDrift", thresholds["maxTotalDrift"]):
         alerts.append("maxTotalDrift")
+    particles = point.get("particles")
+    if particles is not None and thresholds.get("minParticles") is not None and particles < thresholds["minParticles"]:
+        alerts.append("minParticles")
     return alerts
 
 
-def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int], afterRowId: Optional[int],
-            thresholds: Dict[str, Optional[float]]) -> Dict[str, Any]:
-    """The points of the CTF output; before there is one, of the micrographs, with their drift only."""
-    base = chain.get("ctf") or chain.get("micrographs")
-    if base is None:
-        return {"setId": None, "kind": None, "reset": afterSetId is not None, "lastRowId": None, "more": False,
-                "points": []}
-    reset = afterSetId != base["setId"]
-    if not reset and afterRowId is not None:
-        first = (mapper.db.fetchOne(FIRST_ROW_SQL, (base["setId"],)) or {}).get("firstRowId")
-        reset = first is not None and int(first) > int(afterRowId)
-    after = 0 if reset or afterRowId is None else int(afterRowId)
-    rows = mapper.db.fetchAll(SERIES_ITEMS_SQL, (base["setId"], after, SERIES_BATCH)) or []
+def _points(mapper, chain: Dict[str, Dict[str, Any]], base: Dict[str, Any], rows: List[Dict[str, Any]],
+            thresholds: Dict[str, Optional[float]],
+            picked: Optional[Dict[int, int]] = None) -> List[Dict[str, Any]]:
+    """The CTF and drift of these rows of the followed output, and the thresholds each goes past. With the
+    coordinates picked per micrograph, the micrographs already picked carry theirs."""
     drifts = _movieDrifts(mapper, chain.get("alignedMovies"), [int(row["scipionItemId"]) for row in rows])
     isCtf = base["stage"] == "ctf"
     builder = _ctfRowBuilder()
@@ -529,34 +585,238 @@ def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
             except (TypeError, ValueError):
                 drift = None
         point.update(drift or {})
+        if picked is not None and itemId in picked:
+            point["particles"] = picked[itemId]
         point["alerts"] = alertsOf(point, thresholds)
         points.append({key: value for key, value in point.items() if value is not None})
+    return points
+
+
+def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int], afterRowId: Optional[int],
+            thresholds: Dict[str, Optional[float]]) -> Dict[str, Any]:
+    """The points of the CTF output; before there is one, of the micrographs, with their drift only."""
+    base = chain.get("ctf") or chain.get("micrographs")
+    if base is None:
+        return {"setId": None, "kind": None, "reset": afterSetId is not None, "lastRowId": None, "more": False,
+                "points": []}
+    reset = afterSetId != base["setId"]
+    if not reset and afterRowId is not None:
+        first = (mapper.db.fetchOne(FIRST_ROW_SQL, (base["setId"],)) or {}).get("firstRowId")
+        reset = first is not None and int(first) > int(afterRowId)
+    after = 0 if reset or afterRowId is None else int(afterRowId)
+    rows = mapper.db.fetchAll(SERIES_ITEMS_SQL, (base["setId"], after, SERIES_BATCH)) or []
     return {
         "setId": base["setId"],
         "kind": base["stage"],
         "reset": bool(reset and afterSetId is not None),
         "lastRowId": int(rows[-1]["rowId"]) if rows else (None if reset else afterRowId),
         "more": len(rows) >= SERIES_BATCH,
-        "points": points,
+        "points": _points(mapper, chain, base, rows, thresholds),
     }
+
+
+def alertRuns(points: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Runs of consecutive micrographs (by id) past the same threshold, oldest first, as the monitor page
+    shows them: failed estimations neither start nor end a run."""
+    runs: List[Dict[str, Any]] = []
+    current: Dict[str, Dict[str, Any]] = {}
+    for point in sorted(points, key=lambda item: item["id"]):
+        if point.get("failed"):
+            continue
+        kinds = set(point.get("alerts") or [])
+        for kind in [kind for kind in current if kind not in kinds]:
+            current.pop(kind)["ongoing"] = False
+        for kind in sorted(kinds):
+            run = current.get(kind)
+            if run is None:
+                run = {"kind": kind, "first": point, "last": point, "count": 0, "ongoing": True}
+                current[kind] = run
+                runs.append(run)
+            run["last"] = point
+            run["count"] += 1
+    return runs
 
 
 def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, afterSetId: Optional[int] = None,
                      afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
-                     now: Optional[datetime] = None) -> Dict[str, Any]:
+                     now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
+                     afterPickRowId: Optional[int] = None) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
     chain = _chain(outputs, _inputsOf(mapper, projectId), ctfSetId)
-    rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain], now)
+    rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"],
+                   now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
+    # Counted once per poll: the stages and the counts sent come from the same chunk
+    micCounts = {stage: countByMicrograph(mapper, chain[stage]["setId"])
+                 for stage in ("coordinates", "particles") if stage in chain}
+    picking = _picking(chain, micCounts, afterPickSetId, afterPickRowId)
+    classes = _classes(mapper, chain)
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
-        "stages": _stages(chain, rates),
+        "stages": _stages(chain, rates, micCounts, classes),
         "ctfOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
                         "outputName": output["outputName"]}
                        for output in sorted((o for o in outputs if o["stage"] == "ctf"), key=lambda o: o["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
+        "picking": picking,
+        "classes": classes,
     }
+
+
+# -- coordinates and particles per micrograph --------------------------------------
+#
+# Coordinates and particles come many per micrograph, and a long session has millions: grouping a whole Set
+# by micrograph on every poll is out of the question (its values have no index). Each process keeps a count
+# per micrograph of every followed Set and adds to it the rows written since the last poll, through the row
+# id; after a restart it counts again in chunks, one per poll. A Set rebuilt with new rows (its first row is
+# above the ones counted) is counted from the start.
+
+MIC_COUNT_CHUNK = 50000
+
+MIC_COUNTS_SQL = """
+    SELECT chunk.mic, COUNT(*) AS n, MAX(chunk.id) AS "lastRowId"
+      FROM (SELECT id, COALESCE("values" ->> '_micId', "values" ->> '_coordinate._micId') AS mic
+              FROM scipion_set_items
+             WHERE "setId" = %s AND id > %s
+             ORDER BY id
+             LIMIT %s) chunk
+     GROUP BY chunk.mic
+"""
+
+_micCounts: Dict[int, Dict[str, Any]] = {}
+_micCountsLock = threading.Lock()
+
+
+def countByMicrograph(mapper, setId: int) -> Dict[str, Any]:
+    """How many items of the Set each micrograph has, as far as counted: ``counts`` (micrograph id ->
+    items), ``changed`` (micrograph id -> the last row that added to it), ``lastRowId`` and ``complete``."""
+    with _micCountsLock:
+        state = _micCounts.get(int(setId))
+        if state is not None and state["lastRowId"]:
+            first = (mapper.db.fetchOne(FIRST_ROW_SQL, (int(setId),)) or {}).get("firstRowId")
+            if first is not None and int(first) > state["lastRowId"]:
+                state = None
+        if state is None:
+            state = {"lastRowId": 0, "counts": {}, "changed": {}, "complete": False}
+            _micCounts[int(setId)] = state
+        rows = mapper.db.fetchAll(MIC_COUNTS_SQL, (int(setId), state["lastRowId"], MIC_COUNT_CHUNK)) or []
+        read = 0
+        for row in rows:
+            count = int(row.get("n") or 0)
+            read += count
+            lastRowId = int(row.get("lastRowId") or 0)
+            state["lastRowId"] = max(state["lastRowId"], lastRowId)
+            micId = _toInt(row.get("mic"))
+            if micId is None:
+                continue
+            state["counts"][micId] = state["counts"].get(micId, 0) + count
+            state["changed"][micId] = max(state["changed"].get(micId, 0), lastRowId)
+        state["complete"] = read < MIC_COUNT_CHUNK
+        return state
+
+
+def _picking(chain: Dict[str, Dict[str, Any]], micCounts: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
+             afterRowId: Optional[int]) -> Dict[str, Any]:
+    """The coordinates of each micrograph that changed since the caller's cursor (all of them on a first
+    call, or when the coordinates output is another one)."""
+    coordinates = chain.get("coordinates")
+    if coordinates is None:
+        return {"setId": None, "reset": afterSetId is not None, "lastRowId": None, "complete": True, "counts": {}}
+    state = micCounts["coordinates"]
+    reset = afterSetId != coordinates["setId"] or afterRowId is None or int(afterRowId) > state["lastRowId"]
+    after = 0 if reset else int(afterRowId)
+    return {
+        "setId": coordinates["setId"],
+        "reset": bool(reset and afterSetId is not None),
+        "lastRowId": state["lastRowId"],
+        "complete": state["complete"],
+        "counts": {str(micId): state["counts"][micId] for micId, row in state["changed"].items() if row > after},
+    }
+
+
+# -- alerts for the notification bell ---------------------------------------------
+
+ALERT_WINDOW = 300
+ALERT_CACHE_SECONDS = 10.0
+
+THRESHOLD_TEXT = {
+    "minDefocus": "Defocus below %s Å",
+    "maxDefocus": "Defocus above %s Å",
+    "maxAstigmatism": "Astigmatism above %s Å",
+    "maxResolution": "CTF resolution worse than %s Å",
+    "maxFrameShift": "Frame shift above %s Å",
+    "maxTotalDrift": "Total drift above %s Å",
+    "minParticles": "Fewer than %s particles picked",
+}
+
+LATEST_ROWS_SQL = """
+    SELECT id AS "rowId", "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
+      FROM scipion_set_items
+     WHERE "setId" = %s
+     ORDER BY id DESC
+     LIMIT %s
+"""
+
+# projectId -> (when it was computed, its alert runs): every open tab polls the bell, the work is done once
+_alertCache: Dict[int, tuple] = {}
+
+
+def _limitText(kind: str, thresholds: Dict[str, Optional[float]]) -> str:
+    value = thresholds.get(kind)
+    shown = "%g" % value if value is not None else "?"
+    return THRESHOLD_TEXT.get(kind, kind) % shown
+
+
+def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
+    """The alert runs among the newest micrographs of the project's followed stream, as the bell tells them.
+
+    A run whose first micrograph is the oldest one looked at may have started before: it is left out, so a
+    long run is not announced again as it slides out of the window.
+    """
+    cached = _alertCache.get(int(projectId))
+    if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
+        return cached[1]
+    chain = _chain(_outputs(mapper, projectId), _inputsOf(mapper, projectId), None)
+    base = chain.get("ctf") or chain.get("micrographs")
+    runs: List[Dict[str, Any]] = []
+    if base is not None:
+        rows = list(reversed(mapper.db.fetchAll(LATEST_ROWS_SQL, (base["setId"], ALERT_WINDOW)) or []))
+        thresholds = thresholdsWith(storedThresholds(mapper, projectId))
+        picked = countByMicrograph(mapper, chain["coordinates"]["setId"])["counts"] if "coordinates" in chain \
+            else None
+        points = _points(mapper, chain, base, rows, thresholds, picked)
+        oldest = min((point["id"] for point in points), default=None)
+        for run in alertRuns(points):
+            if len(rows) >= ALERT_WINDOW and run["first"]["id"] == oldest:
+                continue
+            runs.append({
+                "kind": run["kind"],
+                "text": _limitText(run["kind"], thresholds),
+                "startedAt": run["first"].get("time"),
+                "micrographName": run["first"].get("micrographName") or "Micrograph %s" % run["first"]["id"],
+                "count": run["count"],
+                "ongoing": run["ongoing"],
+                "protocolId": base["protocolId"],
+                "protocolClassName": base["protocolClassName"],
+            })
+    _alertCache[int(projectId)] = (time.monotonic(), runs)
+    return runs
+
+
+def alertsSince(mapper, projectId: int, since: datetime) -> List[Dict[str, Any]]:
+    """The alert runs of a project that started after ``since``."""
+    events = []
+    for run in projectAlertRuns(mapper, projectId):
+        try:
+            started = datetime.fromisoformat(str(run["startedAt"]))
+        except (TypeError, ValueError):
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if started > since:
+            events.append(run)
+    return events

@@ -947,6 +947,12 @@ def test_RenderMetadataImageCellCachedServiceCachesAndSupportsIfNoneMatch(servic
     service.renderMetadataImageCellCachedService(**{**callKwargs, "rowId": 2})
     assert len(innerCalls) == 2
 
+    # A streaming protocol rewrote the file: another version is another image, also for the browser.
+    versioned = service.renderMetadataImageCellCachedService(**callKwargs, version="2026-10-22T10:00:00")
+    assert len(innerCalls) == 3 and versioned.headers["ETag"] != etag
+    service.renderMetadataImageCellCachedService(**callKwargs, version="2026-10-22T10:00:00")
+    assert len(innerCalls) == 3
+
 
 def _fakeMetadataImageResponse(rowId, rowIndex, columnName):
     from fastapi.responses import Response

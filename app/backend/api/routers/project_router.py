@@ -4620,6 +4620,11 @@ def renderMetadataImageCell(
     volumeView: Literal["surface", "projection", "slice"] = Query(
         "surface", description="How 3D class representatives and volumes are drawn."
     ),
+    version: Optional[str] = Query(
+        None,
+        description="What the caller knows of the image file (e.g. when its Set was updated): a streaming "
+                    "protocol rewrites its class averages in place, and another version is another image.",
+    ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -4651,6 +4656,7 @@ def renderMetadataImageCell(
         protocolIdIsScipionId=True,
         # Preserve legacy calls for Original; Enhanced is opt-in.
         **({"contrastMode": contrastMode, "volumeView": volumeView} if contrastMode != "original" else {}),
+        **({"version": version} if version is not None else {}),
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -5209,6 +5215,8 @@ def getProjectStreamingMonitor(
     ctfSetId: Optional[int] = Query(None, description="The CTF output to follow; the newest one by default."),
     afterSetId: Optional[int] = Query(None, description="The CTF output of the points the caller has."),
     afterRowId: Optional[int] = Query(None, description="The cursor of the last answer: what the caller has."),
+    afterPickSetId: Optional[int] = Query(None, description="The coordinates output of the counts the caller has."),
+    afterPickRowId: Optional[int] = Query(None, description="The picking cursor of the last answer."),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -5218,7 +5226,8 @@ def getProjectStreamingMonitor(
     if not service.getProjectDbRow(mapper, projectId, currentUser):
         raise HTTPException(status_code=404, detail="Project not found")
     payload = streaming_monitor.streamingMonitor(mapper, projectId, ctfSetId=ctfSetId, afterSetId=afterSetId,
-                                                 afterRowId=afterRowId)
+                                                 afterRowId=afterRowId, afterPickSetId=afterPickSetId,
+                                                 afterPickRowId=afterPickRowId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
