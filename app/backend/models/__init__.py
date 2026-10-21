@@ -29,6 +29,7 @@ from app.backend.models.protocol_model import Protocol  # noqa: F401
 from app.backend.models.settings_models import *  # noqa: F401
 from app.backend.models.protocol_step_model import ProtocolStep  # noqa: F401
 from app.backend.models.protocol_launch_model import ProtocolLaunch  # noqa: F401
+from app.backend.models.project_monitor_settings_model import ProjectMonitorSettings  # noqa: F401
 from app.backend.models.system_task_model import SystemTask  # noqa: F401
 from app.backend.models.tomogram_review_model import (  # noqa: F401
     TomogramReview,

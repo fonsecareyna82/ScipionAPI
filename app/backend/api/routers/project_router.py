@@ -5200,6 +5200,54 @@ def getProjectOverview(
 
 
 @router.get(
+    "/{projectId}/monitor",
+    response_model=Any,
+    summary="The streaming chain of a project: its stages, their rates and the CTF and drift of what comes out",
+)
+def getProjectStreamingMonitor(
+    projectId: int,
+    ctfSetId: Optional[int] = Query(None, description="The CTF output to follow; the newest one by default."),
+    afterSetId: Optional[int] = Query(None, description="The CTF output of the points the caller has."),
+    afterItemId: Optional[int] = Query(None, description="The last point the caller has."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import streaming_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = streaming_monitor.streamingMonitor(mapper, projectId, ctfSetId=ctfSetId, afterSetId=afterSetId,
+                                                 afterItemId=afterItemId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.put(
+    "/{projectId}/monitor/thresholds",
+    response_model=Any,
+    summary="Change the streaming monitor thresholds of a project; a null threshold raises no alert",
+)
+def saveProjectMonitorThresholds(
+    projectId: int,
+    thresholds: Dict[str, Any] = Body(..., description="Threshold name -> value in A, or null."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import streaming_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        saved = streaming_monitor.saveThresholds(mapper, projectId, (currentUser or {}).get("id"), thresholds)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except streaming_monitor.ThresholdsNotKept as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    return {"thresholds": saved}
+
+
+@router.get(
     "/{projectId}/disk-usage",
     response_model=Any,
     summary="Disk usage of the project's protocols, counted in the background",
