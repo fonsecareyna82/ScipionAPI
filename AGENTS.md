@@ -40,7 +40,7 @@ code must install from `pyproject.toml`, not maintain a second dependency list.
 
 ## Testing
 
-- CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12, `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.
+- CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12 (3.8 and 3.9 on ubuntu-24.04: setup-python has no builds of them for later Ubuntu), `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.
 - Run locally: needs real Postgres + Valkey (see `scipionapi_cli/provision.py`/`db.py` for setup), then `pip install -e ".[test]" && pytest`.
 - `pytest-asyncio` is part of the test extra; keep it compatible with Python 3.8–3.12 so marked async tests execute throughout the CI matrix.
 - The thumbnail route tests call their coroutines with `asyncio.run()` from ordinary tests, so those checks also execute when async plugin loading is disabled.
