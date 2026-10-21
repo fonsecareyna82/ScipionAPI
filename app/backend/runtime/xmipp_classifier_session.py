@@ -37,8 +37,12 @@ class ClassifierError(RuntimeError):
 
 def javaCommand() -> Tuple[List[str], Dict[str, str]]:
     """Command and environment to run the runner, as Scipion runs Xmipp's Java."""
-    from pwem.viewers.showj import getJavaBin, getJavaIJappArguments
-    import xmipp3
+    try:
+        from pwem.viewers.showj import getJavaBin, getJavaIJappArguments
+        import xmipp3
+    except ImportError as error:
+        # Without Xmipp there is no classifier: callers fall back as for any classifier failure.
+        raise ClassifierError("The Xmipp plugin is not installed: %s" % error) from error
 
     arguments = shlex.split(getJavaIJappArguments(None, "XmippPickerSession", ""))
     # getJavaIJappArguments ends with the application name; ours is a source file.

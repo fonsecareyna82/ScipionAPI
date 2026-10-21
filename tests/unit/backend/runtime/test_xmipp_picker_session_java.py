@@ -51,3 +51,12 @@ def test_particles_picked_off_their_centre_are_centered_on_the_templates(javaSes
     # A particle joins the templates; a box out of the micrograph is ignored.
     assert session.addToTemplates(48, 1, templates, micrograph, *centres[0]) == 1
     assert session.center(48, 1, templates, micrograph, 3, 3) == (3, 3)
+
+
+def test_without_xmipp_the_classifier_fails_as_a_classifier_error(monkeypatch):
+    import sys
+    from app.backend.runtime import xmipp_classifier_session as classifiers
+    monkeypatch.setitem(sys.modules, "xmipp3", None)  # An import of xmipp3 now fails, as without the plugin.
+
+    with pytest.raises(classifiers.ClassifierError, match="Xmipp plugin is not installed"):
+        classifiers.javaCommand()
