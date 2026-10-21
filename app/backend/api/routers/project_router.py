@@ -5213,6 +5213,8 @@ def getProjectOverview(
 def getProjectStreamingMonitor(
     projectId: int,
     ctfSetId: Optional[int] = Query(None, description="The CTF output to follow; the newest one by default."),
+    coordinatesSetId: Optional[int] = Query(
+        None, description="The picking to follow; by default the one that goes furthest (to 2D classes)."),
     afterSetId: Optional[int] = Query(None, description="The CTF output of the points the caller has."),
     afterRowId: Optional[int] = Query(None, description="The cursor of the last answer: what the caller has."),
     afterPickSetId: Optional[int] = Query(None, description="The coordinates output of the counts the caller has."),
@@ -5227,7 +5229,7 @@ def getProjectStreamingMonitor(
         raise HTTPException(status_code=404, detail="Project not found")
     payload = streaming_monitor.streamingMonitor(mapper, projectId, ctfSetId=ctfSetId, afterSetId=afterSetId,
                                                  afterRowId=afterRowId, afterPickSetId=afterPickSetId,
-                                                 afterPickRowId=afterPickRowId)
+                                                 afterPickRowId=afterPickRowId, coordinatesSetId=coordinatesSetId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

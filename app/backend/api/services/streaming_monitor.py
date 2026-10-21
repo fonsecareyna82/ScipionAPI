@@ -65,6 +65,15 @@ INPUT_REFS_SQL = """
      WHERE "projectId" = %s AND "parentProtocolId" IS NOT NULL
 """
 
+# The protocol graph's edges: a fallback for a protocol whose input refs miss a parent it depends on.
+DEPENDENCIES_SQL = """
+    SELECT parent."protocolId" AS "parentProtocolId", child."protocolId" AS "protocolId"
+      FROM protocol_dependencies d
+      JOIN protocols parent ON parent.id = d."parentProtocolDbId" AND parent."projectId" = d."projectId"
+      JOIN protocols child ON child.id = d."childProtocolDbId" AND child."projectId" = d."projectId"
+     WHERE d."projectId" = %s
+"""
+
 # Items of each Set created in the last window and in the one before. Only the newest items of each Set are
 # looked at (through its (setId, scipionItemId) index), so a poll costs the same at the start of a session
 # and after a million particles.
@@ -207,12 +216,29 @@ def _outputs(mapper, projectId: int) -> List[Dict[str, Any]]:
     return outputs
 
 
-def _inputsOf(mapper, projectId: int) -> Dict[str, List[tuple]]:
-    """protocolId -> the (protocolId, outputName) it reads."""
+def _inputsOf(mapper, projectId: int, outputs: Sequence[Dict[str, Any]] = ()) -> Dict[str, List[tuple]]:
+    """protocolId -> the (protocolId, outputName) it reads.
+
+    A protocol the graph says depends on another, with no input ref to it, reads every output of that one:
+    without it the stream would stop there (refs are missing, for instance, for runs older than them)."""
     inputs: Dict[str, List[tuple]] = {}
     for row in mapper.db.fetchAll(INPUT_REFS_SQL, (int(projectId),)) or []:
         inputs.setdefault(str(row["protocolId"]), []).append(
             (str(row["parentProtocolId"]), str(row.get("parentOutputName") or "")))
+    if outputs:
+        outputNames: Dict[str, List[str]] = {}
+        for output in outputs:
+            outputNames.setdefault(output["protocolId"], []).append(output["outputName"])
+        try:
+            edges = mapper.db.fetchAll(DEPENDENCIES_SQL, (int(projectId),)) or []
+        except Exception:
+            logger.warning("The protocol dependencies of project %s could not be read", projectId, exc_info=True)
+            edges = []
+        for row in edges:
+            child, parent = str(row["protocolId"]), str(row["parentProtocolId"])
+            refs = inputs.setdefault(child, [])
+            if not any(ref[0] == parent for ref in refs):
+                refs.extend((parent, name) for name in outputNames.get(parent, []))
     return inputs
 
 
@@ -224,19 +250,85 @@ def _newest(outputs: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
                                                output["setId"]))
 
 
+def _downstream(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]], sources: List[Dict[str, Any]],
+                target: str, through: Sequence[str]) -> List[tuple]:
+    """Every ``target`` output made from these sources, directly or through any outputs of the ``through``
+    stages in between (a CTF consensus or a shift filter between micrographs and picking, a particle screening
+    between extraction and classification), with how many steps away it is."""
+    reached = {(output["protocolId"], output["outputName"]) for output in sources}
+    level = list(reached)
+    found: List[tuple] = []
+    steps = 0
+    while level:
+        steps += 1
+        readersOf = [candidate for candidate in outputs
+                     if any(ref in level for ref in inputs.get(candidate["protocolId"], []))]
+        found += [(candidate, steps) for candidate in readersOf if candidate["stage"] == target]
+        level = [(candidate["protocolId"], candidate["outputName"]) for candidate in readersOf
+                 if candidate["stage"] in through
+                 and (candidate["protocolId"], candidate["outputName"]) not in reached]
+        reached.update(level)
+    return found
+
+
+def _nearest(found: List[tuple]) -> Optional[Dict[str, Any]]:
+    if not found:
+        return None
+    nearest = min(steps for _, steps in found)
+    return _newest(output for output, steps in found if steps == nearest)
+
+
+def _readInput(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]], output: Dict[str, Any],
+               stage: str) -> Optional[Dict[str, Any]]:
+    """The ``stage`` output the protocol of ``output`` reads."""
+    byKey = {(candidate["protocolId"], candidate["outputName"]): candidate for candidate in outputs}
+    read = [byKey[ref] for ref in inputs.get(output["protocolId"], []) if ref in byKey and byKey[ref]["stage"] == stage]
+    return _newest(read)
+
+
+def _pickings(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+              sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Every picking of the project, with what follows it: its extraction (the nearest particles made from its
+    coordinates, through any coordinates filter or picking consensus) and the 2D classes made from those
+    particles, through any particle filter or preprocessing. ``steps`` is how far it is from the followed CTF
+    and micrographs; None when it is made from another branch."""
+    fromStream: Dict[int, int] = {}
+    for coordinates, steps in _downstream(outputs, inputs, sources, "coordinates", ("micrographs", "ctf", "coordinates")):
+        fromStream[coordinates["setId"]] = min(steps, fromStream.get(coordinates["setId"], steps))
+    pickings = []
+    for coordinates in (output for output in outputs if output["stage"] == "coordinates"):
+        particles = _nearest(_downstream(outputs, inputs, [coordinates], "particles", ("coordinates",)))
+        classes = _nearest(_downstream(outputs, inputs, [particles], "classes2d", ("particles",))) \
+            if particles is not None else None
+        pickings.append({"coordinates": coordinates, "steps": fromStream.get(coordinates["setId"]),
+                         "particles": particles, "classes2d": classes})
+    return pickings
+
+
+def _followedPicking(pickings: List[Dict[str, Any]], coordinatesSetId: Optional[int]) -> Optional[Dict[str, Any]]:
+    """The picking asked for; else the one that goes furthest (to 2D classes, then to particles), then the
+    nearest, then the newest."""
+    asked = next((picking for picking in pickings if picking["coordinates"]["setId"] == coordinatesSetId), None)
+    if asked is not None or not pickings:
+        return asked
+
+    def rank(picking):
+        updatedAt = picking["coordinates"]["_updatedAt"]
+        steps = picking["steps"]
+        return (picking["classes2d"] is not None, picking["particles"] is not None, steps is not None,
+                -(steps or 0), updatedAt is not None, updatedAt or 0, picking["coordinates"]["setId"])
+
+    return max(pickings, key=rank)
+
+
 def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
-           ctfSetId: Optional[int]) -> Dict[str, Dict[str, Any]]:
-    """The output of each stage of the followed stream."""
+           ctfSetId: Optional[int], coordinatesSetId: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
+    """The output of each stage of the followed stream. ``pickings`` lists the pickings it could follow."""
     byKey = {(output["protocolId"], output["outputName"]): output for output in outputs}
 
     def read(protocolId: str, stage: str) -> List[Dict[str, Any]]:
         found = [byKey.get(ref) for ref in inputs.get(protocolId, [])]
         return [output for output in found if output is not None and output["stage"] == stage]
-
-    def readers(output: Dict[str, Any], stage: str) -> List[Dict[str, Any]]:
-        key = (output["protocolId"], output["outputName"])
-        return [candidate for candidate in outputs if candidate["stage"] == stage
-                and key in inputs.get(candidate["protocolId"], [])]
 
     def source(output: Dict[str, Any], stage: str) -> tuple:
         """The ``stage`` output this one was made from, through any outputs of its own kind in between
@@ -274,15 +366,31 @@ def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
                           and output["protocolId"] == aligner)
         if aligned is not None:
             chain["alignedMovies"] = aligned
-        coordinates = _newest(readers(micrographs, "coordinates"))
-        if coordinates is not None:
+        pickings = _pickings(outputs, inputs, [output for output in (micrographs, chain.get("ctf"))
+                                               if output is not None])
+        chain["pickings"] = pickings
+        picking = _followedPicking(pickings, coordinatesSetId)
+        if picking is not None:
+            coordinates = picking["coordinates"]
             chain["coordinates"] = coordinates
-            particles = _newest(readers(coordinates, "particles"))
-            if particles is not None:
-                chain["particles"] = particles
-                classes = _newest(readers(particles, "classes2d"))
-                if classes is not None:
-                    chain["classes2d"] = classes
+            # The backlogs are counted on what each protocol reads: the micrographs a consensus kept, the
+            # particles a screening kept
+            pickedFrom = _readInput(outputs, inputs, coordinates, "micrographs")
+            if pickedFrom is not None:
+                chain["pickedFrom"] = pickedFrom
+            if picking["particles"] is not None:
+                chain["particles"] = picking["particles"]
+            if picking["classes2d"] is not None:
+                chain["classes2d"] = picking["classes2d"]
+        if "classes2d" not in chain:
+            # 2D classes no picking leads to (particles imported, or from where the graph does not tell)
+            classes = _newest(output for output in outputs if output["stage"] == "classes2d")
+            if classes is not None:
+                chain["classes2d"] = classes
+        if "classes2d" in chain:
+            classifiedFrom = _readInput(outputs, inputs, chain["classes2d"], "particles")
+            if classifiedFrom is not None:
+                chain["classifiedFrom"] = classifiedFrom
     else:
         # Nothing aligned yet: the movies as they arrive, from an import rather than from an alignment
         movies = [output for output in outputs if output["stage"] == "movies"]
@@ -342,15 +450,26 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
             entry.update({"perMinute": None, "trend": None})
             classified = (classes or {}).get("particles")
             entry["particles"] = classified
-            if classified is not None and previous is not None and previous["stage"] == "particles":
-                entry["behind"] = max(0, previous["items"] - classified)
+            source = chain.get("classifiedFrom") or (previous if previous is not None
+                                                     and previous["stage"] == "particles" else None)
+            if source is not None and source is not previous:
+                entry["classifiedFrom"] = {"protocolId": source["protocolId"], "label": source["label"],
+                                           "outputName": source["outputName"], "items": source["items"]}
+            if classified is not None and source is not None:
+                entry["behind"] = max(0, source["items"] - classified)
         elif stage in ("micrographs", "ctf") and previous is not None:
             entry["behind"] = max(0, previous["items"] - output["items"])
         elif counted is not None:
             entry["micrographs"] = len(counted["counts"])
             entry["counting"] = not counted["complete"]
-            if previousMicrographs is not None and counted["complete"]:
-                entry["behind"] = max(0, previousMicrographs - len(counted["counts"]))
+            # Picking waits on the micrographs it reads (those a consensus kept, if it reads them)
+            source = chain.get("pickedFrom") if stage == "coordinates" else None
+            if source is not None:
+                entry["pickedFrom"] = {"protocolId": source["protocolId"], "label": source["label"],
+                                       "outputName": source["outputName"], "items": source["items"]}
+            waitingOn = source["items"] if source is not None else previousMicrographs
+            if waitingOn is not None and counted["complete"]:
+                entry["behind"] = max(0, waitingOn - len(counted["counts"]))
         stages.append(entry)
         previous = output
         if stage in ("micrographs", "ctf"):
@@ -640,11 +759,11 @@ def alertRuns(points: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, afterSetId: Optional[int] = None,
                      afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
-                     afterPickRowId: Optional[int] = None) -> Dict[str, Any]:
+                     afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
-    chain = _chain(outputs, _inputsOf(mapper, projectId), ctfSetId)
+    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), ctfSetId, coordinatesSetId)
     rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"],
                    now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
@@ -660,6 +779,12 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
         "ctfOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
                         "outputName": output["outputName"]}
                        for output in sorted((o for o in outputs if o["stage"] == "ctf"), key=lambda o: o["setId"])],
+        "coordinatesOutputs": [{"setId": picking["coordinates"]["setId"],
+                                "protocolId": picking["coordinates"]["protocolId"],
+                                "label": picking["coordinates"]["label"],
+                                "outputName": picking["coordinates"]["outputName"]}
+                               for picking in sorted(chain.get("pickings", []),
+                                                     key=lambda item: item["coordinates"]["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
         "picking": picking,
@@ -780,7 +905,8 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
     cached = _alertCache.get(int(projectId))
     if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
         return cached[1]
-    chain = _chain(_outputs(mapper, projectId), _inputsOf(mapper, projectId), None)
+    outputs = _outputs(mapper, projectId)
+    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), None)
     base = chain.get("ctf") or chain.get("micrographs")
     runs: List[Dict[str, Any]] = []
     if base is not None:

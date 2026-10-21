@@ -41,11 +41,14 @@ def ctfItem(itemId, defocusU=20000.0, defocusV=19500.0, resolution=4.0, minutes=
 class Db:
     """Answers each monitor query with its rows; the series rows are filtered as the query would."""
 
-    def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=()):
+    def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=(),
+                 dependencies=()):
         self.outputs, self.refs, self.rates = list(outputs), list(refs), list(rates)
         # Rows of the coordinates and particles Sets: (setId, rowId, micrograph id)
         self.picks = list(picks)
         self.classes = list(classes)
+        # Graph edges (child protocolId, parent protocolId)
+        self.dependencies = list(dependencies)
         self.items, self.movies = list(items), list(movies)
         self.settings = settings
         self.calls = []
@@ -71,6 +74,8 @@ class Db:
             return self.outputs
         if query == monitor.INPUT_REFS_SQL:
             return self.refs
+        if query == monitor.DEPENDENCIES_SQL:
+            return [{"protocolId": child, "parentProtocolId": parent} for child, parent in self.dependencies]
         if query == monitor.SET_RATES_SQL:
             return [row for row in self.rates if row["setId"] in params[3]]
         if query == monitor.SERIES_ITEMS_SQL:
@@ -123,8 +128,8 @@ def test_the_chain_follows_what_the_ctf_read():
         ("movies", 10), ("micrographs", 20), ("ctf", 30), ("coordinates", 40), ("particles", 50)]
     assert payload["streaming"] is True
     behind = {stage["stage"]: stage["behind"] for stage in payload["stages"]}
-    # Nothing picked yet: every micrograph with a CTF waits for picking
-    assert behind == {"movies": None, "micrographs": 10, "ctf": 10, "coordinates": 80, "particles": 0}
+    # Nothing picked yet: every micrograph the picker reads (the 90 aligned) waits for picking
+    assert behind == {"movies": None, "micrographs": 10, "ctf": 10, "coordinates": 90, "particles": 0}
 
 
 def test_the_newest_ctf_is_followed_unless_another_is_asked_for():
@@ -465,11 +470,11 @@ def test_the_coordinates_of_each_micrograph_are_counted_and_only_the_changes_sen
 
 
 def test_the_backlog_of_picking_and_extraction_is_in_micrographs():
-    """80 CTFs; 3 micrographs picked; 2 of them extracted."""
+    """The picker reads the 90 aligned micrographs; 3 picked; 2 of them extracted."""
     db = preprocessing(picks=picks(40, [(1, 3), (2, 2), (3, 1)]) + picks(50, [(1, 3), (2, 2)], firstRow=100))
     stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
 
-    assert (stages["coordinates"]["micrographs"], stages["coordinates"]["behind"]) == (3, 77)
+    assert (stages["coordinates"]["micrographs"], stages["coordinates"]["behind"]) == (3, 87)
     assert (stages["particles"]["micrographs"], stages["particles"]["behind"]) == (2, 1)
     assert stages["coordinates"]["counting"] is False
 
@@ -530,3 +535,146 @@ def test_a_stream_without_2d_classes_has_none():
     payload = monitor.streamingMonitor(Mapper(preprocessing()), 7, now=NOW)
 
     assert payload["classes"] is None and all(s["stage"] != "classes2d" for s in payload["stages"])
+
+
+def consensusPicking(db):
+    """A CTF consensus (6) reads the CTF (3) and keeps 60 micrographs; the picker (4) reads those."""
+    db.outputs += [output(61, "6", "outputMicrographs", "SetOfMicrographs", 60),
+                   output(62, "6", "outputCTF", "SetOfCTF", 60)]
+    db.refs = [r for r in db.refs if r["protocolId"] != "4"] + [
+        ref("6", "3", "outputCTF"), ref("4", "6", "outputMicrographs")]
+    return db
+
+
+def test_a_picker_reading_the_micrographs_a_consensus_kept_is_followed():
+    db = consensusPicking(preprocessing(picks=picks(40, [(1, 3), (2, 2)])))
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert stages["coordinates"]["setId"] == 40 and stages["particles"]["setId"] == 50
+    # It waits on the 60 micrographs the consensus kept, not on the 80 with a CTF
+    assert stages["coordinates"]["behind"] == 58
+    assert stages["coordinates"]["pickedFrom"] == {"protocolId": "6", "label": "run 6",
+                                                   "outputName": "outputMicrographs", "items": 60}
+
+
+def test_the_picker_is_found_through_as_many_filters_as_there_are():
+    """CTF (3) -> consensus (6) -> max shift filter (8) -> picker (4)."""
+    db = consensusPicking(preprocessing())
+    db.outputs.append(output(81, "8", "outputMicrographs", "SetOfMicrographs", 55))
+    db.refs = [r for r in db.refs if r["protocolId"] != "4"] + [ref("8", "6", "outputMicrographs"),
+                                                                ref("4", "8", "outputMicrographs")]
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert stages["coordinates"]["setId"] == 40 and stages["coordinates"]["pickedFrom"]["items"] == 55
+
+
+def test_a_picker_reading_the_chain_micrographs_still_waits_on_them():
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(preprocessing()), 7, now=NOW)["stages"]}
+
+    assert stages["coordinates"]["pickedFrom"]["outputName"] == "outputMicrographsDoseWeighted"
+    assert stages["coordinates"]["behind"] == 90
+
+
+def twoPickings(db):
+    """A second picker (14) reads the same micrographs and is newer, but nothing is extracted from it."""
+    db.outputs.append(output(41, "14", "outputCoordinates", "SetOfCoordinates", 9000,
+                             updatedAt=NOW + timedelta(minutes=5)))
+    db.refs.append(ref("14", "2", "outputMicrographsDoseWeighted"))
+    return db
+
+
+def test_of_several_pickings_the_one_that_goes_furthest_is_followed_unless_another_is_asked_for():
+    db = twoPickings(preprocessing())
+
+    default = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+    asked = monitor.streamingMonitor(Mapper(db), 7, coordinatesSetId=41, now=NOW)
+
+    assert next(s for s in default["stages"] if s["stage"] == "coordinates")["setId"] == 40
+    assert [o["setId"] for o in default["coordinatesOutputs"]] == [40, 41]
+    assert [s["stage"] for s in asked["stages"]][-1] == "coordinates", "Nothing was extracted from picking 41"
+    assert next(s for s in asked["stages"] if s["stage"] == "coordinates")["setId"] == 41
+
+
+def test_2d_classes_behind_a_particle_screening_are_found_and_wait_on_what_it_kept():
+    """Extraction (5) -> screening (11, keeps 4000 of 4800) -> alignPCA-2D (9)."""
+    db = preprocessing()
+    db.outputs += [output(110, "11", "outputParticles", "SetOfParticles", 4000),
+                   output(90, "9", "outputClasses", "SetOfClasses2D", 2)]
+    db.refs += [ref("11", "5", "outputParticles"), ref("9", "11", "outputParticles")]
+    db.classes = [{"classId": 1, "enabled": True, "particles": 3500}]
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert stages["particles"]["setId"] == 50 and stages["classes2d"]["setId"] == 90
+    assert stages["classes2d"]["behind"] == 500
+    assert stages["classes2d"]["classifiedFrom"]["items"] == 4000
+
+
+def test_a_picking_with_2d_classes_wins_over_a_nearer_one_without():
+    """Picker 14 reads the motioncor micrographs (nearer); the classified one (4) reads a consensus."""
+    db = consensusPicking(classified(twoPickings(preprocessing()), [(1, 100)]))
+
+    stage = next(s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"] if s["stage"] == "coordinates")
+
+    assert stage["setId"] == 40
+
+
+def test_a_protocol_without_input_refs_reads_the_outputs_of_the_protocols_it_depends_on():
+    """The extraction (5) has no input ref; the graph says it depends on the picking (4)."""
+    db = preprocessing()
+    db.refs = [r for r in db.refs if r["protocolId"] != "5"]
+    db.dependencies = [("5", "4")]
+
+    stages = [s["stage"] for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]]
+
+    assert stages[-2:] == ["coordinates", "particles"]
+
+
+def test_the_picking_that_leads_to_2d_classes_is_followed_even_from_another_branch():
+    """Picker 15 reads the motioncor movies' micrographs through another branch the CTF does not see, and its
+    extraction (16) feeds alignPCA-2D (9) after a preprocessing (17)."""
+    db = preprocessing()
+    db.outputs += [output(70, "15", "outputCoordinates", "SetOfCoordinates", 300),
+                   output(71, "16", "outputParticles", "SetOfParticles", 290),
+                   output(72, "17", "outputParticles", "SetOfParticles", 280),
+                   output(90, "9", "outputClasses", "SetOfClasses2D", 2)]
+    db.refs += [ref("15", "1", "outputMovies"), ref("16", "15", "outputCoordinates"),
+                ref("17", "16", "outputParticles"), ref("9", "17", "outputParticles")]
+    db.classes = [{"classId": 1, "enabled": True, "particles": 200}]
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert (stages["coordinates"]["setId"], stages["particles"]["setId"], stages["classes2d"]["setId"]) == (70, 71, 90)
+    assert stages["classes2d"]["classifiedFrom"]["items"] == 280 and stages["classes2d"]["behind"] == 80
+
+
+def test_a_picking_consensus_between_picking_and_extraction_is_followed():
+    """Picker (4) -> picking consensus (18) -> extraction (19) -> alignPCA-2D (9)."""
+    db = preprocessing()
+    db.outputs += [output(80, "18", "consensusCoordinates", "SetOfCoordinates", 3000),
+                   output(81, "19", "outputParticles", "SetOfParticles", 2900),
+                   output(90, "9", "outputClasses", "SetOfClasses2D", 1)]
+    db.refs += [ref("18", "4", "outputCoordinates"), ref("19", "18", "consensusCoordinates"),
+                ref("9", "19", "outputParticles")]
+    db.classes = [{"classId": 1, "enabled": True, "particles": 2900}]
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    # The consensus coordinates lead to the classes: they are the picking followed
+    assert (stages["coordinates"]["setId"], stages["particles"]["setId"], stages["classes2d"]["setId"]) == (80, 81, 90)
+
+
+def test_2d_classes_no_picking_leads_to_are_shown_anyway():
+    db = preprocessing()
+    db.outputs += [output(91, "20", "outputParticles", "SetOfParticles", 1000),
+                   output(90, "9", "outputClasses", "SetOfClasses2D", 1)]
+    db.refs += [ref("9", "20", "outputParticles")]
+    db.classes = [{"classId": 1, "enabled": True, "particles": 900}]
+
+    payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+
+    assert payload["classes"]["setId"] == 90
+    classes = next(s for s in payload["stages"] if s["stage"] == "classes2d")
+    assert classes["classifiedFrom"]["items"] == 1000 and classes["behind"] == 100

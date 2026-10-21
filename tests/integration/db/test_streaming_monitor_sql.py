@@ -10,7 +10,7 @@ from sqlalchemy.engine import URL
 from app.backend.api.services.workspace_service import LIVE_PROJECTS_SQL
 
 from app.backend.api.services.streaming_monitor import (FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, LATEST_ROWS_SQL,
-                                                        CLASSES_SQL, MIC_COUNTS_SQL, MOVIE_SHIFTS_SQL,
+                                                        CLASSES_SQL, DEPENDENCIES_SQL, MIC_COUNTS_SQL, MOVIE_SHIFTS_SQL,
                                                         OUTPUT_SETS_SQL, SAVE_SETTINGS_SQL, SERIES_ITEMS_SQL,
                                                         SET_RATES_SQL)
 
@@ -37,6 +37,8 @@ def connection(postgresqlMigratedEnv):
                 conn.exec_driver_sql('''CREATE TABLE scipion_set_items (id serial PRIMARY KEY, "setId" int,
                     "scipionItemId" int, enabled boolean, label text, creation timestamptz,
                     "values" jsonb, "createdAt" timestamptz NOT NULL DEFAULT NOW())''')
+                conn.exec_driver_sql('''CREATE TABLE protocol_dependencies (id serial PRIMARY KEY, "projectId" int,
+                    "parentProtocolDbId" int, "childProtocolDbId" int)''')
                 conn.exec_driver_sql('''CREATE TABLE scipion_set_tables (id serial PRIMARY KEY, "setId" int,
                     "parentItemId" int, "tableKind" text, properties jsonb)''')
                 conn.exec_driver_sql('''CREATE TABLE project_monitor_settings ("projectId" int PRIMARY KEY,
@@ -167,3 +169,14 @@ def test_classes_with_the_particles_of_each(connection):
     rows = {row["classId"]: row["particles"] for row in connection.exec_driver_sql(CLASSES_SQL, (90,)).mappings().all()}
 
     assert rows == {1: 45, 2: 7, 3: 2}
+
+
+def test_protocol_dependencies_by_scipion_protocol_id(connection):
+    connection.exec_driver_sql('''INSERT INTO protocols (id, "projectId", "protocolId", "protocolClassName", status, params)
+        VALUES (1, 7, '4', 'A', 'finished', '{}'), (2, 7, '5', 'B', 'running', '{}'), (3, 8, '9', 'C', 'running', '{}')''')
+    connection.exec_driver_sql('''INSERT INTO protocol_dependencies ("projectId", "parentProtocolDbId", "childProtocolDbId")
+        VALUES (7, 1, 2), (8, 3, 3)''')
+
+    rows = [dict(row) for row in connection.exec_driver_sql(DEPENDENCIES_SQL, (7,)).mappings().all()]
+
+    assert rows == [{"parentProtocolId": "4", "protocolId": "5"}]
