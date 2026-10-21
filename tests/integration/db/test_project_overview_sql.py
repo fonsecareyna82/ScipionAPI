@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-from app.backend.api.services.project_overview import PROJECT_RUNS_SQL
-from app.backend.api.services.protocol_history import INSERT_LAUNCH_SQL, LIST_LAUNCHES_SQL
+from app.backend.mapper.project_overview_mapper import PROJECT_RUNS_SQL
+from app.backend.mapper.protocol_launch_mapper import INSERT_LAUNCH_SQL, LIST_LAUNCHES_SQL
 
 
 @pytest.fixture

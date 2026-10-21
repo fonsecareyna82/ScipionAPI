@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.backend.api.services import streaming_monitor as monitor
+from app.backend.mapper import streaming_monitor_mapper as queries
 
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
 
@@ -56,11 +57,11 @@ class Db:
         self.shiftsSetIds = []
 
     def fetchOne(self, query, params):
-        if query == monitor.FIRST_ROW_SQL:
+        if query == queries.FIRST_ROW_SQL:
             rows = [rowId for setId, rowId, _ in self.picks if setId == params[0]] if any(
                 setId == params[0] for setId, _, _ in self.picks) else [item["rowId"] for item in self.items]
             return {"firstRowId": min(rows, default=None)}
-        assert query == monitor.GET_SETTINGS_SQL
+        assert query == queries.GET_SETTINGS_SQL
         if isinstance(self.settings, Exception):
             raise self.settings
         return {"settings": self.settings} if self.settings is not None else None
@@ -70,18 +71,18 @@ class Db:
 
     def fetchAll(self, query, params):
         self.calls.append((query, params))
-        if query == monitor.OUTPUT_SETS_SQL:
+        if query == queries.OUTPUT_SETS_SQL:
             return self.outputs
-        if query == monitor.INPUT_REFS_SQL:
+        if query == queries.INPUT_REFS_SQL:
             return self.refs
-        if query == monitor.DEPENDENCIES_SQL:
+        if query == queries.DEPENDENCIES_SQL:
             return [{"protocolId": child, "parentProtocolId": parent} for child, parent in self.dependencies]
-        if query == monitor.SET_RATES_SQL:
+        if query == queries.SET_RATES_SQL:
             return [row for row in self.rates if row["setId"] in params[3]]
-        if query == monitor.SERIES_ITEMS_SQL:
+        if query == queries.SERIES_ITEMS_SQL:
             _, after, limit = params
             return sorted((item for item in self.items if item["rowId"] > after), key=lambda item: item["rowId"])[:limit]
-        if query == monitor.MIC_COUNTS_SQL:
+        if query == queries.MIC_COUNTS_SQL:
             setId, after, limit = params
             chunk = sorted((row for row in self.picks if row[0] == setId and row[1] > after), key=lambda row: row[1])[:limit]
             grouped = {}
@@ -90,12 +91,12 @@ class Db:
                 grouped[mic] = (count + 1, max(last, rowId))
             return [{"mic": None if mic is None else str(mic), "n": n, "lastRowId": last}
                     for mic, (n, last) in grouped.items()]
-        if query == monitor.CLASSES_SQL:
+        if query == queries.CLASSES_SQL:
             return list(self.classes)
-        if query == monitor.LATEST_ROWS_SQL:
+        if query == queries.LATEST_ROWS_SQL:
             setId, limit = params
             return sorted(self.items, key=lambda item: item["rowId"], reverse=True)[:limit]
-        if query == monitor.MOVIE_SHIFTS_SQL:
+        if query == queries.ITEMS_BY_IDS_SQL:
             self.shiftsSetIds.append(params[0])
             return [movie for movie in self.movies if movie["scipionItemId"] in params[1]]
         raise AssertionError("Unexpected query")
@@ -269,7 +270,7 @@ def test_saved_thresholds_are_checked_and_kept_with_who_changed_them():
 
     assert saved["maxResolution"] == 6.0 and saved["maxAstigmatism"] is None and saved["minDefocus"] == 1000.0
     (query, params), = db.executed
-    assert query == monitor.SAVE_SETTINGS_SQL and params[0] == 7 and params[2] == 3
+    assert query == queries.SAVE_SETTINGS_SQL and params[0] == 7 and params[2] == 3
     assert params[1].adapted == {"thresholds": {"maxResolution": 6.0, "maxAstigmatism": None}}
 
 

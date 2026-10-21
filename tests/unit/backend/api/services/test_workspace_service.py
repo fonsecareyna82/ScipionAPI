@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.backend.api.services import workspace_service as workspace
+from app.backend.mapper import protocol_activity_mapper as activityQueries
 
 
 class Db:
@@ -69,7 +70,7 @@ class StreamingDb(Db):
 
     def fetchAll(self, query, params):
         self.calls.append(("all", params))
-        if query == workspace.LIVE_PROJECTS_SQL:
+        if query == activityQueries.LIVE_PROJECTS_SQL:
             return [{"projectId": 7}]
         return []
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.backend.api.services.fs_browser import protocolFolder
+from app.backend.mapper.project_overview_mapper import ProjectOverviewPostgresqlMapper
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +28,6 @@ LIVE_STATUSES = ("launched", "running", "scheduled")
 FAILED_STATUSES = ("failed", "aborted")
 LIST_LIMIT = 10
 DISK_USAGE_MAX_AGE_SECONDS = 15 * 60
-
-PROJECT_RUNS_SQL = """
-    SELECT p."protocolId", p."protocolClassName", LOWER(COALESCE(p.status, '')) AS status,
-           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label,
-           p."updatedAt",
-           steps."startedAt", steps."endedAt", steps."stepCount", steps."stepsDone"
-      FROM protocols p
-      LEFT JOIN LATERAL (
-            SELECT MIN(s."initTime") AS "startedAt", MAX(s."endTime") AS "endedAt",
-                   COUNT(*) AS "stepCount",
-                   COUNT(*) FILTER (WHERE LOWER(s.status) = 'finished') AS "stepsDone"
-              FROM protocol_steps s
-             WHERE s."protocolDbId" = p.id
-      ) steps ON TRUE
-     WHERE p."projectId" = %s AND p."protocolId" <> 'PROJECT'
-"""
 
 
 def _iso(value) -> Optional[str]:
@@ -70,7 +55,7 @@ def _aware(value):
 def projectOverview(mapper, projectId: int, now: Optional[datetime] = None) -> Dict[str, Any]:
     """The runs of a project by status, the ones running, failed or recent, and their times."""
     now = now or datetime.now(timezone.utc)
-    rows = mapper.db.fetchAll(PROJECT_RUNS_SQL, (int(projectId),)) or []
+    rows = ProjectOverviewPostgresqlMapper(mapper.db).listRuns(projectId)
     counts: Dict[str, int] = {}
     runs: List[Dict[str, Any]] = []
     computeSeconds = 0.0
@@ -220,13 +205,6 @@ class DiskUsageCache:
 
 diskUsageCache = DiskUsageCache()
 
-PROJECT_PROTOCOLS_SQL = """
-    SELECT p."protocolId", p."protocolClassName", LOWER(COALESCE(p.status, '')) AS status,
-           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label
-      FROM protocols p
-     WHERE p."projectId" = %s AND p."protocolId" <> 'PROJECT'
-"""
-
 
 def projectProtocols(mapper, projectId: int) -> List[Dict[str, Any]]:
-    return [dict(row) for row in (mapper.db.fetchAll(PROJECT_PROTOCOLS_SQL, (int(projectId),)) or [])]
+    return [dict(row) for row in ProjectOverviewPostgresqlMapper(mapper.db).listProtocols(projectId)]

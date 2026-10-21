@@ -5233,6 +5233,88 @@ def getProjectStreamingMonitor(
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
+@router.get(
+    "/{projectId}/monitor/tomo",
+    response_model=Any,
+    summary="The tomography stream of a project: its stages and the quality of each tilt series",
+)
+def getProjectTomoMonitor(
+    projectId: int,
+    tsSetId: Optional[int] = Query(None, description="The acquired tilt series to follow; the newest by default."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = tomo_monitor.tomoMonitor(mapper, projectId, tsSetId=tsSetId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor/tomo/tiltseries",
+    response_model=Any,
+    summary="Per tilt image of one tilt series of the stream: angle, dose, CTF, alignment and residual",
+)
+def getProjectTomoMonitorTiltSeries(
+    projectId: int,
+    tsId: str = Query(..., description="The tilt series."),
+    tsSetId: Optional[int] = Query(None, description="The acquired tilt series followed."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    detail = tomo_monitor.tiltSeriesDetail(mapper, projectId, tsId, tsSetId=tsSetId)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Tilt series not found")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor/tomo/tomograms/{setId}/{itemId}/slice",
+    response_model=None,
+    summary="The central slice of one tomogram of the stream, cached by the file's version",
+)
+def getProjectTomoMonitorSlice(
+    projectId: int,
+    setId: int,
+    itemId: int,
+    size: int = Query(160, ge=32, le=1024, description="The longest side of the image."),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    path = tomo_monitor.tomogramPath(mapper, projectId, setId, itemId)
+    if not path:
+        raise HTTPException(status_code=404, detail="Tomogram file not found")
+    sliceIndex = tomo_monitor.centralSlice(path)
+    renderArgs = dict(volumePath=path, tomogramId="%s:%s" % (setId, itemId), sliceIndex=sliceIndex, axis="z",
+                      colormap=None, normalize="minmax", windowMin=None, windowMax=None, scale=1.0, fmt="webp",
+                      thumb=size, fast=True, quality=75)
+    cacheKey = service._buildVolumeSliceCacheKey(**renderArgs)
+    etag = service._etagFromCacheKey(cacheKey)
+    if service._requestMatchesEtag(ifNoneMatch, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+    cached = service._getCachedVolumeSliceResponse(cacheKey)
+    if cached is not None:
+        cached.headers["ETag"] = etag
+        return cached
+    response = service._renderTomogramSliceFromPath(inline=True, **renderArgs)
+    response.headers["ETag"] = etag
+    return service._storeCachedVolumeSliceResponse(cacheKey, response)
+
+
 @router.put(
     "/{projectId}/monitor/thresholds",
     response_model=Any,

@@ -16,6 +16,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.backend.mapper.protocol_activity_mapper import ProtocolActivityPostgresqlMapper
+
 logger = logging.getLogger(__name__)
 
 ENDED_STATUSES = ("finished", "failed", "aborted", "interactive")
@@ -26,39 +28,6 @@ MAX_EVENTS = 50
 # Streaming projects whose monitor alerts are looked at in one call
 MAX_MONITORED_PROJECTS = 10
 
-PROTOCOL_ACTIVITY_SQL = """
-    SELECT p."projectId", pr.name AS "projectPath", p."protocolId", p."protocolClassName", p.status,
-           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label,
-           COALESCE(steps."endedAt", p."updatedAt") AS "endedAt"
-      FROM protocols p
-      JOIN projects pr ON pr.id = p."projectId"
-      LEFT JOIN LATERAL (
-            SELECT MAX(s."endTime") AS "endedAt"
-              FROM protocol_steps s
-             WHERE s."protocolDbId" = p.id
-      ) steps ON TRUE
-     WHERE p."projectId" = ANY(%s)
-       AND LOWER(COALESCE(p.status, '')) = ANY(%s)
-       AND COALESCE(steps."endedAt", p."updatedAt") > %s
-     ORDER BY "endedAt" DESC
-     LIMIT %s
-"""
-
-LIVE_COUNT_SQL = """
-    SELECT COUNT(*) AS live
-      FROM protocols
-     WHERE "projectId" = ANY(%s) AND LOWER(COALESCE(status, '')) = ANY(%s)
-"""
-
-
-LIVE_PROJECTS_SQL = """
-    SELECT DISTINCT "projectId"
-      FROM protocols
-     WHERE "projectId" = ANY(%s) AND LOWER(COALESCE(status, '')) = ANY(%s)
-     ORDER BY "projectId"
-     LIMIT %s
-"""
-
 
 def _monitorAlerts(mapper, projects: Dict[int, Dict[str, Any]], projectIds: List[int],
                    since: datetime) -> List[Dict[str, Any]]:
@@ -66,9 +35,9 @@ def _monitorAlerts(mapper, projects: Dict[int, Dict[str, Any]], projectIds: List
     from app.backend.api.services import streaming_monitor
 
     events = []
-    rows = mapper.db.fetchAll(LIVE_PROJECTS_SQL, (projectIds, list(LIVE_STATUSES), MAX_MONITORED_PROJECTS)) or []
-    for row in rows:
-        projectId = int(row["projectId"])
+    liveProjectIds = ProtocolActivityPostgresqlMapper(mapper.db).listLiveProjectIds(
+        projectIds, LIVE_STATUSES, MAX_MONITORED_PROJECTS)
+    for projectId in liveProjectIds:
         try:
             runs = streaming_monitor.alertsSince(mapper, projectId, since)
         except Exception:
@@ -110,13 +79,13 @@ def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Option
     events: List[Dict[str, Any]] = []
     live = 0
     if projectIds:
-        live = int((mapper.db.fetchOne(LIVE_COUNT_SQL, (projectIds, list(LIVE_STATUSES))) or {}).get("live") or 0)
+        activity = ProtocolActivityPostgresqlMapper(mapper.db)
+        live = activity.countLiveProtocols(projectIds, LIVE_STATUSES)
         if since is not None:
             if since.tzinfo is None:
                 since = since.replace(tzinfo=timezone.utc)
             since = max(since, now - MAX_LOOKBACK)
-            rows: Sequence[Dict[str, Any]] = mapper.db.fetchAll(
-                PROTOCOL_ACTIVITY_SQL, (projectIds, list(ENDED_STATUSES), since, MAX_EVENTS)) or []
+            rows: Sequence[Dict[str, Any]] = activity.listEndedProtocols(projectIds, ENDED_STATUSES, since, MAX_EVENTS)
             for row in rows:
                 project = projects.get(int(row["projectId"]), {})
                 endedAt = row.get("endedAt")

@@ -7,12 +7,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-from app.backend.api.services.workspace_service import LIVE_PROJECTS_SQL
+from app.backend.mapper.protocol_activity_mapper import LIVE_PROJECTS_SQL
 
-from app.backend.api.services.streaming_monitor import (FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, LATEST_ROWS_SQL,
-                                                        CLASSES_SQL, DEPENDENCIES_SQL, MIC_COUNTS_SQL, MOVIE_SHIFTS_SQL,
-                                                        OUTPUT_SETS_SQL, SAVE_SETTINGS_SQL, SERIES_ITEMS_SQL,
-                                                        SET_RATES_SQL)
+from app.backend.mapper.streaming_monitor_mapper import (
+    CLASSES_SQL, DEPENDENCIES_SQL, FIRST_ROW_SQL, GET_SETTINGS_SQL, INPUT_REFS_SQL, ITEMS_BY_IDS_SQL, LATEST_ROWS_SQL, MIC_COUNTS_SQL, OUTPUT_SETS_SQL, SAVE_SETTINGS_SQL, SERIES_ITEMS_SQL, SET_RATES_SQL,
+)
 
 
 @pytest.fixture
@@ -102,7 +101,7 @@ def test_rates_series_and_shifts_of_the_items(connection):
         'SELECT id, "scipionItemId" FROM scipion_set_items WHERE "setId" = 30').all()}
     series = connection.exec_driver_sql(SERIES_ITEMS_SQL, (30, rowIds[1], 2)).mappings().all()
     first = connection.exec_driver_sql(FIRST_ROW_SQL, (30,)).mappings().one()
-    shifts = connection.exec_driver_sql(MOVIE_SHIFTS_SQL, (21, [3, 4])).mappings().all()
+    shifts = connection.exec_driver_sql(ITEMS_BY_IDS_SQL, (21, [3, 4])).mappings().all()
 
     assert (rates[30]["lastWindow"], rates[30]["previousWindow"]) == (2, 1)
     assert rates[30]["oldest"] == now - timedelta(minutes=25) and rates[30]["sampled"] == 4

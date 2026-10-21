@@ -27,7 +27,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from app.backend.mapper.streaming_monitor_mapper import StreamingMonitorPostgresqlMapper
+
 logger = logging.getLogger(__name__)
+
+
+def _store(mapper) -> StreamingMonitorPostgresqlMapper:
+    """The monitor's queries, over the database of the request's mapper."""
+    return StreamingMonitorPostgresqlMapper(mapper.db)
+
 
 STREAM_OPEN = 1
 SERIES_BATCH = 2000
@@ -44,99 +52,20 @@ DEFAULT_THRESHOLDS: Dict[str, Optional[float]] = {
     "maxFrameShift": 10.0,    # A, between two consecutive frames
     "maxTotalDrift": 45.0,    # A, the whole path of the movie
     "minParticles": None,     # coordinates picked on a micrograph; depends on the sample, no default alert
+    # Tomography, per tilt series (see tomo_monitor)
+    "minTilts": 30.0,         # enabled tilt images, as the exclude views filter of tomo
+    "minAngleSpan": 50.0,     # degrees: the series should reach at least -50 and +50
+    "maxFailedCtfTilts": None,  # tilts whose CTF estimation failed; no default alert
+    "maxResidual": None,      # px, mean residual of the fiducial alignment (IMOD); no default alert
 }
 
 STAGES = ("movies", "micrographs", "ctf", "coordinates", "particles", "classes2d")
 
-OUTPUT_SETS_SQL = """
-    SELECT s.id AS "setId", p."protocolId", p."protocolClassName",
-           LOWER(COALESCE(p.status, '')) AS status,
-           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label,
-           s."outputName", s."setClassName", s."itemClassName", s.properties, s."updatedAt"
-      FROM scipion_sets s
-      JOIN protocols p ON p.id = s."protocolDbId"
-     WHERE s."projectId" = %s
-       AND COALESCE(s.properties ->> 'runtimeReserved', 'false') <> 'true'
-"""
-
-INPUT_REFS_SQL = """
-    SELECT "protocolId", "parentProtocolId", "parentOutputName"
-      FROM protocol_input_refs
-     WHERE "projectId" = %s AND "parentProtocolId" IS NOT NULL
-"""
-
-# The protocol graph's edges: a fallback for a protocol whose input refs miss a parent it depends on.
-DEPENDENCIES_SQL = """
-    SELECT parent."protocolId" AS "parentProtocolId", child."protocolId" AS "protocolId"
-      FROM protocol_dependencies d
-      JOIN protocols parent ON parent.id = d."parentProtocolDbId" AND parent."projectId" = d."projectId"
-      JOIN protocols child ON child.id = d."childProtocolDbId" AND child."projectId" = d."projectId"
-     WHERE d."projectId" = %s
-"""
 
 # Items of each Set created in the last window and in the one before. Only the newest items of each Set are
 # looked at (through its (setId, scipionItemId) index), so a poll costs the same at the start of a session
 # and after a million particles.
 RATE_SAMPLE = 5000
-SET_RATES_SQL = """
-    SELECT sets."setId",
-           COUNT(recent.t) FILTER (WHERE recent.t >= %s) AS "lastWindow",
-           COUNT(recent.t) FILTER (WHERE recent.t >= %s AND recent.t < %s) AS "previousWindow",
-           COUNT(recent.t) AS "sampled",
-           MIN(recent.t) AS "oldest"
-      FROM UNNEST(%s::int[]) AS sets("setId")
-      CROSS JOIN LATERAL (
-            SELECT COALESCE(i.creation, i."createdAt") AS t
-              FROM scipion_set_items i
-             WHERE i."setId" = sets."setId"
-             ORDER BY i."scipionItemId" DESC
-             LIMIT %s
-      ) recent
-     GROUP BY sets."setId"
-"""
-
-# Rows are read in the order they were written (their row id), not by item id: parallel steps finish items
-# out of order, and an item with a lower id written later must still be read.
-SERIES_ITEMS_SQL = """
-    SELECT id AS "rowId", "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
-      FROM scipion_set_items
-     WHERE "setId" = %s AND id > %s
-     ORDER BY id
-     LIMIT %s
-"""
-
-# A Set whose rows were all written again (a full sync) has no row left at or below the caller's cursor.
-FIRST_ROW_SQL = """
-    SELECT MIN(id) AS "firstRowId" FROM scipion_set_items WHERE "setId" = %s
-"""
-
-GET_SETTINGS_SQL = """
-    SELECT settings FROM project_monitor_settings WHERE "projectId" = %s
-"""
-
-SAVE_SETTINGS_SQL = """
-    INSERT INTO project_monitor_settings ("projectId", settings, "updatedBy", "updatedAt")
-    VALUES (%s, %s, %s, NOW())
-    ON CONFLICT ("projectId") DO UPDATE
-       SET settings = EXCLUDED.settings, "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = NOW()
-"""
-
-# The classes of a SetOfClasses2D (its root rows) with the particles of each: the counter of its child table,
-# kept by every flush, so no particle is read.
-CLASSES_SQL = """
-    SELECT i."scipionItemId" AS "classId", i.enabled,
-           COALESCE((t.properties ->> 'itemsCount')::bigint, (i."values" ->> '_size')::bigint, 0) AS particles
-      FROM scipion_set_items i
-      LEFT JOIN scipion_set_tables t
-        ON t."setId" = i."setId" AND t."parentItemId" = i."scipionItemId" AND t."tableKind" = 'child'
-     WHERE i."setId" = %s
-"""
-
-MOVIE_SHIFTS_SQL = """
-    SELECT "scipionItemId", "values"
-      FROM scipion_set_items
-     WHERE "setId" = %s AND "scipionItemId" = ANY(%s)
-"""
 
 
 def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
@@ -193,7 +122,7 @@ def _toInt(value) -> Optional[int]:
 
 def _outputs(mapper, projectId: int) -> List[Dict[str, Any]]:
     outputs = []
-    for row in mapper.db.fetchAll(OUTPUT_SETS_SQL, (int(projectId),)) or []:
+    for row in _store(mapper).listOutputSets(projectId):
         stage = _stageOf(row.get("setClassName"), row.get("itemClassName"))
         if stage is None:
             continue
@@ -222,7 +151,7 @@ def _inputsOf(mapper, projectId: int, outputs: Sequence[Dict[str, Any]] = ()) ->
     A protocol the graph says depends on another, with no input ref to it, reads every output of that one:
     without it the stream would stop there (refs are missing, for instance, for runs older than them)."""
     inputs: Dict[str, List[tuple]] = {}
-    for row in mapper.db.fetchAll(INPUT_REFS_SQL, (int(projectId),)) or []:
+    for row in _store(mapper).listInputRefs(projectId):
         inputs.setdefault(str(row["protocolId"]), []).append(
             (str(row["parentProtocolId"]), str(row.get("parentOutputName") or "")))
     if outputs:
@@ -230,7 +159,7 @@ def _inputsOf(mapper, projectId: int, outputs: Sequence[Dict[str, Any]] = ()) ->
         for output in outputs:
             outputNames.setdefault(output["protocolId"], []).append(output["outputName"])
         try:
-            edges = mapper.db.fetchAll(DEPENDENCIES_SQL, (int(projectId),)) or []
+            edges = _store(mapper).listDependencies(projectId)
         except Exception:
             logger.warning("The protocol dependencies of project %s could not be read", projectId, exc_info=True)
             edges = []
@@ -405,8 +334,7 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
     if not setIds:
         return {}
     window = timedelta(minutes=RATE_WINDOW_MINUTES)
-    rows = mapper.db.fetchAll(SET_RATES_SQL, (now - window, now - 2 * window, now - window, list(setIds),
-                                              RATE_SAMPLE)) or []
+    rows = _store(mapper).countRecentItems(setIds, now - window, now - 2 * window, now - window, RATE_SAMPLE)
     rates = {}
     for row in rows:
         last = int(row.get("lastWindow") or 0)
@@ -485,7 +413,7 @@ def _classes(mapper, chain: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any
     output = chain.get("classes2d")
     if output is None:
         return None
-    rows = mapper.db.fetchAll(CLASSES_SQL, (output["setId"],)) or []
+    rows = _store(mapper).listClasses(output["setId"])
     classes = sorted(({"id": int(row["classId"]), "particles": int(row.get("particles") or 0),
                        "enabled": row.get("enabled") is not False} for row in rows),
                      key=lambda item: (-item["particles"], item["id"]))
@@ -561,7 +489,7 @@ def _movieDrifts(mapper, movies: Optional[Dict[str, Any]], itemIds: List[int]) -
     if movies is None or not itemIds:
         return {}
     drifts = {}
-    for row in mapper.db.fetchAll(MOVIE_SHIFTS_SQL, (movies["setId"], list(itemIds))) or []:
+    for row in _store(mapper).listItemsByIds(movies["setId"], itemIds):
         values = _values(row)
         drift = driftFromShifts(_valueBySuffix(values, "_alignment._xshifts"),
                                 _valueBySuffix(values, "_alignment._yshifts"),
@@ -614,11 +542,10 @@ def validThresholds(thresholds: Dict[str, Any]) -> Dict[str, Optional[float]]:
 def storedThresholds(mapper, projectId: int) -> Dict[str, Any]:
     """The thresholds a project changed; none if it has not, or the database is not migrated yet."""
     try:
-        row = mapper.db.fetchOne(GET_SETTINGS_SQL, (int(projectId),))
+        settings = _store(mapper).getSettings(projectId) or {}
     except Exception:
         logger.warning("The monitor thresholds of project %s could not be read", projectId, exc_info=True)
         return {}
-    settings = (row or {}).get("settings") or {}
     if isinstance(settings, str):
         try:
             settings = json.loads(settings)
@@ -631,11 +558,8 @@ def storedThresholds(mapper, projectId: int) -> Dict[str, Any]:
 def saveThresholds(mapper, projectId: int, userId: Optional[int], thresholds: Dict[str, Any]) -> Dict[str, Any]:
     """Keep the thresholds of a project (the ones sent replace the ones it had) and give back all of them."""
     checked = validThresholds(thresholds)
-    from app.backend.mapper.postgresql import _toJsonParam
-
     try:
-        mapper.db.execute(SAVE_SETTINGS_SQL, (int(projectId), _toJsonParam({"thresholds": checked}),
-                                              int(userId) if userId is not None else None))
+        _store(mapper).saveSettings(projectId, {"thresholds": checked}, userId)
     except Exception as error:
         logger.warning("The monitor thresholds of project %s were not kept", projectId, exc_info=True)
         raise ThresholdsNotKept("The thresholds could not be kept; if the database was not migrated after the "
@@ -720,10 +644,10 @@ def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
                 "points": []}
     reset = afterSetId != base["setId"]
     if not reset and afterRowId is not None:
-        first = (mapper.db.fetchOne(FIRST_ROW_SQL, (base["setId"],)) or {}).get("firstRowId")
+        first = _store(mapper).getFirstRowId(base["setId"])
         reset = first is not None and int(first) > int(afterRowId)
     after = 0 if reset or afterRowId is None else int(afterRowId)
-    rows = mapper.db.fetchAll(SERIES_ITEMS_SQL, (base["setId"], after, SERIES_BATCH)) or []
+    rows = _store(mapper).listItemsAfterRow(base["setId"], after, SERIES_BATCH)
     return {
         "setId": base["setId"],
         "kind": base["stage"],
@@ -789,7 +713,18 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
         "picking": picking,
         "classes": classes,
+        # Tilt series in the project: the monitor shows its tomography view too
+        "tomography": _hasTomography(mapper, projectId),
     }
+
+
+def _hasTomography(mapper, projectId: int) -> bool:
+    from app.backend.api.services import tomo_monitor
+    try:
+        return tomo_monitor.hasTomography(mapper, projectId)
+    except Exception:
+        logger.warning("Whether project %s has tilt series could not be read", projectId, exc_info=True)
+        return False
 
 
 # -- coordinates and particles per micrograph --------------------------------------
@@ -802,15 +737,6 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
 
 MIC_COUNT_CHUNK = 50000
 
-MIC_COUNTS_SQL = """
-    SELECT chunk.mic, COUNT(*) AS n, MAX(chunk.id) AS "lastRowId"
-      FROM (SELECT id, COALESCE("values" ->> '_micId', "values" ->> '_coordinate._micId') AS mic
-              FROM scipion_set_items
-             WHERE "setId" = %s AND id > %s
-             ORDER BY id
-             LIMIT %s) chunk
-     GROUP BY chunk.mic
-"""
 
 _micCounts: Dict[int, Dict[str, Any]] = {}
 _micCountsLock = threading.Lock()
@@ -822,13 +748,13 @@ def countByMicrograph(mapper, setId: int) -> Dict[str, Any]:
     with _micCountsLock:
         state = _micCounts.get(int(setId))
         if state is not None and state["lastRowId"]:
-            first = (mapper.db.fetchOne(FIRST_ROW_SQL, (int(setId),)) or {}).get("firstRowId")
+            first = _store(mapper).getFirstRowId(setId)
             if first is not None and int(first) > state["lastRowId"]:
                 state = None
         if state is None:
             state = {"lastRowId": 0, "counts": {}, "changed": {}, "complete": False}
             _micCounts[int(setId)] = state
-        rows = mapper.db.fetchAll(MIC_COUNTS_SQL, (int(setId), state["lastRowId"], MIC_COUNT_CHUNK)) or []
+        rows = _store(mapper).countItemsPerMicrograph(setId, state["lastRowId"], MIC_COUNT_CHUNK)
         read = 0
         for row in rows:
             count = int(row.get("n") or 0)
@@ -876,15 +802,12 @@ THRESHOLD_TEXT = {
     "maxFrameShift": "Frame shift above %s Å",
     "maxTotalDrift": "Total drift above %s Å",
     "minParticles": "Fewer than %s particles picked",
+    "minTilts": "Fewer than %s tilts",
+    "minAngleSpan": "Tilt range short of ±%s°",
+    "maxFailedCtfTilts": "More than %s tilts without CTF",
+    "maxResidual": "Alignment residual above %s px",
 }
 
-LATEST_ROWS_SQL = """
-    SELECT id AS "rowId", "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
-      FROM scipion_set_items
-     WHERE "setId" = %s
-     ORDER BY id DESC
-     LIMIT %s
-"""
 
 # projectId -> (when it was computed, its alert runs): every open tab polls the bell, the work is done once
 _alertCache: Dict[int, tuple] = {}
@@ -910,7 +833,7 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
     base = chain.get("ctf") or chain.get("micrographs")
     runs: List[Dict[str, Any]] = []
     if base is not None:
-        rows = list(reversed(mapper.db.fetchAll(LATEST_ROWS_SQL, (base["setId"], ALERT_WINDOW)) or []))
+        rows = list(reversed(_store(mapper).listLatestItems(base["setId"], ALERT_WINDOW)))
         thresholds = thresholdsWith(storedThresholds(mapper, projectId))
         picked = countByMicrograph(mapper, chain["coordinates"]["setId"])["counts"] if "coordinates" in chain \
             else None
