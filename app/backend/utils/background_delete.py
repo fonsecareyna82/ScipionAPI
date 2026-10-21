@@ -26,7 +26,29 @@ _purgedTrash = set()
 _purgedLock = threading.Lock()
 
 
+def isUnsafeToDelete(path: Union[str, Path]) -> bool:
+    """A path that must never be removed: empty, the filesystem root, the home folder,
+    or the process's current folder or one of its ancestors.
+
+    Relative paths resolve against the current folder: an empty or "." path
+    (a protocol without its folder) would otherwise remove that whole folder.
+    """
+    if str(path).strip() in ("", "."):
+        return True
+    resolved = Path(os.path.abspath(str(path)))
+    if resolved == Path(resolved.anchor) or resolved == Path(os.path.abspath(os.path.expanduser("~"))):
+        return True
+    try:
+        cwd = Path(os.path.abspath(os.getcwd()))
+    except OSError:
+        return False
+    return resolved == cwd or resolved in cwd.parents
+
+
 def _remove(path: Path) -> None:
+    if isUnsafeToDelete(path):
+        logger.error("Refusing to remove %s: it is the current folder, one of its parents, home or the root", path)
+        return
     try:
         if path.is_symlink() or path.is_file():
             path.unlink(missing_ok=True)
@@ -43,7 +65,7 @@ def _trashOf(path: Path) -> Path:
 def moveToTrash(path: Union[str, Path], trashIn: Optional[Union[str, Path]] = None) -> Optional[Path]:
     """Rename the folder into a trash folder (next to it, or in trashIn); None when it cannot be moved."""
     path = Path(path)
-    if not os.path.lexists(path):
+    if isUnsafeToDelete(path) or not os.path.lexists(path):
         return None
     trash = Path(trashIn) / TRASH_FOLDER if trashIn is not None else _trashOf(path)
     try:
@@ -75,6 +97,9 @@ def deleteInBackground(path: Union[str, Path], trashIn: Optional[Union[str, Path
     in the background instead.
     """
     path = Path(path)
+    if isUnsafeToDelete(path):
+        logger.error("Refusing to delete %s: it is the current folder, one of its parents, home or the root", path)
+        return None
     if not os.path.lexists(path):
         return None
     moved = moveToTrash(path, trashIn)

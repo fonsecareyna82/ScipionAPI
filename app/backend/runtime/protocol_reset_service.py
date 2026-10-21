@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 import logging
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 from pyworkflow.object import (
@@ -360,22 +360,65 @@ class RuntimeProtocolResetService:
         }
 
     @staticmethod
-    def _cleanWorkingDirInBackground(protocol) -> None:
-        """protocol.cleanWorkingDir, without waiting: the folders go away at once, their files later."""
+    def _currentProjectPath(currentProject) -> Optional[str]:
+        """The project's folder: Scipion projects keep it in ``path`` (or give it with getPath)."""
+        getPath = getattr(currentProject, "getPath", None)
+        path = getattr(currentProject, "path", None) or (getPath() if callable(getPath) else None)
+        return str(path) if path else None
+
+    @staticmethod
+    def _protocolRunsFolder(protocol, projectPath) -> "Optional[Any]":
+        """The protocol's folder as an absolute path strictly inside <project>/Runs, or None.
+
+        Scipion keeps it relative to the project, so it must never be resolved
+        against the process's current folder.
+        """
+        import os
+        from pathlib import Path
+
+        getPath = getattr(protocol, "_getPath", None)
+        rawPath = getPath() if callable(getPath) else None
+        if not rawPath or not str(rawPath).strip() or not projectPath:
+            return None
+        projectRoot = Path(os.path.abspath(str(projectPath)))
+        workingDir = Path(str(rawPath))
+        if not workingDir.is_absolute():
+            workingDir = projectRoot / workingDir
+        workingDir = Path(os.path.abspath(str(workingDir)))
+        runsDir = projectRoot / "Runs"
+        if workingDir == runsDir or runsDir not in workingDir.parents:
+            return None
+        return workingDir
+
+    @classmethod
+    def _cleanWorkingDirInBackground(cls, protocol, projectPath=None) -> None:
+        """protocol.cleanWorkingDir, without waiting: the folders go away at once, their files later.
+
+        Only a folder inside <project>/Runs is removed this way; anything else
+        is left to Scipion's own cleanWorkingDir.
+        """
         import os
         from pathlib import Path
 
         from app.backend.utils.background_delete import deleteInBackground
 
-        if not callable(getattr(protocol, "_getPath", None)) or not callable(getattr(protocol, "_getTmpPath", None)):
+        workingDir = cls._protocolRunsFolder(protocol, projectPath)
+        if workingDir is None:
+            logger.info("Protocol %s has no folder under the project's Runs; Scipion cleans it",
+                        getattr(protocol, "getObjId", lambda: None)())
             protocol.cleanWorkingDir()
             return
-        workingDir = Path(protocol._getPath())
-        tmpFolder = protocol._getTmpPath()
-        # A scratch Tmp folder lives elsewhere: remove its target, then the link.
-        if os.path.islink(tmpFolder):
-            deleteInBackground(os.path.realpath(tmpFolder))
-            os.remove(tmpFolder)
+
+        getTmpPath = getattr(protocol, "_getTmpPath", None)
+        tmpFolder = getTmpPath() if callable(getTmpPath) else None
+        if tmpFolder:
+            tmpFolder = Path(str(tmpFolder))
+            if not tmpFolder.is_absolute():
+                tmpFolder = Path(os.path.abspath(str(projectPath))) / tmpFolder
+            # A scratch Tmp folder lives elsewhere: remove its target, then the link.
+            if workingDir in tmpFolder.parents and os.path.islink(tmpFolder):
+                deleteInBackground(os.path.realpath(tmpFolder))
+                os.remove(tmpFolder)
         deleteInBackground(workingDir, trashIn=workingDir.parent.parent)
 
     def _resetPostgresqlProtocol(
@@ -385,6 +428,7 @@ class RuntimeProtocolResetService:
             projectId: int,
             runtimeMapper,
             item,
+            projectPath=None,
     ) -> Dict[str, Any]:
         protocol = item[
             "protocol"
@@ -439,7 +483,7 @@ class RuntimeProtocolResetService:
             0,
         )
 
-        self._cleanWorkingDirInBackground(protocol)
+        self._cleanWorkingDirInBackground(protocol, projectPath)
         protocol.makeWorkingDir()
 
         # Delete only relations created by this protocol.
@@ -658,6 +702,7 @@ class RuntimeProtocolResetService:
                         projectId=projectId,
                         runtimeMapper=runtimeMapper,
                         item=item,
+                        projectPath=self._currentProjectPath(currentProject),
                     )
                 )
 
