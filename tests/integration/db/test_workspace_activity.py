@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-from app.backend.api.services.workspace_service import ENDED_STATUSES, PROTOCOL_ACTIVITY_SQL
+from app.backend.api.services.workspace_service import ENDED_STATUSES
+from app.backend.mapper.protocol_activity_mapper import PROTOCOL_ACTIVITY_SQL
 
 
 @pytest.fixture
