@@ -1574,6 +1574,14 @@ class PostgresqlRuntimeSetMixin:
                     )
                 )
 
+        # Native SetOfClasses._insertItem marks the Set as soon as one class has a representative, and
+        # never unmarks it. Without the mark, writeStack and the averages consumers refuse the classes.
+        hasRepresentative = getattr(item, "hasRepresentative", None)
+        representatives = getattr(self, "_representatives", None)
+
+        if callable(hasRepresentative) and representatives is not None and hasRepresentative():
+            representatives.set(True)
+
     def append(
             self,
             item,
