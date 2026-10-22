@@ -4620,6 +4620,11 @@ def renderMetadataImageCell(
     volumeView: Literal["surface", "projection", "slice"] = Query(
         "surface", description="How 3D class representatives and volumes are drawn."
     ),
+    version: Optional[str] = Query(
+        None,
+        description="What the caller knows of the image file (e.g. when its Set was updated): a streaming "
+                    "protocol rewrites its class averages in place, and another version is another image.",
+    ),
     ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -4651,6 +4656,7 @@ def renderMetadataImageCell(
         protocolIdIsScipionId=True,
         # Preserve legacy calls for Original; Enhanced is opt-in.
         **({"contrastMode": contrastMode, "volumeView": volumeView} if contrastMode != "original" else {}),
+        **({"version": version} if version is not None else {}),
     )
     resp.headers["X-Debug-Auth"] = "ok"
     resp.headers["X-Debug-UserId"] = str(getattr(currentUser, "id", currentUser.get("id", "")))
@@ -5197,6 +5203,143 @@ def getProjectOverview(
         raise HTTPException(status_code=404, detail="Project not found")
     payload = project_overview.projectOverview(mapper, projectId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor",
+    response_model=Any,
+    summary="The streaming chain of a project: its stages, their rates and the CTF and drift of what comes out",
+)
+def getProjectStreamingMonitor(
+    projectId: int,
+    ctfSetId: Optional[int] = Query(None, description="The CTF output to follow; the newest one by default."),
+    coordinatesSetId: Optional[int] = Query(
+        None, description="The picking to follow; by default the one that goes furthest (to 2D classes)."),
+    classesSetId: Optional[int] = Query(None, description="The 2D classes to follow; the nearest to the picking by default."),
+    afterSetId: Optional[int] = Query(None, description="The CTF output of the points the caller has."),
+    afterRowId: Optional[int] = Query(None, description="The cursor of the last answer: what the caller has."),
+    afterPickSetId: Optional[int] = Query(None, description="The coordinates output of the counts the caller has."),
+    afterPickRowId: Optional[int] = Query(None, description="The picking cursor of the last answer."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import streaming_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = streaming_monitor.streamingMonitor(mapper, projectId, ctfSetId=ctfSetId, afterSetId=afterSetId,
+                                                 afterRowId=afterRowId, afterPickSetId=afterPickSetId,
+                                                 afterPickRowId=afterPickRowId, coordinatesSetId=coordinatesSetId,
+                                                 classesSetId=classesSetId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor/tomo",
+    response_model=Any,
+    summary="The tomography stream of a project: its stages and the quality of each tilt series",
+)
+def getProjectTomoMonitor(
+    projectId: int,
+    tsSetId: Optional[int] = Query(None, description="The acquired tilt series to follow; the newest by default."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = tomo_monitor.tomoMonitor(mapper, projectId, tsSetId=tsSetId)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor/tomo/tiltseries",
+    response_model=Any,
+    summary="Per tilt image of one tilt series of the stream: angle, dose, CTF, alignment and residual",
+)
+def getProjectTomoMonitorTiltSeries(
+    projectId: int,
+    tsId: str = Query(..., description="The tilt series."),
+    tsSetId: Optional[int] = Query(None, description="The acquired tilt series followed."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    detail = tomo_monitor.tiltSeriesDetail(mapper, projectId, tsId, tsSetId=tsSetId)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Tilt series not found")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+
+@router.get(
+    "/{projectId}/monitor/tomo/tomograms/{setId}/{itemId}/slice",
+    response_model=None,
+    summary="The central slice of one tomogram of the stream, cached by the file's version",
+)
+def getProjectTomoMonitorSlice(
+    projectId: int,
+    setId: int,
+    itemId: int,
+    size: int = Query(160, ge=32, le=1024, description="The longest side of the image."),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import tomo_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    path = tomo_monitor.tomogramPath(mapper, projectId, setId, itemId)
+    if not path:
+        raise HTTPException(status_code=404, detail="Tomogram file not found")
+    sliceIndex = tomo_monitor.centralSlice(path)
+    renderArgs = dict(volumePath=path, tomogramId="%s:%s" % (setId, itemId), sliceIndex=sliceIndex, axis="z",
+                      colormap=None, normalize="minmax", windowMin=None, windowMax=None, scale=1.0, fmt="webp",
+                      thumb=size, fast=True, quality=75)
+    cacheKey = service._buildVolumeSliceCacheKey(**renderArgs)
+    etag = service._etagFromCacheKey(cacheKey)
+    if service._requestMatchesEtag(ifNoneMatch, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+    cached = service._getCachedVolumeSliceResponse(cacheKey)
+    if cached is not None:
+        cached.headers["ETag"] = etag
+        return cached
+    response = service._renderTomogramSliceFromPath(inline=True, **renderArgs)
+    response.headers["ETag"] = etag
+    return service._storeCachedVolumeSliceResponse(cacheKey, response)
+
+
+@router.put(
+    "/{projectId}/monitor/thresholds",
+    response_model=Any,
+    summary="Change the streaming monitor thresholds of a project; a null threshold raises no alert",
+)
+def saveProjectMonitorThresholds(
+    projectId: int,
+    thresholds: Dict[str, Any] = Body(..., description="Threshold name -> value in A, or null."),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    from app.backend.api.services import streaming_monitor
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        saved = streaming_monitor.saveThresholds(mapper, projectId, (currentUser or {}).get("id"), thresholds)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except streaming_monitor.ThresholdsNotKept as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    return {"thresholds": saved}
 
 
 @router.get(

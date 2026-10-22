@@ -37,6 +37,7 @@ from app.backend.models import (  # noqa: F401,E402
     protocol_tag_assignment_model,
     protocol_step_model,
     protocol_launch_model,
+    project_monitor_settings_model,
     scipion_object_model,
     system_task_model,
     tomogram_review_model,

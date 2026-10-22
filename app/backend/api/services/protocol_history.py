@@ -10,25 +10,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.backend.mapper.protocol_launch_mapper import ProtocolLaunchPostgresqlMapper
+
 logger = logging.getLogger(__name__)
 
 RECORDED_MODES = ("launch", "restart", "continue", "schedule")
 HISTORY_LIMIT = 50
-
-INSERT_LAUNCH_SQL = """
-    INSERT INTO protocol_launches ("projectId", "protocolDbId", "protocolId", "userId", mode, params)
-    VALUES (%s, %s, %s, %s, %s, %s)
-"""
-
-LIST_LAUNCHES_SQL = """
-    SELECT l.id, l.mode, l.params, l."launchedAt", l."userId",
-           u.email, u."firstName", u."lastName"
-      FROM protocol_launches l
-      LEFT JOIN users u ON u.id = l."userId"
-     WHERE l."projectId" = %s AND l."protocolId" = %s
-     ORDER BY l."launchedAt" DESC, l.id DESC
-     LIMIT %s
-"""
 
 
 def launchParams(params: Any) -> Dict[str, Any]:
@@ -46,12 +33,8 @@ def recordLaunch(mapper, projectId: int, protocolId, userId: Optional[int], mode
         row = mapper.getProjectProtocolByProtocolId(projectId=int(projectId), protocolId=int(protocolId))
         if not row:
             return False
-        from app.backend.mapper.postgresql import _toJsonParam
-
-        mapper.db.execute(INSERT_LAUNCH_SQL, (
-            int(projectId), int(row["id"]), str(row["protocolId"]),
-            int(userId) if userId is not None else None, mode, _toJsonParam(launchParams(row.get("params"))),
-        ))
+        ProtocolLaunchPostgresqlMapper(mapper.db).insertLaunch(
+            projectId, row["id"], row["protocolId"], userId, mode, launchParams(row.get("params")))
         return True
     except Exception:
         logger.warning("The parameters of launch %s of protocol %s (project %s) were not kept",
@@ -67,7 +50,7 @@ def _userName(row: Dict[str, Any]) -> str:
 def listLaunches(mapper, projectId: int, protocolId, limit: int = HISTORY_LIMIT) -> List[Dict[str, Any]]:
     """The launches of a protocol, newest first."""
     try:
-        rows = mapper.db.fetchAll(LIST_LAUNCHES_SQL, (int(projectId), str(protocolId), int(limit))) or []
+        rows = ProtocolLaunchPostgresqlMapper(mapper.db).listLaunches(projectId, protocolId, limit)
     except Exception:
         logger.warning("The launches of protocol %s (project %s) could not be read", protocolId, projectId, exc_info=True)
         return []
