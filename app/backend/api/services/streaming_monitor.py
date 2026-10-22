@@ -59,7 +59,9 @@ DEFAULT_THRESHOLDS: Dict[str, Optional[float]] = {
     "maxResidual": None,      # px, mean residual of the fiducial alignment (IMOD); no default alert
 }
 
-STAGES = ("movies", "micrographs", "ctf", "coordinates", "particles", "classes2d")
+# alignedMicrographs: what the aligner wrote, when the micrographs the CTF reads come from a later protocol
+STAGES = ("movies", "alignedMicrographs", "micrographs", "ctf", "coordinates", "particles", "classes2d")
+MICROGRAPH_STAGES = ("alignedMicrographs", "micrographs", "ctf")
 
 
 # Items of each Set created in the last window and in the one before. Only the newest items of each Set are
@@ -227,16 +229,18 @@ def _pickings(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
     pickings = []
     for coordinates in (output for output in outputs if output["stage"] == "coordinates"):
         particles = _nearest(_downstream(outputs, inputs, [coordinates], "particles", ("coordinates",)))
-        classes = _nearest(_downstream(outputs, inputs, [particles], "classes2d", ("particles",))) \
-            if particles is not None else None
+        classified = _downstream(outputs, inputs, [particles], "classes2d", ("particles",)) \
+            if particles is not None else []
         pickings.append({"coordinates": coordinates, "steps": fromStream.get(coordinates["setId"]),
-                         "particles": particles, "classes2d": classes})
+                         "particles": particles, "classes2d": _nearest(classified),
+                         "allClasses": {output["setId"] for output, _ in classified}})
     return pickings
 
 
-def _followedPicking(pickings: List[Dict[str, Any]], coordinatesSetId: Optional[int]) -> Optional[Dict[str, Any]]:
-    """The picking asked for; else the one that goes furthest (to 2D classes, then to particles), then the
-    nearest, then the newest."""
+def _followedPicking(pickings: List[Dict[str, Any]], coordinatesSetId: Optional[int],
+                     classesSetId: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """The picking asked for; else the one that leads to the 2D classes asked for; else the one that goes
+    furthest (to 2D classes, then to particles), then the nearest, then the newest."""
     asked = next((picking for picking in pickings if picking["coordinates"]["setId"] == coordinatesSetId), None)
     if asked is not None or not pickings:
         return asked
@@ -244,14 +248,16 @@ def _followedPicking(pickings: List[Dict[str, Any]], coordinatesSetId: Optional[
     def rank(picking):
         updatedAt = picking["coordinates"]["_updatedAt"]
         steps = picking["steps"]
-        return (picking["classes2d"] is not None, picking["particles"] is not None, steps is not None,
+        return (classesSetId is not None and classesSetId in picking["allClasses"],
+                picking["classes2d"] is not None, picking["particles"] is not None, steps is not None,
                 -(steps or 0), updatedAt is not None, updatedAt or 0, picking["coordinates"]["setId"])
 
     return max(pickings, key=rank)
 
 
 def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
-           ctfSetId: Optional[int], coordinatesSetId: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
+           ctfSetId: Optional[int], coordinatesSetId: Optional[int] = None,
+           classesSetId: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
     """The output of each stage of the followed stream. ``pickings`` lists the pickings it could follow."""
     byKey = {(output["protocolId"], output["outputName"]): output for output in outputs}
 
@@ -295,10 +301,14 @@ def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
                           and output["protocolId"] == aligner)
         if aligned is not None:
             chain["alignedMovies"] = aligned
+        alignedMicrographs = _newest(output for output in outputs if output["stage"] == "micrographs"
+                                     and output["protocolId"] == aligner)
+        if alignedMicrographs is not None and alignedMicrographs["setId"] != micrographs["setId"]:
+            chain["alignedMicrographs"] = alignedMicrographs
         pickings = _pickings(outputs, inputs, [output for output in (micrographs, chain.get("ctf"))
                                                if output is not None])
         chain["pickings"] = pickings
-        picking = _followedPicking(pickings, coordinatesSetId)
+        picking = _followedPicking(pickings, coordinatesSetId, classesSetId)
         if picking is not None:
             coordinates = picking["coordinates"]
             chain["coordinates"] = coordinates
@@ -311,6 +321,10 @@ def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
                 chain["particles"] = picking["particles"]
             if picking["classes2d"] is not None:
                 chain["classes2d"] = picking["classes2d"]
+        asked = next((output for output in outputs if output["stage"] == "classes2d"
+                      and output["setId"] == classesSetId), None)
+        if asked is not None:
+            chain["classes2d"] = asked
         if "classes2d" not in chain:
             # 2D classes no picking leads to (particles imported, or from where the graph does not tell)
             classes = _newest(output for output in outputs if output["stage"] == "classes2d")
@@ -388,6 +402,8 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
         if output is None:
             continue
         entry = {key: value for key, value in output.items() if not key.startswith("_")}
+        # The stage of the stream, which for the aligned micrographs is not the kind of their Set
+        entry["stage"] = stage
         entry.update(rates.get(output["setId"], {"perMinute": 0.0, "trend": "steady"}))
         counted = micCounts.get(stage)
         entry["behind"] = None
@@ -404,7 +420,7 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
                                            "outputName": source["outputName"], "items": source["items"]}
             if classified is not None and source is not None:
                 entry["behind"] = max(0, source["items"] - classified)
-        elif stage in ("micrographs", "ctf") and previous is not None:
+        elif stage in MICROGRAPH_STAGES and previous is not None:
             entry["behind"] = max(0, previous["items"] - output["items"])
         elif counted is not None:
             entry["micrographs"] = len(counted["counts"])
@@ -419,7 +435,7 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
                 entry["behind"] = max(0, waitingOn - len(counted["counts"]))
         stages.append(withEta(entry))
         previous = output
-        if stage in ("micrographs", "ctf"):
+        if stage in MICROGRAPH_STAGES:
             previousMicrographs = output["items"]
         elif counted is not None:
             previousMicrographs = len(counted["counts"]) if counted["complete"] else None
@@ -702,11 +718,12 @@ def alertRuns(points: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, afterSetId: Optional[int] = None,
                      afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
-                     afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None) -> Dict[str, Any]:
+                     afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None,
+                     classesSetId: Optional[int] = None) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
-    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), ctfSetId, coordinatesSetId)
+    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), ctfSetId, coordinatesSetId, classesSetId)
     rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"],
                    now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
@@ -728,6 +745,10 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                                 "outputName": picking["coordinates"]["outputName"]}
                                for picking in sorted(chain.get("pickings", []),
                                                      key=lambda item: item["coordinates"]["setId"])],
+        "classesOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
+                            "outputName": output["outputName"]}
+                           for output in sorted((o for o in outputs if o["stage"] == "classes2d"),
+                                                key=lambda o: o["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
         "picking": picking,

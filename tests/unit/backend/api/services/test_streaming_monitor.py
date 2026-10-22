@@ -338,7 +338,11 @@ def test_micrographs_made_from_micrographs_still_find_their_movies():
 
     payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
 
-    assert [(s["stage"], s["setId"]) for s in payload["stages"]][:3] == [("movies", 10), ("micrographs", 25), ("ctf", 30)]
+    # The micrographs motioncor aligned show apart, before the preprocessed ones the CTF reads
+    assert [(s["stage"], s["setId"]) for s in payload["stages"]][:4] == [
+        ("movies", 10), ("alignedMicrographs", 20), ("micrographs", 25), ("ctf", 30)]
+    behind = {s["stage"]: s["behind"] for s in payload["stages"]}
+    assert (behind["alignedMicrographs"], behind["micrographs"]) == (10, 2)
     monitor.streamingMonitor(Mapper(db), 7, now=NOW)
     assert set(db.shiftsSetIds) == {21}, "The shifts come from motioncor, which made these micrographs"
 
@@ -702,3 +706,27 @@ def test_the_stages_of_the_monitor_carry_their_estimated_time():
     # 10 micrographs without CTF at 2 CTFs a minute
     assert stages["ctf"]["etaMinutes"] == 5.0
     assert stages["micrographs"]["stalled"] is True
+
+
+def test_the_aligned_micrographs_are_not_shown_twice_when_the_ctf_reads_them():
+    stages = [s["stage"] for s in monitor.streamingMonitor(Mapper(preprocessing()), 7, now=NOW)["stages"]]
+
+    assert "alignedMicrographs" not in stages
+
+
+def test_of_several_2d_classifications_the_one_asked_for_is_followed_with_its_picking():
+    """alignPCA-2D 9 reads the extraction of picking 4; another one (19) reads the extraction (16) of picking 15."""
+    db = classified(preprocessing(), [(1, 100)])
+    db.outputs += [output(70, "15", "outputCoordinates", "SetOfCoordinates", 300),
+                   output(71, "16", "outputParticles", "SetOfParticles", 290),
+                   output(91, "19", "outputClasses", "SetOfClasses2D", 1)]
+    db.refs += [ref("15", "2", "outputMicrographsDoseWeighted"), ref("16", "15", "outputCoordinates"),
+                ref("19", "16", "outputParticles")]
+
+    default = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+    asked = monitor.streamingMonitor(Mapper(db), 7, classesSetId=91, now=NOW)
+
+    assert [o["setId"] for o in default["classesOutputs"]] == [90, 91]
+    stages = {s["stage"]: s["setId"] for s in asked["stages"]}
+    assert (stages["coordinates"], stages["particles"], stages["classes2d"]) == (70, 71, 91)
+    assert asked["classes"]["setId"] == 91
