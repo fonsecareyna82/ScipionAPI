@@ -13,8 +13,10 @@ NOW = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
 @pytest.fixture(autouse=True)
 def noCache():
     tomo._cache.clear()
+    tomo._alertCache.clear()
     yield
     tomo._cache.clear()
+    tomo._alertCache.clear()
 
 
 def output(setId, protocolId, outputName, setClassName, items):
@@ -260,3 +262,35 @@ def test_tilt_series_movies_are_not_the_acquired_tilt_series():
     db.outputs.insert(0, output(5, "9", "outputTiltSeriesM", "SetOfTiltSeriesM", 2))
 
     assert tomo.tomoMonitor(Mapper(db), 7, now=NOW)["stages"][0]["setId"] == 10
+
+
+def test_runs_of_tilt_series_past_a_threshold_reach_the_bell():
+    late = datetime(2026, 10, 22, 12, 30, tzinfo=timezone.utc)
+    short = [tiltSeries("TS_0%d" % i, i, list(range(-40, 41, 4))) for i in (1, 2)]
+    db = tomography(sets={10: short})
+
+    runs = tomo.projectAlertRuns(Mapper(db), 7)
+    tomo._alertCache.clear()
+
+    assert [(r["kind"], r["micrographName"], r["count"], r["text"]) for r in runs] == [
+        ("minAngleSpan", "TS_01", 2, "Tilt range short of ±50°"), ("minTilts", "TS_01", 2, "Fewer than 30 tilts")]
+    assert runs[0]["protocolId"] == "1"
+    assert len(tomo.alertsSince(Mapper(db), 7, datetime(2026, 10, 22, 11, 0, tzinfo=timezone.utc))) == 2
+    assert tomo.alertsSince(Mapper(db), 7, late) == []
+
+
+def test_the_tomography_stages_carry_their_estimated_time():
+    db = tomography()
+    db.rates = [{"setId": 50, "lastWindow": 5, "previousWindow": 5, "sampled": 5, "oldest": NOW}]
+    original = db.fetchAll
+
+    def fetchAll(query, params):
+        if query == queries.SET_RATES_SQL:
+            return [row for row in db.rates if row["setId"] in params[3]]
+        return original(query, params)
+
+    db.fetchAll = fetchAll
+    stages = {s["stage"]: s for s in tomo.tomoMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    # 1 tomogram waiting at half a tomogram a minute
+    assert stages["tomograms"]["etaMinutes"] == 2.0

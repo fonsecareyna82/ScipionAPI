@@ -21,6 +21,7 @@ import logging
 import math
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -330,7 +331,7 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]]) 
         # Tilt series acquired and not processed by this stage yet; tomograms wait on the aligned ones
         before = chain.get("aligned") if stage == "tomograms" and chain.get("aligned") is not None else raw
         entry["behind"] = max(0, before["items"] - output["items"]) if stage != "tiltseries" else None
-        stages.append(entry)
+        stages.append(spa.withEta(entry))
     return stages
 
 
@@ -357,6 +358,47 @@ def tomoMonitor(mapper, projectId: int, tsSetId: Optional[int] = None,
         "thresholds": thresholds,
         "tiltSeries": _rows(mapper, projectId, chain, thresholds) if "tiltseries" in chain else [],
     }
+
+
+# -- alerts for the notification bell -----------------------------------------------
+
+ALERT_CACHE_SECONDS = 10.0
+
+# projectId -> (when it was computed, its alert runs): every open tab polls the bell, the work is done once
+_alertCache: Dict[int, tuple] = {}
+
+
+def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
+    """The runs of consecutive tilt series past a threshold, as the tomography view shows them."""
+    cached = _alertCache.get(int(projectId))
+    if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
+        return cached[1]
+    outputs = _outputs(mapper, projectId)
+    runs: List[Dict[str, Any]] = []
+    if any(output["stage"] == "tiltseries" for output in outputs):
+        chain = _chain(mapper, outputs, spa._inputsOf(mapper, projectId, outputs), None)
+        thresholds = spa.thresholdsWith(spa.storedThresholds(mapper, projectId))
+        rows = _rows(mapper, projectId, chain, thresholds) if "tiltseries" in chain else []
+        points = [{"id": row["id"], "time": row.get("time"), "micrographName": row["tsId"], "alerts": row["alerts"]}
+                  for row in rows]
+        for run in spa.alertRuns(points):
+            runs.append({
+                "kind": run["kind"],
+                "text": spa._limitText(run["kind"], thresholds),
+                "startedAt": run["first"].get("time"),
+                "micrographName": run["first"]["micrographName"],
+                "count": run["count"],
+                "ongoing": run["ongoing"],
+                "protocolId": chain["tiltseries"]["protocolId"],
+                "protocolClassName": chain["tiltseries"]["protocolClassName"],
+            })
+    _alertCache[int(projectId)] = (time.monotonic(), runs)
+    return runs
+
+
+def alertsSince(mapper, projectId: int, since: datetime) -> List[Dict[str, Any]]:
+    """The tilt series alert runs of a project that started after ``since``."""
+    return [run for run in projectAlertRuns(mapper, projectId) if spa._startedAfter(run, since)]
 
 
 # -- one tilt series --------------------------------------------------------------

@@ -31,15 +31,17 @@ MAX_MONITORED_PROJECTS = 10
 
 def _monitorAlerts(mapper, projects: Dict[int, Dict[str, Any]], projectIds: List[int],
                    since: datetime) -> List[Dict[str, Any]]:
-    """Runs of micrographs past a monitor threshold that started after ``since``, in the streaming projects."""
-    from app.backend.api.services import streaming_monitor
+    """Runs of micrographs or tilt series past a monitor threshold that started after ``since``, in the
+    streaming projects."""
+    from app.backend.api.services import streaming_monitor, tomo_monitor
 
     events = []
     liveProjectIds = ProtocolActivityPostgresqlMapper(mapper.db).listLiveProjectIds(
         projectIds, LIVE_STATUSES, MAX_MONITORED_PROJECTS)
     for projectId in liveProjectIds:
         try:
-            runs = streaming_monitor.alertsSince(mapper, projectId, since)
+            runs = streaming_monitor.alertsSince(mapper, projectId, since) + tomo_monitor.alertsSince(
+                mapper, projectId, since)
         except Exception:
             # The monitor of one project never stops the activity of the others
             logger.warning("The monitor alerts of project %s could not be read", projectId, exc_info=True)

@@ -356,6 +356,25 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
     return rates
 
 
+def withEta(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """How long the backlog of a stage takes to clear at its rate of the last minutes (``etaMinutes``), or
+    that it does not move (``stalled``). Coordinates and particles count their backlog in micrographs and
+    their rate in items: the rate goes to micrographs with their items per micrograph."""
+    behind, rate = entry.get("behind"), entry.get("perMinute")
+    if not behind or rate is None:
+        return entry
+    if entry.get("micrographs") is not None:
+        items, micrographs = entry.get("items") or 0, entry["micrographs"]
+        rate = rate * micrographs / items if items and micrographs else None
+    if rate is None:
+        return entry
+    if rate > 0:
+        entry["etaMinutes"] = behind / rate
+    else:
+        entry["stalled"] = True
+    return entry
+
+
 def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
             micCounts: Dict[str, Dict[str, Any]], classes: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The stages and their backlog: what the stage before produced that this one has not yet. Coordinates
@@ -398,7 +417,7 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
             waitingOn = source["items"] if source is not None else previousMicrographs
             if waitingOn is not None and counted["complete"]:
                 entry["behind"] = max(0, waitingOn - len(counted["counts"]))
-        stages.append(entry)
+        stages.append(withEta(entry))
         previous = output
         if stage in ("micrographs", "ctf"):
             previousMicrographs = output["items"]
@@ -856,16 +875,16 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
     return runs
 
 
+def _startedAfter(run: Dict[str, Any], since: datetime) -> bool:
+    try:
+        started = datetime.fromisoformat(str(run["startedAt"]))
+    except (TypeError, ValueError):
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return started > since
+
+
 def alertsSince(mapper, projectId: int, since: datetime) -> List[Dict[str, Any]]:
     """The alert runs of a project that started after ``since``."""
-    events = []
-    for run in projectAlertRuns(mapper, projectId):
-        try:
-            started = datetime.fromisoformat(str(run["startedAt"]))
-        except (TypeError, ValueError):
-            continue
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        if started > since:
-            events.append(run)
-    return events
+    return [run for run in projectAlertRuns(mapper, projectId) if _startedAfter(run, since)]

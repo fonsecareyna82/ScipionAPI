@@ -112,3 +112,19 @@ def test_nothing_running_looks_at_no_monitor(monkeypatch):
     monkeypatch.setattr(streaming_monitor, "alertsSince", lambda *args: pytest.fail("No monitor to read"))
 
     workspace.protocolActivity(Mapper(PROJECTS, StreamingDb([], live=0)), 3, NOW - timedelta(seconds=30), now=NOW)
+
+
+
+def test_tilt_series_alerts_reach_the_bell_too(monkeypatch):
+    from app.backend.api.services import streaming_monitor, tomo_monitor
+    started = NOW - timedelta(seconds=5)
+    monkeypatch.setattr(streaming_monitor, "alertsSince", lambda mapper, projectId, since: [])
+    monkeypatch.setattr(tomo_monitor, "alertsSince", lambda mapper, projectId, since: [{
+        "kind": "minTilts", "text": "Fewer than 30 tilts", "startedAt": started.isoformat(), "micrographName": "TS_07",
+        "count": 1, "ongoing": True, "protocolId": "1", "protocolClassName": "ProtComposeTS"}])
+
+    payload = workspace.protocolActivity(Mapper(PROJECTS, StreamingDb([], live=1)), 3, NOW - timedelta(seconds=30),
+                                         now=NOW)
+
+    assert [(e["label"], e["status"], e["threshold"]) for e in payload["events"]] == [
+        ("Fewer than 30 tilts: TS_07", "alert", "minTilts")]

@@ -679,3 +679,26 @@ def test_2d_classes_no_picking_leads_to_are_shown_anyway():
     assert payload["classes"]["setId"] == 90
     classes = next(s for s in payload["stages"] if s["stage"] == "classes2d")
     assert classes["classifiedFrom"]["items"] == 1000 and classes["behind"] == 100
+
+
+def test_a_backlog_tells_how_long_it_takes_to_clear_at_its_rate():
+    assert monitor.withEta({"behind": 30, "perMinute": 2.0})["etaMinutes"] == 15.0
+    assert monitor.withEta({"behind": 30, "perMinute": 0.0})["stalled"] is True
+    assert "etaMinutes" not in monitor.withEta({"behind": 0, "perMinute": 2.0})
+    assert "etaMinutes" not in monitor.withEta({"behind": 10, "perMinute": None})
+
+
+def test_the_picking_backlog_in_micrographs_clears_at_its_rate_in_micrographs():
+    """300 coordinates a minute at 100 per micrograph is 3 micrographs a minute: 12 waiting take 4 minutes."""
+    entry = monitor.withEta({"behind": 12, "perMinute": 300.0, "items": 5000, "micrographs": 50})
+
+    assert entry["etaMinutes"] == 4.0
+
+
+def test_the_stages_of_the_monitor_carry_their_estimated_time():
+    rates = [{"setId": 30, "lastWindow": 20, "previousWindow": 20, "sampled": 80, "oldest": NOW - timedelta(hours=1)}]
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(preprocessing(rates=rates)), 7, now=NOW)["stages"]}
+
+    # 10 micrographs without CTF at 2 CTFs a minute
+    assert stages["ctf"]["etaMinutes"] == 5.0
+    assert stages["micrographs"]["stalled"] is True
