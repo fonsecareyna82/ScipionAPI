@@ -143,6 +143,8 @@ def _outputs(mapper, projectId: int) -> List[Dict[str, Any]]:
             "maxItemId": _toInt(properties.get("maxItemId")),
             "streaming": streamState == STREAM_OPEN,
             "_updatedAt": row.get("updatedAt"),
+            # Only coordinates have one: the side of the box drawn around each particle
+            "_boxSize": _toInt(properties.get("_boxSize", properties.get("boxSize"))),
         })
     return outputs
 
@@ -813,10 +815,11 @@ def countByMicrograph(mapper, setId: int) -> Dict[str, Any]:
 def _picking(chain: Dict[str, Dict[str, Any]], micCounts: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
              afterRowId: Optional[int]) -> Dict[str, Any]:
     """The coordinates of each micrograph that changed since the caller's cursor (all of them on a first
-    call, or when the coordinates output is another one)."""
+    call, or when the coordinates output is another one), and where to read them to draw them."""
     coordinates = chain.get("coordinates")
     if coordinates is None:
-        return {"setId": None, "reset": afterSetId is not None, "lastRowId": None, "complete": True, "counts": {}}
+        return {"setId": None, "reset": afterSetId is not None, "lastRowId": None, "complete": True, "counts": {},
+                "protocolId": None, "outputName": None, "boxSize": None}
     state = micCounts["coordinates"]
     reset = afterSetId != coordinates["setId"] or afterRowId is None or int(afterRowId) > state["lastRowId"]
     after = 0 if reset else int(afterRowId)
@@ -826,6 +829,9 @@ def _picking(chain: Dict[str, Dict[str, Any]], micCounts: Dict[str, Dict[str, An
         "lastRowId": state["lastRowId"],
         "complete": state["complete"],
         "counts": {str(micId): state["counts"][micId] for micId, row in state["changed"].items() if row > after},
+        "protocolId": coordinates["protocolId"],
+        "outputName": coordinates["outputName"],
+        "boxSize": coordinates["_boxSize"],
     }
 
 

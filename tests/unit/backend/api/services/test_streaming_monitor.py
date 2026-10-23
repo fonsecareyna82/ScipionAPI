@@ -463,6 +463,15 @@ def picks(setId, micsAndCounts, firstRow=1):
     return rows
 
 
+def test_the_picking_says_where_its_coordinates_are_and_their_box_size():
+    db = preprocessing(items=[ctfItem(1)], picks=picks(40, [(1, 3)]))
+    next(row for row in db.outputs if row["setId"] == 40)["properties"]["_boxSize"] = 180
+
+    picking = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["picking"]
+
+    assert (picking["protocolId"], picking["outputName"], picking["boxSize"]) == ("4", "outputCoordinates", 180)
+
+
 def test_the_coordinates_of_each_micrograph_are_counted_and_only_the_changes_sent_again():
     db = preprocessing(items=[ctfItem(1), ctfItem(2)], picks=picks(40, [(1, 3), (2, 2)]))
     first = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["picking"]
@@ -470,7 +479,8 @@ def test_the_coordinates_of_each_micrograph_are_counted_and_only_the_changes_sen
     following = monitor.streamingMonitor(Mapper(db), 7, afterPickSetId=40, afterPickRowId=first["lastRowId"],
                                          now=NOW)["picking"]
 
-    assert first == {"setId": 40, "reset": False, "lastRowId": 5, "complete": True, "counts": {"1": 3, "2": 2}}
+    assert first == {"setId": 40, "reset": False, "lastRowId": 5, "complete": True, "counts": {"1": 3, "2": 2},
+                     "protocolId": "4", "outputName": "outputCoordinates", "boxSize": None}
     assert following["counts"] == {"2": 6, "3": 1} and following["lastRowId"] == 10
 
 
