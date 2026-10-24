@@ -14,9 +14,11 @@ def noCaches():
     """The alert runs and micrograph counts are kept per process: every test starts without them."""
     monitor._alertCache.clear()
     monitor._micCounts.clear()
+    monitor._doseSets.clear()
     yield
     monitor._alertCache.clear()
     monitor._micCounts.clear()
+    monitor._doseSets.clear()
 
 
 def output(setId, protocolId, outputName, setClassName, items, streamState=1, updatedAt=None, maxItemId=None):
@@ -43,8 +45,10 @@ class Db:
     """Answers each monitor query with its rows; the series rows are filtered as the query would."""
 
     def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=(),
-                 dependencies=()):
+                 dependencies=(), doseRows=None):
         self.outputs, self.refs, self.rates = list(outputs), list(refs), list(rates)
+        # The rows of the outputs of a dose analysis: setId -> rows
+        self.doseRows = dict(doseRows or {})
         # Rows of the coordinates and particles Sets: (setId, rowId, micrograph id)
         self.picks = list(picks)
         self.classes = list(classes)
@@ -57,6 +61,10 @@ class Db:
         self.shiftsSetIds = []
 
     def fetchOne(self, query, params):
+        if query == queries.FIRST_ITEM_HAS_VALUE_SQL:
+            key, setId = params
+            rows = sorted(self.doseRows.get(setId, self.items), key=lambda item: item["rowId"])
+            return {"has": key in rows[0]["values"]} if rows else None
         if query == queries.FIRST_ROW_SQL:
             rows = [rowId for setId, rowId, _ in self.picks if setId == params[0]] if any(
                 setId == params[0] for setId, _, _ in self.picks) else [item["rowId"] for item in self.items]
@@ -80,8 +88,9 @@ class Db:
         if query == queries.SET_RATES_SQL:
             return [row for row in self.rates if row["setId"] in params[3]]
         if query == queries.SERIES_ITEMS_SQL:
-            _, after, limit = params
-            return sorted((item for item in self.items if item["rowId"] > after), key=lambda item: item["rowId"])[:limit]
+            setId, after, limit = params
+            rows = self.doseRows.get(setId, self.items)
+            return sorted((item for item in rows if item["rowId"] > after), key=lambda item: item["rowId"])[:limit]
         if query == queries.MIC_COUNTS_SQL:
             setId, after, limit = params
             chunk = sorted((row for row in self.picks if row[0] == setId and row[1] > after), key=lambda row: row[1])[:limit]
@@ -95,7 +104,8 @@ class Db:
             return list(self.classes)
         if query == queries.LATEST_ROWS_SQL:
             setId, limit = params
-            return sorted(self.items, key=lambda item: item["rowId"], reverse=True)[:limit]
+            rows = self.doseRows.get(setId, self.items)
+            return sorted(rows, key=lambda item: item["rowId"], reverse=True)[:limit]
         if query == queries.ITEMS_BY_IDS_SQL:
             self.shiftsSetIds.append(params[0])
             return [movie for movie in self.movies if movie["scipionItemId"] in params[1]]
@@ -745,3 +755,73 @@ def test_of_several_2d_classifications_the_one_asked_for_is_followed_with_its_pi
 def test_a_3d_picking_is_not_a_picking_of_the_micrographs():
     assert monitor._stageOf("SetOfCoordinates3D", "Coordinate3D") is None
     assert monitor._stageOf("SetOfCoordinates", "Coordinate") == "coordinates"
+
+
+def doseMovie(itemId, mean=1.2, difference=0.0, rowId=None):
+    """A movie of a dose analysis; one whose analysis failed has no dose."""
+    values = {"_filename": "Runs/02/movie_%03d.tiff" % itemId}
+    if mean is not None:
+        values.update({"_MEAN_DOSE_PER_ANGSTROM2": mean, "_DIFF_TO_DOSE_PER_ANGSTROM2": difference})
+    return {"rowId": rowId if rowId is not None else 500 + itemId, "scipionItemId": itemId, "enabled": True,
+            "label": "", "time": NOW, "values": values}
+
+
+def withDoseAnalysis(kept, discarded, **kwargs):
+    """preprocessing() with a dose analysis (9) of the imported movies: its kept and its discarded movies."""
+    db = preprocessing(**kwargs)
+    db.outputs += [output(90, "9", "outputMovies", "SetOfMovies", len(kept)),
+                   output(91, "9", "outputMoviesDiscarded", "SetOfMovies", len(discarded))]
+    db.refs.append(ref("9", "1", "outputMovies"))
+    db.doseRows = {90: kept, 91: discarded}
+    return db
+
+
+def test_the_dose_of_the_kept_and_the_discarded_movies_is_followed_in_the_order_they_were_analysed():
+    db = withDoseAnalysis([doseMovie(1, 1.20, 0.5), doseMovie(3, 1.22, 2.0)],
+                          [doseMovie(2, 1.40, 16.0), doseMovie(4, None, rowId=499)])
+
+    dose = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["dose"]
+
+    assert (dose["key"], dose["label"], dose["reset"], dose["lastRowId"], dose["more"]) == ("9", "run 9", False, 503, False)
+    # The failed analysis (no dose) moves the cursor but is no point
+    assert [(p["id"], p["doseDifference"], p["discarded"], p["alerts"]) for p in dose["points"]] == [
+        (1, 0.5, False, []), (2, 16.0, True, ["maxDoseDifference"]), (3, 2.0, False, [])]
+    assert dose["points"][0]["movieName"] == "movie_001.tiff" and dose["points"][0]["meanDose"] == 1.2
+
+
+def test_the_dose_is_read_after_the_cursor_and_again_from_scratch_for_another_analysis():
+    db = withDoseAnalysis([doseMovie(1), doseMovie(3)], [doseMovie(2, 1.4, 16.0)])
+
+    following = monitor.streamingMonitor(Mapper(db), 7, afterDoseKey="9", afterDoseRowId=502, now=NOW)["dose"]
+    other = monitor.streamingMonitor(Mapper(db), 7, afterDoseKey="8", afterDoseRowId=502, now=NOW)["dose"]
+
+    assert [p["id"] for p in following["points"]] == [3] and following["reset"] is False
+    assert [p["id"] for p in other["points"]] == [1, 2, 3] and other["reset"] is True
+
+
+def test_the_dose_cursor_stops_where_an_output_with_more_rows_stopped(monkeypatch):
+    monkeypatch.setattr(monitor, "SERIES_BATCH", 2)
+    kept = [doseMovie(itemId) for itemId in (1, 2, 3, 4)]
+    db = withDoseAnalysis(kept, [doseMovie(5, rowId=502)])
+
+    dose = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["dose"]
+
+    # The kept movies stop at row 502: the discarded one at 502 comes, nothing after it is skipped
+    assert dose["lastRowId"] == 502 and dose["more"] is True
+    assert [p["id"] for p in dose["points"]] == [1, 2, 5]
+
+
+def test_a_project_without_a_dose_analysis_has_no_dose_series():
+    dose = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, now=NOW)["dose"]
+
+    assert dose["key"] is None and dose["points"] == []
+
+
+def test_the_bell_tells_a_run_of_movies_off_the_median_dose():
+    db = withDoseAnalysis([doseMovie(1)], [doseMovie(2, 1.4, 16.0), doseMovie(3, 1.4, -12.0)])
+
+    runs = monitor.projectAlertRuns(Mapper(db), 7)
+
+    assert [(run["kind"], run["count"], run["micrographName"], run["protocolId"]) for run in runs] == [
+        ("maxDoseDifference", 2, "movie_002.tiff", "9")]
+    assert runs[0]["text"] == "Dose off the session median by more than 5 %"

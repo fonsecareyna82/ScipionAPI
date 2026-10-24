@@ -61,6 +61,15 @@ SERIES_ITEMS_SQL = """
      LIMIT %s
 """
 
+# Whether the first item of a Set carries a value: what kind of analysis wrote it, for one row
+FIRST_ITEM_HAS_VALUE_SQL = """
+    SELECT jsonb_exists("values", %s) AS "has"
+      FROM scipion_set_items
+     WHERE "setId" = %s
+     ORDER BY id
+     LIMIT 1
+"""
+
 # A Set whose rows were all written again (a full sync) has no row left at or below the caller's cursor.
 FIRST_ROW_SQL = """
     SELECT MIN(id) AS "firstRowId" FROM scipion_set_items WHERE "setId" = %s
@@ -222,6 +231,11 @@ class StreamingMonitorPostgresqlMapper:
     def listItemsAfterRow(self, setId: int, afterRowId: int, limit: int) -> List[Dict[str, Any]]:
         """The items of a Set written after a row, in the order they were written."""
         return self.db.fetchAll(SERIES_ITEMS_SQL, (int(setId), int(afterRowId), int(limit))) or []
+
+    def firstItemHasValue(self, setId: int, key: str) -> bool:
+        """Whether the first item written to a Set carries the value ``key``."""
+        row = self.db.fetchOne(FIRST_ITEM_HAS_VALUE_SQL, (str(key), int(setId))) or {}
+        return bool(row.get("has"))
 
     def getFirstRowId(self, setId: int) -> Optional[int]:
         row = self.db.fetchOne(FIRST_ROW_SQL, (int(setId),)) or {}

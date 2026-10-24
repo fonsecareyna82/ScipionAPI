@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ DEFAULT_THRESHOLDS: Dict[str, Optional[float]] = {
     "maxFrameShift": 10.0,    # A, between two consecutive frames
     "maxTotalDrift": 45.0,    # A, the whole path of the movie
     "minParticles": None,     # coordinates picked on a micrograph; depends on the sample, no default alert
+    "maxDoseDifference": 5.0,  # %, the dose of a movie against the median of the session (as Xmipp's dose analysis)
     # Tomography, per tilt series (see tomo_monitor)
     "minTilts": 30.0,         # enabled tilt images, as the exclude views filter of tomo
     "minAngleSpan": 50.0,     # degrees: the series should reach at least -50 and +50
@@ -633,6 +635,10 @@ def alertsOf(point: Dict[str, Any], thresholds: Dict[str, Optional[float]]) -> L
     particles = point.get("particles")
     if particles is not None and thresholds.get("minParticles") is not None and particles < thresholds["minParticles"]:
         alerts.append("minParticles")
+    difference = point.get("doseDifference")
+    if difference is not None and thresholds.get("maxDoseDifference") is not None and \
+            abs(difference) > thresholds["maxDoseDifference"]:
+        alerts.append("maxDoseDifference")
     return alerts
 
 
@@ -695,6 +701,87 @@ def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
     }
 
 
+# What a dose analysis of the movies writes on each one (Xmipp's movie dose analysis): the mean dose per frame
+# in e/A2, and how far it is from the median of the session in %
+DOSE_MEAN = "_MEAN_DOSE_PER_ANGSTROM2"
+DOSE_DIFFERENCE = "_DIFF_TO_DOSE_PER_ANGSTROM2"
+
+# setId -> whether its first movie carries a measured dose; the first row of a Set does not change
+_doseSets: Dict[int, bool] = {}
+
+
+def _doseOutputs(mapper, outputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The movies outputs of the dose analysis followed: every one of the newest protocol whose movies carry a
+    measured dose, its kept and its discarded movies alike (a movie whose analysis failed has no dose)."""
+    movies = [output for output in outputs if output["stage"] == "movies"]
+    analysed = set()
+    for output in movies:
+        if not output["items"]:
+            continue
+        known = _doseSets.get(output["setId"])
+        if known is None:
+            known = _store(mapper).firstItemHasValue(output["setId"], DOSE_MEAN)
+            _doseSets[output["setId"]] = known
+        if known:
+            analysed.add(output["protocolId"])
+    newest = _newest(output for output in movies if output["protocolId"] in analysed)
+    if newest is None:
+        return []
+    return sorted((output for output in movies if output["protocolId"] == newest["protocolId"]),
+                  key=lambda output: output["setId"])
+
+
+def _dosePoints(rows: List[tuple], thresholds: Dict[str, Optional[float]]) -> List[Dict[str, Any]]:
+    """The dose of each movie of these (row, output) pairs that has one."""
+    points = []
+    for row, output in rows:
+        values = _values(row)
+        mean, difference = _valueBySuffix(values, DOSE_MEAN), _valueBySuffix(values, DOSE_DIFFERENCE)
+        try:
+            mean, difference = float(mean), float(difference)
+        except (TypeError, ValueError):
+            continue  # Its analysis failed
+        fileName = _valueBySuffix(values, "_filename")
+        point = {"id": int(row["scipionItemId"]), "time": _iso(row.get("time")),
+                 "movieName": row.get("label") or (os.path.basename(str(fileName)) if fileName else None),
+                 "meanDose": mean, "doseDifference": difference,
+                 "discarded": "discard" in output["outputName"].lower()}
+        point["alerts"] = alertsOf(point, thresholds)
+        points.append({key: value for key, value in point.items() if value is not None})
+    return points
+
+
+def _doseSeries(mapper, doseOutputs: List[Dict[str, Any]], afterKey: Optional[str], afterRowId: Optional[int],
+                thresholds: Dict[str, Optional[float]]) -> Dict[str, Any]:
+    """The dose of the movies analysed after the caller's cursor, from the kept and the discarded ones."""
+    if not doseOutputs:
+        return {"key": None, "label": None, "reset": afterKey is not None, "lastRowId": None, "more": False,
+                "points": []}
+    key = doseOutputs[0]["protocolId"]
+    reset = afterKey != key
+    after = 0 if reset or afterRowId is None else int(afterRowId)
+    rows, cut = [], None
+    for output in doseOutputs:
+        found = _store(mapper).listItemsAfterRow(output["setId"], after, SERIES_BATCH)
+        rows += [(row, output) for row in found]
+        if len(found) >= SERIES_BATCH:
+            # Row ids are shared by every Set: the cursor cannot go past what an unfinished output gave
+            last = int(found[-1]["rowId"])
+            cut = last if cut is None else min(cut, last)
+    if cut is not None:
+        rows = [(row, output) for row, output in rows if int(row["rowId"]) <= cut]
+    rows.sort(key=lambda pair: int(pair[0]["rowId"]))
+    lastRowId = int(rows[-1][0]["rowId"]) if rows else (None if reset else afterRowId)
+    return {
+        "key": key,
+        "label": doseOutputs[0]["label"],
+        "reset": bool(reset and afterKey is not None),
+        "lastRowId": lastRowId,
+        "more": cut is not None,
+        "points": _dosePoints(rows, thresholds),
+    }
+
+
 def alertRuns(points: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Runs of consecutive micrographs (by id) past the same threshold, oldest first, as the monitor page
     shows them: failed estimations neither start nor end a run."""
@@ -721,7 +808,8 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                      afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
                      afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None,
-                     classesSetId: Optional[int] = None) -> Dict[str, Any]:
+                     classesSetId: Optional[int] = None, afterDoseKey: Optional[str] = None,
+                     afterDoseRowId: Optional[int] = None) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
@@ -753,6 +841,7 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                                                 key=lambda o: o["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
+        "dose": _doseSeries(mapper, _doseOutputs(mapper, outputs), afterDoseKey, afterDoseRowId, limits),
         "picking": picking,
         "classes": classes,
         # Tilt series in the project: the monitor shows its tomography view too
@@ -848,6 +937,7 @@ THRESHOLD_TEXT = {
     "maxFrameShift": "Frame shift above %s Å",
     "maxTotalDrift": "Total drift above %s Å",
     "minParticles": "Fewer than %s particles picked",
+    "maxDoseDifference": "Dose off the session median by more than %s %%",
     "minTilts": "Fewer than %s tilts",
     "minAngleSpan": "Tilt range short of ±%s°",
     "maxFailedCtfTilts": "More than %s tilts without CTF",
@@ -884,21 +974,38 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
         picked = countByMicrograph(mapper, chain["coordinates"]["setId"])["counts"] if "coordinates" in chain \
             else None
         points = _points(mapper, chain, base, rows, thresholds, picked)
-        oldest = min((point["id"] for point in points), default=None)
-        for run in alertRuns(points):
-            if len(rows) >= ALERT_WINDOW and run["first"]["id"] == oldest:
-                continue
-            runs.append({
-                "kind": run["kind"],
-                "text": _limitText(run["kind"], thresholds),
-                "startedAt": run["first"].get("time"),
-                "micrographName": run["first"].get("micrographName") or "Micrograph %s" % run["first"]["id"],
-                "count": run["count"],
-                "ongoing": run["ongoing"],
-                "protocolId": base["protocolId"],
-                "protocolClassName": base["protocolClassName"],
-            })
+        runs += _windowRuns(points, len(rows) >= ALERT_WINDOW, thresholds, base, "micrographName", "Micrograph")
+    doseOutputs = _doseOutputs(mapper, outputs)
+    if doseOutputs:
+        thresholds = thresholdsWith(storedThresholds(mapper, projectId))
+        latest = [(row, output) for output in doseOutputs
+                  for row in _store(mapper).listLatestItems(output["setId"], ALERT_WINDOW)]
+        # The newest movies of the kept and the discarded ones together
+        latest = sorted(latest, key=lambda pair: int(pair[0]["scipionItemId"]))[-ALERT_WINDOW:]
+        runs += _windowRuns(_dosePoints(latest, thresholds), len(latest) >= ALERT_WINDOW, thresholds,
+                            doseOutputs[0], "movieName", "Movie")
     _alertCache[int(projectId)] = (time.monotonic(), runs)
+    return runs
+
+
+def _windowRuns(points: List[Dict[str, Any]], windowFull: bool, thresholds: Dict[str, Optional[float]],
+                output: Dict[str, Any], nameKey: str, itemKind: str) -> List[Dict[str, Any]]:
+    """The alert runs of the newest items of an output, as the bell tells them."""
+    oldest = min((point["id"] for point in points), default=None)
+    runs = []
+    for run in alertRuns(points):
+        if windowFull and run["first"]["id"] == oldest:
+            continue
+        runs.append({
+            "kind": run["kind"],
+            "text": _limitText(run["kind"], thresholds),
+            "startedAt": run["first"].get("time"),
+            "micrographName": run["first"].get(nameKey) or "%s %s" % (itemKind, run["first"]["id"]),
+            "count": run["count"],
+            "ongoing": run["ongoing"],
+            "protocolId": output["protocolId"],
+            "protocolClassName": output["protocolClassName"],
+        })
     return runs
 
 
