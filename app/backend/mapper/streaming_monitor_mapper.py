@@ -170,6 +170,14 @@ ROOT_ROWS_SQL = """
      WHERE "setId" = %s
 """
 
+# The coordinates of a 3D picking per tomogram (the tsId of the tomogram each one is on)
+COORDINATES_3D_PER_TOMOGRAM_SQL = """
+    SELECT "values" ->> '_tomoId' AS "tomoId", COUNT(*) AS count
+      FROM scipion_set_items
+     WHERE "setId" = %s
+     GROUP BY 1
+"""
+
 ALIGNED_SQL = """
     SELECT 1 AS aligned FROM scipion_set_items
      WHERE "setId" = %s AND LOWER(COALESCE("values" ->> '_hasAlignment', '')) IN ('true', '1')
@@ -267,6 +275,10 @@ class StreamingMonitorPostgresqlMapper:
     def listRootItems(self, setId: int) -> List[Dict[str, Any]]:
         """The items of a Set with their tsId and file names."""
         return self.db.fetchAll(ROOT_ROWS_SQL, (int(setId),)) or []
+
+    def countCoordinates3dPerTomogram(self, setId: int) -> List[Dict[str, Any]]:
+        """How many coordinates of a SetOfCoordinates3D are on each tomogram (by its tsId)."""
+        return self.db.fetchAll(COORDINATES_3D_PER_TOMOGRAM_SQL, (int(setId),)) or []
 
     def hasAlignedItem(self, setId: int) -> bool:
         """Whether a SetOfTiltSeries holds an aligned tilt series."""

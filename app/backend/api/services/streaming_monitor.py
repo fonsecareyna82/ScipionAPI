@@ -72,7 +72,7 @@ RATE_SAMPLE = 5000
 
 def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
     text = ("%s %s" % (setClassName or "", itemClassName or "")).replace("_", "").lower()
-    if "tomo" in text or "tiltseries" in text:
+    if "tomo" in text or "tiltseries" in text or "coordinates3d" in text:
         return None  # The monitor follows single particle streams
     if "setofmovies" in text:
         return "movies"

@@ -30,7 +30,7 @@ from app.backend.api.services.streaming_monitor import _store
 
 logger = logging.getLogger(__name__)
 
-STAGES = ("tiltseries", "ctftomo", "aligned", "tomograms")
+STAGES = ("tiltseries", "ctftomo", "aligned", "tomograms", "coordinates3d")
 
 # A failed CTF estimation of a tilt (tomo's setWrongDefocus, or a failed CTFFIND/AreTomo fit)
 FAILED_DEFOCUS = -999.0
@@ -52,6 +52,8 @@ def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
         return "tomograms"
     if "setoflandmarkmodels" in text:
         return "landmarks"
+    if "setofcoordinates3d" in text:
+        return "coordinates3d"
     return None
 
 
@@ -76,6 +78,7 @@ def _outputs(mapper, projectId: int) -> List[Dict[str, Any]]:
             "maxItemId": spa._toInt(properties.get("maxItemId")),
             "streaming": streamState == spa.STREAM_OPEN,
             "_updatedAt": row.get("updatedAt"),
+            "_boxSize": spa._toInt(properties.get("_boxSize", properties.get("boxSize"))),
         })
     return outputs
 
@@ -119,6 +122,15 @@ def _chain(mapper, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]
     landmarks = [output for output, _ in spa._downstream(outputs, inputs, [raw], "landmarks", through)]
     if landmarks:
         chain["landmarks"] = spa._newest(landmarks)
+    # The picking nearest to the tilt series, on any tomograms made from them: often not the followed ones
+    # but a denoised or corrected reconstruction of another branch
+    picking = spa._nearest(spa._downstream(outputs, inputs, [raw], "coordinates3d",
+                                           ("tiltseries", "ctftomo", "landmarks", "tomograms", "coordinates3d")))
+    if picking is not None:
+        chain["coordinates3d"] = picking
+        pickedFrom = spa._readInput(outputs, inputs, picking, "tomograms")
+        if pickedFrom is not None:
+            chain["pickedTomograms"] = pickedFrom
     return chain
 
 
@@ -174,6 +186,24 @@ def _ctfTilts(mapper, setId: int, itemIds: List[int]) -> Dict[int, Dict[str, Any
         "astigmatism": _float(row.get("astigmatism")),
         "resolution": _float(row.get("resolution")),
     } for row in rows}
+
+
+def _particlesPerTomogram(mapper, picking: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """How many coordinates the followed 3D picking has on each tomogram (by tsId), counted again only when
+    the picking output changes."""
+    if picking is None:
+        return {}
+    key = ("coordinates3d", picking["setId"])
+    version = (picking["items"], picking["maxItemId"], str(picking["_updatedAt"]))
+    with _cacheLock:
+        cached = _cache.get(key)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+    counts = {str(row["tomoId"]): int(row["count"]) for row in
+              _store(mapper).countCoordinates3dPerTomogram(picking["setId"]) if row.get("tomoId")}
+    with _cacheLock:
+        _cache[key] = (version, counts)
+    return counts
 
 
 def landmarkResiduals(path: str) -> Optional[Dict[str, Any]]:
@@ -290,6 +320,7 @@ def _rows(mapper, projectId: int, chain: Dict[str, Dict[str, Any]],
         tomogramByTs = {str(row["tsId"]): int(row["itemId"]) for row in
                         store.listRootItems(chain["tomograms"]["setId"]) if row.get("tsId")}
     residuals = _residuals(mapper, projectId, chain.get("landmarks"))
+    particles = _particlesPerTomogram(mapper, chain.get("coordinates3d"))
 
     rows = []
     for series in seriesRows:
@@ -313,12 +344,15 @@ def _rows(mapper, projectId: int, chain: Dict[str, Dict[str, Any]],
             row["residual"] = residuals[tsId]["mean"]
         if tsId in tomogramByTs:
             row["tomogramId"] = tomogramByTs[tsId]
+        if tsId in particles:
+            row["particles"] = particles[tsId]
         row["alerts"] = tomoAlertsOf(row, thresholds)
         rows.append({key: value for key, value in row.items() if value is not None})
     return sorted(rows, key=lambda item: item["id"])
 
 
-def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
+            particles: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     stages = []
     raw = chain.get("tiltseries")
     for stage in STAGES:
@@ -328,6 +362,16 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]]) 
         entry = {key: value for key, value in output.items() if not key.startswith("_")}
         entry["stage"] = stage
         entry.update(rates.get(output["setId"], {"perMinute": 0.0, "trend": "steady"}))
+        if stage == "coordinates3d":
+            # Its items are coordinates: what waits are the tomograms it reads with none yet
+            entry["tomogramsPicked"] = len(particles or {})
+            pickedFrom = chain.get("pickedTomograms") or chain.get("tomograms")
+            entry["behind"] = max(0, pickedFrom["items"] - entry["tomogramsPicked"]) if pickedFrom else None
+            if chain.get("pickedTomograms") is not None:
+                entry["pickedFrom"] = {key: pickedFrom[key] for key in ("protocolId", "label", "outputName", "items")}
+            entry["boxSize"] = output["_boxSize"]
+            stages.append(entry)
+            continue
         # Tilt series acquired and not processed by this stage yet; tomograms wait on the aligned ones
         before = chain.get("aligned") if stage == "tomograms" and chain.get("aligned") is not None else raw
         entry["behind"] = max(0, before["items"] - output["items"]) if stage != "tiltseries" else None
@@ -347,7 +391,7 @@ def tomoMonitor(mapper, projectId: int, tsSetId: Optional[int] = None,
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
-        "stages": _stages(chain, rates),
+        "stages": _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d"))),
         "tiltSeriesOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
                                "outputName": output["outputName"]}
                               for output in sorted((o for o in outputs if o["stage"] == "tiltseries"),

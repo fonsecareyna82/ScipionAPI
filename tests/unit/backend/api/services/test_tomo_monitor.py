@@ -49,8 +49,10 @@ def ctfTilt(order, defocusU, defocusV=None, resolution=None, enabled=True):
 class Db:
     """Sets: setId -> list of root rows {itemId, tsId, size, updatedAt, ..., children: [tilt rows]}."""
 
-    def __init__(self, outputs, refs, sets, aligned=(), settings=None):
+    def __init__(self, outputs, refs, sets, aligned=(), settings=None, coordinates=None):
         self.outputs, self.refs, self.sets = outputs, refs, sets
+        # setId -> {tomoId: coordinates}, for the 3D pickings
+        self.coordinates = coordinates or {}
         self.alignedSets = set(aligned)
         self.settings = settings
         self.queries = []
@@ -108,6 +110,8 @@ class Db:
                     "astigmatism": sum(abs(v["_defocusU"] - v["_defocusV"]) for v in good) / len(good) if good else None,
                     "resolution": max(resolutions, default=None)})
             return result
+        if query == queries.COORDINATES_3D_PER_TOMOGRAM_SQL:
+            return [{"tomoId": tomoId, "count": count} for tomoId, count in self.coordinates[params[0]].items()]
         if query == queries.TILTS_OF_SQL:
             setId, itemId = params
             return next(r["children"] for r in self.sets[setId] if r["itemId"] == itemId)
@@ -294,3 +298,56 @@ def test_the_tomography_stages_carry_their_estimated_time():
 
     # 1 tomogram waiting at half a tomogram a minute
     assert stages["tomograms"]["etaMinutes"] == 2.0
+
+
+def picked(coordinates, boxSize=40):
+    """The stream of tomography() with a 3D picking (6) on its tomograms."""
+    db = tomography()
+    picking = output(60, "6", "coordinates", "SetOfCoordinates3D", sum(coordinates.values()))
+    picking["properties"]["_boxSize"] = boxSize
+    db.outputs.append(picking)
+    db.refs.append(ref("6", "5", "Tomograms"))
+    db.coordinates = {60: coordinates}
+    return db
+
+
+def test_a_3d_picking_on_the_tomograms_counts_the_particles_of_each_one():
+    payload = tomo.tomoMonitor(Mapper(picked({"TS_01": 120})), 7, now=NOW)
+
+    stage = payload["stages"][-1]
+    assert (stage["stage"], stage["setId"], stage["protocolId"], stage["outputName"]) == (
+        "coordinates3d", 60, "6", "coordinates")
+    # The one tomogram has its particles: no tomogram waits
+    assert (stage["items"], stage["tomogramsPicked"], stage["behind"], stage["boxSize"]) == (120, 1, 0, 40)
+    rows = {row["tsId"]: row for row in payload["tiltSeries"]}
+    assert rows["TS_01"]["particles"] == 120 and "particles" not in rows["TS_02"]
+
+
+def test_the_particles_are_counted_again_only_when_the_picking_changes():
+    db = picked({"TS_01": 120})
+    tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+    tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+    assert db.queries.count(queries.COORDINATES_3D_PER_TOMOGRAM_SQL) == 1
+
+    db.coordinates[60]["TS_01"] = 150
+    db.outputs[-1]["properties"].update(itemsCount=150, maxItemId=150)
+    rows = {row["tsId"]: row for row in tomo.tomoMonitor(Mapper(db), 7, now=NOW)["tiltSeries"]}
+
+    assert rows["TS_01"]["particles"] == 150
+
+
+def test_a_3d_picking_on_the_denoised_tomograms_of_another_branch_is_followed():
+    """Reconstruction (5) -> denoising (7) -> template matching (8): the monitor follows the tomograms of 5,
+    the picking reads the denoised ones."""
+    db = tomography()
+    picking = output(80, "8", "coordinates", "SetOfCoordinates3D", 300)
+    db.outputs += [output(70, "7", "Tomograms", "SetOfTomograms", 2), picking]
+    db.refs += [ref("7", "5", "Tomograms"), ref("8", "7", "Tomograms")]
+    db.coordinates = {80: {"TS_01": 300}}
+
+    stage = tomo.tomoMonitor(Mapper(db), 7, now=NOW)["stages"][-1]
+
+    assert (stage["stage"], stage["setId"], stage["items"]) == ("coordinates3d", 80, 300)
+    # It reads the 2 denoised tomograms and has particles on 1
+    assert stage["pickedFrom"] == {"protocolId": "7", "label": "run 7", "outputName": "Tomograms", "items": 2}
+    assert stage["behind"] == 1

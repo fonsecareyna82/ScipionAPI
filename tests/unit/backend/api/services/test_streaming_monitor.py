@@ -740,3 +740,8 @@ def test_of_several_2d_classifications_the_one_asked_for_is_followed_with_its_pi
     stages = {s["stage"]: s["setId"] for s in asked["stages"]}
     assert (stages["coordinates"], stages["particles"], stages["classes2d"]) == (70, 71, 91)
     assert asked["classes"]["setId"] == 91
+
+
+def test_a_3d_picking_is_not_a_picking_of_the_micrographs():
+    assert monitor._stageOf("SetOfCoordinates3D", "Coordinate3D") is None
+    assert monitor._stageOf("SetOfCoordinates", "Coordinate") == "coordinates"
