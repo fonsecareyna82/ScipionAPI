@@ -263,6 +263,19 @@ class PostgresqlRuntimeSetMixin:
         )
 
     def load(self):
+        self._openPostgresqlMapper()
+        return self
+
+    def _getMapper(self):
+        # Parallel steps share one input Set: another thread may close it (``_mapper`` becomes None) between
+        # opening it here and returning it. Hand over the mapper this call opened, never the attribute again.
+        mapper = self._mapper
+        if mapper is None:
+            mapper = self._openPostgresqlMapper()
+        return mapper
+
+    def _openPostgresqlMapper(self):
+        """Open a mapper for this Set, refresh its size and properties with it, and return it."""
         mapperFactory = getattr(
             self,
             "_postgresqlMapperFactory",
@@ -289,7 +302,7 @@ class PostgresqlRuntimeSetMixin:
         # _updateOutputSet(). Preserve the previous access
         # mode when the same object is opened again.
         if writable:
-            self._mapper = mapperFactory(
+            mapper = mapperFactory(
                 writable=True
             )
 
@@ -297,21 +310,23 @@ class PostgresqlRuntimeSetMixin:
             # Do not pass writable=False here. Clone mapper
             # factories preserve the original no-argument
             # callable contract.
-            self._mapper = mapperFactory()
+            mapper = mapperFactory()
+
+        self._mapper = mapper
 
         self._size.set(
-            self._mapper.count()
+            mapper.count()
         )
 
         self._idCount = (
-            self._mapper.maxId()
+            mapper.maxId()
         )
 
         self._refreshPostgresqlRuntimeProperties(
-            self._mapper
+            mapper
         )
 
-        return self
+        return mapper
 
     def refreshPostgresqlRuntimeState(self):
         mapper = self._getMapper()
@@ -1204,16 +1219,17 @@ class PostgresqlRuntimeSetMixin:
             if callable(closeMapper):
                 closeMapper()
 
-        self._mapper = mapperFactory(
+        mapper = mapperFactory(
             writable=True
         )
+        self._mapper = mapper
 
         self._size.set(
-            self._mapper.count()
+            mapper.count()
         )
 
         self._idCount = (
-            self._mapper.maxId()
+            mapper.maxId()
         )
 
         self._postgresqlWritable = True

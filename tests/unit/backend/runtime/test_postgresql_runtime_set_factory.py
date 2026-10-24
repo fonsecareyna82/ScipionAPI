@@ -4122,3 +4122,24 @@ def test_NestedChildMapperPathDoesNotExportParent():
     # Explicit requests outside the hook still export the parent.
     assert runtimeSet.getFileName() == "/tmp/exported.sqlite"
     assert exports == [runtimeSet]
+
+
+def test_RuntimeSetRefreshSurvivesAnotherThreadClosingIt(monkeypatch):
+    """Parallel steps share one input Set: a thread may close it while another one opens it again to refresh
+    it. The refresh keeps working on the mapper it opened."""
+    _, runtimeSet = buildRuntimeSet()
+    runtimeSet.close()
+    realRefresh = runtimeSet._refreshPostgresqlRuntimeProperties
+    closedOnce = []
+
+    def refreshThenClosedByAnotherThread(mapper):
+        realRefresh(mapper)
+        if not closedOnce:
+            closedOnce.append(True)
+            runtimeSet.close()
+
+    monkeypatch.setattr(runtimeSet, "_refreshPostgresqlRuntimeProperties", refreshThenClosedByAnotherThread)
+
+    runtimeSet.loadAllProperties()
+
+    assert runtimeSet.getSize() == 1
