@@ -191,3 +191,43 @@ def test_PostgresqlCoords3dReaderDelegatesProjectTomogramReads(authTestEnv):
     assert ".fetchOne(" not in source
     assert ".fetchAll(" not in source
     assert ".execute(" not in source
+
+def _readerWithLinkedTomogram(module, monkeypatch, projectPath, fileName):
+    """A reader whose coordinates link one tomogram (TS_01) stored with ``fileName``, in a project at
+    ``projectPath``."""
+    from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
+
+    reader = module.PostgresqlCoords3dReader(db=object(), projectId=16, protocolId=21, outputName="coordinates")
+    tomogram = {"id": 1, "tomoId": "TS_01", "label": "TS_01", "name": "TS_01", "fileName": fileName}
+    monkeypatch.setattr(reader, "_getStoredSet", lambda: {"properties": {}})
+    monkeypatch.setattr(reader, "_getLinkedTomogramsFromProperties", lambda storedSet: [tomogram])
+    monkeypatch.setattr(reader, "_normalizeLinkedTomogramItem", lambda item: item)
+    monkeypatch.setattr(reader, "_getTomogramMatchKeys", lambda item: {"TS_01"})
+    monkeypatch.setattr(PostgresqlProjectPathResolver, "getProjectPath", lambda self: projectPath)
+    return reader
+
+
+def test_PostgresqlCoords3dReaderFindsATomogramOfTheProjectWhateverTheWorkingDirectory(
+        authTestEnv, tmp_path, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_coords3d_reader")
+    projectPath = tmp_path / "project"
+    stored = projectPath / "Runs" / "000018_Recon" / "extra" / "TS_01.mrc"
+    stored.parent.mkdir(parents=True)
+    stored.write_bytes(b"")
+    # The API process may be anywhere: another request loaded another project, or none was loaded yet
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    reader = _readerWithLinkedTomogram(module, monkeypatch, projectPath, "Runs/000018_Recon/extra/TS_01.mrc")
+
+    tomogram = reader.getTomogramFile("TS_01")
+
+    assert tomogram is not None and tomogram["fileName"] == str(stored)
+
+
+def test_PostgresqlCoords3dReaderSaysWhenTheFileOfATomogramIsMissing(authTestEnv, tmp_path, monkeypatch):
+    module = importlib.import_module("app.backend.viewers.postgresql_coords3d_reader")
+    reader = _readerWithLinkedTomogram(module, monkeypatch, tmp_path, "Runs/000018_Recon/extra/TS_01.mrc")
+
+    assert reader.getTomogramFile("TS_01") is None
+    assert reader.lastSkipReason.startswith("tomogram_file_missing tomogramId=TS_01")

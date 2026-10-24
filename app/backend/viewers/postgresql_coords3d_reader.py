@@ -955,6 +955,18 @@ class PostgresqlCoords3dReader:
 
         return None
 
+    def _resolveTomogramPath(self, tomogramId: str, fileName: Any) -> Optional[str]:
+        """The file of a tomogram as stored (often relative to its project), resolved against the project folder:
+        never against the working directory of the process, which is the folder of whatever project another
+        request loaded last, or none."""
+        from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
+
+        path = PostgresqlProjectPathResolver(self.db, int(self.projectId)).resolveExistingPath(fileName)
+        if path is None:
+            self.lastSkipReason = "tomogram_file_missing tomogramId=%s fileName=%s" % (tomogramId, fileName)
+            return None
+        return str(path)
+
     def getTomogramFile(self, tomogramId: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
@@ -982,13 +994,16 @@ class PostgresqlCoords3dReader:
             if not fileName:
                 self.lastSkipReason = "tomogram_file_not_found_in_linked_metadata tomogramId=%s" % requested
                 return None
+            path = self._resolveTomogramPath(requested, fileName)
+            if path is None:
+                return None
 
             return {
                 "id": normalized.get("id"),
                 "tomoId": normalized.get("tomoId"),
                 "label": normalized.get("label"),
                 "name": normalized.get("name"),
-                "fileName": str(fileName),
+                "fileName": path,
                 "dims": normalized.get("dims"),
                 "voxelSize": normalized.get("voxelSize"),
             }
@@ -1006,13 +1021,16 @@ class PostgresqlCoords3dReader:
             fileName = item.get("fileName")
             if not fileName:
                 continue
+            path = self._resolveTomogramPath(requested, fileName)
+            if path is None:
+                return None
 
             return {
                 "id": item.get("id"),
                 "tomoId": item.get("tomoId"),
                 "label": item.get("label"),
                 "name": item.get("name"),
-                "fileName": str(fileName),
+                "fileName": path,
                 "dims": item.get("dims"),
                 "voxelSize": item.get("voxelSize"),
             }
