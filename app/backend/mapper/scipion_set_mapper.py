@@ -2584,6 +2584,35 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             (setId, limit, offset),
         )
 
+    def summarizeStoredSetItemsByValueField(
+            self,
+            setId: int,
+            fieldKey: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Group the items of `setId` by the text of their "values" JSONB field
+        `fieldKey`: per value, how many items have it and the first of them
+        (its "scipionItemId", label and values). Items without the field
+        form one group whose "fieldValue" is None.
+
+        E.g. the micrographs of a coordinates Set with their coordinates
+        counted, without sending every coordinate of the Set to the caller.
+        """
+        return self.db.fetchAll(
+            """
+            WITH groups AS (
+                SELECT "values" ->> %s AS "fieldValue", COUNT(*) AS count, MIN(id) AS "firstRowId"
+                  FROM scipion_set_items
+                 WHERE "setId" = %s
+                 GROUP BY 1
+            )
+            SELECT g."fieldValue", g.count, i."scipionItemId", i.label, i."values"
+              FROM groups g
+              JOIN scipion_set_items i ON i.id = g."firstRowId"
+            """,
+            (fieldKey, setId),
+        ) or []
+
     def getStoredSetItemsByValueField(
             self,
             setId: int,

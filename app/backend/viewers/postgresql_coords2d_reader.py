@@ -47,6 +47,10 @@ class PostgresqlCoords2dReader:
     def listMicrographs(self) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
+        summary = self._listMicrographsFromSummary()
+        if summary is not None:
+            return summary
+
         storedSet = self._getStoredSet()
         if storedSet is None:
             self.lastSkipReason = "stored_set_not_found"
@@ -94,6 +98,50 @@ class PostgresqlCoords2dReader:
             "totalMicrographs": len(micrographs),
             "totalPicks": totalPicks,
             "boxSize": boxSize,
+        }
+
+    def _listMicrographsFromSummary(self) -> Optional[Dict[str, Any]]:
+        """
+        The micrographs of the Set counted by the database on the canonical
+        "_micId" field, reading one coordinate per micrograph instead of
+        every coordinate of the Set.
+
+        None when that cannot give the same answer as listMicrographs()'s
+        full read: some coordinate lacks "_micId" (it may name its micrograph
+        another way, see _extractMicId), or the Set is not a 2D coordinates
+        one -- the caller then reads the whole Set as before.
+        """
+        storedSetMeta = self._getStoredSetMeta()
+        if storedSetMeta is None or not self._isCoords2dStoredSet(storedSetMeta):
+            return None
+
+        setId = self._toOptionalInt(storedSetMeta.get("id"))
+        if setId is None:
+            return None
+
+        try:
+            groups = self.setMapper.summarizeStoredSetItemsByValueField(setId=setId, fieldKey="_micId")
+        except Exception:
+            return None
+
+        if not groups or any(group.get("fieldValue") is None for group in groups):
+            return None
+
+        micrographs: List[Dict[str, Any]] = []
+        for index, group in enumerate(sorted(groups, key=lambda row: self._micrographSortKey(str(row["fieldValue"]))),
+                                      start=1):
+            micId = str(group["fieldValue"])
+            summary = self._buildMicrographSummary(micId=micId, item=group,
+                                                   values=self._normalizeJsonObject(group.get("values")))
+            summary["index"] = index
+            summary["particles"] = int(group.get("count") or 0)
+            micrographs.append(summary)
+
+        return {
+            "micrographs": micrographs,
+            "totalMicrographs": len(micrographs),
+            "totalPicks": sum(item["particles"] for item in micrographs),
+            "boxSize": self._extractBoxSize(storedSetMeta),
         }
 
     def listCoordinatesForMicrograph(self, micId: Any) -> Optional[Dict[str, Any]]:
