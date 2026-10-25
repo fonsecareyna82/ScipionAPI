@@ -30,7 +30,7 @@ from app.backend.api.services.streaming_monitor import _store
 
 logger = logging.getLogger(__name__)
 
-STAGES = ("tiltseries", "ctftomo", "aligned", "tomograms", "coordinates3d")
+STAGES = ("tiltseriesmovies", "tiltseries", "ctftomo", "aligned", "tomograms", "coordinates3d")
 
 # A failed CTF estimation of a tilt (tomo's setWrongDefocus, or a failed CTFFIND/AreTomo fit)
 FAILED_DEFOCUS = -999.0
@@ -43,7 +43,7 @@ _cacheLock = threading.Lock()
 def _stageOf(setClassName: str, itemClassName: str) -> Optional[str]:
     text = ("%s %s" % (setClassName or "", itemClassName or "")).replace("_", "").lower()
     if "setoftiltseriesm" in text:
-        return None  # The movies of the tilts, before motion correction
+        return "tiltseriesmovies"  # The movies of the tilts, before motion correction
     if "setoftiltseries" in text:
         return "tiltseries"
     if "setofctftomoseries" in text:
@@ -84,8 +84,8 @@ def _outputs(mapper, projectId: int) -> List[Dict[str, Any]]:
 
 
 def hasTomography(mapper, projectId: int) -> bool:
-    """Whether the project has tilt series: the monitor then shows its tomography view."""
-    return any(output["stage"] == "tiltseries" for output in _outputs(mapper, projectId))
+    """Whether the project has tilt series, or their movies: the monitor then shows its tomography view."""
+    return any(output["stage"] in ("tiltseries", "tiltseriesmovies") for output in _outputs(mapper, projectId))
 
 
 def _isAligned(mapper, output: Dict[str, Any]) -> bool:
@@ -102,8 +102,16 @@ def _chain(mapper, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]
         or spa._newest(acquired) or spa._newest(series)
     chain: Dict[str, Dict[str, Any]] = {}
     if raw is None:
+        # Nothing motion corrected yet: the movies of the tilts as they arrive
+        movies = spa._newest(output for output in outputs if output["stage"] == "tiltseriesmovies")
+        if movies is not None:
+            chain["tiltseriesmovies"] = movies
         return chain
     chain["tiltseries"] = raw
+    # The movies the acquired tilt series were motion corrected from
+    movies = spa._readInput(outputs, inputs, raw, "tiltseriesmovies")
+    if movies is not None:
+        chain["tiltseriesmovies"] = movies
     through = ("tiltseries", "ctftomo", "landmarks")
     ctf = spa._nearest(spa._downstream(outputs, inputs, [raw], "ctftomo", through))
     if ctf is not None:
@@ -372,9 +380,13 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
             entry["boxSize"] = output["_boxSize"]
             stages.append(entry)
             continue
-        # Tilt series acquired and not processed by this stage yet; tomograms wait on the aligned ones
+        # Tilt series acquired and not processed by this stage yet; tomograms wait on the aligned ones, and the
+        # tilt series on the motion correction of their movies
         before = chain.get("aligned") if stage == "tomograms" and chain.get("aligned") is not None else raw
-        entry["behind"] = max(0, before["items"] - output["items"]) if stage != "tiltseries" else None
+        if stage == "tiltseries":
+            before = chain.get("tiltseriesmovies")
+        entry["behind"] = max(0, before["items"] - output["items"]) \
+            if stage != "tiltseriesmovies" and before is not None else None
         stages.append(spa.withEta(entry))
     return stages
 

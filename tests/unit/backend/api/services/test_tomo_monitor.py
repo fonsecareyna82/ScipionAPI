@@ -351,3 +351,34 @@ def test_a_3d_picking_on_the_denoised_tomograms_of_another_branch_is_followed():
     # It reads the 2 denoised tomograms and has particles on 1
     assert stage["pickedFrom"] == {"protocolId": "7", "label": "run 7", "outputName": "Tomograms", "items": 2}
     assert stage["behind"] == 1
+
+
+def withMovies(db, items=3, readBy="1"):
+    """The movies of the tilts (0), imported, that the protocol ``readBy`` motion corrects into tilt series."""
+    db.outputs.insert(0, output(5, "0", "outputTiltSeriesM", "SetOfTiltSeriesM", items))
+    db.refs.append(ref(readBy, "0", "outputTiltSeriesM"))
+    return db
+
+
+def test_the_movies_of_the_tilts_open_the_chain_and_tell_what_waits_for_motion_correction():
+    payload = tomo.tomoMonitor(Mapper(withMovies(tomography())), 7, now=NOW)
+
+    assert [(s["stage"], s["setId"]) for s in payload["stages"]][:2] == [("tiltseriesmovies", 5), ("tiltseries", 10)]
+    behind = {s["stage"]: s["behind"] for s in payload["stages"]}
+    # 3 tilt series acquired as movies, 2 motion corrected
+    assert behind["tiltseriesmovies"] is None and behind["tiltseries"] == 1
+
+
+def test_tilt_series_imported_without_movies_wait_on_nothing():
+    stages = tomo.tomoMonitor(Mapper(tomography()), 7, now=NOW)["stages"]
+
+    assert stages[0]["stage"] == "tiltseries" and stages[0]["behind"] is None
+
+
+def test_the_movies_of_the_tilts_show_before_anything_is_motion_corrected():
+    db = Db([output(5, "0", "outputTiltSeriesM", "SetOfTiltSeriesM", 4)], [], {})
+
+    payload = tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+
+    assert [(s["stage"], s["items"]) for s in payload["stages"]] == [("tiltseriesmovies", 4)]
+    assert payload["tiltSeries"] == [] and tomo.hasTomography(Mapper(db), 7)
