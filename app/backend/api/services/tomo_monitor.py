@@ -114,6 +114,9 @@ def _chain(mapper, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]
         chain["tiltseriesmovies"] = movies
     through = ("tiltseries", "ctftomo", "landmarks")
     ctf = spa._nearest(spa._downstream(outputs, inputs, [raw], "ctftomo", through))
+    if ctf is None and movies is not None:
+        # Estimated from the movies of the tilts, beside the tilt series (e.g. Warp, in its motion correction)
+        ctf = spa._nearest(spa._downstream(outputs, inputs, [movies], "ctftomo", ("tiltseriesmovies",) + through))
     if ctf is not None:
         chain["ctftomo"] = ctf
     tomograms = spa._nearest(spa._downstream(outputs, inputs, [raw], "tomograms", through))

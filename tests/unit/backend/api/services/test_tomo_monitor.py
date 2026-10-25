@@ -382,3 +382,17 @@ def test_the_movies_of_the_tilts_show_before_anything_is_motion_corrected():
 
     assert [(s["stage"], s["items"]) for s in payload["stages"]] == [("tiltseriesmovies", 4)]
     assert payload["tiltSeries"] == [] and tomo.hasTomography(Mapper(db), 7)
+
+
+def test_a_ctf_estimated_from_the_movies_beside_the_tilt_series_is_followed():
+    """As Warp does: one protocol (1) reads the movies of the tilts and writes the tilt series and their CTF."""
+    db = withMovies(tomography())
+    ctf = next(o for o in db.outputs if o["setId"] == 20)
+    ctf["protocolId"] = "1"
+    db.refs = [r for r in db.refs if r["protocolId"] != "2"]
+
+    payload = tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+
+    assert ("ctftomo", 20) in [(s["stage"], s["setId"]) for s in payload["stages"]]
+    rows = {row["tsId"]: row for row in payload["tiltSeries"]}
+    assert rows["TS_01"]["defocusU"] == 31000.0
