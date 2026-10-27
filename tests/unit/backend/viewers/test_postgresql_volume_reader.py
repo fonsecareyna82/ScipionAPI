@@ -334,3 +334,48 @@ def test_PostgresqlVolumeReaderDelegatesStoredOutputReads(authTestEnv):
     assert ".fetchOne(" not in objectTreeSource
     assert ".fetchAll(" not in objectTreeSource
     assert ".execute(" not in objectTreeSource
+
+def _averageWithHalvesReader(module, halfMapFilenames):
+    reader = module.PostgresqlVolumeReader(
+        db=object(),
+        projectId=14,
+        protocolId=14,
+        outputName="average",
+    )
+    rows = [
+        {"path": "average", "className": "AverageSubTomogram", "scipionObjId": 3, "label": None, "name": "average"},
+        {"path": "average._filename", "value": "Runs/000014_Refine/extra/_class001.mrc"},
+        {"path": "average._samplingRate", "value": "1.5788"},
+    ]
+    if halfMapFilenames is not None:
+        rows.append({"path": "average._halfMapFilenames", "value": halfMapFilenames})
+    reader._getStoredSet = lambda: None
+    reader._getStoredObjectTree = lambda: rows
+    reader._resolveExistingPath = lambda fileName: "/project/" + str(fileName)
+    return reader
+
+
+def test_PostgresqlVolumeReaderListsTheHalfMapsOfAVolumeAfterItsMap(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+    reader = _averageWithHalvesReader(
+        module,
+        "Runs/000014_Refine/extra/_it012_half1_class001.mrc,Runs/000014_Refine/extra/_it012_half2_class001.mrc",
+    )
+
+    volumes = reader.listVolumes()
+
+    assert [volume["id"] for volume in volumes] == [0, "half1", "half2"]
+    assert [volume["label"] for volume in volumes][1:] == ["Half map 1", "Half map 2"]
+    assert volumes[2]["samplingRate"] == volumes[0]["samplingRate"] == 1.5788
+    assert reader.getVolumeFile("half2")["fileName"] == (
+        "/project/Runs/000014_Refine/extra/_it012_half2_class001.mrc"
+    )
+    assert reader.getVolumeFile(0)["fileName"] == "/project/Runs/000014_Refine/extra/_class001.mrc"
+
+
+def test_PostgresqlVolumeReaderListsOnlyTheMapOfAVolumeWithoutHalfMaps(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_volume_reader")
+
+    for halfMapFilenames in (None, "", "Runs/only_one_half.mrc"):
+        volumes = _averageWithHalvesReader(module, halfMapFilenames).listVolumes()
+        assert [volume["id"] for volume in volumes] == [0]

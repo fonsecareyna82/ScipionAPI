@@ -231,3 +231,21 @@ def test_PostgresqlCoords3dReaderSaysWhenTheFileOfATomogramIsMissing(authTestEnv
 
     assert reader.getTomogramFile("TS_01") is None
     assert reader.lastSkipReason.startswith("tomogram_file_missing tomogramId=TS_01")
+
+
+def test_PostgresqlCoords3dReaderDoesNotSearchTheProjectForAnOutputThatIsNotCoordinates(authTestEnv, monkeypatch):
+    """Every volume request asks this reader first: a SetOfTomograms, whose items carry a tsId, must not make it
+    go through every tomogram-like item of the project (thousands of particles) on each slice."""
+    module = importlib.import_module("app.backend.viewers.postgresql_coords3d_reader")
+    reader = module.PostgresqlCoords3dReader(db=object(), projectId=14, protocolId=5, outputName="Tomograms")
+    storedSet = {"setClassName": "SetOfTomograms", "itemClassName": "Tomogram", "properties": {},
+                 "items": [{"values": {"_tsId": "TS_01"}}]}
+    monkeypatch.setattr(reader, "_getStoredSet", lambda: storedSet)
+
+    def searchProject():
+        raise AssertionError("the project must not be searched for tomograms of a SetOfTomograms")
+
+    monkeypatch.setattr(reader, "_getProjectTomogramRows", searchProject)
+
+    assert reader.listTomograms() is None
+    assert reader.lastSkipReason == "not_coordinates_output setClassName=SetOfTomograms"

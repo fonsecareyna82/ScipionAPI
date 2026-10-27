@@ -52,6 +52,10 @@ class PostgresqlCoords3dReader:
             self.lastSkipReason = "stored_set_not_found"
             return None
 
+        if not self._mayHoldCoordinates(storedSet):
+            self.lastSkipReason = "not_coordinates_output setClassName=%s" % storedSet.get("setClassName")
+            return None
+
         countsByKey = self._countCoordinatesByTomogramKey(storedSet)
         coordinateKeys = set(countsByKey.keys())
 
@@ -128,6 +132,15 @@ class PostgresqlCoords3dReader:
             return None
 
         return points
+
+    @staticmethod
+    def _mayHoldCoordinates(storedSet: Dict[str, Any]) -> bool:
+        """False for a Set known to be of something else (tomograms, particles...): their items carry a tsId too,
+        which would otherwise send each of their volume requests through every tomogram-like item of the project."""
+        classNames = [str(storedSet.get(key) or "") for key in ("setClassName", "itemClassName")]
+        if not any(classNames):
+            return True
+        return any(word in name.lower() for name in classNames for word in ("coordinate", "mesh"))
 
     def _getStoredSet(self) -> Optional[Dict[str, Any]]:
         if self._storedSet is None:

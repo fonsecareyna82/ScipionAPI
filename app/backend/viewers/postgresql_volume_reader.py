@@ -50,7 +50,7 @@ class PostgresqlVolumeReader:
         if objectTree:
             volume = self._buildSingleVolumeFromObjectTree(objectTree)
             if volume is not None:
-                self._volumes = [volume]
+                self._volumes = [volume] + self._buildHalfMapVolumes(volume)
                 return self._volumes
 
         self.lastSkipReason = "volume_output_not_resolved"
@@ -313,7 +313,44 @@ class PostgresqlVolumeReader:
         if samplingRate is not None:
             self._attachSamplingRate(volume, samplingRate)
 
+        halfMaps = self._extractHalfMapFileNames(valuesByPath)
+        if halfMaps:
+            volume["halfMaps"] = halfMaps
+
         return volume
+
+    def _extractHalfMapFileNames(self, values: Dict[str, Any]) -> Optional[List[str]]:
+        """The two half maps of a volume (its CsvList ``_halfMapFilenames``), or None unless there are two."""
+        raw = self._toText(values.get("_halfMapFilenames"))
+        if not raw:
+            return None
+
+        fileNames = [fileName.strip() for fileName in raw.split(",") if fileName.strip()]
+        return fileNames if len(fileNames) == 2 else None
+
+    def _buildHalfMapVolumes(self, volume: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The half maps of a volume, listed after it so the viewer can open each one as a volume."""
+        halfVolumes = []
+        for number, fileName in enumerate(volume.get("halfMaps") or [], start=1):
+            label = "Half map %d" % number
+            halfVolume: Dict[str, Any] = {
+                "id": "half%d" % number,
+                "index": number,
+                "name": label,
+                "label": label,
+                "relPath": fileName,
+                "fileName": fileName,
+                "path": fileName,
+            }
+            if volume.get("className"):
+                halfVolume["className"] = volume["className"]
+            for key in ("dims", "tsId", "tiltSeriesId", "tomoId", "tomogramId"):
+                if key in volume:
+                    halfVolume[key] = volume[key]
+            if volume.get("samplingRate") is not None:
+                self._attachSamplingRate(halfVolume, volume["samplingRate"])
+            halfVolumes.append(halfVolume)
+        return halfVolumes
 
     def _findVolume(
             self,

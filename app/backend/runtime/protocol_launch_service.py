@@ -40,6 +40,21 @@ from pyworkflow.protocol import (
 logger = logging.getLogger(__name__)
 
 
+def _describeValidationFailure(error: Exception) -> str:
+    """What the user is told when the validation of a protocol breaks with nothing else to correct: a fault of the
+    protocol, not of the inputs, with where it happened so it can be reported."""
+    import os
+    import traceback
+
+    frames = traceback.extract_tb(error.__traceback__)
+    where = ""
+    if frames:
+        last = frames[-1]
+        where = " (%s, line %s)" % (os.path.basename(last.filename), last.lineno)
+    return ("**Validation error:** the protocol could not check its parameters: %s: %s%s. This is a problem of the "
+            "protocol, not of the values entered; please report it." % (type(error).__name__, error, where))
+
+
 class RuntimeProtocolLaunchService:
     """
     Orchestrates protocol launch/restart/schedule/stop.
@@ -277,14 +292,18 @@ class RuntimeProtocolLaunchService:
             if validationErrors:
                 errors += validationErrors
 
-        except Exception:
+        except Exception as error:
             logger.exception(
                 "Unexpected error during protocol validation"
             )
 
-            errors += [
-                "**Other errors:** There are other validation errors that may be resolved by correcting the previous ones."
-            ]
+            if errors:
+                # A validation that breaks on an input already reported is usually fixed with it
+                errors += [
+                    "**Other errors:** There are other validation errors that may be resolved by correcting the previous ones."
+                ]
+            else:
+                errors += [_describeValidationFailure(error)]
 
         if errors:
             raise HTTPException(
