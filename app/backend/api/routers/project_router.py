@@ -5222,6 +5222,7 @@ def getProjectStreamingMonitor(
     afterPickRowId: Optional[int] = Query(None, description="The picking cursor of the last answer."),
     afterDoseKey: Optional[str] = Query(None, description="The dose analysis of the points the caller has."),
     afterDoseRowId: Optional[int] = Query(None, description="The dose cursor of the last answer."),
+    qualityWindowSize: int = Query(0, ge=0, le=5000, description="Recent imported movies per quality window; 0 omits the exposure snapshot."),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -5234,7 +5235,7 @@ def getProjectStreamingMonitor(
                                                  afterRowId=afterRowId, afterPickSetId=afterPickSetId,
                                                  afterPickRowId=afterPickRowId, coordinatesSetId=coordinatesSetId,
                                                  classesSetId=classesSetId, afterDoseKey=afterDoseKey,
-                                                 afterDoseRowId=afterDoseRowId)
+                                                 afterDoseRowId=afterDoseRowId, qualityWindowSize=qualityWindowSize)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

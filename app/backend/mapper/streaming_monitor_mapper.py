@@ -84,7 +84,7 @@ LATEST_ROWS_SQL = """
 """
 
 ITEMS_BY_IDS_SQL = """
-    SELECT "scipionItemId", "values"
+    SELECT id AS "rowId", "scipionItemId", enabled, label, COALESCE(creation, "createdAt") AS "time", "values"
       FROM scipion_set_items
      WHERE "setId" = %s AND "scipionItemId" = ANY(%s)
 """

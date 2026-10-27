@@ -701,6 +701,59 @@ def _series(mapper, chain: Dict[str, Dict[str, Any]], afterSetId: Optional[int],
     }
 
 
+
+def _exposureWindow(mapper, chain, outputs, inputs, thresholds, micCounts, size):
+    """Latest imported movies, in database import order, refreshed independently of the CTF cursor.
+
+    The scoped processing chain preserves movie/micrograph/CTF item identities. Ambiguous movie
+    merges cannot establish that identity, so leave the client on its micrograph-based overview.
+    """
+    if not size:
+        return None
+    if not isinstance(size, int) or not 1 <= size <= 5000:
+        raise ValueError("The quality window must contain between 1 and 5000 movies")
+    movieSet = chain.get("movies")
+    byKey = {(output["protocolId"], output["outputName"]): output for output in outputs}
+    seen = set()
+    while movieSet is not None:
+        if movieSet["setId"] in seen:
+            return None
+        seen.add(movieSet["setId"])
+        parents = {parent["setId"]: parent for key in inputs.get(movieSet["protocolId"], [])
+                   for parent in [byKey.get(key)] if parent is not None and parent["stage"] == "movies"}
+        if not parents:
+            break
+        if len(parents) != 1:
+            return None
+        movieSet = next(iter(parents.values()))
+    if movieSet is None:
+        return None
+    store = _store(mapper)
+    movies = list(reversed(store.listLatestItems(movieSet["setId"], 2 * size)))
+    ids = [int(row["scipionItemId"]) for row in movies]
+    micrographs = chain.get("alignedMicrographs") or chain.get("micrographs")
+    ctf = chain.get("ctf")
+    def rowsOf(output):
+        return store.listItemsByIds(output["setId"], ids) if output is not None and ids else []
+    micRows, ctfRows = rowsOf(micrographs), rowsOf(ctf)
+    coordinates = chain.get("coordinates")
+    relatedPicking = coordinates is not None and any(
+        picking["coordinates"]["setId"] == coordinates["setId"] and picking["steps"] is not None
+        for picking in chain.get("pickings", []))
+    counts = micCounts.get("coordinates", {}).get("counts", {}) if relatedPicking else {}
+    micPoints = {point["id"]: point for point in _points(mapper, chain, micrographs, micRows, thresholds, counts)} if micrographs else {}
+    ctfPoints = {point["id"]: point for point in _points(mapper, chain, ctf, ctfRows, thresholds, counts)} if ctf else {}
+    points = []
+    for row in movies:
+        itemId = int(row["scipionItemId"])
+        fileName = _valueBySuffix(_values(row), "_filename")
+        points.append({"id": itemId, "importRowId": int(row["rowId"]),
+                       "movieName": row.get("label") or (os.path.basename(str(fileName)) if fileName else str(itemId)),
+                       "time": _iso(row.get("time")), "aligned": itemId in micPoints or itemId in ctfPoints,
+                       "ctfReady": itemId in ctfPoints, "point": ctfPoints.get(itemId) or micPoints.get(itemId)})
+    return {"setId": movieSet["setId"], "ctfSetId": ctf["setId"] if ctf else None, "windowSize": size,
+            "points": points}
+
 # What a dose analysis of the movies writes on each one (Xmipp's movie dose analysis): the mean dose per frame
 # in e/A2, and how far it is from the median of the session in %
 DOSE_MEAN = "_MEAN_DOSE_PER_ANGSTROM2"
@@ -809,11 +862,12 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
                      afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None,
                      classesSetId: Optional[int] = None, afterDoseKey: Optional[str] = None,
-                     afterDoseRowId: Optional[int] = None) -> Dict[str, Any]:
+                     afterDoseRowId: Optional[int] = None, qualityWindowSize: int = 0) -> Dict[str, Any]:
     """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
-    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), ctfSetId, coordinatesSetId, classesSetId)
+    inputs = _inputsOf(mapper, projectId, outputs)
+    chain = _chain(outputs, inputs, ctfSetId, coordinatesSetId, classesSetId)
     rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"],
                    now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
@@ -841,6 +895,7 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                                                 key=lambda o: o["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
+        "exposures": _exposureWindow(mapper, chain, outputs, inputs, limits, micCounts, qualityWindowSize),
         "dose": _doseSeries(mapper, _doseOutputs(mapper, outputs), afterDoseKey, afterDoseRowId, limits),
         "picking": picking,
         "classes": classes,

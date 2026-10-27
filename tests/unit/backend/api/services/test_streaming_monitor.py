@@ -45,7 +45,8 @@ class Db:
     """Answers each monitor query with its rows; the series rows are filtered as the query would."""
 
     def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=(),
-                 dependencies=(), doseRows=None):
+                 dependencies=(), doseRows=None, setRows=None):
+        self.setRows = dict(setRows or {})
         self.outputs, self.refs, self.rates = list(outputs), list(refs), list(rates)
         # The rows of the outputs of a dose analysis: setId -> rows
         self.doseRows = dict(doseRows or {})
@@ -104,9 +105,11 @@ class Db:
             return list(self.classes)
         if query == queries.LATEST_ROWS_SQL:
             setId, limit = params
-            rows = self.doseRows.get(setId, self.items)
+            rows = self.setRows.get(setId, self.doseRows.get(setId, self.items))
             return sorted(rows, key=lambda item: item["rowId"], reverse=True)[:limit]
         if query == queries.ITEMS_BY_IDS_SQL:
+            if params[0] in self.setRows:
+                return [row for row in self.setRows[params[0]] if row["scipionItemId"] in params[1]]
             self.shiftsSetIds.append(params[0])
             return [movie for movie in self.movies if movie["scipionItemId"] in params[1]]
         raise AssertionError("Unexpected query")
@@ -825,3 +828,55 @@ def test_the_bell_tells_a_run_of_movies_off_the_median_dose():
     assert [(run["kind"], run["count"], run["micrographName"], run["protocolId"]) for run in runs] == [
         ("maxDoseDifference", 2, "movie_002.tiff", "9")]
     assert runs[0]["text"] == "Dose off the session median by more than 5 %"
+
+
+def test_exposure_window_tracks_import_order_and_refreshes_late_ctf():
+    movies = [dict(ctfItem(itemId), rowId=rowId) for itemId, rowId in [(99, 1), (3, 2), (1, 3), (2, 4), (4, 5)]]
+    db = preprocessing(items=[ctfItem(1)], setRows={10: movies, 20: [ctfItem(1), ctfItem(2)], 30: [ctfItem(1)]})
+    first = monitor.streamingMonitor(Mapper(db), 7, qualityWindowSize=2, now=NOW)["exposures"]
+    assert first["setId"] == 10
+    assert [point["id"] for point in first["points"]] == [3, 1, 2, 4]
+    assert [point["ctfReady"] for point in first["points"]] == [False, True, False, False]
+    assert [point["aligned"] for point in first["points"]] == [False, True, True, False]
+    assert first["points"][-1]["point"] is None
+    db.setRows[30].append(ctfItem(2))
+    following = monitor.streamingMonitor(Mapper(db), 7, qualityWindowSize=2, afterSetId=30, afterRowId=9999, now=NOW)
+    assert following["series"]["points"] == []
+    assert following["exposures"]["points"][2]["ctfReady"] is True
+    assert following["exposures"]["points"][2]["point"]["resolution"] == 4.0
+    assert (queries.LATEST_ROWS_SQL, (10, 4)) in db.calls
+
+
+def test_exposure_window_follows_the_import_before_movie_filters():
+    db = preprocessing(setRows={5: [ctfItem(1)], 10: [], 20: [], 30: []})
+    db.outputs.append(output(5, "0", "rawMovies", "SetOfMovies", 1))
+    db.refs.append(ref("1", "0", "rawMovies"))
+    payload = monitor.streamingMonitor(Mapper(db), 7, qualityWindowSize=2, now=NOW)
+    assert payload["exposures"]["setId"] == 5
+    assert payload["exposures"]["points"][0]["point"] is None
+
+
+def test_exposure_window_does_not_guess_movie_identity_across_ambiguous_merges():
+    db = preprocessing()
+    db.outputs.extend([output(5, "0", "moviesA", "SetOfMovies", 1), output(6, "0b", "moviesB", "SetOfMovies", 1)])
+    db.refs.extend([ref("1", "0", "moviesA"), ref("1", "0b", "moviesB")])
+    assert monitor.streamingMonitor(Mapper(db), 7, qualityWindowSize=2, now=NOW)["exposures"] is None
+
+
+def test_imported_movies_are_reported_before_any_alignment():
+    db = Db(outputs=[output(10, "1", "movies", "SetOfMovies", 1)], setRows={10: [ctfItem(7)]})
+    payload = monitor.streamingMonitor(Mapper(db), 7, qualityWindowSize=2, now=NOW)
+    assert payload["series"]["kind"] is None
+    assert payload["exposures"]["points"][0]["id"] == 7
+    assert payload["exposures"]["points"][0]["aligned"] is False
+    assert payload["exposures"]["points"][0]["point"] is None
+
+
+def test_exposure_window_does_not_join_picking_from_another_branch_by_id():
+    db = preprocessing(items=[ctfItem(1)], picks=[(41, 700, 1)],
+                       setRows={10: [ctfItem(1)], 20: [ctfItem(1)], 30: [ctfItem(1)]})
+    db.outputs.extend([output(80, "8", "otherMicrographs", "SetOfMicrographs", 1),
+                       output(41, "9", "otherCoordinates", "SetOfCoordinates", 1)])
+    db.refs.append(ref("9", "8", "otherMicrographs"))
+    payload = monitor.streamingMonitor(Mapper(db), 7, coordinatesSetId=41, qualityWindowSize=2, now=NOW)
+    assert "particles" not in payload["exposures"]["points"][0]["point"]
