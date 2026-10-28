@@ -18,14 +18,21 @@ from typing import Optional
 
 import numpy as np
 
-# Background noise is shown at this many standard deviations above black.
-_NOISE_FLOOR_SIGMA = 3.0
+# Background noise is shown at this many standard deviations above black: in
+# 2D classes, and in the projections and slices of 3D classes.
+_NOISE_FLOOR_SIGMA = 5.0
+_VOLUME_NOISE_FLOOR_SIGMA = 3.0
 # Gray of the background (the mean of the noise) in every class.
 _BACKGROUND_LEVEL = 0.22
 # Highest displayed value: this percentile of the particle area.
 _SIGNAL_PERCENTILE = 99.7
 # Gaussian smoothing (pixels of the original image) of 2D classes.
-_CLASS_SMOOTHING = 0.8
+_CLASS_SMOOTHING = 1.2
+# Noise up to this many standard deviations above the background mean stays in
+# the background grays of a 2D class; only what rises above it goes towards white.
+_SIGNAL_KNEE_SIGMA = 2.0
+# Smoothing of the central slice of a 3D class (no knee: 3D classes keep their display).
+_VOLUME_SLICE_SMOOTHING = 0.8
 # The background is measured outside this fraction of the image radius.
 _BACKGROUND_RADIUS = 0.75
 # The background noise counts as at least this fraction of the spread of the
@@ -62,7 +69,8 @@ def _resizeUnit(values, size: int) -> np.ndarray:
     return np.dstack(channels)
 
 
-def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING) -> np.ndarray:
+def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING,
+                        knee: float = _SIGNAL_KNEE_SIGMA, noiseFloor: float = _NOISE_FLOOR_SIGMA) -> np.ndarray:
     """A uint8 (size x size) display image of a 2D class average."""
     data = np.asarray(image, dtype=np.float64)
     if data.ndim != 2 or data.size == 0:
@@ -93,15 +101,16 @@ def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING) -
     noise = noise or float(data[valid].std()) or 1.0
     scaled = (data - center) / noise
 
-    # Two linear pieces: the noise below its mean goes from black to the
-    # background gray, the signal above it from that gray to white. Every
-    # class then shows its background at the same gray.
-    high = max(float(np.percentile(scaled[valid], _SIGNAL_PERCENTILE)), 1.0)
+    # Two linear pieces: the noise up to the knee rises slowly from black
+    # through the background gray (its mean), the signal above it goes on to
+    # white. Every class then shows its background at the same gray.
+    high = max(float(np.percentile(scaled[valid], _SIGNAL_PERCENTILE)), knee + 1.0)
     backgroundLevel = _BACKGROUND_LEVEL
+    kneeLevel = backgroundLevel * (knee + noiseFloor) / noiseFloor
     unit = np.where(
-        scaled < 0,
-        backgroundLevel * (scaled + _NOISE_FLOOR_SIGMA) / _NOISE_FLOOR_SIGMA,
-        backgroundLevel + (1 - backgroundLevel) * scaled / high,
+        scaled < knee,
+        backgroundLevel * (scaled + noiseFloor) / noiseFloor,
+        kneeLevel + (1 - kneeLevel) * (scaled - knee) / (high - knee),
     )
     unit = np.clip(unit, 0, 1)
     # The masked area shows as background, and the image fades into it at its border.
@@ -178,9 +187,11 @@ def renderClassVolume(volume, size: int, view: str = "surface") -> np.ndarray:
     data = np.where(np.isfinite(data), data, np.nanmedian(data) if np.isfinite(data).any() else 0.0)
     data = shrinkVolume(data)
     if view == "projection":
-        return displayClassAverage(data.sum(axis=0), size, smoothing=0.6)
+        return displayClassAverage(data.sum(axis=0), size, smoothing=0.6, knee=0.0,
+                                   noiseFloor=_VOLUME_NOISE_FLOOR_SIGMA)
     if view == "slice":
-        return displayClassAverage(data[data.shape[0] // 2], size)
+        return displayClassAverage(data[data.shape[0] // 2], size, smoothing=_VOLUME_SLICE_SMOOTHING, knee=0.0,
+                                   noiseFloor=_VOLUME_NOISE_FLOOR_SIGMA)
     return _surface(data, size, _SURFACE_MASS_FRACTION, smoothing=1.0)
 
 

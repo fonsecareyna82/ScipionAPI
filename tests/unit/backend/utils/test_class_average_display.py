@@ -41,9 +41,30 @@ def test_a_flattened_background_does_not_turn_into_a_checkered_pattern():
     outside = np.hypot(yy - 32, xx - 32) > 22
     image[outside] = 1e-4 * np.sin(xx[outside] * 0.6) * np.cos(yy[outside] * 0.5)
     shown = display.displayClassAverage(image, 64).astype(float)
-    corner = shown[2:10, 26:38]
+    # Away from the particle area: the smoothing spreads its noise a couple of pixels out
+    corner = shown[2:8, 26:38]
     assert corner.std() < 4
     assert shown[28:36, 28:36].mean() > corner.mean() + 60
+
+
+def test_the_background_noise_of_a_2d_class_stays_near_its_gray():
+    # The noise used to spread over half the grays: black and white speckles all over the background
+    image = display.displayClassAverage(classAverage(signal=3, seed=4), 64).astype(float)
+    yy, xx = np.mgrid[:64, :64]
+    background = image[np.hypot(yy - 32, xx - 32) > 16]
+    assert np.percentile(background, 95) - np.percentile(background, 5) < 45
+    # Still at the gray of the masked area and the faded border
+    assert abs(float(np.median(background)) - 255 * display._BACKGROUND_LEVEL) < 6
+    assert image[28:36, 28:36].mean() > 220
+
+
+def test_3d_class_projections_and_slices_keep_their_display():
+    volume = blob()
+    reduced = display.shrinkVolume(volume)
+    assert np.array_equal(display.renderClassVolume(volume, 48, "projection"),
+                          display.displayClassAverage(reduced.sum(axis=0), 48, smoothing=0.6, knee=0.0, noiseFloor=3.0))
+    assert np.array_equal(display.renderClassVolume(volume, 48, "slice"),
+                          display.displayClassAverage(reduced[reduced.shape[0] // 2], 48, smoothing=0.8, knee=0.0, noiseFloor=3.0))
 
 
 def test_invalid_images_do_not_fail():
