@@ -632,19 +632,7 @@ class ScipionObjectPostgresqlMapper:
             ]
 
             if setIds:
-                self.db.execute(
-                    """
-                    DELETE FROM scipion_set_table_items
-                     WHERE "tableId" IN (
-                           SELECT id
-                             FROM scipion_set_tables
-                            WHERE "setId" = ANY(%s)
-                     )
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
+                # The items are queued when their tables and Sets go and removed in the background
                 self.db.execute(
                     """
                     DELETE FROM scipion_set_table_columns
@@ -661,15 +649,6 @@ class ScipionObjectPostgresqlMapper:
                 self.db.execute(
                     """
                     DELETE FROM scipion_set_tables
-                     WHERE "setId" = ANY(%s)
-                    """,
-                    (setIds,),
-                    commit=False,
-                )
-
-                self.db.execute(
-                    """
-                    DELETE FROM scipion_set_items
                      WHERE "setId" = ANY(%s)
                     """,
                     (setIds,),

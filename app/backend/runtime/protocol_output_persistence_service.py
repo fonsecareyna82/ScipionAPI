@@ -38,6 +38,7 @@ from pyworkflow.object import (
 )
 
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+from app.backend.utils.set_item_purge import requestSetItemPurge
 
 logger = logging.getLogger(__name__)
 
@@ -2778,6 +2779,7 @@ class RuntimeProtocolOutputPersistenceService:
 
         objectMapper = ScipionObjectPostgresqlMapper(mapper.db)
         metadataCleanup = objectMapper.deleteProtocolOutputMetadata(projectId=projectId, protocolDbId=protocolDbId)
+        requestSetItemPurge()
 
         return {
             "protocolDbId": protocolDbId,

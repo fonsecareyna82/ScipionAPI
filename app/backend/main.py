@@ -207,9 +207,18 @@ def resumeBackgroundDeletes():
     threading.Thread(target=run, name="resume-background-deletes", daemon=True).start()
 
 
+def startSetItemPurge():
+    """Remove, in the background, the items of the Sets deleted here or left queued by an earlier run."""
+    from app.backend.database import getMapper
+    from app.backend.utils.set_item_purge import startSetItemPurge as start
+
+    start(lambda: getMapper().db)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     resumeBackgroundDeletes()
+    startSetItemPurge()
     yield
 
 

@@ -39,6 +39,7 @@ from pyworkflow.protocol.params import (
 from app.backend.runtime.protocol_graph_repository import (
     ProtocolGraphRepository,
 )
+from app.backend.runtime.protocol_reset_service import RuntimeProtocolResetService
 from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
@@ -392,6 +393,7 @@ class RuntimePostgresqlRestartLauncherService:
             level: int,
             runtimeMapper,
             runtimeStructure=None,
+            projectPath=None,
     ) -> Dict[str, Any]:
         identityResolver = ProtocolIdentityResolver(
             mapper=mapper,
@@ -443,7 +445,8 @@ class RuntimePostgresqlRestartLauncherService:
         protocol._numberOfSteps.set(0)
         protocol._cpuTime.set(0)
 
-        protocol.cleanWorkingDir()
+        # The folder goes away at once and its files in the background, as in a Reset
+        RuntimeProtocolResetService._cleanWorkingDirInBackground(protocol, projectPath)
         protocol.makeWorkingDir()
 
         runtimeMapper.deleteRelations(
@@ -581,6 +584,7 @@ class RuntimePostgresqlRestartLauncherService:
                     level=level,
                     runtimeMapper=runtimeMapper,
                     runtimeStructure=runtimeStructure,
+                    projectPath=RuntimeProtocolResetService._currentProjectPath(currentProject),
                 )
             )
 

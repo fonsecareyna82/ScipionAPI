@@ -33,6 +33,7 @@ from pyworkflow.protocol import (
     STATUS_SCHEDULED,
 )
 
+from app.backend.utils.set_item_purge import requestSetItemPurge
 from app.backend.runtime.protocol_graph_repository import ProtocolGraphRepository
 from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
 
@@ -276,6 +277,7 @@ class RuntimeProtocolDeleteService:
                 ),
             )
         )
+        requestSetItemPurge()
 
         return {
             "deletedProtocolIds": (

@@ -248,6 +248,7 @@ def _deleteProjectRows(projectId: int) -> None:
         mapper = getMapper()
         mapper.deleteDeletingProject(int(projectId))
         logger.info("Deleted the rows of project %s", projectId)
+        requestSetItemPurge()
     except Exception:
         logger.exception("Could not delete the rows of project %s; retried at the next start", projectId)
     finally:
@@ -276,6 +277,7 @@ def resumePendingProjectDeletions(mapper) -> int:
     return len(projectIds)
 
 from app.backend.utils.background_delete import deleteInBackground
+from app.backend.utils.set_item_purge import requestSetItemPurge
 
 
 class ProjectService:

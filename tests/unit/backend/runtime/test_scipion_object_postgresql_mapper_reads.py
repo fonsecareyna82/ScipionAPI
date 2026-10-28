@@ -480,7 +480,7 @@ def test_DeleteProtocolOutputMetadataUsesSingleScopedTransaction():
         def __init__(self):
             self.calls = []
             self.transactionCalls = 0
-            self.rowcounts = iter([0, 0, 0, 0, 0, 0, 2, 5])
+            self.rowcounts = iter([0, 0, 0, 0, 2, 5])
 
         @contextmanager
         def transaction(self):
@@ -524,7 +524,7 @@ def test_DeleteProtocolOutputMetadataUsesSingleScopedTransaction():
     }
 
     assert database.transactionCalls == 1
-    assert len(database.calls) == 9
+    assert len(database.calls) == 7
 
     setRead = database.calls[0]
 
@@ -540,21 +540,22 @@ def test_DeleteProtocolOutputMetadataUsesSingleScopedTransaction():
     assert all(call["operation"] == "execute" for call in executeCalls)
     assert all(call["commit"] is False for call in executeCalls)
 
+    # The items are left to the background purge the deleted tables and Sets queue
     expectedSetTables = [
-        "scipion_set_table_items",
         "scipion_set_table_columns",
         "scipion_set_tables",
-        "scipion_set_items",
         "scipion_set_columns",
         "scipion_set_properties",
         "scipion_sets",
     ]
 
-    for call, tableName in zip(executeCalls[:7], expectedSetTables):
+    for call, tableName in zip(executeCalls[:5], expectedSetTables):
         assert f"DELETE FROM {tableName}" in call["query"]
         assert call["values"] == ([71, 72],)
+    assert not any("scipion_set_items" in call["query"] or "scipion_set_table_items" in call["query"]
+                   for call in executeCalls)
 
-    objectDelete = executeCalls[7]
+    objectDelete = executeCalls[5]
 
     assert objectDelete["values"] == (7, 31, 7, 31)
     assert "WITH RECURSIVE object_tree" in objectDelete["query"]
