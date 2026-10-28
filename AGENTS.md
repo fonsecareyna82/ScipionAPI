@@ -116,6 +116,11 @@ writes nothing and returns False; keep that guarantee when extending it.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
+## CTF viewer (SetOfCTF)
+
+- `GET .../outputs/{o}/ctf` (`viewers/postgresql_ctf_reader.py`) lists every CTF of the Set, as the viewer draws its plots and statistics from all of them. It reads only the values a row shows (`listStoredSetItemsWithKeys` with `LISTED_VALUE_PATTERN`, keys matched by their end as `_buildCtfRow` does), keeps the list per process by Set version (`updatedAt`, `itemsCount`), and the route answers gzip compressed when the client takes it (`_compressedJson`, for routes listing thousands of rows only: images are compressed already).
+- `.../ctf/{id}/psd` and `.../ctf/{id}/micrograph` read one item (`getStoredSetItem`) and the Set without its items (`limit=0`): never the whole Set at every row clicked. Their renders are kept per process (`_CTF_IMAGE_CACHE`, by file version and parameters) with an ETag and `Cache-Control`, and an `If-None-Match` that matches answers 304.
+
 ## Protocol viewers on the web
 
 ScipionWeb builds each plugin's desktop "Analyze results" viewer (`ProtocolViewer`) at runtime instead of porting viewers by hand:

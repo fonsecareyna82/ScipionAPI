@@ -1,4 +1,6 @@
 import base64
+import gzip
+import json
 import logging
 import os
 import hashlib
@@ -3287,6 +3289,20 @@ def createNewSetOfTiltSeries(
             detail=f"Failed to create new tilt-series set: {e}",
         )
 
+_COMPRESS_FROM_BYTES = 64 * 1024
+
+
+def _compressedJson(request: Request, payload: Any) -> Response:
+    """A JSON answer, gzip compressed when it is big and the client takes it. Only for the routes that list
+    thousands of rows: compressing every answer would also squeeze images, already compressed."""
+    body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
+    headers = {"Vary": "Accept-Encoding"}
+    if len(body) >= _COMPRESS_FROM_BYTES and "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(gzip.compress(body, compresslevel=5), media_type="application/json",
+                        headers=dict(headers, **{"Content-Encoding": "gzip"}))
+    return Response(body, media_type="application/json", headers=headers)
+
+
 # ==============================================================================
 #        ANALYZE RESULTS: CTF (SetOfCTF)
 # ==============================================================================
@@ -3300,6 +3316,7 @@ def listCtfModels(
     projectId: int,
     protocolId: int,
     outputName: str,
+    request: Request,
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3316,13 +3333,14 @@ def listCtfModels(
             detail="Project not found",
         )
 
-    return service.listOutputCtfService(
+    # Thousands of rows that repeat their keys: compressed, they weigh a tenth
+    return _compressedJson(request, service.listOutputCtfService(
         projectId=projectId,
         protocolId=protocolId,
         outputName=outputName,
         mapper=mapper,
         protocolIdIsScipionId=True,
-    )
+    ))
 
 
 @router.get(
@@ -3349,6 +3367,7 @@ def renderCtfPsdImage(
         ge=1,
         le=100,
     ),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3376,6 +3395,7 @@ def renderCtfPsdImage(
         quality=quality,
         mapper=mapper,
         protocolIdIsScipionId=True,
+        ifNoneMatch=ifNoneMatch,
     )
 
 
@@ -3403,6 +3423,7 @@ def renderCtfMicrographImage(
         ge=1,
         le=100,
     ),
+    ifNoneMatch: Optional[str] = Header(None, alias="If-None-Match"),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -3430,6 +3451,7 @@ def renderCtfMicrographImage(
         quality=quality,
         mapper=mapper,
         protocolIdIsScipionId=True,
+        ifNoneMatch=ifNoneMatch,
     )
 
 

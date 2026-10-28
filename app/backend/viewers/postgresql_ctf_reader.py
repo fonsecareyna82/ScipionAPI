@@ -30,6 +30,19 @@ from typing import Any, Dict, List, Optional
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 
 
+# The values a row of the list reads (see _buildCtfRow), by the end of their key
+LISTED_VALUE_SUFFIXES = (
+    "defocusu", "df1", "defocusv", "df2", "defocusratio", "micname", "micrographname", "defocusangle",
+    "astigangle", "phaseshift", "resolution", "estres", "fitquality", "ccvalue", "cc", "psdfile", "psdpath",
+)
+LISTED_VALUE_PATTERN = "(%s)$" % "|".join(LISTED_VALUE_SUFFIXES)
+
+# setId -> (its version: updatedAt and items, the listed CTFs): a viewer opened again on an unchanged Set
+# does not read its thousands of items again
+_listCache: Dict[int, tuple] = {}
+_LIST_CACHE_SIZE = 8
+
+
 class PostgresqlCtfReader:
     def __init__(self, db, projectId: int, protocolId: int, outputName: str):
         self.db = db
@@ -38,6 +51,7 @@ class PostgresqlCtfReader:
         self.outputName = outputName
         self.setMapper = ScipionSetPostgresqlMapper(db)
         self._storedSet = None
+        self._storedSetMeta = None
         self.lastSkipReason = None
 
     def hasOutput(self) -> bool:
@@ -47,7 +61,7 @@ class PostgresqlCtfReader:
     def listCtfs(self) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        storedSet = self._getStoredSet()
+        storedSet = self._getStoredSetMeta()
         if storedSet is None:
             self.lastSkipReason = "stored_set_not_found"
             return None
@@ -56,20 +70,26 @@ class PostgresqlCtfReader:
             self.lastSkipReason = "stored_set_is_not_setofctf"
             return None
 
-        ctfs = [
-            self._buildCtfRow(item, position)
-            for position, item in enumerate(storedSet.get("items") or [])
-        ]
+        properties = self._normalizeJsonObject(storedSet.get("properties"))
+        version = (str(storedSet.get("updatedAt")), properties.get("itemsCount"))
+        cached = _listCache.get(int(storedSet["id"]))
+        if cached is not None and cached[0] == version:
+            return cached[1]
 
-        return {
-            "ctfs": ctfs,
-            "total": len(ctfs),
-        }
+        # Only the values a row shows, not every value of every item
+        items = self.setMapper.listStoredSetItemsWithKeys(storedSet["id"], LISTED_VALUE_PATTERN)
+        ctfs = [self._buildCtfRow(item, position) for position, item in enumerate(items)]
+        payload = {"ctfs": ctfs, "total": len(ctfs)}
+        if len(_listCache) >= _LIST_CACHE_SIZE:
+            _listCache.pop(next(iter(_listCache)))
+        _listCache[int(storedSet["id"])] = (version, payload)
+        return payload
 
     def getCtf(self, ctfId: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        storedSet = self._getStoredSet()
+        # One item, not the whole Set: a PSD is asked for at every row clicked
+        storedSet = self._getStoredSetMeta()
         if storedSet is None:
             self.lastSkipReason = "stored_set_not_found"
             return None
@@ -78,19 +98,19 @@ class PostgresqlCtfReader:
             self.lastSkipReason = "stored_set_is_not_setofctf"
             return None
 
-        targetId = str(ctfId)
-
-        for position, item in enumerate(storedSet.get("items") or []):
-            if str(item.get("scipionItemId")) == targetId:
-                return self._buildCtfRow(item, position)
-
-        self.lastSkipReason = "ctf_not_found ctfId=%s" % targetId
-        return None
+        scipionItemId = self._toOptionalInt(ctfId)
+        item = None if scipionItemId is None else self.setMapper.getStoredSetItem(storedSet["id"], scipionItemId)
+        if item is None:
+            self.lastSkipReason = "ctf_not_found ctfId=%s" % str(ctfId)
+            return None
+        # Its position in the list is not known without reading the Set; whoever needs it has the list
+        return self._buildCtfRow(item, None)
 
     def getMicrographImageInfo(self, ctfId: Any) -> Optional[Dict[str, Any]]:
         self.lastSkipReason = None
 
-        storedSet = self._getStoredSet()
+        # Only the Set's id is needed: its items are not read
+        storedSet = self._getStoredSetMeta()
         if storedSet is None:
             self.lastSkipReason = "stored_set_not_found"
             return None
@@ -195,7 +215,7 @@ class PostgresqlCtfReader:
     def _buildCtfRow(
             self,
             item: Dict[str, Any],
-            position: int,
+            position: Optional[int],
     ) -> Dict[str, Any]:
         values = self._normalizeJsonObject(
             item.get("values")
@@ -262,7 +282,7 @@ class PostgresqlCtfReader:
 
         row: Dict[str, Any] = {
             "ctfId": str(ctfId),
-            "position": int(position),
+            "position": None if position is None else int(position),
             "micrographId": str(ctfId),
             "micrographName": str(micrographName),
             "excluded": not enabled if enabled is not None else False,
@@ -330,6 +350,19 @@ class PostgresqlCtfReader:
             )
 
         return self._storedSet
+
+    def _getStoredSetMeta(self) -> Optional[Dict[str, Any]]:
+        """The Set without its items (or with them, when a full read already happened)."""
+        if self._storedSet is not None:
+            return self._storedSet
+        if self._storedSetMeta is None:
+            self._storedSetMeta = self.setMapper.getStoredSet(
+                projectId=self.projectId,
+                protocolDbId=self.protocolId,
+                outputName=self.outputName,
+                limit=0,
+            )
+        return self._storedSetMeta
 
     def _isCtfStoredSet(
             self,

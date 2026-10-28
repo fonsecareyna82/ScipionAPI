@@ -2559,6 +2559,38 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             ),
         }
 
+    def listStoredSetItemsWithKeys(self, setId: int, keyPattern: str) -> List[Dict[str, Any]]:
+        """The items of a Set with only the values whose key matches ``keyPattern``.
+
+        The key is matched in lower case and without "_" and "." (``_defocusU`` as ``defocusu``), as a
+        POSIX regular expression. A viewer listing thousands of items then reads a few values of each one,
+        not every value.
+        """
+        return self.db.fetchAll(
+            """
+            SELECT item."scipionItemId", item.enabled, item.label,
+                   (SELECT jsonb_object_agg(entry.key, entry.value)
+                      FROM jsonb_each(item."values") entry
+                     WHERE regexp_replace(lower(entry.key), '[_.]', '', 'g') ~ %s) AS "values"
+              FROM scipion_set_items item
+             WHERE item."setId" = %s
+             ORDER BY item."scipionItemId" ASC
+            """,
+            (keyPattern, setId),
+        )
+
+    def getStoredSetItem(self, setId: int, scipionItemId: int) -> Optional[Dict[str, Any]]:
+        """One item of a Set by its id, with the same columns as getStoredSetItems."""
+        return self.db.fetchOne(
+            """
+            SELECT id, "setId", "scipionItemId", enabled, label, comment,
+                   creation, "values", "createdAt", "updatedAt"
+              FROM scipion_set_items
+             WHERE "setId" = %s AND "scipionItemId" = %s
+            """,
+            (setId, scipionItemId),
+        )
+
     def getStoredSetItems(self, setId: int, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         if limit is None:
             return self.db.fetchAll(

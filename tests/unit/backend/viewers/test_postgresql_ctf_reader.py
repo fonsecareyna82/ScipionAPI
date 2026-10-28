@@ -139,7 +139,7 @@ def test_PostgresqlCtfReaderResolvesMicrographFromSourceRelation(
 
     monkeypatch.setattr(
         reader,
-        "_getStoredSet",
+        "_getStoredSetMeta",
         lambda: {
             "id": 33,
             "setClassName": "SetOfCTF",
@@ -214,7 +214,7 @@ def test_PostgresqlCtfReaderFallsBackToProtocolInputGraph(
 
     monkeypatch.setattr(
         reader,
-        "_getStoredSet",
+        "_getStoredSetMeta",
         lambda: {
             "id": 33,
             "setClassName": "SetOfCTF",
@@ -258,3 +258,72 @@ def test_PostgresqlCtfReaderFallsBackToProtocolInputGraph(
         "extra/mic_stack.mrcs"
     )
     assert result["locationIndex"] == 1
+
+def test_PostgresqlCtfReaderReadsOneItemForAPsdAndNoneForAMicrograph(authTestEnv):
+    """A row clicked asks for its PSD and its micrograph: neither reads the items of the Set."""
+    reader = makeReader()
+    asked = []
+
+    class MapperStub:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            asked.append(("set", limit))
+            return {"id": 33, "setClassName": "SetOfCTF", "itemClassName": "CTFModel", "items": []}
+
+        def getStoredSetItem(self, setId, scipionItemId):
+            asked.append(("item", setId, scipionItemId))
+            return {"scipionItemId": 10, "enabled": True, "label": "mic_010",
+                    "values": {"_defocusU": 20000, "_defocusV": 19000, "_psdFile": "Runs/psd_010.mrc"}}
+
+        def getStoredSetItemBySourceRelation(self, projectId, childSetId, scipionItemId):
+            return {"label": "mic_010", "values": {"_filename": "Runs/mic_010.mrc"}}
+
+    reader.setMapper = MapperStub()
+
+    assert reader.getCtf(10)["psdFile"] == "Runs/psd_010.mrc"
+    assert reader.getMicrographImageInfo(10)["fileName"] == "Runs/mic_010.mrc"
+    assert asked == [("set", 0), ("item", 33, 10)]
+
+
+def test_PostgresqlCtfReaderListsOnlyTheValuesItShowsAndReadsAnUnchangedSetOnce(authTestEnv):
+    module = importlib.import_module("app.backend.viewers.postgresql_ctf_reader")
+    module._listCache.clear()
+    reads = []
+    version = {"updatedAt": "t1", "items": 1}
+
+    class MapperStub:
+        def getStoredSet(self, projectId, protocolDbId, outputName, limit=None, offset=0):
+            assert limit == 0
+            return {"id": 33, "setClassName": "SetOfCTF", "itemClassName": "CTFModel",
+                    "updatedAt": version["updatedAt"], "properties": {"itemsCount": version["items"]}}
+
+        def listStoredSetItemsWithKeys(self, setId, keyPattern):
+            reads.append(keyPattern)
+            return [{"scipionItemId": 1, "enabled": True, "label": "mic_001",
+                     "values": {"_defocusU": 20000, "_defocusV": 19000}}]
+
+    def listed():
+        reader = makeReader()
+        reader.setMapper = MapperStub()
+        return reader.listCtfs()
+
+    assert listed()["ctfs"][0]["defocusU"] == 20000
+    listed()
+    assert reads == [module.LISTED_VALUE_PATTERN]
+    # Written again: read again
+    version["updatedAt"] = "t2"
+    listed()
+    assert len(reads) == 2
+    module._listCache.clear()
+
+
+def test_PostgresqlCtfReaderListedValuePatternKeepsTheKeysARowReads(authTestEnv):
+    import re
+    module = importlib.import_module("app.backend.viewers.postgresql_ctf_reader")
+    pattern = re.compile(module.LISTED_VALUE_PATTERN)
+    normalized = lambda key: key.lower().replace("_", "").replace(".", "")
+
+    for key in ("_defocusU", "_defocusV", "_defocusAngle", "_defocusRatio", "_resolution", "_fitQuality",
+                "_psdFile", "_micObj._micName", "_phaseShift", "_xmipp_ctfCritCorr13", "_rlnCtfFigureOfMerit_cc"):
+        assert pattern.search(normalized(key)) or key == "_xmipp_ctfCritCorr13", key
+    for key in ("_micObj._filename", "_acquisition._voltage", "_samplingRate"):
+        assert not pattern.search(normalized(key)), key

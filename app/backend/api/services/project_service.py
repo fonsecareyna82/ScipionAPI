@@ -180,6 +180,11 @@ from app.backend.utils.file_handlers import FileHandlers
 from app.backend.utils.thumbnail_service import ThumbnailService
 from app.backend.api.services.settings_service import SettingsService
 
+# Rendered CTF micrographs and PSDs (bytes and headers) by file version and parameters: going back to a row of
+# the CTF viewer does not read and render its micrograph again
+_CTF_IMAGE_CACHE_LOCK = threading.Lock()
+_CTF_IMAGE_CACHE = collections.OrderedDict()
+_CTF_IMAGE_CACHE_MAX_ITEMS = 64
 _VOLUME_SLICE_CACHE_LOCK = threading.Lock()
 _VOLUME_SLICE_CACHE = collections.OrderedDict()
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 128
@@ -11231,6 +11236,7 @@ class ProjectService:
             inline: bool,
             quality: int,
             mapper,
+            ifNoneMatch: Optional[str] = None,
     ) -> Response:
         pathText = str(rawPath or "").strip()
 
@@ -11275,13 +11281,33 @@ class ProjectService:
                 ),
             )
 
+        try:
+            stat = os.stat(resolvedPath)
+            fileVersion = (int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            fileVersion = None
+        cacheKey = ("ctf-image", os.path.abspath(str(resolvedPath)), fileVersion, imageIndex, int(size or 0),
+                    str(fmt or "png").lower(), int(quality or 0), bool(inline))
+        etag = self._etagFromCacheKey(cacheKey)
+        cacheHeaders = {"ETag": etag, "Cache-Control": _VOLUME_PREVIEW_CACHE_CONTROL}
+        if fileVersion is not None and self._requestMatchesEtag(ifNoneMatch, etag):
+            return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cacheHeaders)
+
+        with _CTF_IMAGE_CACHE_LOCK:
+            cached = _CTF_IMAGE_CACHE.get(cacheKey) if fileVersion is not None else None
+            if cached is not None:
+                _CTF_IMAGE_CACHE.move_to_end(cacheKey)
+        if cached is not None:
+            body, mediaType, headers = cached
+            return Response(content=body, media_type=mediaType, headers=dict(headers, **cacheHeaders))
+
         preview = OutputsPreview(
             currentProject=self.currentProject,
             protocol=None,
             output=None,
         )
 
-        return preview.renderImageFromFilePath(
+        response = preview.renderImageFromFilePath(
             filePath=resolvedPath,
             size=size,
             fmt=fmt,
@@ -11290,6 +11316,19 @@ class ProjectService:
             quality=quality,
             applyTransform=False,
         )
+        if fileVersion is None or getattr(response, "status_code", 200) != 200 or not isinstance(
+                getattr(response, "body", None), (bytes, bytearray)):
+            return response
+        headers = {key: value for key, value in response.headers.items()
+                   if key.lower() not in ("content-length", "content-type", "etag", "cache-control")}
+        with _CTF_IMAGE_CACHE_LOCK:
+            _CTF_IMAGE_CACHE[cacheKey] = (bytes(response.body), response.media_type, headers)
+            while len(_CTF_IMAGE_CACHE) > _CTF_IMAGE_CACHE_MAX_ITEMS:
+                _CTF_IMAGE_CACHE.popitem(last=False)
+        for key, value in cacheHeaders.items():
+            response.headers[key] = value
+        self._exposeHeader(response.headers, "ETag")
+        return response
 
     def renderCtfPsdImageService(
             self,
@@ -11302,6 +11341,7 @@ class ProjectService:
             inline: bool = True,
             quality: int = 75,
             mapper=None,
+            ifNoneMatch: Optional[str] = None,
 
             protocolIdIsScipionId=False,
     ) -> Response:
@@ -11329,6 +11369,7 @@ class ProjectService:
                         inline=inline,
                         quality=quality,
                         mapper=mapper,
+                        ifNoneMatch=ifNoneMatch,
                     )
 
         if mapper is not None:
@@ -11361,6 +11402,7 @@ class ProjectService:
             inline: bool = True,
             quality: int = 75,
             mapper=None,
+            ifNoneMatch: Optional[str] = None,
 
             protocolIdIsScipionId=False,
     ) -> Response:
@@ -11387,6 +11429,7 @@ class ProjectService:
                     inline=inline,
                     quality=quality,
                     mapper=mapper,
+                    ifNoneMatch=ifNoneMatch,
                 )
 
         if mapper is not None:
