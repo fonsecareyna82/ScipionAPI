@@ -948,3 +948,54 @@ def test_the_acquisition_is_the_import_also_behind_a_protocol_writing_movies_aga
 
     assert next(item for item in payload["stages"] if item["stage"] == "movies")["setId"] == 11
     assert payload["flow"]["acquisition"] == "finished" and payload["flow"]["protocolId"] == "1"
+
+
+def twoAcquisitions(rates=()):
+    """The stream of preprocessing() (import 1), and a second import (11) -> motioncor (12) -> CTF (13)."""
+    db = preprocessing(rates=list(rates))
+    db.outputs += [output(110, "11", "outputMovies", "SetOfMovies", 40),
+                   output(120, "12", "outputMicrographsDoseWeighted", "SetOfMicrographs", 30),
+                   output(130, "13", "outputCTF", "SetOfCTF", 20)]
+    db.refs += [ref("12", "11", "outputMovies"), ref("13", "12", "outputMicrographsDoseWeighted")]
+    return db
+
+
+def lastMovie(setId, minutesAgo):
+    return {"setId": setId, "lastWindow": 0, "previousWindow": 0, "sampled": 10, "oldest": NOW - timedelta(hours=2),
+            "newest": NOW - timedelta(minutes=minutesAgo)}
+
+
+def test_the_acquisition_that_received_something_last_is_followed_and_any_other_can_be():
+    db = twoAcquisitions([lastMovie(10, 30), lastMovie(110, 1)])
+
+    newest = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+    first = monitor.streamingMonitor(Mapper(db), 7, acquisitionSetId=10, now=NOW)
+
+    assert [(item["setId"], item["label"]) for item in newest["acquisitions"]] == [(10, "run 1"), (110, "run 11")]
+    assert newest["acquisitionSetId"] == 110
+    assert next(stage for stage in newest["stages"] if stage["stage"] == "ctf")["setId"] == 130
+    # Its picking and the CTFs to choose are those of its branch only
+    assert [stage["stage"] for stage in newest["stages"]] == ["movies", "micrographs", "ctf"]
+    assert [item["setId"] for item in newest["ctfOutputs"]] == [130]
+    assert first["acquisitionSetId"] == 10
+    assert [item["setId"] for item in first["ctfOutputs"]] == [30]
+    assert [stage["setId"] for stage in first["stages"]] == [10, 20, 30, 40, 50]
+
+
+def test_a_new_acquisition_with_nothing_processed_yet_is_followed_from_its_first_movies():
+    db = preprocessing(rates=[lastMovie(10, 30), lastMovie(110, 1)])
+    db.outputs.append(output(110, "11", "outputMovies", "SetOfMovies", 3))
+
+    payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+
+    assert payload["acquisitionSetId"] == 110
+    assert [(stage["stage"], stage["setId"]) for stage in payload["stages"]] == [("movies", 110)]
+
+
+def test_the_bell_hears_of_every_open_acquisition():
+    # The first import stopped receiving movies 12 minutes ago; the second one goes on
+    db = twoAcquisitions([lastMovie(10, 12), lastMovie(110, 1)])
+
+    runs = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=5), now=NOW)
+
+    assert [(run["kind"], run["micrographName"]) for run in runs] == [("maxMoviePauseMinutes", "run 1")]

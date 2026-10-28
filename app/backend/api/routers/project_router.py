@@ -5278,6 +5278,8 @@ def getProjectStreamingMonitor(
     afterDoseKey: Optional[str] = Query(None, description="The dose analysis of the points the caller has."),
     afterDoseRowId: Optional[int] = Query(None, description="The dose cursor of the last answer."),
     qualityWindowSize: int = Query(0, ge=0, le=5000, description="Recent imported movies per quality window; 0 omits the exposure snapshot."),
+    acquisitionSetId: Optional[int] = Query(
+        None, description="The acquisition (an import) whose branch to follow; by default the open one that received something last."),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -5290,7 +5292,8 @@ def getProjectStreamingMonitor(
                                                  afterRowId=afterRowId, afterPickSetId=afterPickSetId,
                                                  afterPickRowId=afterPickRowId, coordinatesSetId=coordinatesSetId,
                                                  classesSetId=classesSetId, afterDoseKey=afterDoseKey,
-                                                 afterDoseRowId=afterDoseRowId, qualityWindowSize=qualityWindowSize)
+                                                 afterDoseRowId=afterDoseRowId, qualityWindowSize=qualityWindowSize,
+                                                 acquisitionSetId=acquisitionSetId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
@@ -5302,6 +5305,8 @@ def getProjectStreamingMonitor(
 def getProjectTomoMonitor(
     projectId: int,
     tsSetId: Optional[int] = Query(None, description="The acquired tilt series to follow; the newest by default."),
+    acquisitionSetId: Optional[int] = Query(
+        None, description="The acquisition (an import) whose branch to follow; by default the open one that received something last."),
     currentUser=Depends(getCurrentUser),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
@@ -5310,7 +5315,7 @@ def getProjectTomoMonitor(
 
     if not service.getProjectDbRow(mapper, projectId, currentUser):
         raise HTTPException(status_code=404, detail="Project not found")
-    payload = tomo_monitor.tomoMonitor(mapper, projectId, tsSetId=tsSetId)
+    payload = tomo_monitor.tomoMonitor(mapper, projectId, tsSetId=tsSetId, acquisitionSetId=acquisitionSetId)
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

@@ -28,7 +28,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from app.backend.api.services import stream_flow
+from app.backend.api.services import stream_branches, stream_flow
 from app.backend.mapper.streaming_monitor_mapper import StreamingMonitorPostgresqlMapper
 
 logger = logging.getLogger(__name__)
@@ -888,6 +888,19 @@ def _acquisitionOutput(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tup
     return current
 
 
+def _acquisitions(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]) -> List[Dict[str, Any]]:
+    """The imports of the project (see stream_branches): movies or micrographs whose protocol reads none of
+    the outputs followed (a CTF consensus writes micrographs too, but reads the CTFs)."""
+    return [output for output in outputs if output["stage"] in ("movies", "micrographs")
+            and stream_branches.readsNone(outputs, inputs, output)]
+
+
+def _lastItems(mapper, acquisitions: List[Dict[str, Any]], now: datetime) -> Dict[int, Optional[str]]:
+    """When each acquisition received its last item."""
+    rates = _rates(mapper, [output["setId"] for output in acquisitions], now) if acquisitions else {}
+    return {setId: rate.get("lastItemAt") for setId, rate in rates.items()}
+
+
 def _flow(mapper, projectId: int, source: Optional[Dict[str, Any]], stages: List[Dict[str, Any]],
           rates: Dict[int, Dict[str, Any]], limits: Dict[str, Optional[float]], now: datetime) -> Optional[Dict[str, Any]]:
     """Whether the stream flows (see stream_flow), with the timeout of an import still open."""
@@ -910,13 +923,22 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
                      afterPickRowId: Optional[int] = None, coordinatesSetId: Optional[int] = None,
                      classesSetId: Optional[int] = None, afterDoseKey: Optional[str] = None,
-                     afterDoseRowId: Optional[int] = None, qualityWindowSize: int = 0) -> Dict[str, Any]:
-    """The followed stream of a project: its stages, their rates, and the quality points after the given one."""
+                     afterDoseRowId: Optional[int] = None, qualityWindowSize: int = 0,
+                     acquisitionSetId: Optional[int] = None) -> Dict[str, Any]:
+    """The followed stream of a project: its stages, their rates, and the quality points after the given one.
+
+    It follows the branch of one acquisition (``acquisitionSetId``, else the one stream_branches chooses):
+    the outputs, selectors and series below are those of that branch only.
+    """
     now = now or datetime.now(timezone.utc)
-    outputs = _outputs(mapper, projectId)
-    inputs = _inputsOf(mapper, projectId, outputs)
+    allOutputs = _outputs(mapper, projectId)
+    inputs = _inputsOf(mapper, projectId, allOutputs)
+    acquisitions = _acquisitions(allOutputs, inputs)
+    lastItems = _lastItems(mapper, acquisitions, now)
+    root = stream_branches.followedAcquisition(acquisitions, lastItems, acquisitionSetId)
+    outputs = stream_branches.branchOutputs(allOutputs, inputs, root, acquisitions)
     chain = _chain(outputs, inputs, ctfSetId, coordinatesSetId, classesSetId)
-    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    acquisition = root or _acquisitionOutput(outputs, inputs, chain)
     rates = _rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"}
                                   | ({acquisition["setId"]} if acquisition is not None else set())), now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
@@ -929,6 +951,8 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
+        "acquisitions": stream_branches.describeAcquisitions(acquisitions, lastItems),
+        "acquisitionSetId": None if root is None else root["setId"],
         "stages": stages,
         "flow": _flow(mapper, projectId, acquisition, stages, rates, limits, now),
         "ctfOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
@@ -946,7 +970,8 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
                                                 key=lambda o: o["setId"])],
         "thresholds": limits,
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
-        "exposures": _exposureWindow(mapper, chain, outputs, inputs, limits, micCounts, qualityWindowSize),
+        # Upstream over the whole project: past a union of two imports, the movies of both
+        "exposures": _exposureWindow(mapper, chain, allOutputs, inputs, limits, micCounts, qualityWindowSize),
         "dose": _doseSeries(mapper, _doseOutputs(mapper, outputs), afterDoseKey, afterDoseRowId, limits),
         "picking": picking,
         "classes": classes,
@@ -1067,7 +1092,8 @@ def _limitText(kind: str, thresholds: Dict[str, Optional[float]]) -> str:
 
 
 def projectAlertRuns(mapper, projectId: int, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """The alert runs among the newest micrographs of the project's followed stream, as the bell tells them.
+    """The alert runs among the newest micrographs of the project's streams, as the bell tells them: of every
+    open acquisition (at most stream_branches.MAX_ALERT_BRANCHES), else of the one the monitor follows.
 
     A run whose first micrograph is the oldest one looked at may have started before: it is left out, so a
     long run is not announced again as it slides out of the window.
@@ -1075,39 +1101,54 @@ def projectAlertRuns(mapper, projectId: int, now: Optional[datetime] = None) -> 
     cached = _alertCache.get(int(projectId))
     if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
         return cached[1]
-    outputs = _outputs(mapper, projectId)
-    inputs = _inputsOf(mapper, projectId, outputs)
+    now = now or datetime.now(timezone.utc)
+    allOutputs = _outputs(mapper, projectId)
+    inputs = _inputsOf(mapper, projectId, allOutputs)
+    acquisitions = _acquisitions(allOutputs, inputs)
+    lastItems = _lastItems(mapper, acquisitions, now)
+    thresholds = thresholdsWith(storedThresholds(mapper, projectId))
+    runs: List[Dict[str, Any]] = []
+    seen = set()
+    for root in stream_branches.alertAcquisitions(acquisitions, lastItems):
+        outputs = stream_branches.branchOutputs(allOutputs, inputs, root, acquisitions)
+        # Branches joined later share what comes after: told once
+        for run in _branchAlertRuns(mapper, projectId, outputs, inputs, root, thresholds, now):
+            key = (run["kind"], run["protocolId"], run["startedAt"], run["micrographName"])
+            if key not in seen:
+                seen.add(key)
+                runs.append(run)
+    _alertCache[int(projectId)] = (time.monotonic(), runs)
+    return runs
+
+
+def _branchAlertRuns(mapper, projectId: int, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+                     root: Optional[Dict[str, Any]], thresholds: Dict[str, Optional[float]],
+                     now: datetime) -> List[Dict[str, Any]]:
+    """The alert runs of one branch: whether it flows, its micrographs and its movies past a threshold."""
     chain = _chain(outputs, inputs, None)
     base = chain.get("ctf") or chain.get("micrographs")
-    runs: List[Dict[str, Any]] = []
-    # Whether the stream flows: a pause of the acquisition, its end, a stage that stopped
-    flowLimits = thresholdsWith(storedThresholds(mapper, projectId))
-    now = now or datetime.now(timezone.utc)
-    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    acquisition = root or _acquisitionOutput(outputs, inputs, chain)
     rates = _rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"}
                                   | ({acquisition["setId"]} if acquisition is not None else set())), now)
     micCounts = {stage: countByMicrograph(mapper, chain[stage]["setId"])
                  for stage in ("coordinates", "particles") if stage in chain}
     flowStages = _stages(chain, rates, micCounts, _classes(mapper, chain))
-    runs += stream_flow.flowAlertRuns(_flow(mapper, projectId, acquisition, flowStages, rates, flowLimits, now),
-                                      flowStages, flowLimits)
+    # Whether the stream flows: a pause of the acquisition, its end, a stage that stopped
+    runs = stream_flow.flowAlertRuns(_flow(mapper, projectId, acquisition, flowStages, rates, thresholds, now),
+                                     flowStages, thresholds)
     if base is not None:
         rows = list(reversed(_store(mapper).listLatestItems(base["setId"], ALERT_WINDOW)))
-        thresholds = thresholdsWith(storedThresholds(mapper, projectId))
-        picked = countByMicrograph(mapper, chain["coordinates"]["setId"])["counts"] if "coordinates" in chain \
-            else None
+        picked = micCounts["coordinates"]["counts"] if "coordinates" in micCounts else None
         points = _points(mapper, chain, base, rows, thresholds, picked)
         runs += _windowRuns(points, len(rows) >= ALERT_WINDOW, thresholds, base, "micrographName", "Micrograph")
     doseOutputs = _doseOutputs(mapper, outputs)
     if doseOutputs:
-        thresholds = thresholdsWith(storedThresholds(mapper, projectId))
         latest = [(row, output) for output in doseOutputs
                   for row in _store(mapper).listLatestItems(output["setId"], ALERT_WINDOW)]
         # The newest movies of the kept and the discarded ones together
         latest = sorted(latest, key=lambda pair: int(pair[0]["scipionItemId"]))[-ALERT_WINDOW:]
         runs += _windowRuns(_dosePoints(latest, thresholds), len(latest) >= ALERT_WINDOW, thresholds,
                             doseOutputs[0], "movieName", "Movie")
-    _alertCache[int(projectId)] = (time.monotonic(), runs)
     return runs
 
 

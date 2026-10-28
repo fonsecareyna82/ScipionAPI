@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from app.backend.api.services import stream_flow
+from app.backend.api.services import stream_branches, stream_flow
 from app.backend.api.services import streaming_monitor as spa
 from app.backend.api.services.streaming_monitor import _store
 
@@ -399,6 +399,23 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
     return stages
 
 
+def _acquisitions(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]) -> List[Dict[str, Any]]:
+    """The imports of the project (see stream_branches): the movies of the tilts, or the tilt series, whose
+    protocol reads none of the tomography outputs (a composition reads micrographs, which are not)."""
+    return [output for output in outputs if output["stage"] in ("tiltseriesmovies", "tiltseries")
+            and stream_branches.readsNone(outputs, inputs, output)]
+
+
+def _followedBranch(mapper, allOutputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+                    acquisitionSetId: Optional[int], now: datetime):
+    """The acquisitions, when each one received its last item, the followed one and its branch's outputs."""
+    acquisitions = _acquisitions(allOutputs, inputs)
+    rates = spa._rates(mapper, [output["setId"] for output in acquisitions], now) if acquisitions else {}
+    lastItems = {setId: rate.get("lastItemAt") for setId, rate in rates.items()}
+    root = stream_branches.followedAcquisition(acquisitions, lastItems, acquisitionSetId)
+    return acquisitions, lastItems, root, stream_branches.branchOutputs(allOutputs, inputs, root, acquisitions)
+
+
 def _acquisitionOutput(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
                        chain: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """What the acquisition fills: the import of the movies of the tilts (up through any protocol writing
@@ -456,11 +473,13 @@ def _flow(mapper, projectId: int, outputs: List[Dict[str, Any]], inputs: Dict[st
 
 
 def tomoMonitor(mapper, projectId: int, tsSetId: Optional[int] = None,
-                now: Optional[datetime] = None) -> Dict[str, Any]:
-    """The followed tomography stream of a project: its stages and one row per tilt series."""
+                now: Optional[datetime] = None, acquisitionSetId: Optional[int] = None) -> Dict[str, Any]:
+    """The followed tomography stream of a project: its stages and one row per tilt series, of the branch of
+    one acquisition (``acquisitionSetId``, else the one stream_branches chooses)."""
     now = now or datetime.now(timezone.utc)
-    outputs = _outputs(mapper, projectId)
-    inputs = spa._inputsOf(mapper, projectId, outputs)
+    allOutputs = _outputs(mapper, projectId)
+    inputs = spa._inputsOf(mapper, projectId, allOutputs)
+    acquisitions, lastItems, root, outputs = _followedBranch(mapper, allOutputs, inputs, acquisitionSetId, now)
     chain = _chain(mapper, outputs, inputs, tsSetId)
     thresholds = spa.thresholdsWith(spa.storedThresholds(mapper, projectId))
     acquisition = _acquisitionOutput(outputs, inputs, chain)
@@ -471,6 +490,8 @@ def tomoMonitor(mapper, projectId: int, tsSetId: Optional[int] = None,
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
+        "acquisitions": stream_branches.describeAcquisitions(acquisitions, lastItems),
+        "acquisitionSetId": None if root is None else root["setId"],
         "stages": stages,
         "flow": _flow(mapper, projectId, outputs, inputs, chain, stages, rates, thresholds, now),
         "tiltSeriesOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
@@ -495,38 +516,55 @@ _alertCache: Dict[int, tuple] = {}
 
 def projectAlertRuns(mapper, projectId: int, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The runs of consecutive tilt series past a threshold, as the tomography view shows them, and whether
-    the stream flows."""
+    the stream flows: of every open acquisition (at most stream_branches.MAX_ALERT_BRANCHES), else of the one
+    the monitor follows."""
     cached = _alertCache.get(int(projectId))
     if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
         return cached[1]
-    outputs = _outputs(mapper, projectId)
+    allOutputs = _outputs(mapper, projectId)
     runs: List[Dict[str, Any]] = []
-    if any(output["stage"] in ("tiltseries", "tiltseriesmovies") for output in outputs):
+    if any(output["stage"] in ("tiltseries", "tiltseriesmovies") for output in allOutputs):
         now = now or datetime.now(timezone.utc)
-        inputs = spa._inputsOf(mapper, projectId, outputs)
-        chain = _chain(mapper, outputs, inputs, None)
+        inputs = spa._inputsOf(mapper, projectId, allOutputs)
         thresholds = spa.thresholdsWith(spa.storedThresholds(mapper, projectId))
-        acquisition = _acquisitionOutput(outputs, inputs, chain)
-        rates = spa._rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain}
-                                          | ({acquisition["setId"]} if acquisition is not None else set())), now)
-        stages = _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d")))
-        runs += stream_flow.flowAlertRuns(_flow(mapper, projectId, outputs, inputs, chain, stages, rates,
-                                                thresholds, now), stages, thresholds)
-        rows = _rows(mapper, projectId, chain, thresholds) if "tiltseries" in chain else []
-        points = [{"id": row["id"], "time": row.get("time"), "micrographName": row["tsId"], "alerts": row["alerts"]}
-                  for row in rows]
-        for run in spa.alertRuns(points):
-            runs.append({
-                "kind": run["kind"],
-                "text": spa._limitText(run["kind"], thresholds),
-                "startedAt": run["first"].get("time"),
-                "micrographName": run["first"]["micrographName"],
-                "count": run["count"],
-                "ongoing": run["ongoing"],
-                "protocolId": chain["tiltseries"]["protocolId"],
-                "protocolClassName": chain["tiltseries"]["protocolClassName"],
-            })
+        acquisitions, lastItems, _root, _outputsOfRoot = _followedBranch(mapper, allOutputs, inputs, None, now)
+        seen = set()
+        for root in stream_branches.alertAcquisitions(acquisitions, lastItems):
+            outputs = stream_branches.branchOutputs(allOutputs, inputs, root, acquisitions)
+            # Branches joined later share what comes after: told once
+            for run in _branchAlertRuns(mapper, projectId, outputs, inputs, thresholds, now):
+                key = (run["kind"], run["protocolId"], run["startedAt"], run["micrographName"])
+                if key not in seen:
+                    seen.add(key)
+                    runs.append(run)
     _alertCache[int(projectId)] = (time.monotonic(), runs)
+    return runs
+
+
+def _branchAlertRuns(mapper, projectId: int, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+                     thresholds: Dict[str, Optional[float]], now: datetime) -> List[Dict[str, Any]]:
+    """The alert runs of one branch: whether it flows, and its tilt series past a threshold."""
+    chain = _chain(mapper, outputs, inputs, None)
+    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    rates = spa._rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain}
+                                      | ({acquisition["setId"]} if acquisition is not None else set())), now)
+    stages = _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d")))
+    runs = stream_flow.flowAlertRuns(_flow(mapper, projectId, outputs, inputs, chain, stages, rates,
+                                           thresholds, now), stages, thresholds)
+    rows = _rows(mapper, projectId, chain, thresholds) if "tiltseries" in chain else []
+    points = [{"id": row["id"], "time": row.get("time"), "micrographName": row["tsId"], "alerts": row["alerts"]}
+              for row in rows]
+    for run in spa.alertRuns(points):
+        runs.append({
+            "kind": run["kind"],
+            "text": spa._limitText(run["kind"], thresholds),
+            "startedAt": run["first"].get("time"),
+            "micrographName": run["first"]["micrographName"],
+            "count": run["count"],
+            "ongoing": run["ongoing"],
+            "protocolId": chain["tiltseries"]["protocolId"],
+            "protocolClassName": chain["tiltseries"]["protocolClassName"],
+        })
     return runs
 
 

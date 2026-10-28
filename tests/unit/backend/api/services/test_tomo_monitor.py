@@ -478,3 +478,20 @@ def test_a_protocol_reading_tilt_series_through_their_fiducial_model_does_not_ac
 
     assert next(stage for stage in payload["stages"] if stage["stage"] == "tiltseries")["protocolId"] == "1"
     assert payload["flow"]["protocolId"] == "1"
+
+
+def test_each_acquisition_of_tilt_series_can_be_followed():
+    db = tomography()
+    # A second import of tilt series, with nothing made from it yet
+    db.outputs.append(output(15, "9", "tiltSeries", "SetOfTiltSeries", 1))
+    db.sets[15] = [tiltSeries("TS_09", 1, ANGLES)]
+
+    followed = tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+    other = tomo.tomoMonitor(Mapper(db), 7, now=NOW, acquisitionSetId=15)
+
+    assert [item["setId"] for item in followed["acquisitions"]] == [10, 15]
+    assert followed["acquisitionSetId"] == 10
+    assert other["acquisitionSetId"] == 15
+    assert [(stage["stage"], stage["setId"]) for stage in other["stages"]] == [("tiltseries", 15)]
+    assert [row["tsId"] for row in other["tiltSeries"]] == ["TS_09"]
+    assert [item["setId"] for item in other["tiltSeriesOutputs"]] == [15]
