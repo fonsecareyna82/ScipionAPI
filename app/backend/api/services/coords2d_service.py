@@ -35,12 +35,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Response, status
-from PIL import Image, ImageEnhance, ImageOps
+import numpy as np
+from PIL import Image
 from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.objects import Coordinate
 
 from app.backend.api.services.project_service import ProjectService
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.utils.image_display import reduceForDisplay, toDisplayUint8
 from app.backend.runtime import RuntimeOutputProxyService
 from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
@@ -52,6 +54,11 @@ logger = logging.getLogger(__name__)
 # _thumbnailBuildLocks/_thumbnailBuildLocksGuard.
 _micrographImageBuildLocksGuard = threading.Lock()
 _micrographImageBuildLocks: Dict[str, threading.Lock] = {}
+
+
+# Part of the image ETag and disk cache key: bump it when the way micrographs look
+# changes, so the images cached before are not served again
+_MICROGRAPH_DISPLAY_VERSION = 2
 
 
 class Coords2dService:
@@ -908,7 +915,8 @@ class Coords2dService:
         fmt: str,
     ) -> str:
         statResult = os.stat(imagePath)
-        payload = "%s:%s:%s:%s:%s:%s" % (
+        payload = "%s:%s:%s:%s:%s:%s:%s" % (
+            _MICROGRAPH_DISPLAY_VERSION,
             imagePath,
             int(statResult.st_mtime_ns),
             int(statResult.st_size),
@@ -1014,35 +1022,41 @@ class Coords2dService:
         return "PNG", "image/png"
 
     @staticmethod
-    def _prepareImage(image: Image.Image, size: int) -> Image.Image:
-        if image.mode not in {"L", "RGB", "RGBA"}:
-            image = image.convert("L")
+    def _prepareImage(data: Any, size: int) -> Image.Image:
+        """The micrograph for display, from its original values.
 
-        if image.mode == "L":
-            image = ImageOps.autocontrast(image)
-            image = ImageEnhance.Contrast(image).enhance(1.6)
-        elif image.mode == "RGBA":
-            image = image.convert("RGB")
+        A gray micrograph is reduced and shown over its robust mean +/- sigmas,
+        as the other micrograph previews: normalized between its extremes, a
+        few hot pixels squeezed it into one flat dark gray.
+        """
+        if isinstance(data, Image.Image):
+            data = np.asarray(data.convert("RGB") if data.mode not in {"L", "F", "I", "I;16", "RGB"} else data)
+        data = np.squeeze(np.asarray(data))
 
+        if data.ndim == 2:
+            return Image.fromarray(toDisplayUint8(reduceForDisplay(data, int(size or 0))), mode="L")
+
+        image = Image.fromarray(np.clip(data, 0, 255).astype(np.uint8)).convert("RGB")
         if size and size > 0:
             image.thumbnail((int(size), int(size)), Image.Resampling.LANCZOS)
-
         return image
 
     @staticmethod
-    def _readMicrographImage(imagePath: str, imageIndex: Optional[int]) -> Image.Image:
+    def _readMicrographImage(imagePath: str, imageIndex: Optional[int]) -> Any:
+        """The original values of the micrograph (not a PIL image: that one is
+        already normalized between its extremes)."""
         imageStack = ImageReadersRegistry.open(imagePath)
 
         if imageIndex is None:
-            return imageStack.getImage(pilImage=True)
+            return imageStack.getImage(pilImage=False)
 
         try:
-            return imageStack.getImage(index=imageIndex, pilImage=True)
+            return imageStack.getImage(index=imageIndex, pilImage=False)
         except Exception:
             pass
 
         try:
-            return imageStack.getImage(imageIndex, pilImage=True)
+            return imageStack.getImage(imageIndex, pilImage=False)
         except Exception:
             pass
 
@@ -1050,16 +1064,16 @@ class Coords2dService:
             zeroBasedIndex = imageIndex - 1
 
             try:
-                return imageStack.getImage(index=zeroBasedIndex, pilImage=True)
+                return imageStack.getImage(index=zeroBasedIndex, pilImage=False)
             except Exception:
                 pass
 
             try:
-                return imageStack.getImage(zeroBasedIndex, pilImage=True)
+                return imageStack.getImage(zeroBasedIndex, pilImage=False)
             except Exception:
                 pass
 
-        return imageStack.getImage(pilImage=True)
+        return imageStack.getImage(pilImage=False)
 
     def renderMicrographImage(
         self,
@@ -1315,9 +1329,12 @@ class Coords2dService:
                     }
 
             try:
-                image = self._readMicrographImage(imagePath, imageIndex)
-                originalWidth, originalHeight = image.size
-                image = self._prepareImage(image, size)
+                data = self._readMicrographImage(imagePath, imageIndex)
+                if isinstance(data, Image.Image):
+                    originalWidth, originalHeight = data.size
+                else:
+                    originalHeight, originalWidth = np.squeeze(np.asarray(data)).shape[:2]
+                image = self._prepareImage(data, size)
             except Exception as e:
                 logger.exception("Failed to render coords2d micrograph image: %s", e)
                 raise HTTPException(

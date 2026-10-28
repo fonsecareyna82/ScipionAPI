@@ -146,6 +146,10 @@ class FakeImageStack:
         self._image = image
 
     def getImage(self, index=None, pilImage=True):
+        if pilImage and not isinstance(self._image, Image.Image):
+            # As pwem: normalized between the extremes of the image
+            from pwem.emlib.image.image_readers import ImageStack
+            return ImageStack.asPilImage(self._image)
         return self._image
 
 
@@ -295,6 +299,40 @@ def test_Coords2dServiceRenderMicrographImageReusesOnDiskCacheAcrossRequests(ser
     assert secondResponse.body == firstResponse.body
     # The actual point of this test: still only one decode, ever.
     assert len(openCalls) == 1
+
+
+def test_Coords2dServiceMicrographImageIsNotSqueezedIntoDarkGrayByHotPixels(service, monkeypatch, tmp_path):
+    # Normalized between its extremes, a micrograph with a few hot pixels showed as one flat dark gray
+    import io
+    import numpy as np
+
+    openCalls = []
+    _setUpRenderMicrographImageMocks(monkeypatch, service, tmp_path, openCalls)
+    rng = np.random.default_rng(1)
+    micrograph = rng.normal(0.0, 1.0, (400, 600)).astype(np.float32)
+    micrograph[10, 10] = 5000.0
+    micrograph[200, 300] = 8000.0
+    monkeypatch.setattr(
+        "app.backend.api.services.coords2d_service.ImageReadersRegistry.open",
+        lambda path: FakeImageStack(micrograph),
+    )
+
+    response = service.renderMicrographImage(
+        mapper=SimpleNamespace(db=object()),
+        projectId=1,
+        currentUser={"id": 1},
+        protocolId=2,
+        outputName="coordinates",
+        micId="10",
+        size=300,
+    )
+
+    shown = np.asarray(Image.open(io.BytesIO(response.body)).convert("L"), dtype=float)
+    assert shown.shape == (200, 300)
+    assert np.percentile(shown, 95) - np.percentile(shown, 5) > 120
+    # The coordinates are still placed on the original size
+    assert response.headers["X-Preview-Original-Width"] == "600"
+    assert response.headers["X-Preview-Original-Height"] == "400"
 
 
 class FakeMultiMicrographReader:
