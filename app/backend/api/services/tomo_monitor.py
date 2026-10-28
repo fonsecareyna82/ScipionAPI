@@ -1,7 +1,7 @@
 """A live monitor of a tomography stream: its processing chain and the quality of each tilt series.
 
-The chain starts from the tilt series as they are acquired (an output whose protocol reads no tilt series:
-a composition from mdoc files, an import) and follows what is made from them, through any protocol in
+The chain starts from the tilt series as they are acquired (an output whose protocol reads no tilt series,
+nor anything made from them: a composition from mdoc files, an import) and follows what is made from them, through any protocol in
 between that writes tilt series again (normalization, dose filter, exclusion of views...): the CTF of each
 tilt, the aligned tilt series (the ones the reconstruction reads, else ones that carry an alignment), the
 fiducial models with their residuals and the tomograms.
@@ -32,6 +32,8 @@ from app.backend.api.services.streaming_monitor import _store
 logger = logging.getLogger(__name__)
 
 STAGES = ("tiltseriesmovies", "tiltseries", "ctftomo", "aligned", "tomograms", "coordinates3d")
+# A protocol reading any of these works on tilt series already acquired
+MADE_FROM_TILT_SERIES = ("tiltseries", "landmarks", "ctftomo", "tomograms", "coordinates3d")
 
 # A failed CTF estimation of a tilt (tomo's setWrongDefocus, or a failed CTFFIND/AreTomo fit)
 FAILED_DEFOCUS = -999.0
@@ -97,8 +99,10 @@ def _chain(mapper, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]]
            tsSetId: Optional[int]) -> Dict[str, Dict[str, Any]]:
     """The output of each stage of the followed tomography stream."""
     series = [output for output in outputs if output["stage"] == "tiltseries"]
+    # A protocol may read tilt series through what was made from them: IMOD's fiducial alignment reads the
+    # fiducial model, not the tilt series it was made from
     acquired = [output for output in series
-                if not spa._readInput(outputs, inputs, output, "tiltseries")]
+                if not any(spa._readInput(outputs, inputs, output, stage) for stage in MADE_FROM_TILT_SERIES)]
     raw = next((output for output in series if output["setId"] == tsSetId), None) \
         or spa._newest(acquired) or spa._newest(series)
     chain: Dict[str, Dict[str, Any]] = {}

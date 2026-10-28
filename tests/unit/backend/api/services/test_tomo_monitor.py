@@ -463,3 +463,18 @@ def test_the_bell_hears_of_a_pause_of_the_tomography_acquisition():
     pause = [run for run in runs if run["kind"] == "maxTiltPauseMinutes"]
     assert [(run["text"], run["startedAt"]) for run in pause] == [
         ("No new tilts for over 10 min", (NOW + timedelta(minutes=10)).isoformat())]
+
+
+def test_a_protocol_reading_tilt_series_through_their_fiducial_model_does_not_acquire_them():
+    # As IMOD's fiducial alignment: it reads the landmark model (made from tilt series), not tilt series, and is
+    # newer than the tilt series really acquired
+    db = tomography()
+    fiducial = output(42, "8", "TiltSeries", "SetOfTiltSeries", 2)
+    fiducial["updatedAt"] = NOW + timedelta(minutes=5)
+    db.outputs.append(fiducial)
+    db.refs.append(ref("8", "4", "FiducialModelNoGaps"))
+
+    payload = tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+
+    assert next(stage for stage in payload["stages"] if stage["stage"] == "tiltseries")["protocolId"] == "1"
+    assert payload["flow"]["protocolId"] == "1"
