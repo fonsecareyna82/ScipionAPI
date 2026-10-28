@@ -178,3 +178,31 @@ def test_ReadVolumeArray3dFallsBackToRegistryWhenMrcMmapFails(
     assert props == {
         "source": "registry",
     }
+
+def test_VolumeDisplayWindowIgnoresOutliersAndFitsSmoothedSlices(volumeUtilsModule, tmp_path):
+    import mrcfile
+
+    rng = np.random.default_rng(5)
+    volume = rng.normal(0.0, 1.0, size=(30, 48, 48)).astype(np.float32)
+    volume[15, 5, 5] = 1000.0
+    volumePath = tmp_path / "tomogram.mrc"
+    with mrcfile.new(str(volumePath)) as mrc:
+        mrc.set_data(volume)
+
+    low, high = volumeUtilsModule.readVolumeDisplayWindow(str(volumePath))
+
+    smoothed = volumeUtilsModule.smoothSliceForDisplay(volume[15])
+    assert -3.0 < low < 0.0 < high < 3.0
+    # Smoothing narrows the noise, and the window follows it
+    assert high - low < 6.0 * float(np.std(volume))
+    assert np.mean((smoothed > low) & (smoothed < high)) > 0.95
+
+
+def test_SmoothSliceForDisplayToleratesNonFiniteValues(volumeUtilsModule):
+    slice2d = np.ones((8, 8), dtype=np.float32)
+    slice2d[3, 3] = np.nan
+
+    smoothed = volumeUtilsModule.smoothSliceForDisplay(slice2d)
+
+    assert np.isfinite(smoothed).all()
+    np.testing.assert_allclose(smoothed, 1.0)

@@ -1369,3 +1369,51 @@ def test_TheTomogramIsReducedOnceAndKept(service, monkeypatch, tmp_path):
     assert stack["data"].shape == (8, 16, 16)
     assert second.body == first.body
     assert reads == [1]
+
+
+def _writeNoisyTomogramWithGold(path):
+    import mrcfile
+
+    rng = np.random.default_rng(3)
+    volume = rng.normal(0.0, 1.0, size=(40, 64, 64)).astype(np.float32)
+    # A few gold-like voxels far outside the range of the rest
+    volume[20, 10, 32] = -400.0
+    volume[25, 40, 32] = 400.0
+    with mrcfile.new(str(path)) as mrc:
+        mrc.set_data(volume)
+
+
+def _renderedGray(response):
+    import io
+    from PIL import Image
+
+    return np.asarray(Image.open(io.BytesIO(response.body)).convert("L"), dtype=np.float32)
+
+
+def test_RenderTomogramSliceKeepsContrastOnSideSlicesWithGold(service, tmp_path):
+    # Normalizing each slice between its own extremes left side slices crossing gold flat grey
+    volumePath = tmp_path / "tomogram.mrc"
+    _writeNoisyTomogramWithGold(volumePath)
+
+    response = service._renderTomogramSliceFromPath(
+        volumePath=str(volumePath), tomogramId=1, sliceIndex=32, axis="x", fmt="png", thumb=None,
+    )
+
+    low, high = np.percentile(_renderedGray(response), [5, 95])
+    assert high - low > 100
+
+
+def test_RenderTomogramSliceUsesOneWindowForEveryAxis(service, tmp_path):
+    volumePath = tmp_path / "tomogram.mrc"
+    _writeNoisyTomogramWithGold(volumePath)
+
+    # Side slices crossing the gold voxels, and a Z slice that only has noise
+    slices = [
+        _renderedGray(service._renderTomogramSliceFromPath(
+            volumePath=str(volumePath), tomogramId=1, sliceIndex=index, axis=axis, fmt="png", thumb=None,
+        ))
+        for axis, index in (("z", 5), ("x", 32), ("y", 10))
+    ]
+
+    spreads = [np.percentile(gray, 95) - np.percentile(gray, 5) for gray in slices]
+    assert max(spreads) - min(spreads) < 30

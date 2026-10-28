@@ -663,6 +663,11 @@ def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
     )
     monkeypatch.setattr(
         projectServiceModule,
+        "readVolumeDisplayWindow",
+        lambda volumePath: None,
+    )
+    monkeypatch.setattr(
+        projectServiceModule,
         "readVolumeSlice2d",
         lambda volumePath, sliceIndex, axis, maxSide: (
             np.arange(16, dtype=np.float32).reshape((4, 4)),
@@ -696,7 +701,7 @@ def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
     assert response.headers["x-preview-tomogramid"] == "0"
 
 
-def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
+def test_RenderTomogramSliceFromPathSmoothsAndUsesTheVolumeWindow(
     projectServiceModule,
     service,
     monkeypatch,
@@ -716,6 +721,13 @@ def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
     )
 
     normalizedInputs = []
+    windows = []
+
+    monkeypatch.setattr(
+        projectServiceModule,
+        "readVolumeDisplayWindow",
+        lambda volumePath: (1.0, 4.0),
+    )
 
     monkeypatch.setattr(
         projectServiceModule,
@@ -738,6 +750,7 @@ def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
             windowMax=None,
     ):
         normalizedInputs.append(np.asarray(data).copy())
+        windows.append((windowMin, windowMax))
         return np.zeros((4, 4), dtype=np.uint8)
 
     monkeypatch.setattr(
@@ -761,18 +774,11 @@ def test_RenderTomogramSliceFromPathRestoresFastZContrastClipping(
         quality=55,
     )
 
-    sliceMean = float(np.mean(sliceData))
-    sliceStd = float(np.std(sliceData))
-    expected = np.clip(
-        sliceData,
-        sliceMean - 2.0 * sliceStd,
-        sliceMean + 2.0 * sliceStd,
-    )
-
     np.testing.assert_allclose(
         normalizedInputs[0],
-        expected,
+        projectServiceModule.smoothSliceForDisplay(sliceData),
     )
+    assert windows == [(1.0, 4.0)]
 
 
 def test_CreateCoords3dOutputFromPointsServiceCreatesNewPostgresqlOutput(

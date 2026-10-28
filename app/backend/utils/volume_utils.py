@@ -34,6 +34,11 @@ from pwem.emlib.image.image_readers import (
     MRCImageReader,
 )
 
+# Slices are shown lightly smoothed: at pixel level a tomogram is mostly noise.
+DISPLAY_SMOOTHING_SIGMA = 1.0
+DISPLAY_WINDOW_PERCENTILES = (0.5, 99.5)
+DISPLAY_WINDOW_SAMPLE_SLICES = 9
+
 
 @dataclass(frozen=True)
 class VolumeSignature:
@@ -206,3 +211,49 @@ def readVolumeArray3d(volumePath: str) -> Tuple[np.ndarray, Dict[str, Any]]:
 
     arr, props = _readVolumeCached(sig)
     return arr, props
+
+
+def smoothSliceForDisplay(slice2d: np.ndarray) -> np.ndarray:
+    """Gaussian smoothing applied to every displayed slice; the data are never changed."""
+    from scipy.ndimage import gaussian_filter
+
+    arr = np.asarray(slice2d, dtype=np.float32)
+    finiteMask = np.isfinite(arr)
+    if not finiteMask.any():
+        return arr
+    if not finiteMask.all():
+        arr = np.where(finiteMask, arr, float(np.median(arr[finiteMask])))
+    return gaussian_filter(arr, sigma=DISPLAY_SMOOTHING_SIGMA, mode="nearest")
+
+
+def readVolumeDisplayWindow(volumePath: str) -> Optional[Tuple[float, float]]:
+    """Intensity window shared by every slice of a volume, on any axis."""
+    p = Path(volumePath)
+    if not p.exists():
+        return None
+    return _computeVolumeDisplayWindow(buildVolumeSignature(p))
+
+
+@lru_cache(maxsize=16)
+def _computeVolumeDisplayWindow(sig: VolumeSignature) -> Optional[Tuple[float, float]]:
+    vol3d, _props = readVolumeArray3d(sig.path)
+    zdim = int(vol3d.shape[0])
+    if zdim <= 0:
+        return None
+
+    # Whole Z slices are contiguous on disk, so a few of them over the central part
+    # are a cheap sample; the outer slices are often empty
+    first, last = int(zdim * 0.1), max(int(zdim * 0.9) - 1, int(zdim * 0.1))
+    indexes = sorted(set(np.linspace(first, last, DISPLAY_WINDOW_SAMPLE_SLICES).round().astype(int)))
+    values = np.concatenate([smoothSliceForDisplay(vol3d[k]).ravel() for k in indexes])
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+
+    low, high = (float(v) for v in np.percentile(values, DISPLAY_WINDOW_PERCENTILES))
+    if high <= low:
+        # Mostly constant volumes (masks): fall back to the full range
+        low, high = float(values.min()), float(values.max())
+    if high <= low:
+        return None
+    return low, high

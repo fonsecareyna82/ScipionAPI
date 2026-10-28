@@ -64,7 +64,12 @@ from app.backend.utils.volume_surface_mesh import (
     buildVolumeSurfaceMesh,
     encodeSurfaceMeshBinary,
 )
-from app.backend.utils.volume_utils import readVolumeArray3d, readVolumeSlice2d
+from app.backend.utils.volume_utils import (
+    readVolumeArray3d,
+    readVolumeDisplayWindow,
+    readVolumeSlice2d,
+    smoothSliceForDisplay,
+)
 from app.backend.api.services.protocol_relation_service import (
     ProtocolRelationService,
 )
@@ -187,6 +192,9 @@ _VOLUME_SURFACE_CACHE_LOCK = threading.Lock()
 _VOLUME_SURFACE_CACHE = collections.OrderedDict()
 _VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
 _VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=3600"
+# Part of the slice cache key and ETag: bump it when the way slices look changes,
+# so browsers do not keep showing the old images
+_VOLUME_SLICE_RENDER_VERSION = 2
 
 # Metadata table image-cell renders: keyed purely by request params (no
 # cheap single "source file" to stat upfront -- the column renderer may
@@ -12834,6 +12842,7 @@ class ProjectService:
             int(thumb or 0),
             bool(fast),
             int(quality or 75),
+            _VOLUME_SLICE_RENDER_VERSION,
         )
 
     def _getCachedVolumeSliceResponse(self, cacheKey) -> Optional[Response]:
@@ -16440,18 +16449,17 @@ class ProjectService:
             zdim, ydim, xdim = sliceMeta.get("dims", (1, 1, 1))
             depth = max(int(zdim), 1)
 
-            if axis == "z" and fast and not hasIntensityWindow:
-                sliceArray = np.asarray(slice2d, dtype=np.float32)
-                sliceMean = float(np.mean(sliceArray))
-                sliceStd = float(np.std(sliceArray))
+            slice2d = smoothSliceForDisplay(slice2d)
 
-                if np.isfinite(sliceMean) and np.isfinite(sliceStd) and sliceStd > 0:
-                    offset = 2.0 * sliceStd
-                    slice2d = np.clip(
-                        sliceArray,
-                        sliceMean - offset,
-                        sliceMean + offset,
-                    )
+            # One window for the whole volume, so the contrast neither changes
+            # with the slider nor differs between the Z, X and Y slices
+            if not hasIntensityWindow:
+                try:
+                    volumeWindow = readVolumeDisplayWindow(str(volumePath))
+                except Exception:
+                    volumeWindow = None
+                if volumeWindow is not None:
+                    windowMin, windowMax = volumeWindow
 
             gray = self._normalize2dSlice(
                 slice2d,
