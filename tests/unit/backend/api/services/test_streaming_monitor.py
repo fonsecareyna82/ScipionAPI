@@ -820,6 +820,17 @@ def test_the_dose_cursor_stops_where_an_output_with_more_rows_stopped(monkeypatc
     assert [p["id"] for p in dose["points"]] == [1, 2, 5]
 
 
+def test_the_dose_followed_is_the_one_measured_not_the_one_copied_by_the_protocols_after():
+    # Motioncor (12) reads the movies of the dose analysis (9) and writes their dose on its own movies
+    db = withDoseAnalysis([doseMovie(1), doseMovie(3)], [doseMovie(2, 1.4, 16.0)])
+    db.outputs.append(output(95, "12", "outputMovies", "SetOfMovies", 1))
+    db.outputs[db.outputs.index(next(o for o in db.outputs if o["setId"] == 95))]["updatedAt"] = NOW + timedelta(minutes=1)
+    db.refs.append(ref("12", "9", "outputMovies"))
+    db.doseRows[95] = [doseMovie(1, rowId=700)]
+
+    assert monitor.streamingMonitor(Mapper(db), 7, now=NOW)["dose"]["key"] == "9"
+
+
 def test_a_project_without_a_dose_analysis_has_no_dose_series():
     dose = monitor.streamingMonitor(Mapper(preprocessing(items=[ctfItem(1)])), 7, now=NOW)["dose"]
 
@@ -999,3 +1010,41 @@ def test_the_bell_hears_of_every_open_acquisition():
     runs = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=5), now=NOW)
 
     assert [(run["kind"], run["micrographName"]) for run in runs] == [("maxMoviePauseMinutes", "run 1")]
+
+
+def test_two_estimations_running_side_by_side_do_not_take_turns_at_being_followed():
+    # A second estimation (6) made after the first (3); the first one was written last
+    db = preprocessing()
+    db.outputs.append(output(31, "6", "outputCTF", "SetOfCTF", 3))
+    db.outputs[[o["setId"] for o in db.outputs].index(30)]["updatedAt"] = NOW + timedelta(minutes=1)
+    db.refs.append(ref("6", "2", "outputMicrographsDoseWeighted"))
+
+    assert next(s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"] if s["stage"] == "ctf")["setId"] == 31
+
+
+def test_two_pickers_running_side_by_side_do_not_take_turns_at_being_followed():
+    db = preprocessing()
+    db.outputs = [o for o in db.outputs if o["setId"] != 50]
+    db.refs = [r for r in db.refs if r["protocolId"] != "5"]
+    # A second picker (14) made after the first (4); the first one was written last
+    db.outputs.append(output(45, "14", "outputCoordinates", "SetOfCoordinates", 100))
+    db.outputs[[o["setId"] for o in db.outputs].index(40)]["updatedAt"] = NOW + timedelta(minutes=1)
+    db.refs.append(ref("14", "2", "outputMicrographsDoseWeighted"))
+
+    stages = {s["stage"]: s for s in monitor.streamingMonitor(Mapper(db), 7, now=NOW)["stages"]}
+
+    assert stages["coordinates"]["setId"] == 45
+
+
+def test_before_a_ctf_the_drift_follows_the_micrographs_of_the_aligner():
+    """Motioncor (2) -> max shift filter (8) on its movies; a tilt analysis (9) with its discarded micrographs."""
+    db = preprocessing()
+    db.outputs = [o for o in db.outputs if o["setClassName"] != "SetOfCTF"]
+    db.outputs += [output(80, "8", "outputMicrographs", "SetOfMicrographs", 25),
+                   output(81, "8", "outputMovies", "SetOfMovies", 25),
+                   output(90, "9", "discardedMicrographs", "SetOfMicrographs", 4)]
+    db.refs += [ref("8", "2", "outputMovies"), ref("9", "8", "outputMicrographs")]
+
+    payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+
+    assert payload["series"]["kind"] == "micrographs" and payload["series"]["setId"] == 20

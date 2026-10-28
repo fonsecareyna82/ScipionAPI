@@ -187,11 +187,13 @@ def _inputsOf(mapper, projectId: int, outputs: Sequence[Dict[str, Any]] = ()) ->
 
 
 def _newest(outputs: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The output made last (Set ids grow as Sets are made). Not the one written last: in streaming, two
+    protocols running side by side (two CTF estimations, two pickers) take turns at being written last, and
+    the monitor would jump from one to the other at every poll."""
     candidates = list(outputs)
     if not candidates:
         return None
-    return max(candidates, key=lambda output: (output["_updatedAt"] is not None, output["_updatedAt"] or 0,
-                                               output["setId"]))
+    return max(candidates, key=lambda output: output["setId"])
 
 
 def _downstream(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]], sources: List[Dict[str, Any]],
@@ -253,17 +255,17 @@ def _pickings(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
 def _followedPicking(pickings: List[Dict[str, Any]], coordinatesSetId: Optional[int],
                      classesSetId: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """The picking asked for; else the one that leads to the 2D classes asked for; else the one that goes
-    furthest (to 2D classes, then to particles), then the nearest, then the newest."""
+    furthest (to 2D classes, then to particles), then the nearest, then the one made last."""
     asked = next((picking for picking in pickings if picking["coordinates"]["setId"] == coordinatesSetId), None)
     if asked is not None or not pickings:
         return asked
 
     def rank(picking):
-        updatedAt = picking["coordinates"]["_updatedAt"]
         steps = picking["steps"]
+        # Then the one made last, not the one written last (see _newest)
         return (classesSetId is not None and classesSetId in picking["allClasses"],
                 picking["classes2d"] is not None, picking["particles"] is not None, steps is not None,
-                -(steps or 0), updatedAt is not None, updatedAt or 0, picking["coordinates"]["setId"])
+                -(steps or 0), picking["coordinates"]["setId"])
 
     return max(pickings, key=rank)
 
@@ -303,7 +305,14 @@ def _chain(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
         chain["ctf"] = ctf
         micrographs, _ = source(ctf, "micrographs")
     else:
-        micrographs = _newest(output for output in outputs if output["stage"] == "micrographs")
+        # No CTF yet: the micrographs of the aligner, the protocol that makes them from movies not aligned yet
+        # (a max shift filter reads aligned movies; a categorization or a tilt analysis, with its discarded
+        # micrographs, reads micrographs). The newest of any protocol would jump to each one that appears.
+        produced = [output for output in outputs if output["stage"] == "micrographs"]
+        alignerOf = {output["protocolId"] for output in produced}
+        aligned = [output for output in produced
+                   if any(movies["protocolId"] not in alignerOf for movies in read(output["protocolId"], "movies"))]
+        micrographs = _newest(aligned) or _newest(produced)
     if micrographs is not None:
         chain["micrographs"] = micrographs
         movies, aligner = source(micrographs, "movies")
@@ -775,9 +784,14 @@ DOSE_DIFFERENCE = "_DIFF_TO_DOSE_PER_ANGSTROM2"
 _doseSets: Dict[int, bool] = {}
 
 
-def _doseOutputs(mapper, outputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The movies outputs of the dose analysis followed: every one of the newest protocol whose movies carry a
-    measured dose, its kept and its discarded movies alike (a movie whose analysis failed has no dose)."""
+def _doseOutputs(mapper, outputs: List[Dict[str, Any]],
+                 inputs: Optional[Dict[str, List[tuple]]] = None) -> List[Dict[str, Any]]:
+    """The movies outputs of the dose analysis followed: every one of the newest protocol that measured a dose
+    on its movies, its kept and its discarded movies alike (a movie whose analysis failed has no dose).
+
+    The protocols after it copy the dose of the movies they read (motioncor writes it on its own movies): the
+    one followed is one whose movies carry a dose that the movies it reads do not.
+    """
     movies = [output for output in outputs if output["stage"] == "movies"]
     analysed = set()
     for output in movies:
@@ -789,7 +803,14 @@ def _doseOutputs(mapper, outputs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             _doseSets[output["setId"]] = known
         if known:
             analysed.add(output["protocolId"])
-    newest = _newest(output for output in movies if output["protocolId"] in analysed)
+    byKey = {(output["protocolId"], output["outputName"]): output for output in movies}
+
+    def copied(protocolId: str) -> bool:
+        read = [byKey.get(tuple(ref)) for ref in (inputs or {}).get(protocolId, [])]
+        return any(output is not None and output["protocolId"] in analysed for output in read)
+
+    measuring = {protocolId for protocolId in analysed if not copied(protocolId)} or analysed
+    newest = _newest(output for output in movies if output["protocolId"] in measuring)
     if newest is None:
         return []
     return sorted((output for output in movies if output["protocolId"] == newest["protocolId"]),
@@ -972,7 +993,7 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
         "series": _series(mapper, chain, afterSetId, afterRowId, limits),
         # Upstream over the whole project: past a union of two imports, the movies of both
         "exposures": _exposureWindow(mapper, chain, allOutputs, inputs, limits, micCounts, qualityWindowSize),
-        "dose": _doseSeries(mapper, _doseOutputs(mapper, outputs), afterDoseKey, afterDoseRowId, limits),
+        "dose": _doseSeries(mapper, _doseOutputs(mapper, outputs, inputs), afterDoseKey, afterDoseRowId, limits),
         "picking": picking,
         "classes": classes,
         # Tilt series in the project: the monitor shows its tomography view too
@@ -1141,7 +1162,7 @@ def _branchAlertRuns(mapper, projectId: int, outputs: List[Dict[str, Any]], inpu
         picked = micCounts["coordinates"]["counts"] if "coordinates" in micCounts else None
         points = _points(mapper, chain, base, rows, thresholds, picked)
         runs += _windowRuns(points, len(rows) >= ALERT_WINDOW, thresholds, base, "micrographName", "Micrograph")
-    doseOutputs = _doseOutputs(mapper, outputs)
+    doseOutputs = _doseOutputs(mapper, outputs, inputs)
     if doseOutputs:
         latest = [(row, output) for output in doseOutputs
                   for row in _store(mapper).listLatestItems(output["setId"], ALERT_WINDOW)]
