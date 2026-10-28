@@ -194,7 +194,7 @@ _VOLUME_SURFACE_CACHE_MAX_ITEMS = 12
 _VOLUME_PREVIEW_CACHE_CONTROL = "private, max-age=300, stale-while-revalidate=3600"
 # Part of the slice cache key and ETag: bump it when the way slices look changes,
 # so browsers do not keep showing the old images
-_VOLUME_SLICE_RENDER_VERSION = 2
+_VOLUME_SLICE_RENDER_VERSION = 3
 
 # Metadata table image-cell renders: keyed purely by request params (no
 # cheap single "source file" to stat upfront -- the column renderer may
@@ -16451,11 +16451,11 @@ class ProjectService:
 
             slice2d = smoothSliceForDisplay(slice2d)
 
-            # One window for the whole volume, so the contrast neither changes
-            # with the slider nor differs between the Z, X and Y slices
+            # One window for all the slices of an axis, so the contrast does not
+            # change with the slider
             if not hasIntensityWindow:
                 try:
-                    volumeWindow = readVolumeDisplayWindow(str(volumePath))
+                    volumeWindow = readVolumeDisplayWindow(str(volumePath), axis)
                 except Exception:
                     volumeWindow = None
                 if volumeWindow is not None:

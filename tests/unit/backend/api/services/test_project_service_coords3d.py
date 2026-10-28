@@ -664,7 +664,7 @@ def test_RenderTomogramSliceFromPathAvoidsWritableImageRegistry(
     monkeypatch.setattr(
         projectServiceModule,
         "readVolumeDisplayWindow",
-        lambda volumePath: None,
+        lambda volumePath, axis: None,
     )
     monkeypatch.setattr(
         projectServiceModule,
@@ -726,7 +726,7 @@ def test_RenderTomogramSliceFromPathSmoothsAndUsesTheVolumeWindow(
     monkeypatch.setattr(
         projectServiceModule,
         "readVolumeDisplayWindow",
-        lambda volumePath: (1.0, 4.0),
+        lambda volumePath, axis: (1.0, 4.0),
     )
 
     monkeypatch.setattr(

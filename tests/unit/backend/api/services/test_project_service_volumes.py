@@ -1403,7 +1403,7 @@ def test_RenderTomogramSliceKeepsContrastOnSideSlicesWithGold(service, tmp_path)
     assert high - low > 100
 
 
-def test_RenderTomogramSliceUsesOneWindowForEveryAxis(service, tmp_path):
+def test_RenderTomogramSliceGivesEveryAxisASimilarContrast(service, tmp_path):
     volumePath = tmp_path / "tomogram.mrc"
     _writeNoisyTomogramWithGold(volumePath)
 
@@ -1417,3 +1417,23 @@ def test_RenderTomogramSliceUsesOneWindowForEveryAxis(service, tmp_path):
 
     spreads = [np.percentile(gray, 95) - np.percentile(gray, 5) for gray in slices]
     assert max(spreads) - min(spreads) < 30
+
+
+def test_RenderTomogramSliceDoesNotSaturateSideSlicesOfNoiseStretchedAlongZ(service, tmp_path):
+    # Smoothing removes less of this noise from X and Y slices, so a window taken
+    # from Z slices turned them into black and white
+    import mrcfile
+    from scipy.ndimage import gaussian_filter1d
+
+    rng = np.random.default_rng(7)
+    volume = gaussian_filter1d(rng.normal(0.0, 1.0, size=(60, 64, 64)), sigma=4.0, axis=0).astype(np.float32)
+    volumePath = tmp_path / "tomogram.mrc"
+    with mrcfile.new(str(volumePath)) as mrc:
+        mrc.set_data(volume)
+
+    for axis, index in (("z", 30), ("x", 32), ("y", 32)):
+        gray = _renderedGray(service._renderTomogramSliceFromPath(
+            volumePath=str(volumePath), tomogramId=1, sliceIndex=index, axis=axis, fmt="png", thumb=None,
+        ))
+        saturated = np.mean((gray <= 0) | (gray >= 255))
+        assert saturated < 0.05, axis

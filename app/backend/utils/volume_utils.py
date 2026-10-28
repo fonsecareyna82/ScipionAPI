@@ -226,26 +226,35 @@ def smoothSliceForDisplay(slice2d: np.ndarray) -> np.ndarray:
     return gaussian_filter(arr, sigma=DISPLAY_SMOOTHING_SIGMA, mode="nearest")
 
 
-def readVolumeDisplayWindow(volumePath: str) -> Optional[Tuple[float, float]]:
-    """Intensity window shared by every slice of a volume, on any axis."""
+def readVolumeDisplayWindow(volumePath: str, axis: str = "z") -> Optional[Tuple[float, float]]:
+    """Intensity window shared by every slice of a volume along one axis.
+
+    One window per axis, not per volume: smoothing removes less noise from the X and Y
+    slices, where it is stretched along Z, so a Z window would saturate them.
+    """
     p = Path(volumePath)
     if not p.exists():
         return None
-    return _computeVolumeDisplayWindow(buildVolumeSignature(p))
+    axis = (axis or "z").lower()
+    if axis not in ("z", "y", "x"):
+        axis = "z"
+    return _computeVolumeDisplayWindow(buildVolumeSignature(p), axis)
 
 
-@lru_cache(maxsize=16)
-def _computeVolumeDisplayWindow(sig: VolumeSignature) -> Optional[Tuple[float, float]]:
+@lru_cache(maxsize=48)
+def _computeVolumeDisplayWindow(sig: VolumeSignature, axis: str) -> Optional[Tuple[float, float]]:
     vol3d, _props = readVolumeArray3d(sig.path)
-    zdim = int(vol3d.shape[0])
-    if zdim <= 0:
+    arrayAxis = {"z": 0, "y": 1, "x": 2}[axis]
+    dim = int(vol3d.shape[arrayAxis])
+    if dim <= 0:
         return None
 
-    # Whole Z slices are contiguous on disk, so a few of them over the central part
-    # are a cheap sample; the outer slices are often empty
-    first, last = int(zdim * 0.1), max(int(zdim * 0.9) - 1, int(zdim * 0.1))
+    # A few slices over the central part are enough; the outer ones are often empty
+    first, last = int(dim * 0.1), max(int(dim * 0.9) - 1, int(dim * 0.1))
     indexes = sorted(set(np.linspace(first, last, DISPLAY_WINDOW_SAMPLE_SLICES).round().astype(int)))
-    values = np.concatenate([smoothSliceForDisplay(vol3d[k]).ravel() for k in indexes])
+    values = np.concatenate([
+        smoothSliceForDisplay(np.take(vol3d, k, axis=arrayAxis)).ravel() for k in indexes
+    ])
     values = values[np.isfinite(values)]
     if values.size == 0:
         return None
