@@ -27,6 +27,7 @@ ALLOWED_MODULES = frozenset({
     'app.backend.api.services.protocol_viewer_action_worker',
     'app.backend.api.services.protocol_wizard_runtime_worker',
     'app.backend.api.services.protocol_viewer_wizard_worker',
+    'app.backend.api.services.protocol_run_actions_worker',
 })
 PRELOAD_SWITCH = 'SCIPION_VIEWER_WARM_PRELOAD'
 TEST_MODULES_SWITCH = 'SCIPION_VIEWER_WARM_TEST_MODULES'

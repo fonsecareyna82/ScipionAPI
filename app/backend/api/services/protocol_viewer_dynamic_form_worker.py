@@ -436,14 +436,13 @@ class RuntimeViewerContext:
 
 
 @contextmanager
-def loadRuntimeViewer(request: dict):
-    """Load the project, the protocol and the requested viewer with its form.
+def loadRuntimeProtocol(request: dict):
+    """Load the project and the protocol of ``request`` (projectId, protocolId, protocolDbId).
 
-    The request identity has already been authorized by the API parent.
+    Yields ``(mapper, project, protocol)``. The request identity has already been authorized by the API
+    parent; a protocol whose row changed since (another one under its id, another class) is refused.
     """
     from pyworkflow import Config
-    from pyworkflow.viewer import ProtocolViewer
-    from app.backend.api.services.protocol_viewer_inventory_service import _class_identity
     from app.backend.api.services.project_service import ProjectService
     from app.backend.database import getMapper
     from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
@@ -452,7 +451,6 @@ def loadRuntimeViewer(request: dict):
         # Plugin protocol and viewer classes are only found through the domain.
         Config.setDomain("pwem")
     project_id, protocol_id = request['projectId'], request['protocolId']
-    viewer_id = request['viewerId']
     mapper = getMapper()
     try:
         row = mapper.getProjectProtocolByProtocolId(projectId=project_id, protocolId=protocol_id)
@@ -468,6 +466,27 @@ def loadRuntimeViewer(request: dict):
         protocol = service._getScipionProtocolByScipionId(protocol_id)
         if protocol is None or protocol.getClassName() != row['protocolClassName']:
             raise ValueError('protocol_class_changed')
+        yield mapper, project, protocol
+    finally:
+        try:
+            mapper.db.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def loadRuntimeViewer(request: dict):
+    """Load the project, the protocol and the requested viewer with its form.
+
+    The request identity has already been authorized by the API parent.
+    """
+    from pyworkflow import Config
+    from pyworkflow.viewer import ProtocolViewer
+    from app.backend.api.services.protocol_viewer_inventory_service import _class_identity
+
+    project_id, protocol_id = request['projectId'], request['protocolId']
+    viewer_id = request['viewerId']
+    with loadRuntimeProtocol(request) as (mapper, project, protocol):
         # Viewers define their forms and actions from inputs and outputs.
         try:
             restoreProtocolInputs(mapper, project, protocol, project_id, protocol_id)
@@ -497,11 +516,6 @@ def loadRuntimeViewer(request: dict):
             viewer.setProtocol(protocol)  # calls dynamic _defineParams
         yield RuntimeViewerContext(viewer, project, protocol, baseline,
                                    hidden_declarations)
-    finally:
-        try:
-            mapper.db.close()
-        except Exception:
-            pass
 
 
 def viewerActionNames(viewer):

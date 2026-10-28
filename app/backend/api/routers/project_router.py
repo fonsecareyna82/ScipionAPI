@@ -2446,6 +2446,61 @@ def runProtocolViewerActionRoute(
                             detail={"code": exc.code, "messages": []}) from None
 
 
+class ProtocolRunActionRequest(BaseModel):
+    action: StrictStr = Field(..., min_length=1, max_length=128)
+
+    class Config:
+        extra = "forbid"
+
+
+_PROTOCOL_RUN_ACTION_STATUS = {
+    "unauthorized": 403, "not_found": 404, "unknown_action": 409, "not_running": 409,
+    "invalid_identity": 422, "invalid_action": 422,
+    "worker_timeout": 504, "worker_unavailable": 503,
+}
+
+
+def _protocolRunActionError(exc) -> HTTPException:
+    return HTTPException(status_code=_PROTOCOL_RUN_ACTION_STATUS.get(exc.code, 502), detail={"code": exc.code})
+
+
+@router.get("/{projectId}/protocols/{protocolId}/run-actions", response_model=Any)
+def listProtocolRunActionsRoute(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """The actions a running protocol offers, as the desktop context menu (STOP STREAMING...)."""
+    from app.backend.api.services.protocol_run_actions_service import (
+        ProtocolRunActionError, listProtocolRunActions,
+    )
+    try:
+        return {"actions": listProtocolRunActions(mapper=mapper, current_user=currentUser,
+                                                  project_id=projectId, protocol_id=protocolId)}
+    except ProtocolRunActionError as exc:
+        raise _protocolRunActionError(exc) from None
+
+
+@router.post("/{projectId}/protocols/{protocolId}/run-actions", response_model=Any)
+def runProtocolRunActionRoute(
+    projectId: int,
+    protocolId: int,
+    payload: ProtocolRunActionRequest,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """Run one action a running protocol offers: it leaves the file the protocol looks for."""
+    from app.backend.api.services.protocol_run_actions_service import (
+        ProtocolRunActionError, runProtocolRunAction,
+    )
+    try:
+        return runProtocolRunAction(mapper=mapper, current_user=currentUser, project_id=projectId,
+                                    protocol_id=protocolId, action=payload.action)
+    except ProtocolRunActionError as exc:
+        raise _protocolRunActionError(exc) from None
+
+
 @router.post("/{projectId}/protocols/{protocolId}/viewers/wizard", response_model=Any)
 def runProtocolViewerWizardRoute(
     projectId: int,
