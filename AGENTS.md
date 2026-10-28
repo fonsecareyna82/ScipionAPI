@@ -116,6 +116,12 @@ writes nothing and returns False; keep that guarantee when extending it.
 
 Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatibility.md) before changing runtime Sets, streaming inputs, `getFileName()`, `Set.load()`, output restoration, or SQLite materialization.
 
+## Metadata viewer tables
+
+- A table sorted by a column other than the id (`postgresql_dao._getSortedRowsPage`) is sorted once in PostgreSQL, ids only, and kept per process (`_SORTED_ORDER_CACHE`, keyed by table, column, direction and the Set's and its logical table's last write, `_sortVersion`); each window then reads only its rows by id. Sorting again at every window scrolled to cost the whole Set each time.
+- `renderMetadataImageCellsBatchService` shares one `batchContext` among its cells: the table is opened once, the rows asked for by index are read in one window (`_batchRowValues`, when they are closer than `_METADATA_BATCH_ROW_SPAN`) and one `OutputsPreview` renders the MRC images. Each cell opened the table, read a page of rows for one and built its own renderer.
+- `_metadataLock` still serialises the table requests (tables, schema, pages, windows, row position, export) of every user. Each request builds its own ObjectManager, and image cells already run without it, but it may cover module-level registrations of `metadataviewer`; it was left in place until that is shown safe.
+
 ## CTF viewer (SetOfCTF)
 
 - `GET .../outputs/{o}/ctf` (`viewers/postgresql_ctf_reader.py`) lists every CTF of the Set, as the viewer draws its plots and statistics from all of them. It reads only the values a row shows (`listStoredSetItemsWithKeys` with `LISTED_VALUE_PATTERN`, keys matched by their end as `_buildCtfRow` does), keeps the list per process by Set version (`updatedAt`, `itemsCount`), and the route answers gzip compressed when the client takes it (`_compressedJson`, for routes listing thousands of rows only: images are compressed already).

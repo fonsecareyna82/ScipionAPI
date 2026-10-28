@@ -475,7 +475,8 @@ def test_PostgresqlDaoDoesNotUseEvalForMatrixStrings(postgresqlDaoModule):
 
 @pytest.mark.parametrize("logical", [False, True])
 @pytest.mark.parametrize("orderBy,asc", [("score", True), ("score", False), ("id", False), ("enabled", True)])
-def test_ScalarSortingReadsOnlyRequestedPage(postgresqlDaoModule, monkeypatch, logical, orderBy, asc):
+def test_ScalarSortingSortsOnceAndReadsOnlyTheRowsOfEachWindow(postgresqlDaoModule, monkeypatch, logical, orderBy, asc):
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()
     if logical:
         dao, mapper = _buildLogicalDao(postgresqlDaoModule, monkeypatch)
     else:
@@ -483,20 +484,54 @@ def test_ScalarSortingReadsOnlyRequestedPage(postgresqlDaoModule, monkeypatch, l
         dao = _buildDao(postgresqlDaoModule, monkeypatch, mapper)
     dao.getTables()
     calls = []
+    # The order PostgreSQL gives: item 1000 first, then 999...
+    order = list(range(1000, 800, -1))
+
     def fetchAll(sql, params):
         calls.append((sql, params))
-        return [{"scipionItemId": 987, "enabled": True, "values": {"score": "2.5"}}]
+        if "ORDER BY" in sql:
+            return [{"scipionItemId": itemId} for itemId in order]
+        return [{"scipionItemId": itemId, "enabled": True, "values": {"score": str(itemId / 10)}}
+                for itemId in reversed(params[-1])]
     monkeypatch.setattr(dao.db, "fetchAll", fetchAll, raising=False)
+
     result = dao._getRows("objects", 120, 60, orderBy, asc)
-    assert result[0]["id"] == 987
-    assert result[0]["score"] == 2.5
-    sql, params = calls[0]
-    assert "LIMIT %s OFFSET %s" in sql
-    assert "NULLS LAST" in sql
-    assert params[-2:] == (60, 120)
-    assert '"tableId" = %s' in sql if logical else '"setId" = %s' in sql
+    again = dao._getRows("objects", 180, 10, orderBy, asc)
+
+    # The window in the order sorted, whatever order its rows come back in
+    assert [row["id"] for row in result] == order[120:180]
+    assert [row["id"] for row in again] == order[180:190]
+    sorted_ = [sql for sql, _ in calls if "ORDER BY" in sql]
+    assert len(sorted_) == 1 and "NULLS LAST" in sorted_[0] and "LIMIT" not in sorted_[0]
+    assert ('"tableId" = %s' if logical else '"setId" = %s') in sorted_[0]
+    windows = [params for sql, params in calls if "ANY(%s)" in sql]
+    assert [list(params[-1]) for params in windows] == [order[120:180], order[180:190]]
     assert all(call["limit"] == 0 for call in mapper.getStoredSetCalls)
     assert not mapper.getStoredSetTableItemsCalls
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()
+
+
+def test_ASortedOrderIsSortedAgainOnceTheSetIsWrittenAgain(postgresqlDaoModule, monkeypatch):
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()
+    mapper = FakeSetMapper(_makeStoredSet())
+    dao = _buildDao(postgresqlDaoModule, monkeypatch, mapper)
+    dao.getTables()
+    sorts = []
+
+    def fetchAll(sql, params):
+        if "ORDER BY" in sql:
+            sorts.append(sql)
+            return [{"scipionItemId": 1}]
+        return [{"scipionItemId": 1, "enabled": True, "values": {"score": "1"}}]
+    monkeypatch.setattr(dao.db, "fetchAll", fetchAll, raising=False)
+
+    dao._getRows("objects", 0, 10, "score", True)
+    dao._getRows("objects", 0, 10, "score", True)
+    dao._getStoredSetHeader()["updatedAt"] = "written again"
+    dao._getRows("objects", 0, 10, "score", True)
+
+    assert len(sorts) == 2
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()
 
 
 def test_SortPropertyNamesAreBoundParameters(postgresqlDaoModule, monkeypatch):

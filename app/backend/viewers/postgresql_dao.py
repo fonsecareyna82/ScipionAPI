@@ -33,8 +33,10 @@
 # ******************************************************************************
 
 import ast
+import collections
 import json
 import logging
+import threading
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -54,6 +56,12 @@ from metadataviewer.model import (
 from pwem.convert.transformations import euler_from_matrix
 
 from app.backend.mapper import ScipionSetPostgresqlMapper
+
+# (table, scope, column, direction, version) -> the item ids in that order: a table sorted by a column is
+# sorted once, not again at every window scrolled to. Its version is the Set's (and its table's) last write.
+_SORTED_ORDER_CACHE: "collections.OrderedDict[tuple, List[int]]" = collections.OrderedDict()
+_SORTED_ORDER_CACHE_SIZE = 8
+_SORTED_ORDER_LOCK = threading.Lock()
 
 
 logger = logging.getLogger(__name__)
@@ -769,6 +777,14 @@ class PostgresqlDAO(IDAO):
             self._columns = self._normalizeColumns(self._storedSet.get("columns") or [])
         return self._storedSet
 
+    def _sortVersion(self, tableName: str) -> tuple:
+        """When the Set, and the logical table of ``tableName``, were written last: a sorted order is kept
+        while they are unchanged."""
+        header = self._getStoredSetHeader() or {}
+        table = self._getLogicalTable(tableName) or {}
+        return (str(header.get("updatedAt")), str(table.get("updatedAt")),
+                json.dumps(table.get("properties"), sort_keys=True, default=str) if table else "")
+
     def _getItemsSource(self, tableName: str):
         """Resolve a scoped persisted table; SQL identifiers never come from the request."""
         if tableName == PROPERTIES_TABLE:
@@ -919,11 +935,29 @@ class PostgresqlDAO(IDAO):
             else:
                 expression = 'sort_value COLLATE "C"'
         direction = "ASC" if orderAsc else "DESC"
-        sql = f'''SELECT * FROM (SELECT *{valueSelect} FROM {sqlTable} WHERE {scopeColumn} = %s) AS metadata_items
-                  ORDER BY {expression} {direction} NULLS LAST, "scipionItemId" ASC
-                  LIMIT %s OFFSET %s'''
-        parameters.extend([limit, max(0, int(start))])
-        items = self.db.fetchAll(sql, tuple(parameters))
+        key = (sqlTable, scopeId, orderBy, bool(orderAsc), self._sortVersion(tableName))
+        with _SORTED_ORDER_LOCK:
+            order = _SORTED_ORDER_CACHE.get(key)
+            if order is not None:
+                _SORTED_ORDER_CACHE.move_to_end(key)
+        if order is None:
+            # Sorted once, ids only: the windows after read their rows by id
+            sql = f'''SELECT "scipionItemId" FROM (SELECT *{valueSelect} FROM {sqlTable}
+                                          WHERE {scopeColumn} = %s) AS metadata_items
+                      ORDER BY {expression} {direction} NULLS LAST, "scipionItemId" ASC'''
+            order = [int(row["scipionItemId"]) for row in self.db.fetchAll(sql, tuple(parameters)) or []]
+            with _SORTED_ORDER_LOCK:
+                _SORTED_ORDER_CACHE[key] = order
+                while len(_SORTED_ORDER_CACHE) > _SORTED_ORDER_CACHE_SIZE:
+                    _SORTED_ORDER_CACHE.popitem(last=False)
+        start = max(0, int(start))
+        window = order[start:] if limit is None else order[start:start + int(limit)]
+        if not window:
+            return []
+        fetched = self.db.fetchAll(f'SELECT * FROM {sqlTable} WHERE {scopeColumn} = %s AND "scipionItemId" = ANY(%s)',
+                                   (scopeId, window)) or []
+        byId = {int(item["scipionItemId"]): item for item in fetched}
+        items = [byId[itemId] for itemId in window if itemId in byId]
         return [self._itemToRow(item, columns) for item in items]
 
     def _getRows(

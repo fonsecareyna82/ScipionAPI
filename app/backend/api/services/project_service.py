@@ -18430,6 +18430,26 @@ class ProjectService:
 
         return response
 
+    # Rows a batch reads in one window: further apart, each cell reads its own
+    _METADATA_BATCH_ROW_SPAN = 512
+
+    @classmethod
+    def _batchRowValues(cls, batchContext: Optional[Dict[str, Any]], objMgr, tableName: str,
+                        idx0: int) -> Optional[list]:
+        """The values of the row at ``idx0`` from the one window of rows the batch reads, or None."""
+        if batchContext is None:
+            return None
+        rows = batchContext.get("rows")
+        if rows is None:
+            indexes = [index for index in batchContext.get("indexes") or [] if index is not None]
+            rows = {}
+            if indexes and max(indexes) - min(indexes) < cls._METADATA_BATCH_ROW_SPAN:
+                first = min(indexes)
+                window = objMgr.getRows(tableName, first, max(indexes) - first + 1) or []
+                rows = {first + offset: row.getValues() for offset, row in enumerate(window)}
+            batchContext["rows"] = rows
+        return rows.get(idx0)
+
     def renderMetadataImageCellCachedService(
             self,
             projectId: int,
@@ -18452,6 +18472,7 @@ class ProjectService:
             contrastMode: str = "original",
             volumeView: str = "surface",
             version: Optional[str] = None,
+            batchContext: Optional[Dict[str, Any]] = None,
     ) -> Response:
         """
         Thin ETag/cache wrapper around renderMetadataImageCellService --
@@ -18513,6 +18534,7 @@ class ProjectService:
             asc=asc,
             contrastMode=contrastMode,
             volumeView=volumeView,
+            batchContext=batchContext,
             **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
         )
 
@@ -18585,9 +18607,14 @@ class ProjectService:
             protocolIdIsScipionId=False,
             contrastMode: str = "original",
             volumeView: str = "surface",
+            batchContext: Optional[Dict[str, Any]] = None,
     ) -> Response:
         """
         Render one image cell from a metadata table using ImageRenderer.
+
+        ``batchContext`` is shared by the cells of one batch (renderMetadataImageCellsBatchService): the
+        table is opened once, the rows the batch asks for by index are read in one window, and one
+        OutputsPreview renders every image, instead of each cell doing it again.
 
         Behavior:
         - If everything is correct -> real thumbnail.
@@ -18599,14 +18626,19 @@ class ProjectService:
         from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
 
         # Resolve metadata root path for relative image paths
-        objMgr, table = self._openMetadataTable(
-            projectId,
-            protocolId,
-            outputName,
-            tableName,
-            mapper=mapper,
-            **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
-        )
+        opened = batchContext.get("opened") if batchContext is not None else None
+        if opened is None:
+            opened = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+            )
+            if batchContext is not None:
+                batchContext["opened"] = opened
+        objMgr, table = opened
         columns = list(table.getColumns())
         table.setSortingColumn(sortBy)
         table.setSortingAsc(asc)
@@ -18690,9 +18722,11 @@ class ProjectService:
                     else:
                         column.calculate(persistedRow, rowValues)
         else:
-            rows = objMgr.getRows(tableName, idx0, 1) or []
-            if rows:
-                rowValues = rows[0].getValues()
+            rowValues = self._batchRowValues(batchContext, objMgr, tableName, idx0)
+            if rowValues is None:
+                rows = objMgr.getRows(tableName, idx0, 1) or []
+                if rows:
+                    rowValues = rows[0].getValues()
         if rowValues is None:
             logger.warning(
                 "Row index %s not found in table '%s' (projectId=%s, protocolId=%s)",
@@ -18964,11 +18998,15 @@ class ProjectService:
                                     previewIndex = None
 
                                 try:
-                                    preview = OutputsPreview(
-                                        currentProject=self.currentProject,
-                                        protocol=None,
-                                        output=None,
-                                    )
+                                    preview = batchContext.get("preview") if batchContext is not None else None
+                                    if preview is None:
+                                        preview = OutputsPreview(
+                                            currentProject=self.currentProject,
+                                            protocol=None,
+                                            output=None,
+                                        )
+                                        if batchContext is not None:
+                                            batchContext["preview"] = preview
 
                                     previewResponse = preview.renderImageFromFilePath(
                                         filePath=str(resolvedPath),
@@ -19262,6 +19300,8 @@ class ProjectService:
 
         results: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
+        # One table, one window of rows and one renderer for the whole batch (see renderMetadataImageCellService)
+        batchContext: Dict[str, Any] = {"indexes": [rowIndex for rowId, rowIndex, _ in cleanItems if rowId is None]}
 
         for rowId, rowIndex, columnName in cleanItems:
             try:
@@ -19280,6 +19320,7 @@ class ProjectService:
                     mapper=mapper,
                     sortBy=sortBy,
                     asc=asc,
+                    batchContext=batchContext,
                     **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
                     # Each cell uses the contrast-aware cache key.
                     **({"contrastMode": contrastMode, "volumeView": volumeView}
