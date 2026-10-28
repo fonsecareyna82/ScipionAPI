@@ -39,7 +39,8 @@ SET_RATES_SQL = """
            COUNT(recent.t) FILTER (WHERE recent.t >= %s) AS "lastWindow",
            COUNT(recent.t) FILTER (WHERE recent.t >= %s AND recent.t < %s) AS "previousWindow",
            COUNT(recent.t) AS "sampled",
-           MIN(recent.t) AS "oldest"
+           MIN(recent.t) AS "oldest",
+           MAX(recent.t) AS "newest"
       FROM UNNEST(%s::int[]) AS sets("setId")
       CROSS JOIN LATERAL (
             SELECT COALESCE(i.creation, i."createdAt") AS t
@@ -49,6 +50,12 @@ SET_RATES_SQL = """
              LIMIT %s
       ) recent
      GROUP BY sets."setId"
+"""
+
+PROTOCOL_PARAM_SQL = """
+    SELECT params->>%s AS value
+      FROM protocols
+     WHERE "projectId" = %s AND "protocolId" = %s
 """
 
 # Rows are read in the order they were written (their row id), not by item id: parallel steps finish items
@@ -227,6 +234,12 @@ class StreamingMonitorPostgresqlMapper:
         """Per Set, among its newest ``sample`` items, how many were created in the last window and in the
         one before, how many were looked at and the oldest of them."""
         return self.db.fetchAll(SET_RATES_SQL, (lastFrom, previousFrom, previousTo, list(setIds), int(sample))) or []
+
+    def getProtocolParam(self, projectId: int, protocolId: str, name: str) -> Optional[str]:
+        """One parameter of a protocol as it was saved (a string), or None."""
+        row = self.db.fetchOne(PROTOCOL_PARAM_SQL, (str(name), int(projectId), str(protocolId))) or {}
+        value = row.get("value")
+        return None if value is None else str(value)
 
     def listItemsAfterRow(self, setId: int, afterRowId: int, limit: int) -> List[Dict[str, Any]]:
         """The items of a Set written after a row, in the order they were written."""

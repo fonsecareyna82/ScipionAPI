@@ -1,5 +1,5 @@
 """The tomography monitor: the chain it follows and what it tells of each tilt series."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -75,7 +75,7 @@ class Db:
         if query == queries.TILT_SERIES_SQL:
             return [{"itemId": r["itemId"], "enabled": True, "updatedAt": r.get("updatedAt", NOW), "time": NOW,
                      "tsId": r["tsId"], "size": r.get("size"), "samplingRate": 1.0, "hasAlignment": None,
-                     "tilts": len(r["children"]), "tiltsUpdatedAt": NOW} for r in self.sets[params[0]]]
+                     "tilts": len(r["children"]), "tiltsUpdatedAt": NOW} for r in self.sets.get(params[0], [])]
         if query == queries.ROOT_ROWS_SQL:
             return [{"itemId": r["itemId"], "enabled": True, "updatedAt": r.get("updatedAt", NOW), "tsId": r["tsId"],
                      "fileName": r.get("fileName"), "filename": r.get("filename"), "hasResidualInfo": None}
@@ -273,14 +273,14 @@ def test_runs_of_tilt_series_past_a_threshold_reach_the_bell():
     short = [tiltSeries("TS_0%d" % i, i, list(range(-40, 41, 4))) for i in (1, 2)]
     db = tomography(sets={10: short})
 
-    runs = tomo.projectAlertRuns(Mapper(db), 7)
+    runs = tomo.projectAlertRuns(Mapper(db), 7, now=NOW)
     tomo._alertCache.clear()
 
     assert [(r["kind"], r["micrographName"], r["count"], r["text"]) for r in runs] == [
         ("minAngleSpan", "TS_01", 2, "Tilt range short of ±50°"), ("minTilts", "TS_01", 2, "Fewer than 30 tilts")]
     assert runs[0]["protocolId"] == "1"
-    assert len(tomo.alertsSince(Mapper(db), 7, datetime(2026, 10, 22, 11, 0, tzinfo=timezone.utc))) == 2
-    assert tomo.alertsSince(Mapper(db), 7, late) == []
+    assert len(tomo.alertsSince(Mapper(db), 7, datetime(2026, 10, 22, 11, 0, tzinfo=timezone.utc), now=NOW)) == 2
+    assert tomo.alertsSince(Mapper(db), 7, late, now=NOW) == []
 
 
 def test_the_tomography_stages_carry_their_estimated_time():
@@ -396,3 +396,70 @@ def test_a_ctf_estimated_from_the_movies_beside_the_tilt_series_is_followed():
     assert ("ctftomo", 20) in [(s["stage"], s["setId"]) for s in payload["stages"]]
     rows = {row["tsId"]: row for row in payload["tiltSeries"]}
     assert rows["TS_01"]["defocusU"] == 31000.0
+
+
+def withRates(db, rates):
+    original = db.fetchAll
+
+    def fetchAll(query, params):
+        if query == queries.SET_RATES_SQL:
+            return [row for row in rates if row["setId"] in params[3]]
+        return original(query, params)
+
+    db.fetchAll = fetchAll
+
+
+def lastItem(setId, minutesAgo):
+    """The rate row of a Set whose newest item came that many minutes before NOW."""
+    return {"setId": setId, "lastWindow": 0, "previousWindow": 0, "sampled": 2, "oldest": NOW - timedelta(hours=2),
+            "newest": NOW - timedelta(minutes=minutesAgo)}
+
+
+def test_a_pause_of_the_acquisition_is_told_by_its_tilts_not_by_its_tilt_series():
+    db = tomography()
+    # The newest tilt series began an hour ago, and its tilts came until NOW
+    withRates(db, [lastItem(10, 60)])
+
+    active = tomo.tomoMonitor(Mapper(db), 7, now=NOW + timedelta(minutes=5))["flow"]
+    paused = tomo.tomoMonitor(Mapper(db), 7, now=NOW + timedelta(minutes=12))["flow"]
+
+    assert active["acquisition"] == "active"
+    assert paused["acquisition"] == "paused" and paused["idleMinutes"] == pytest.approx(12)
+    assert (paused["unit"], paused["activityUnit"], paused["items"]) == ("tilt series", "tilts", 2)
+
+
+def test_the_tilt_series_still_being_acquired_waits_for_no_stage():
+    db = tomography()
+    # One CTF series for two tilt series, the second still being acquired (20 of its 41 tilts)
+    db.outputs[1] = output(20, "2", "CTFTomoSeries", "SetOfCTFTomoSeries", 1)
+    withRates(db, [lastItem(20, 120)])
+
+    waiting = tomo.tomoMonitor(Mapper(db), 7, now=NOW)
+    ctf = next(stage for stage in waiting["stages"] if stage["stage"] == "ctftomo")
+    assert (ctf["behind"], ctf["readyBehind"]) == (1, 0)
+    assert "stalledMinutes" not in ctf and waiting["flow"]["stalled"] == []
+
+    # Complete now, and still no CTF for it after two hours
+    db.sets[10][1] = tiltSeries("TS_02", 2, ANGLES)
+    tomo._cache.clear()
+    stalled = tomo.tomoMonitor(Mapper(db), 7, now=NOW)["flow"]["stalled"]
+    assert [(item["stage"], item["behind"], round(item["minutes"])) for item in stalled] == [("ctftomo", 1, 120)]
+
+
+def test_the_tomography_flow_has_thresholds_of_its_own():
+    db = tomography()
+    db.settings = {"thresholds": {"maxTiltPauseMinutes": 30, "maxMoviePauseMinutes": 1}}
+    withRates(db, [lastItem(10, 60)])
+
+    assert tomo.tomoMonitor(Mapper(db), 7, now=NOW + timedelta(minutes=12))["flow"]["acquisition"] == "active"
+
+
+def test_the_bell_hears_of_a_pause_of_the_tomography_acquisition():
+    db = tomography()
+    withRates(db, [lastItem(10, 60)])
+
+    runs = tomo.projectAlertRuns(Mapper(db), 7, now=NOW + timedelta(minutes=12))
+
+    pause = [run for run in runs if run["kind"] == "maxTiltPauseMinutes"]
+    assert [(run["text"], run["startedAt"]) for run in pause] == [
+        ("No new tilts for over 10 min", (NOW + timedelta(minutes=10)).isoformat())]

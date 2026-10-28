@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.backend.api.services import stream_flow
 from app.backend.api.services import streaming_monitor as spa
 from app.backend.api.services.streaming_monitor import _store
 
@@ -394,19 +395,80 @@ def _stages(chain: Dict[str, Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
     return stages
 
 
+def _acquisitionOutput(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+                       chain: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """What the acquisition fills: the import of the movies of the tilts (up through any protocol writing
+    them again), else the acquired tilt series."""
+    current = chain.get("tiltseriesmovies")
+    if current is None:
+        return chain.get("tiltseries")
+    seen = set()
+    while current["setId"] not in seen:
+        seen.add(current["setId"])
+        parent = spa._readInput(outputs, inputs, current, "tiltseriesmovies")
+        if parent is None:
+            break
+        current = parent
+    return current
+
+
+def _latest(row: Dict[str, Any]) -> Optional[datetime]:
+    moments = [spa._aware(row.get(key)) for key in ("time", "updatedAt", "tiltsUpdatedAt")]
+    return max((moment for moment in moments if moment is not None), default=None)
+
+
+def _flow(mapper, projectId: int, outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+          chain: Dict[str, Dict[str, Any]], stages: List[Dict[str, Any]], rates: Dict[int, Dict[str, Any]],
+          thresholds: Dict[str, Optional[float]], now: datetime) -> Optional[Dict[str, Any]]:
+    """Whether the tomography stream flows (see stream_flow).
+
+    A tilt series is made when its first tilt comes and gets the others one by one: the acquisition last
+    gave something with its newest tilt, not with its newest tilt series. And the tilt series still being
+    acquired waits for no stage, which cannot process it before it is complete.
+    """
+    source = _acquisitionOutput(outputs, inputs, chain)
+    if source is None:
+        return None
+    rows = _store(mapper).listTiltSeries(source["setId"])
+    lastActivity = max((moment for moment in map(_latest, rows) if moment is not None), default=None)
+    incomplete = sum(1 for row in rows
+                     if spa._toInt(row.get("size")) and (row.get("tilts") or 0) < spa._toInt(row.get("size")))
+    readsAcquired = {"tiltseries", "ctftomo", "aligned"} | ({"tomograms"} if "aligned" not in chain else set())
+    for stage in stages:
+        if stage["stage"] in readsAcquired and stage.get("behind"):
+            stage["readyBehind"] = max(0, stage["behind"] - incomplete)
+    entry = {key: value for key, value in source.items() if not key.startswith("_")}
+    entry["lastItemAt"] = rates.get(source["setId"], {}).get("lastItemAt")
+    timeout = None
+    if source.get("streaming"):
+        try:
+            timeout = stream_flow.durationSeconds(
+                _store(mapper).getProtocolParam(projectId, source["protocolId"], "timeout"))
+        except Exception:
+            logger.warning("The import timeout of project %s could not be read", projectId, exc_info=True)
+    return stream_flow.streamFlow(entry, stages, thresholds, now, timeout, spa._iso(source.get("_updatedAt")),
+                                  limits=stream_flow.TOMO_LIMITS, unit="tilt series", activityUnit="tilts",
+                                  lastActivityAt=spa._iso(lastActivity))
+
+
 def tomoMonitor(mapper, projectId: int, tsSetId: Optional[int] = None,
                 now: Optional[datetime] = None) -> Dict[str, Any]:
     """The followed tomography stream of a project: its stages and one row per tilt series."""
     now = now or datetime.now(timezone.utc)
     outputs = _outputs(mapper, projectId)
-    chain = _chain(mapper, outputs, spa._inputsOf(mapper, projectId, outputs), tsSetId)
+    inputs = spa._inputsOf(mapper, projectId, outputs)
+    chain = _chain(mapper, outputs, inputs, tsSetId)
     thresholds = spa.thresholdsWith(spa.storedThresholds(mapper, projectId))
-    rates = spa._rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain], now)
+    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    rates = spa._rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain}
+                                      | ({acquisition["setId"]} if acquisition is not None else set())), now)
     tomograms = chain.get("tomograms")
+    stages = _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d")))
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
-        "stages": _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d"))),
+        "stages": stages,
+        "flow": _flow(mapper, projectId, outputs, inputs, chain, stages, rates, thresholds, now),
         "tiltSeriesOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
                                "outputName": output["outputName"]}
                               for output in sorted((o for o in outputs if o["stage"] == "tiltseries"),
@@ -427,16 +489,25 @@ ALERT_CACHE_SECONDS = 10.0
 _alertCache: Dict[int, tuple] = {}
 
 
-def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
-    """The runs of consecutive tilt series past a threshold, as the tomography view shows them."""
+def projectAlertRuns(mapper, projectId: int, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """The runs of consecutive tilt series past a threshold, as the tomography view shows them, and whether
+    the stream flows."""
     cached = _alertCache.get(int(projectId))
     if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
         return cached[1]
     outputs = _outputs(mapper, projectId)
     runs: List[Dict[str, Any]] = []
-    if any(output["stage"] == "tiltseries" for output in outputs):
-        chain = _chain(mapper, outputs, spa._inputsOf(mapper, projectId, outputs), None)
+    if any(output["stage"] in ("tiltseries", "tiltseriesmovies") for output in outputs):
+        now = now or datetime.now(timezone.utc)
+        inputs = spa._inputsOf(mapper, projectId, outputs)
+        chain = _chain(mapper, outputs, inputs, None)
         thresholds = spa.thresholdsWith(spa.storedThresholds(mapper, projectId))
+        acquisition = _acquisitionOutput(outputs, inputs, chain)
+        rates = spa._rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain}
+                                          | ({acquisition["setId"]} if acquisition is not None else set())), now)
+        stages = _stages(chain, rates, _particlesPerTomogram(mapper, chain.get("coordinates3d")))
+        runs += stream_flow.flowAlertRuns(_flow(mapper, projectId, outputs, inputs, chain, stages, rates,
+                                                thresholds, now), stages, thresholds)
         rows = _rows(mapper, projectId, chain, thresholds) if "tiltseries" in chain else []
         points = [{"id": row["id"], "time": row.get("time"), "micrographName": row["tsId"], "alerts": row["alerts"]}
                   for row in rows]
@@ -455,9 +526,9 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
     return runs
 
 
-def alertsSince(mapper, projectId: int, since: datetime) -> List[Dict[str, Any]]:
+def alertsSince(mapper, projectId: int, since: datetime, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The tilt series alert runs of a project that started after ``since``."""
-    return [run for run in projectAlertRuns(mapper, projectId) if spa._startedAfter(run, since)]
+    return [run for run in projectAlertRuns(mapper, projectId, now) if spa._startedAfter(run, since)]
 
 
 # -- one tilt series --------------------------------------------------------------

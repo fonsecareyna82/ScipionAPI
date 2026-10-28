@@ -45,8 +45,10 @@ class Db:
     """Answers each monitor query with its rows; the series rows are filtered as the query would."""
 
     def __init__(self, outputs=(), refs=(), rates=(), items=(), movies=(), settings=None, picks=(), classes=(),
-                 dependencies=(), doseRows=None, setRows=None):
+                 dependencies=(), doseRows=None, setRows=None, protocolParams=None):
         self.setRows = dict(setRows or {})
+        # (protocolId, param name) -> the value saved
+        self.protocolParams = dict(protocolParams or {})
         self.outputs, self.refs, self.rates = list(outputs), list(refs), list(rates)
         # The rows of the outputs of a dose analysis: setId -> rows
         self.doseRows = dict(doseRows or {})
@@ -70,6 +72,10 @@ class Db:
             rows = [rowId for setId, rowId, _ in self.picks if setId == params[0]] if any(
                 setId == params[0] for setId, _, _ in self.picks) else [item["rowId"] for item in self.items]
             return {"firstRowId": min(rows, default=None)}
+        if query == queries.PROTOCOL_PARAM_SQL:
+            name, _projectId, protocolId = params
+            value = self.protocolParams.get((protocolId, name))
+            return {"value": value} if value is not None else None
         assert query == queries.GET_SETTINGS_SQL
         if isinstance(self.settings, Exception):
             raise self.settings
@@ -880,3 +886,65 @@ def test_exposure_window_does_not_join_picking_from_another_branch_by_id():
     db.refs.append(ref("9", "8", "otherMicrographs"))
     payload = monitor.streamingMonitor(Mapper(db), 7, coordinatesSetId=41, qualityWindowSize=2, now=NOW)
     assert "particles" not in payload["exposures"]["points"][0]["point"]
+
+
+def flowRates(moviesMinutes, ctfMinutes):
+    """Rates of a stream whose last movie and last CTF came that many minutes ago."""
+    rate = lambda setId, minutes: {"setId": setId, "lastWindow": 0, "previousWindow": 0, "sampled": 80,
+                                   "oldest": NOW - timedelta(hours=1), "newest": NOW - timedelta(minutes=minutes)}
+    return [rate(10, moviesMinutes), rate(20, 1), rate(30, ctfMinutes), rate(40, 1), rate(50, 1)]
+
+
+def test_the_monitor_tells_a_pause_of_the_acquisition_and_how_long_the_import_still_waits():
+    db = preprocessing(rates=flowRates(moviesMinutes=12, ctfMinutes=1), protocolParams={("1", "timeout"): "30m"})
+
+    state = monitor.streamingMonitor(Mapper(db), 7, now=NOW)["flow"]
+
+    assert state["acquisition"] == "paused" and state["lastItemAt"] == (NOW - timedelta(minutes=12)).isoformat()
+    assert state["importClosesInMinutes"] == pytest.approx(18)
+
+
+def test_the_monitor_tells_a_finished_acquisition_and_a_stage_that_stopped():
+    db = preprocessing(rates=flowRates(moviesMinutes=600, ctfMinutes=20))
+    db.outputs[0] = output(10, "1", "outputMovies", "SetOfMovies", 100, streamState=2,
+                           updatedAt=NOW - timedelta(minutes=3))
+
+    payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+
+    assert payload["flow"]["acquisition"] == "finished"
+    assert payload["flow"]["finishedAt"] == (NOW - timedelta(minutes=3)).isoformat()
+    assert [item["stage"] for item in payload["flow"]["stalled"]] == ["ctf"]
+    ctf = next(item for item in payload["stages"] if item["stage"] == "ctf")
+    assert ctf["stalledMinutes"] == pytest.approx(20)
+
+
+def test_the_bell_hears_of_a_pause_once_it_passes_its_threshold():
+    db = preprocessing(rates=flowRates(moviesMinutes=12, ctfMinutes=1))
+
+    runs = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=5), now=NOW)
+    monitor._alertCache.clear()
+    later = monitor.alertsSince(Mapper(db), 7, NOW - timedelta(minutes=1), now=NOW)
+
+    assert [(run["kind"], run["text"]) for run in runs] == [("maxMoviePauseMinutes", "No new movies for over 10 min")]
+    # Told once: it began two minutes ago
+    assert later == []
+
+
+def test_the_flow_thresholds_are_kept_with_the_others():
+    assert monitor.validThresholds({"maxMoviePauseMinutes": 5, "maxStageStallMinutes": None}) == {
+        "maxMoviePauseMinutes": 5.0, "maxStageStallMinutes": None}
+    with pytest.raises(ValueError):
+        monitor.validThresholds({"maxMoviePauseMinutes": 0})
+
+
+def test_the_acquisition_is_the_import_also_behind_a_protocol_writing_movies_again():
+    db = preprocessing(rates=flowRates(moviesMinutes=600, ctfMinutes=1))
+    # Import (1, closed) -> a movie filter (9, still open) -> motioncor (2)
+    db.outputs[0] = output(10, "1", "outputMovies", "SetOfMovies", 100, streamState=2)
+    db.outputs.append(output(11, "9", "outputMovies", "SetOfMovies", 95))
+    db.refs = [ref("9", "1", "outputMovies"), ref("2", "9", "outputMovies")] + db.refs[1:]
+
+    payload = monitor.streamingMonitor(Mapper(db), 7, now=NOW)
+
+    assert next(item for item in payload["stages"] if item["stage"] == "movies")["setId"] == 11
+    assert payload["flow"]["acquisition"] == "finished" and payload["flow"]["protocolId"] == "1"

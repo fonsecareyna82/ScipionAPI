@@ -28,6 +28,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from app.backend.api.services import stream_flow
 from app.backend.mapper.streaming_monitor_mapper import StreamingMonitorPostgresqlMapper
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,14 @@ DEFAULT_THRESHOLDS: Dict[str, Optional[float]] = {
     "minAngleSpan": 50.0,     # degrees: the series should reach at least -50 and +50
     "maxFailedCtfTilts": None,  # tilts whose CTF estimation failed; no default alert
     "maxResidual": None,      # px, mean residual of the fiducial alignment (IMOD); no default alert
+    # The flow of the stream (see stream_flow): minutes with no new movies while the import still waits for
+    # them, and minutes a stage with items waiting gives nothing
+    "maxMoviePauseMinutes": 10.0,
+    "maxStageStallMinutes": 15.0,
+    # Tomography: minutes with no new tilt while the import waits (between two tilt series there are only a
+    # few), and minutes a stage with complete tilt series waiting gives nothing (a tilt series takes long)
+    "maxTiltPauseMinutes": 10.0,
+    "maxTiltSeriesStallMinutes": 30.0,
 }
 
 # alignedMicrographs: what the aligner wrote, when the micrographs the CTF reads come from a later protocol
@@ -358,11 +367,13 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
         last = int(row.get("lastWindow") or 0)
         previous = int(row.get("previousWindow") or 0)
         oldest = _aware(row.get("oldest"))
+        # When the stage last gave something: whether it stopped (see stream_flow)
+        lastItemAt = _iso(row.get("newest"))
         if int(row.get("sampled") or 0) >= RATE_SAMPLE and oldest is not None and oldest > now - 2 * window:
             # So many items came that the sample does not reach back two windows: the rate is the sample's
             # own, and there is nothing to compare it with.
             minutes = max((now - oldest).total_seconds() / 60.0, 1.0 / 60)
-            rates[int(row["setId"])] = {"perMinute": RATE_SAMPLE / minutes, "trend": "steady"}
+            rates[int(row["setId"])] = {"perMinute": RATE_SAMPLE / minutes, "trend": "steady", "lastItemAt": lastItemAt}
             continue
         trend = "steady"
         if previous == 0 and last > 0:
@@ -370,7 +381,8 @@ def _rates(mapper, setIds: Sequence[int], now: datetime) -> Dict[int, Dict[str, 
         elif previous > 0:
             change = (last - previous) / float(previous)
             trend = "up" if change > RATE_TREND_THRESHOLD else "down" if change < -RATE_TREND_THRESHOLD else "steady"
-        rates[int(row["setId"])] = {"perMinute": last / float(RATE_WINDOW_MINUTES), "trend": trend}
+        rates[int(row["setId"])] = {"perMinute": last / float(RATE_WINDOW_MINUTES), "trend": trend,
+                                    "lastItemAt": lastItemAt}
     return rates
 
 
@@ -857,6 +869,42 @@ def alertRuns(points: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return runs
 
 
+def _acquisitionOutput(outputs: List[Dict[str, Any]], inputs: Dict[str, List[tuple]],
+                       chain: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """What the acquisition fills: the import the stream's movies come from (an output whose protocol reads
+    no movies), up through any protocol writing movies again; else the stream's micrographs."""
+    byKey = {(output["protocolId"], output["outputName"]): output for output in outputs}
+    current = chain.get("movies")
+    if current is None:
+        return chain.get("micrographs")
+    seen = set()
+    while current["setId"] not in seen:
+        seen.add(current["setId"])
+        parents = [byKey.get(key) for key in inputs.get(current["protocolId"], [])]
+        parents = [parent for parent in parents if parent is not None and parent["stage"] == "movies"]
+        if not parents:
+            break
+        current = _newest(parents)
+    return current
+
+
+def _flow(mapper, projectId: int, source: Optional[Dict[str, Any]], stages: List[Dict[str, Any]],
+          rates: Dict[int, Dict[str, Any]], limits: Dict[str, Optional[float]], now: datetime) -> Optional[Dict[str, Any]]:
+    """Whether the stream flows (see stream_flow), with the timeout of an import still open."""
+    if source is None:
+        return None
+    entry = {key: value for key, value in source.items() if not key.startswith("_")}
+    entry["lastItemAt"] = rates.get(source["setId"], {}).get("lastItemAt")
+    timeout = None
+    if source.get("streaming"):
+        try:
+            timeout = stream_flow.durationSeconds(
+                _store(mapper).getProtocolParam(projectId, source["protocolId"], "timeout"))
+        except Exception:
+            logger.warning("The import timeout of project %s could not be read", projectId, exc_info=True)
+    return stream_flow.streamFlow(entry, stages, limits, now, timeout, _iso(source.get("_updatedAt")))
+
+
 def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, afterSetId: Optional[int] = None,
                      afterRowId: Optional[int] = None, thresholds: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None, afterPickSetId: Optional[int] = None,
@@ -868,18 +916,21 @@ def streamingMonitor(mapper, projectId: int, ctfSetId: Optional[int] = None, aft
     outputs = _outputs(mapper, projectId)
     inputs = _inputsOf(mapper, projectId, outputs)
     chain = _chain(outputs, inputs, ctfSetId, coordinatesSetId, classesSetId)
-    rates = _rates(mapper, [chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"],
-                   now)
+    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    rates = _rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"}
+                                  | ({acquisition["setId"]} if acquisition is not None else set())), now)
     limits = thresholdsWith(storedThresholds(mapper, projectId) if thresholds is None else thresholds)
     # Counted once per poll: the stages and the counts sent come from the same chunk
     micCounts = {stage: countByMicrograph(mapper, chain[stage]["setId"])
                  for stage in ("coordinates", "particles") if stage in chain}
     picking = _picking(chain, micCounts, afterPickSetId, afterPickRowId)
     classes = _classes(mapper, chain)
+    stages = _stages(chain, rates, micCounts, classes)
     return {
         "now": now.isoformat(),
         "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
-        "stages": _stages(chain, rates, micCounts, classes),
+        "stages": stages,
+        "flow": _flow(mapper, projectId, acquisition, stages, rates, limits, now),
         "ctfOutputs": [{"setId": output["setId"], "protocolId": output["protocolId"], "label": output["label"],
                         "outputName": output["outputName"]}
                        for output in sorted((o for o in outputs if o["stage"] == "ctf"), key=lambda o: o["setId"])],
@@ -997,6 +1048,11 @@ THRESHOLD_TEXT = {
     "minAngleSpan": "Tilt range short of ±%s°",
     "maxFailedCtfTilts": "More than %s tilts without CTF",
     "maxResidual": "Alignment residual above %s px",
+    "maxMoviePauseMinutes": "No new movies for over %s min",
+    "maxStageStallMinutes": "No progress for over %s min",
+    "maxTiltPauseMinutes": "No new tilts for over %s min",
+    "maxTiltSeriesStallMinutes": "No progress for over %s min",
+    "acquisitionFinished": "Acquisition finished",
 }
 
 
@@ -1010,7 +1066,7 @@ def _limitText(kind: str, thresholds: Dict[str, Optional[float]]) -> str:
     return THRESHOLD_TEXT.get(kind, kind) % shown
 
 
-def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
+def projectAlertRuns(mapper, projectId: int, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The alert runs among the newest micrographs of the project's followed stream, as the bell tells them.
 
     A run whose first micrograph is the oldest one looked at may have started before: it is left out, so a
@@ -1020,9 +1076,21 @@ def projectAlertRuns(mapper, projectId: int) -> List[Dict[str, Any]]:
     if cached is not None and time.monotonic() - cached[0] < ALERT_CACHE_SECONDS:
         return cached[1]
     outputs = _outputs(mapper, projectId)
-    chain = _chain(outputs, _inputsOf(mapper, projectId, outputs), None)
+    inputs = _inputsOf(mapper, projectId, outputs)
+    chain = _chain(outputs, inputs, None)
     base = chain.get("ctf") or chain.get("micrographs")
     runs: List[Dict[str, Any]] = []
+    # Whether the stream flows: a pause of the acquisition, its end, a stage that stopped
+    flowLimits = thresholdsWith(storedThresholds(mapper, projectId))
+    now = now or datetime.now(timezone.utc)
+    acquisition = _acquisitionOutput(outputs, inputs, chain)
+    rates = _rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"}
+                                  | ({acquisition["setId"]} if acquisition is not None else set())), now)
+    micCounts = {stage: countByMicrograph(mapper, chain[stage]["setId"])
+                 for stage in ("coordinates", "particles") if stage in chain}
+    flowStages = _stages(chain, rates, micCounts, _classes(mapper, chain))
+    runs += stream_flow.flowAlertRuns(_flow(mapper, projectId, acquisition, flowStages, rates, flowLimits, now),
+                                      flowStages, flowLimits)
     if base is not None:
         rows = list(reversed(_store(mapper).listLatestItems(base["setId"], ALERT_WINDOW)))
         thresholds = thresholdsWith(storedThresholds(mapper, projectId))
@@ -1074,6 +1142,6 @@ def _startedAfter(run: Dict[str, Any], since: datetime) -> bool:
     return started > since
 
 
-def alertsSince(mapper, projectId: int, since: datetime) -> List[Dict[str, Any]]:
+def alertsSince(mapper, projectId: int, since: datetime, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The alert runs of a project that started after ``since``."""
-    return [run for run in projectAlertRuns(mapper, projectId) if _startedAfter(run, since)]
+    return [run for run in projectAlertRuns(mapper, projectId, now) if _startedAfter(run, since)]
