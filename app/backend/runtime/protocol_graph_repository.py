@@ -1046,6 +1046,12 @@ class ProtocolGraphRepository:
                 itemsCount = None
 
         info["itemsCount"] = itemsCount
+        # The items a Set has shown through Set.write(): an appended item is stored at once, but the Set's
+        # own attributes (odd/even, alignment...) only reach the database when the producer writes the Set
+        try:
+            info["publishedItemsCount"] = int(properties["_size"])
+        except (KeyError, TypeError, ValueError):
+            info["publishedItemsCount"] = itemsCount
         info["tablesCount"] = tablesCount
         info["tableItemsCount"] = tableItemsCount
 

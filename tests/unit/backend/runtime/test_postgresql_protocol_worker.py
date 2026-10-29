@@ -80,6 +80,7 @@ def buildWorker(
         parentOutputName="outputSet",
         outputKind="set",
         outputItemsCount=1,
+        outputPublishedItemsCount=None,
 ):
     worker = RuntimePostgresqlProtocolWorker(
         projectId=1,
@@ -129,6 +130,11 @@ def buildWorker(
                 200
                 if outputExists
                 else None
+            ),
+            **(
+                {"publishedItemsCount": outputPublishedItemsCount}
+                if outputPublishedItemsCount is not None
+                else {}
             ),
         }
     )
@@ -1128,6 +1134,25 @@ def test_StreamingProtocolWaitsForFirstSetItem():
             ),
         },
     ]
+
+
+def test_StreamingProtocolWaitsUntilTheParentWritesTheSetWithItems():
+    # The item is stored at the append, the Set's attributes (e.g. odd/even) only at Set.write()
+    worker = buildWorker(
+        streaming=True,
+        parentStatus="running",
+        outputExists=True,
+        outputKind="set",
+        outputItemsCount=1,
+        outputPublishedItemsCount=0,
+    )
+    worker.validateAvailableInputs = (
+        lambda inputRefs=None: pytest.fail("An unwritten streaming Set must not reach protocol validation")
+    )
+
+    readiness = worker.getReadinessState()
+
+    assert [item["reason"] for item in readiness["missingInputs"]] == ["parent_output_empty"]
 
 
 def test_StreamingProtocolAllowsEmptySetAfterParentFinished():

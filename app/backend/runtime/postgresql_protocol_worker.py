@@ -2007,8 +2007,11 @@ class RuntimePostgresqlProtocolWorker:
                         or ""
                     ).strip().lower()
                     == "set"
+                    # Not before the producer has written the Set with items: the child would read the
+                    # Set's attributes as they were when it was created (e.g. without odd/even)
                     and outputInfo.get(
-                        "itemsCount"
+                        "publishedItemsCount",
+                        outputInfo.get("itemsCount"),
                     )
                     == 0
             ):
