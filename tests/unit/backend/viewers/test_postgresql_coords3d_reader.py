@@ -249,3 +249,23 @@ def test_PostgresqlCoords3dReaderDoesNotSearchTheProjectForAnOutputThatIsNotCoor
 
     assert reader.listTomograms() is None
     assert reader.lastSkipReason == "not_coordinates_output setClassName=SetOfTomograms"
+
+
+def test_PostgresqlCoords3dReaderShowsATomogramOfTheSetWithNothingPickedWithNoPoints(authTestEnv, monkeypatch):
+    """The picking of one tomogram may fail or find nothing: the viewer opens it empty, not with an error."""
+    module = importlib.import_module("app.backend.viewers.postgresql_coords3d_reader")
+    reader = module.PostgresqlCoords3dReader(db=object(), projectId=16, protocolId=21, outputName="coordinates")
+    linked = [{"id": "TS_01", "tomoId": "TS_01", "name": ".1", "objectId": "1", "dims": [100, 100, 50]},
+              {"id": "TS_02", "tomoId": "TS_02", "name": ".2", "objectId": "2", "dims": [100, 100, 50]}]
+    storedSet = {"setClassName": "SetOfCoordinates3D", "itemClassName": "Coordinate3D",
+                 "properties": {"linkedTomograms": linked},
+                 "items": [{"id": 1, "values": {"_x": -168.0, "_y": -494.0, "_z": 45.0, "_volId": 2, "_tomoId": "TS_02",
+                                                "bottomLeftX": 344.0, "bottomLeftY": 18.0, "bottomLeftZ": 220.0,
+                                                "coordinateConvention": "BOTTOM_LEFT_CORNER"}}]}
+    monkeypatch.setattr(reader, "_getStoredSet", lambda: storedSet)
+    monkeypatch.setattr(reader, "_getProjectTomogramRows", lambda: [])
+
+    assert reader.getPoints("TS_01") == []
+    assert len(reader.getPoints("TS_02")) == 1
+    assert reader.getPoints("TS_99") is None
+    assert reader.lastSkipReason.startswith("coordinates_not_found_for_tomogram tomogramId=TS_99")

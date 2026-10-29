@@ -125,6 +125,9 @@ class PostgresqlCoords3dReader:
                 points.append(point)
 
         if not points:
+            # A tomogram of the Set where nothing was picked (e.g. its picking failed) shows with no points
+            if self._isLinkedTomogram(storedSet, tomogramId):
+                return []
             self.lastSkipReason = (
                 "coordinates_not_found_for_tomogram "
                 "tomogramId=%s targetKeys=%s"
@@ -132,6 +135,16 @@ class PostgresqlCoords3dReader:
             return None
 
         return points
+
+    def _isLinkedTomogram(self, storedSet: Dict[str, Any], tomogramId: Any) -> bool:
+        requested = self._toTextCandidate(tomogramId)
+        if not requested:
+            return False
+        for item in self._getLinkedTomogramsFromProperties(storedSet):
+            normalized = self._normalizeLinkedTomogramItem(item)
+            if normalized is not None and requested in self._getTomogramMatchKeys(normalized):
+                return True
+        return False
 
     @staticmethod
     def _mayHoldCoordinates(storedSet: Dict[str, Any]) -> bool:
