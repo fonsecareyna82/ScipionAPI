@@ -431,7 +431,7 @@ class FakeSystemTaskService:
 
 
 @pytest.fixture
-def pluginRouterModule(monkeypatch):
+def pluginRouterModule(monkeypatch, authTestEnv):
     pluginServiceModuleName = (
         "app.backend.api.services.plugin_service"
     )
@@ -600,9 +600,40 @@ def pluginClient(
 
     app = FastAPI()
     app.include_router(pluginRouterModule.router)
+    # Plugins are changed by an administrator
+    administrator = {"id": 1, "email": "admin@example.com", "role": "admin", "isActive": True}
+    app.dependency_overrides[pluginRouterModule.getCurrentUser] = lambda: administrator
+    app.dependency_overrides[pluginRouterModule.requireAdmin] = lambda: administrator
 
     with TestClient(app) as client:
         yield client
+
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/plugins/install/scipion-em-xmipp"),
+    ("post", "/plugins/uninstall/scipion-em-xmipp"),
+    ("post", "/plugins/devel/install"),
+    ("get", "/plugins/devel/browser/list"),
+])
+def test_ChangingPluginsIsForbiddenToAUserWhoIsNotAnAdministrator(pluginRouterModule, method, path):
+    app = FastAPI()
+    app.include_router(pluginRouterModule.router)
+    app.dependency_overrides[pluginRouterModule.getCurrentUser] = lambda: {
+        "id": 2, "email": "user@example.com", "role": "user", "isActive": True}
+
+    with TestClient(app) as client:
+        response = client.post(path, json={}) if method == "post" else client.get(path)
+
+    assert response.status_code == 403
+
+
+def test_PluginsAreHiddenFromAnonymousRequests(pluginRouterModule):
+    app = FastAPI()
+    app.include_router(pluginRouterModule.router)
+
+    with TestClient(app) as client:
+        assert client.get("/plugins/").status_code == 401
+        assert client.post("/plugins/install/scipion-em-xmipp").status_code == 401
 
 
 def test_LoadPluginsReturnsServiceList(pluginClient):

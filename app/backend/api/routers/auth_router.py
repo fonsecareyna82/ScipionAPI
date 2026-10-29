@@ -37,6 +37,9 @@ from app.backend.api.dependencies import getCurrentUser
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# A new account waits for an administrator; a disabled one stays out
+ACCOUNT_NOT_ACTIVE_MESSAGE = "This account is not active. An administrator has to activate it."
+
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 async def signup(
@@ -55,7 +58,8 @@ async def signup(
     hashedPassword = hashPassword(userData.password)
     verificationCode = str(uuid.uuid4())
 
-    # Insert user into the database via the mapper
+    # Insert user into the database via the mapper. The account cannot sign in until an
+    # administrator activates it (and gives it its permissions)
     userId = mapper.insertUser(
         email=userData.email,
         hashedPassword=hashedPassword,
@@ -63,15 +67,16 @@ async def signup(
         lastName=userData.lastName,
         institution=userData.institution,
         role="user",
-        isActive=True,
+        isActive=False,
         isVerified=True,
         verificationCode=verificationCode,
     )
 
     # Return confirmation message and new user ID
     return {
-        "message": "User created.",
+        "message": "User created. An administrator has to activate the account before it can sign in.",
         "userId": userId,
+        "pendingActivation": True,
     }
 
 
@@ -129,7 +134,7 @@ def login(
     if not bool(user.get("isActive", True)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
+            detail=ACCOUNT_NOT_ACTIVE_MESSAGE,
         )
 
     if not user["isVerified"]:

@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.dependencies import getCurrentUser, requireAdmin
 from app.backend.api.services.protocol_viewer_inventory_service import buildProtocolViewerInventory
 from app.backend.api.services.scipion_domain_refresh_service import getScipionViewersSnapshot
 from app.backend.api.services.protocol_viewer_resolution_service import (
@@ -346,12 +346,12 @@ def _startCeleryPluginSystemTask(
     )
 
 @router.get("/", response_model=Any)
-def loadPlugins():
+def loadPlugins(currentUser=Depends(getCurrentUser)):
     return service.getPlugins()
 
 
 @router.post("/devel/validate", response_model=Any)
-def validateDevelPluginPath(payload: DevelPluginPathRequest):
+def validateDevelPluginPath(payload: DevelPluginPathRequest, currentUser=Depends(requireAdmin)):
     try:
         return develService.validateDevelPluginPath(payload.path)
     except Exception as e:
@@ -359,7 +359,7 @@ def validateDevelPluginPath(payload: DevelPluginPathRequest):
 
 
 @router.get("/devel", response_model=Any)
-def listDevelPlugins():
+def listDevelPlugins(currentUser=Depends(requireAdmin)):
     try:
         return develService.listDevelPlugins()
     except Exception as e:
@@ -367,7 +367,7 @@ def listDevelPlugins():
 
 
 @router.get("/devel/browser/paths", response_model=Any)
-def getDevelPluginBrowserPaths():
+def getDevelPluginBrowserPaths(currentUser=Depends(requireAdmin)):
     try:
         return develService.getDevelPluginBrowserPaths()
     except Exception as e:
@@ -375,7 +375,7 @@ def getDevelPluginBrowserPaths():
 
 
 @router.get("/devel/browser/list", response_model=Any)
-def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative path inside the devel plugin browser root")):
+def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative path inside the devel plugin browser root"), currentUser=Depends(requireAdmin)):
     try:
         return develService.listDevelPluginBrowserDirectory(path)
     except FileNotFoundError as e:
@@ -389,7 +389,7 @@ def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative 
 
 
 @router.post("/devel/install", response_model=TaskStartResponse)
-async def installDevelPlugin(payload: InstallDevelPluginRequest):
+async def installDevelPlugin(payload: InstallDevelPluginRequest, currentUser=Depends(requireAdmin)):
     try:
         validation = develService.validateDevelPluginPath(payload.path)
 
@@ -474,6 +474,7 @@ def listPluginTasks(
         status: Optional[str] = None,
         includeAcknowledged: bool = False,
         limit: int = 100,
+    currentUser=Depends(getCurrentUser),
 ):
     tasks = systemTaskService.listTasks(
         taskType="plugin",
@@ -540,6 +541,7 @@ def listPluginTasks(
 )
 def acknowledgePluginTasks(
         payload: AcknowledgePluginTasksRequest,
+    currentUser=Depends(requireAdmin),
 ):
     allowedStatuses = {
         "SUCCESS",
@@ -594,7 +596,7 @@ def acknowledgePluginTasks(
     "/tasks/{taskId}/acknowledge",
     response_model=SystemTaskResponse,
 )
-def acknowledgePluginTask(taskId: str):
+def acknowledgePluginTask(taskId: str, currentUser=Depends(requireAdmin)):
     task = systemTaskService.acknowledgeTask(taskId)
 
     if task is None:
@@ -637,7 +639,7 @@ def resolveProtocolViewerInventory(
         ) from exc
 
 @router.get("/{pluginName}", response_model=Any)
-def loadPlugin(pluginName: str):
+def loadPlugin(pluginName: str, currentUser=Depends(getCurrentUser)):
     plugin = service.getPlugin(pluginName)
     if plugin is None:
         raise HTTPException(status_code=404, detail="Plugin not found")
@@ -651,6 +653,7 @@ def loadPlugin(pluginName: str):
 async def installPluginBinary(
         pluginName: str,
         binaryTarget: str,
+    currentUser=Depends(requireAdmin),
 ):
     try:
         payload = {
@@ -695,6 +698,7 @@ async def installPluginBinary(
 async def uninstallPluginBinary(
         pluginName: str,
         binaryTarget: str,
+    currentUser=Depends(requireAdmin),
 ):
     try:
         payload = {
@@ -736,7 +740,7 @@ async def uninstallPluginBinary(
     "/tasks/{taskId}/cancel",
     response_model=SystemTaskResponse,
 )
-def cancelPluginTask(taskId: str):
+def cancelPluginTask(taskId: str, currentUser=Depends(requireAdmin)):
     task = systemTaskService.getTask(
         taskId
     )
@@ -848,7 +852,7 @@ def cancelPluginTask(taskId: str):
     "/tasks/{taskId}/retry",
     response_model=TaskStartResponse,
 )
-async def retryPluginTask(taskId: str):
+async def retryPluginTask(taskId: str, currentUser=Depends(requireAdmin)):
     try:
         originalTask = systemTaskService.getTask(taskId)
 
@@ -1291,7 +1295,7 @@ async def _startInProcessTask(
 
 
 @router.post("/install-batch", response_model=TaskStartResponse)
-async def installPluginsBatch(payload: InstallPluginsBatchRequest):
+async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=Depends(requireAdmin)):
     try:
         plugins = []
         seen = set()
@@ -1384,7 +1388,7 @@ async def installPluginsBatch(payload: InstallPluginsBatchRequest):
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
-async def installPlugin(pluginName: str, skipBinaries: bool = False):
+async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser=Depends(requireAdmin)):
     try:
         if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
             taskId = uuid4().hex
@@ -1434,7 +1438,7 @@ async def installPlugin(pluginName: str, skipBinaries: bool = False):
 
 
 @router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
-async def uninstallPlugin(pluginName: str):
+async def uninstallPlugin(pluginName: str, currentUser=Depends(requireAdmin)):
     try:
         if (
                 _celeryAppAvailable
@@ -1495,7 +1499,7 @@ async def uninstallPlugin(pluginName: str):
 
 
 @router.get("/tasks/{taskId}", response_model=TaskStatusResponse)
-async def getTaskStatus(taskId: str):
+async def getTaskStatus(taskId: str, currentUser=Depends(getCurrentUser)):
     storedTask = _getStoredSystemTask(taskId)
 
     if storedTask is not None:
@@ -1638,7 +1642,7 @@ async def getTaskStatus(taskId: str):
 
 
 @router.get("/tasks/{taskId}/log", response_model=TaskLogResponse)
-async def getTaskLog(taskId: str, offset: int = 0, limit: int = 65536):
+async def getTaskLog(taskId: str, offset: int = 0, limit: int = 65536, currentUser=Depends(getCurrentUser)):
     text, nextOffset = readPluginTaskLog(taskId, offset=offset, limit=limit)
 
     status: Optional[str] = None

@@ -37,13 +37,14 @@ def test_SignupCreatesUser(authClient, fakeMapper):
 
     assert response.status_code == 201
     body = response.json()
-    assert body["message"] == "User created."
+    assert body["message"] == "User created. An administrator has to activate the account before it can sign in."
     assert body["userId"] == 1
+    assert body["pendingActivation"] is True
 
     createdUser = fakeMapper.usersByEmail["new@example.com"]
     assert createdUser["hashedPassword"] == "hashed::secret123"
     assert createdUser["role"] == "user"
-    assert createdUser["isActive"] is True
+    assert createdUser["isActive"] is False
     assert createdUser["isVerified"] is True
 
 
@@ -209,7 +210,7 @@ def test_LoginFailsWhenUserIsInactive(authClient, fakeMapper):
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "User account is inactive"
+    assert response.json()["detail"] == "This account is not active. An administrator has to activate it."
 
 
 def test_LoginFailsWhenEmailIsNotVerified(authClient, fakeMapper):
@@ -506,29 +507,18 @@ def test_ChangePasswordValidatesNewPassword(authClient, fakeMapper):
     assert fakeMapper.updatedUserPasswords == []
 
 
-def test_LoginFailsWhenUserIsInactive(authClient, fakeMapper):
-    fakeMapper.insertUser(
-        email="inactive@example.com",
-        hashedPassword="hashed::secret123",
-        firstName="Inactive",
-        lastName="User",
-        institution="Lab",
-        role="user",
-        isActive=False,
-        isVerified=True,
-        verificationCode="code-1",
-    )
+def test_ASignedUpAccountSignsInOnlyOnceAnAdministratorActivatesIt(authClient, fakeMapper):
+    credentials = {"email": "pending@example.com", "password": "secret123"}
+    signup = authClient.post("/auth/signup", json=dict(credentials, firstName="New", lastName="User",
+                                                         institution="CNB-CSIC"))
+    assert signup.status_code == 201
 
-    response = authClient.post(
-        "/auth/login",
-        json={
-            "email": "inactive@example.com",
-            "password": "secret123",
-        },
-    )
+    pending = authClient.post("/auth/login", json=credentials)
+    assert pending.status_code == 403
+    assert pending.json()["detail"] == "This account is not active. An administrator has to activate it."
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "User account is inactive"
+    fakeMapper.usersByEmail["pending@example.com"]["isActive"] = True
+    assert authClient.post("/auth/login", json=credentials).status_code == 200
 
 
 
