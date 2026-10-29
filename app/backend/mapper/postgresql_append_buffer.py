@@ -1,6 +1,6 @@
 """Compact, worker-local pending writes; PostgreSQL remains authoritative."""
 
-import io
+import bisect
 import json
 import pickle
 import tempfile
@@ -11,6 +11,10 @@ from itertools import islice
 
 _PLAIN_METADATA_TYPES = frozenset((str, bool, int, float, date, datetime))
 _READ_BATCH_SIZE = 256
+# Rows written to the spill file per pickled block
+_SPILL_BLOCK_ROWS = 1024
+# Approximate memory of a row besides its JSON text
+_ROW_OVERHEAD_BYTES = 64
 
 
 class EncodedAppendItem(Mapping):
@@ -36,15 +40,24 @@ class EncodedAppendItem(Mapping):
 class PostgresqlAppendBuffer:
     """Freeze normalized rows, spilling above 8 MiB without committing them.
 
-    Only the native runtime factory opts into early JSON encoding. Custom
-    serializers keep their existing deferred conversion and mutation contract.
-    Pickle is read only from our own anonymous temporary file, never user input.
+    A row is frozen as its JSON text and immutable metadata, kept in memory
+    while the rows fit and written in pickled blocks to an anonymous temporary
+    file beyond that. Only the native runtime factory opts into early JSON
+    encoding. Custom serializers keep their existing deferred conversion and
+    mutation contract. Pickle is read only from our own file, never user input.
     """
 
     def __init__(self, maxMemoryBytes=8 * 1024 * 1024):
         self.maxMemoryBytes = maxMemoryBytes
+        # Rows not spilled yet: (metadata, jsonValues, size), or None for a row kept as given
+        self._records = []
+        self._memoryBytes = 0
         self._file = None
         self._end = 0
+        # Spilled blocks: first row index, offset and length in the file
+        self._blockStarts = []
+        self._blocks = []
+        self._spilledCount = 0
         self._count = 0
         self._fallbacks = {}
         self._lock = threading.RLock()
@@ -54,11 +67,16 @@ class PostgresqlAppendBuffer:
         return self._count
 
     def append(self, item):
-        metadata = tuple(item.get(key, True if key == "enabled" else None)
-                         for key in EncodedAppendItem.KEYS)
+        get = item.get
+        # EncodedAppendItem.KEYS, a missing "enabled" being True
+        metadata = (get("scipionItemId"), get("enabled", True), get("label"), get("comment"), get("creation"))
         normalMetadata = True
+        size = _ROW_OVERHEAD_BYTES
         for value in metadata:
-            if value is not None and type(value) not in _PLAIN_METADATA_TYPES:
+            valueType = type(value)
+            if valueType is str:
+                size += len(value)
+            elif value is not None and valueType not in _PLAIN_METADATA_TYPES:
                 normalMetadata = False
                 break
         record = None
@@ -66,59 +84,99 @@ class PostgresqlAppendBuffer:
             try:
                 # Unsupported values fall back without calling custom __str__.
                 jsonValues = (item.jsonValues if isinstance(item, EncodedAppendItem)
-                              else json.dumps(item.get("values") or {}, separators=(",", ":")))
-                record = (metadata, jsonValues)
+                              else json.dumps(get("values") or {}, separators=(",", ":")))
+                record = (metadata, jsonValues, size + len(jsonValues))
             except (TypeError, ValueError, OverflowError):
                 pass
-        data = pickle.dumps(record, protocol=4)
+        self._appendRecord(record, item)
+
+    def _appendRecord(self, record, item):
         with self._lock:
-            if self._file is None:
-                self._file = io.BytesIO()
-                self._end = 0
-            start = self._end
-            if not self.spilled and start + len(data) > self.maxMemoryBytes:
-                temporary = tempfile.TemporaryFile(mode="w+b")
-                try:
-                    self._file.seek(0)
-                    oldData = self._file.read()
-                    if temporary.write(oldData) != len(oldData):
-                        raise OSError("Incomplete PostgreSQL append-buffer spill.")
-                except Exception:
-                    temporary.close()
-                    raise
-                self._file.close()
-                self._file = temporary
-                self.spilled = True
-            try:
-                # Readers move the shared position; records are only appended.
-                self._file.seek(start)
-                if self._file.write(data) != len(data):
-                    raise OSError("Incomplete PostgreSQL append-buffer write.")
-            except Exception:
-                self._file.seek(start)
-                self._file.truncate()
-                raise
-            self._end = start + len(data)
+            index = self._count
+            self._records.append(record)
+            size = record[2] if record is not None else _ROW_OVERHEAD_BYTES
+            self._memoryBytes += size
             if record is None:
-                self._fallbacks[self._count] = item
+                self._fallbacks[index] = item
             self._count += 1
+            if self._memoryBytes > self.maxMemoryBytes:
+                try:
+                    self._spill()
+                except Exception:
+                    # The failed row is not kept: a retry appends it again
+                    self._records.pop()
+                    self._memoryBytes -= size
+                    self._fallbacks.pop(index, None)
+                    self._count -= 1
+                    raise
+
+    def _spill(self):
+        """Write the rows held in memory to the spill file, or leave everything as it was."""
+        created = self._file is None
+        file = tempfile.TemporaryFile(mode="w+b") if created else self._file
+        start = self._end
+        position = start
+        blocks = []
+        try:
+            for offset in range(0, len(self._records), _SPILL_BLOCK_ROWS):
+                data = pickle.dumps(self._records[offset:offset + _SPILL_BLOCK_ROWS], protocol=4)
+                # Readers move the shared position; blocks are only appended.
+                file.seek(position)
+                if file.write(data) != len(data):
+                    raise OSError("Incomplete PostgreSQL append-buffer write.")
+                blocks.append((self._spilledCount + offset, position, len(data)))
+                position += len(data)
+        except Exception:
+            if created:
+                file.close()
+            else:
+                file.seek(start)
+                file.truncate()
+            raise
+        self._file = file
+        self._end = position
+        for firstIndex, blockOffset, length in blocks:
+            self._blockStarts.append(firstIndex)
+            self._blocks.append((blockOffset, length))
+        self._spilledCount += len(self._records)
+        self._records = []
+        self._memoryBytes = 0
+        self.spilled = True
+
+    def _readRecords(self, start, stop, cache):
+        """Rows start..stop-1, decoding each spilled block once per reader (cache)."""
+        rows = []
+        index = start
+        while index < stop:
+            if index >= self._spilledCount:
+                first = index - self._spilledCount
+                rows.extend(self._records[first:first + (stop - index)])
+                break
+            block = bisect.bisect_right(self._blockStarts, index) - 1
+            if cache.get("block") != block:
+                offset, length = self._blocks[block]
+                self._file.seek(offset)
+                cache["block"] = block
+                cache["records"] = pickle.loads(self._file.read(length))
+            blockStart = self._blockStarts[block]
+            records = cache["records"]
+            taken = records[index - blockStart:index - blockStart + (stop - index)]
+            rows.extend(taken)
+            index += len(taken)
+        return rows
 
     def iterPrefix(self, count):
-        position = 0
         index = 0
         count = min(count, len(self))
+        cache = {}
         while index < count:
-            batch = []
-            # Decode a bounded run per seek; appends made meanwhile only add
-            # records after this fixed prefix.
+            stop = min(count, index + _READ_BATCH_SIZE)
+            # Rows appended meanwhile only come after this fixed prefix.
             with self._lock:
-                self._file.seek(position)
-                for recordIndex in range(index, min(count, index + _READ_BATCH_SIZE)):
-                    start = position
-                    record = pickle.load(self._file)
-                    position = self._file.tell()
-                    batch.append(self._fallbacks[recordIndex] if record is None
-                                 else EncodedAppendItem(*record, encodedSize=position - start))
+                records = self._readRecords(index, stop, cache)
+                batch = [self._fallbacks[index + offset] if record is None
+                         else EncodedAppendItem(record[0], record[1], encodedSize=record[2])
+                         for offset, record in enumerate(records)]
             index += len(batch)
             yield from batch
 
@@ -141,22 +199,24 @@ class PostgresqlAppendBuffer:
 
     def discardPrefix(self, count):
         with self._lock:
-            if count == len(self):
+            if count >= len(self):
                 self.clear()
                 return
             replacement = PostgresqlAppendBuffer(self.maxMemoryBytes)
             try:
-                for item in islice(self, count, None):
-                    replacement.append(item)
+                cache = {}
+                for index in range(count, len(self), _READ_BATCH_SIZE):
+                    stop = min(len(self), index + _READ_BATCH_SIZE)
+                    for offset, record in enumerate(self._readRecords(index, stop, cache)):
+                        replacement._appendRecord(record, self._fallbacks.get(index + offset))
             except Exception:
                 replacement.clear()
                 raise
             self.clear()
-            self._file, replacement._file = replacement._file, None
-            self._end = replacement._end
-            self._count = replacement._count
-            self._fallbacks, replacement._fallbacks = replacement._fallbacks, {}
-            self.spilled = replacement.spilled
+            for name in ("_records", "_memoryBytes", "_file", "_end", "_blockStarts", "_blocks",
+                         "_spilledCount", "_count", "_fallbacks", "spilled"):
+                setattr(self, name, getattr(replacement, name))
+            replacement._file = None
 
     def clear(self):
         with self._lock:
@@ -164,8 +224,13 @@ class PostgresqlAppendBuffer:
                 self._file.close()
             self._file = None
             self._end = 0
+            self._records = []
+            self._memoryBytes = 0
+            self._blockStarts = []
+            self._blocks = []
+            self._spilledCount = 0
             self._count = 0
-            self._fallbacks.clear()
+            self._fallbacks = {}
             self.spilled = False
 
     def __del__(self):

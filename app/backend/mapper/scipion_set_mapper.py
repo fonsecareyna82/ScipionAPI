@@ -85,6 +85,19 @@ class _UnsupportedItemGraph(Exception):
     """Select the legacy serializer for graphs requiring custom introspection."""
 
 
+class _ItemGraphMismatch(Exception):
+    """The item differs from the shape learnt for its class: the general walk reads it."""
+
+
+# A class whose items keep differing from the learnt shape stops using it
+_GRAPH_PLAN_MAX_MISSES = 32
+
+
+def _hasNoClassAttribute(cls, name):
+    """No class of cls defines name, so an instance's own entry is what getattr() returns."""
+    return not any(name in vars(klass) for klass in cls.__mro__)
+
+
 class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
     """Store Scipion SetOf... objects in PostgreSQL using a flat JSONB layout."""
 
@@ -221,7 +234,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
 
         For any custom introspection, PointerList, or unsupported nested object,
         return None and let the existing independently-tested legacy path run.
-        There is deliberately no class- or item-wide cache.
+        It keeps nothing between items (_getItemGraph reuses only a checked shape).
         """
         if type(self) is not ScipionSetPostgresqlMapper:
             return None
@@ -325,6 +338,146 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             pointerSchema[path] = (self._getClassName(pointer), None)
             pointerValues[path] = self._serializePointerReference(pointer)
         return rawValues, rawSchema, pointerSchema, pointerValues
+
+    def _getItemGraph(self, item):
+        """_singleGraphForStandardItem() for item, faster for the items of a Set that share one shape.
+
+        The shape of the first item of each class (the attribute names of each object, their order and
+        classes, and which are stored) is learnt once, and only after the walk over it gave exactly the
+        general walk's result. Every later item is checked against it while its values are read, so only
+        the shape is reused, never a value: an item of another shape takes the general walk.
+        """
+        if (type(self) is not ScipionSetPostgresqlMapper
+                or getattr(self._singleGraphForStandardItem, "__func__", None)
+                is not _PLAIN_GRAPH_METHODS["_singleGraphForStandardItem"]):
+            return self._singleGraphForStandardItem(item)
+        plans = self.__dict__.get("_itemGraphPlans")
+        if plans is None:
+            plans = self._itemGraphPlans = {}
+        itemClass = type(item)
+        entry = plans.get(itemClass)
+        if entry is not None and entry[0] is not None:
+            try:
+                graph = self._walkItemGraphPlan(entry[0], item)
+                entry[1] += 1
+                return graph
+            except Exception:
+                # Another shape, or a getter failing: the general walk decides, as for any item
+                entry[2] += 1
+                if entry[2] > _GRAPH_PLAN_MAX_MISSES and entry[2] * 4 > entry[1]:
+                    entry[0] = None
+        graph = self._singleGraphForStandardItem(item)
+        if entry is None:
+            plans[itemClass] = [self._learnItemGraphPlan(item, graph), 0, 0]
+        return graph
+
+    def _learnItemGraphPlan(self, item, graph):
+        """The shape of item's graph, or None when walking it would not give exactly graph."""
+        if graph is None:
+            return None
+        plainGetObjValue = ScipionObject.getObjValue
+        plainGetClassName = ScipionObject.getClassName.__func__
+
+        def classNameIsStatic(objectClass):
+            return getattr(objectClass.getClassName, "__func__", None) is plainGetClassName
+
+        def learn(current, prefix):
+            currentClass = type(current)
+            skipped, stored = [], []
+            for name in vars(current):
+                if not _hasNoClassAttribute(currentClass, name):
+                    return None
+                child = current.__dict__[name]
+                if not isinstance(child, ScipionObject):
+                    skipped.append((name, None))
+                    continue
+                childClass = type(child)
+                # The storage and pointer flags are read from each object, as the general walk reads them
+                if (not _hasNoClassAttribute(childClass, "_objDoStore")
+                        or not _hasNoClassAttribute(childClass, "_objIsPointer")
+                        or not classNameIsStatic(childClass)
+                        or childClass.isPointer is not ScipionObject.isPointer
+                        or "_objDoStore" not in child.__dict__):
+                    return None
+                if not child.__dict__["_objDoStore"]:
+                    skipped.append((name, childClass))
+                    continue
+                path = (prefix + "." + name) if prefix else name
+                # The value is read from the object when getObjValue() would only return it
+                direct = (childClass.getObjValue is plainGetObjValue
+                          and childClass.__getattribute__ is object.__getattribute__
+                          and _hasNoClassAttribute(childClass, "_objValue"))
+                childPlan = None
+                if not isinstance(child, ScipionScalar):
+                    childPlan = learn(child, path)
+                    if childPlan is None:
+                        return None
+                stored.append((name, childClass, path, child.getClassName(), direct, childPlan))
+            return currentClass, tuple(vars(current)), tuple(skipped), tuple(stored)
+
+        if not classNameIsStatic(type(item)):
+            return None
+        try:
+            plan = (item.getClassName(), learn(item, ""))
+            if plan[1] is None:
+                return None
+            planned = self._walkItemGraphPlan(plan, item)
+        except Exception:
+            return None
+        # Only a shape whose walk gives the general walk's exact result is kept
+        if (list(planned[0].items()) != list(graph[0].items())
+                or list(planned[1].items()) != list(graph[1].items())
+                or graph[2] or graph[3]):
+            return None
+        return plan
+
+    @staticmethod
+    def _walkItemGraphPlan(plan, item):
+        """item's values and schema along the learnt shape; _ItemGraphMismatch where item differs."""
+        itemClassName, rootPlan = plan
+        values = {}
+        schema = {SELF_LABEL: (itemClassName,)}
+        visited = set()
+
+        def walk(nodePlan, current):
+            nodeClass, names, skipped, stored = nodePlan
+            attributes = current.__dict__
+            if type(current) is not nodeClass or tuple(attributes) != names:
+                raise _ItemGraphMismatch()
+            # Shared sub-objects take the general walk, which rejects them
+            identity = id(current)
+            if identity in visited:
+                raise _ItemGraphMismatch()
+            visited.add(identity)
+            for name, childClass in skipped:
+                child = attributes[name]
+                if childClass is None:
+                    if isinstance(child, ScipionObject):
+                        raise _ItemGraphMismatch()
+                elif type(child) is not childClass or child.__dict__.get("_objDoStore", True):
+                    # Still an object that is not stored (a missing flag takes the general walk)
+                    raise _ItemGraphMismatch()
+            for name, childClass, path, className, direct, childPlan in stored:
+                child = attributes[name]
+                if type(child) is not childClass:
+                    raise _ItemGraphMismatch()
+                childAttributes = child.__dict__
+                if (not childAttributes.get("_objDoStore", False)
+                        or childAttributes.get("_objIsPointer", True)):
+                    raise _ItemGraphMismatch()
+                if direct:
+                    if "_objValue" not in childAttributes:
+                        raise _ItemGraphMismatch()
+                    value = childAttributes["_objValue"]
+                else:
+                    value = child.getObjValue()
+                values[path] = value
+                schema[path] = (className, value)
+                if childPlan is not None:
+                    walk(childPlan, child)
+
+        walk(rootPlan, item)
+        return values, schema, {}, {}
 
     def _singleObjDictForStandardItem(self, item):
         """One Scipion traversal for values and schema, or None for fallback.
@@ -461,7 +614,7 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         combinedSchema = None
         combinedValues = None
         combinedPointerValues = None
-        combinedPointers = self._singleGraphForStandardItem(item)
+        combinedPointers = self._getItemGraph(item)
         if combinedPointers is not None:
             combinedValues, combinedSchema, pointerSchema, combinedPointerValues = combinedPointers
         else:

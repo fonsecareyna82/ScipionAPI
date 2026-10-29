@@ -129,7 +129,6 @@ def test_PrefixFlushKeepsItemsAppendedDuringIteration(limit):
 def test_SpillFailurePreservesAllPreviouslyBufferedRows(monkeypatch, failure):
     pending = PostgresqlAppendBuffer()
     pending.append(item(1))
-    originalFile = pending._file
     pending.maxMemoryBytes = 1
 
     class ShortFile(io.BytesIO):
@@ -137,6 +136,7 @@ def test_SpillFailurePreservesAllPreviouslyBufferedRows(monkeypatch, failure):
             return super().write(data[:1])
 
     shortFile = ShortFile()
+    originalTemporaryFile = bufferModule.tempfile.TemporaryFile
 
     def temporary(**kwargs):
         if failure == "create":
@@ -146,19 +146,26 @@ def test_SpillFailurePreservesAllPreviouslyBufferedRows(monkeypatch, failure):
     monkeypatch.setattr(bufferModule.tempfile, "TemporaryFile", temporary)
     with pytest.raises(OSError):
         pending.append(item(2))
-    assert pending._file is originalFile
-    assert not originalFile.closed
+    assert pending._file is None
     assert pending == [item(1)]
     assert len(pending) == 1
+    assert not pending.spilled
     if failure == "write":
         assert shortFile.closed
+
+    # Once the disk works again, the same row is buffered
+    monkeypatch.setattr(bufferModule.tempfile, "TemporaryFile", originalTemporaryFile)
+    pending.append(item(2))
+    assert pending.spilled
+    assert pending == [item(1), item(2)]
     pending.clear()
 
 
-def test_PartialRecordWriteIsRemovedBeforeRetry():
-    pending = PostgresqlAppendBuffer()
+def test_PartialBlockWriteIsRemovedBeforeRetry():
+    pending = PostgresqlAppendBuffer(1)
     pending.append(item(1))
     originalFile = pending._file
+    assert originalFile is not None
 
     class BrokenWrite:
         def __getattr__(self, name):
@@ -176,6 +183,22 @@ def test_PartialRecordWriteIsRemovedBeforeRetry():
     pending.append(item(2))
     assert pending == [item(1), item(2)]
     pending.clear()
+
+
+def test_RowsStayInMemoryUntilTheLimitAndThenSpillInBlocks():
+    pending = PostgresqlAppendBuffer(4096)
+    try:
+        for index in range(3):
+            pending.append(item(index))
+        assert pending._file is None and not pending.spilled
+        for index in range(3, 2600):
+            pending.append(item(index))
+        assert pending.spilled
+        assert len(pending._blocks) < 2600
+        assert [row["scipionItemId"] for row in pending] == list(range(2600))
+        assert dict(pending[1500]) == item(1500)
+    finally:
+        pending.clear()
 
 
 def test_ClearClosesSpillAndAllowsReuse():

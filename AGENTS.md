@@ -68,9 +68,16 @@ setters for every row; custom hydration hooks retain the generic path.
 Pointer-free items with primitive values can consume their own freshly
 collected graph during serialization. Never reuse item values between appends;
 custom conversion/introspection hooks keep the general serialization route.
-Native runtime appends use a compact buffer that spills above
-8 MiB into an anonymous worker-local temporary file until the existing flush
-boundary; custom serializers retain deferred conversion. Root bulk writes update canonical and logical item tables in
+The graph of each item class is read along the shape learnt from its first item
+(`ScipionSetPostgresqlMapper._getItemGraph`): the attribute names, order and
+classes of every object and their storage/pointer flags are checked on each
+item while its values are read, and any difference sends that item through the
+general walk. A shape is kept only if its walk gave exactly the general walk's
+result on the item it was learnt from (`test_postgresql_item_graph_plan.py`).
+Native runtime appends use a compact buffer that keeps rows as JSON text in
+memory and spills them above 8 MiB, in pickled blocks, into an anonymous
+worker-local temporary file until the existing flush boundary; a failed spill
+leaves the buffer as it was. Custom serializers retain deferred conversion. Root bulk writes update canonical and logical item tables in
 one SQL statement per chunk, inside one transaction covering the entire flush.
 Preserve rollback/retry behavior and both stored representations.
 

@@ -40,6 +40,8 @@ Run with, for example::
 ``SCIPIONAPI_BENCHMARK_NESTED_SIZES`` takes ``<classes>x<particles>`` pairs.
 ``SCIPIONAPI_BENCHMARK_NESTED_MATERIALIZE=0`` skips SQLite materialization.
 ``SCIPIONAPI_BENCHMARK_QUERY_REPORT=1`` prints the costliest write statements.
+``SCIPIONAPI_BENCHMARK_DUMP=<file>`` writes the stored classes Set as JSON, without database ids, times or
+temporary paths, so two runs can be compared row by row (e.g. before and after a change of the write path).
 """
 import cProfile
 import io
@@ -66,6 +68,10 @@ RUN_BENCHMARKS = os.getenv("SCIPIONAPI_RUN_BENCHMARKS") == "1"
 PROFILE_DIR = (os.getenv("SCIPIONAPI_BENCHMARK_PROFILE_DIR") or "").strip()
 MATERIALIZE = os.getenv("SCIPIONAPI_BENCHMARK_NESTED_MATERIALIZE", "1") != "0"
 QUERY_REPORT = os.getenv("SCIPIONAPI_BENCHMARK_QUERY_REPORT") == "1"
+DUMP_PATH = (os.getenv("SCIPIONAPI_BENCHMARK_DUMP") or "").strip()
+# Bookkeeping that changes from run to run: reservation tokens, sync times, database ids
+VOLATILE_PROPERTY_KEYS = {"lastSyncAt", "lastCheckedAt", "reservationToken", "provisionalOutputName",
+                          "scipionObjId", "rootTableId", "setId", "tableId", "objectId"}
 QUERY_METHODS = ("execute", "executeValues", "executeReturningOne", "fetchOne", "fetchAll")
 SAMPLING_RATE = 1.25
 
@@ -432,6 +438,9 @@ def _runPostgresql(ctx, classesCount, particlesCount, stackPath):
         "queryStats": db.getQueryStats(),
         "phases": _phaseSummary(timer),
     }
+    if DUMP_PATH:
+        _dumpStoredSet(reader, ctx["projectId"], ctx["protocolDbId"], "outputClasses", str(Path(stackPath).parent),
+                       DUMP_PATH)
     try:
         stored = ScipionSetPostgresqlMapper(reader).getStoredSet(
             projectId=ctx["projectId"], protocolDbId=ctx["protocolDbId"], outputName="outputClasses")
@@ -460,6 +469,51 @@ def _runPostgresql(ctx, classesCount, particlesCount, stackPath):
     finally:
         reader.close()
     return result
+
+
+def _dumpStoredSet(db, projectId, protocolDbId, outputName, tmpPath, path):
+    """The Set as stored: its properties, columns, tables and items, keyed by Scipion ids."""
+    def clean(value):
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in sorted(value.items()) if key not in VOLATILE_PROPERTY_KEYS}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(tmpPath, "<tmp>")
+        return value
+
+    stored = db.fetchOne('SELECT id, "setClassName", "itemClassName", properties FROM scipion_sets '
+                         'WHERE "projectId" = %s AND "protocolDbId" = %s AND "outputName" = %s',
+                         (projectId, protocolDbId, outputName))
+    setId = stored["id"]
+    tables = db.fetchAll('SELECT id, name, alias, "tableKind", "parentItemId", "itemClassName", properties '
+                         'FROM scipion_set_tables WHERE "setId" = %s', (setId,))
+    itemColumns = 'enabled, label, comment, "values"'
+    dump = {
+        "set": clean({"setClassName": stored["setClassName"], "itemClassName": stored["itemClassName"],
+                      "properties": stored["properties"]}),
+        "setProperties": clean({row["key"]: row["value"] for row in db.fetchAll(
+            'SELECT key, value FROM scipion_set_properties WHERE "setId" = %s', (setId,))}),
+        "setColumns": clean(db.fetchAll(
+            'SELECT "labelProperty", "columnName", "className", "valueType", position, indexed '
+            'FROM scipion_set_columns WHERE "setId" = %s ORDER BY position', (setId,))),
+        "items": clean({str(row["scipionItemId"]): row for row in db.fetchAll(
+            'SELECT "scipionItemId", %s FROM scipion_set_items WHERE "setId" = %%s' % itemColumns, (setId,))}),
+        "tables": {},
+    }
+    for table in tables:
+        key = "%s:%s" % (table["tableKind"], table["parentItemId"])
+        dump["tables"][key] = clean({
+            "name": table["name"], "alias": table["alias"], "itemClassName": table["itemClassName"],
+            "properties": table["properties"],
+            "columns": db.fetchAll(
+                'SELECT "labelProperty", "columnName", "className", "valueType", position, indexed, properties '
+                'FROM scipion_set_table_columns WHERE "tableId" = %s ORDER BY position', (table["id"],)),
+            "items": {str(row["scipionItemId"]): row for row in db.fetchAll(
+                'SELECT "scipionItemId", "parentItemId", %s FROM scipion_set_table_items WHERE "tableId" = %%s'
+                % itemColumns, (table["id"],))},
+        })
+    Path(path).write_text(json.dumps(dump, sort_keys=True, indent=1, default=str))
 
 
 @pytest.mark.parametrize("classesCount,particlesCount", _getNestedSizes())
