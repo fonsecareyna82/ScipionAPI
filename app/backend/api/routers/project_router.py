@@ -2573,6 +2573,24 @@ def _protocolRunActionError(exc) -> HTTPException:
     return HTTPException(status_code=_PROTOCOL_RUN_ACTION_STATUS.get(exc.code, 502), detail={"code": exc.code})
 
 
+@router.get("/{projectId}/protocols/{protocolId}/summary", response_model=Any)
+def getProtocolSummaryRoute(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+):
+    """The protocol's summary as the desktop Summary tab shows it: its lines (Scipion's markup) and the
+    objects they link to (sci-open ids: the protocol and output each one is)."""
+    from app.backend.api.services.protocol_summary_service import ProtocolSummaryError, getProtocolSummary
+    try:
+        return getProtocolSummary(mapper=mapper, current_user=currentUser, project_id=projectId,
+                                  protocol_id=protocolId)
+    except ProtocolSummaryError as exc:
+        # The same codes as the run actions (both ask a child process)
+        raise _protocolRunActionError(exc) from None
+
+
 @router.get("/{projectId}/protocols/{protocolId}/run-actions", response_model=Any)
 def listProtocolRunActionsRoute(
     projectId: int,
