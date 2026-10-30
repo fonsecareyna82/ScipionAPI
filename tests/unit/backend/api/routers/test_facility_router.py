@@ -230,6 +230,18 @@ class _SampleService:
     def deleteSample(self, sampleId):
         return self.store.pop(sampleId)
 
+    def addImage(self, ownerKind, ownerId, data, caption="", userId=None):
+        image = {"id": 50, "caption": caption, "contentType": "image/webp", "data": b"webp", "sampleId": 1}
+        self.store[("image", 50)] = image
+        return {"image": {"id": 50, "caption": caption}, "sample": {"id": 1, "code": "NZ251"}}
+
+    def getImage(self, imageId):
+        return self.store[("image", imageId)]
+
+    def deleteImage(self, imageId):
+        self.store.pop(("image", imageId))
+        return {"id": 1, "code": "NZ251"}
+
 
 @pytest.fixture
 def sampleClient(modules, monkeypatch):
@@ -272,3 +284,20 @@ def test_ABoxDateIsADate(sampleClient):
     payload = dict(NZ, boxes=[dict(NZ["boxes"][0], vitrifiedOn="28/09/2026")])
 
     assert sampleClient(["facility.manage"]).post("/facility/samples", json=payload).status_code == 422
+
+
+def test_TheStaffWhoKeepSamplesAddAndRemoveImagesAndAnyStaffSeesThem(sampleClient):
+    technician = sampleClient(["facility.sessions"])
+
+    added = technician.post("/facility/grids/101/images?caption=Atlas", content=b"jpeg")
+    assert added.status_code == 201 and added.json()["image"]["caption"] == "Atlas"
+    assert technician.events == ["facility.sampleUpdated"]
+
+    monitor = sampleClient(["facility.monitor"])
+    image = monitor.get("/facility/images/50")
+    assert image.status_code == 200 and image.headers["content-type"] == "image/webp"
+    assert "immutable" in image.headers["cache-control"]
+    assert monitor.post("/facility/boxes/10/images", content=b"jpeg").status_code == 403
+    assert monitor.delete("/facility/images/50").status_code == 403
+
+    assert technician.delete("/facility/images/50").status_code == 200

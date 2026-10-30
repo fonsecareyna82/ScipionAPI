@@ -114,3 +114,55 @@ def test_SamplesAreFoundByCodeOrDescription(samples):
 
     assert [found["id"] for found in service.listSamples(marker)] == [sample["id"]]
     assert service.listSamples("zz%s_none" % marker) == []
+
+
+def _jpeg(width=3000, height=2000):
+    import io
+
+    from PIL import Image
+
+    raw = io.BytesIO()
+    Image.new("RGB", (width, height), (90, 60, 30)).save(raw, format="JPEG")
+    return raw.getvalue()
+
+
+def test_ASampleItsBoxesAndGridsKeepImagesThatGoWithThem(samples, postgresqlIntegrationDb):
+    import io
+
+    from PIL import Image
+
+    service, created = samples
+    sample = service.saveSample(_nz("NZ%s" % uuid4().hex[:8]))
+    created.append(sample["id"])
+    box, grid = sample["boxes"][0], sample["boxes"][0]["grids"][1]
+
+    service.addImage("sample", sample["id"], _jpeg(), caption="Vitrobot sheet")
+    service.addImage("box", box["id"], _jpeg(800, 600))
+    added = service.addImage("grid", grid["id"], _jpeg(), caption="Atlas")
+
+    listed = added["sample"]
+    assert [image["caption"] for image in listed["images"]] == ["Vitrobot sheet"]
+    assert len(listed["boxes"][0]["images"]) == 1
+    assert [image["caption"] for image in listed["boxes"][0]["grids"][1]["images"]] == ["Atlas"]
+    stored = service.getImage(added["image"]["id"])
+    assert stored["sampleId"] == sample["id"] and stored["contentType"] == "image/webp"
+    assert Image.open(io.BytesIO(bytes(stored["data"]))).size == (2048, 1365)
+
+    # A grid left out of the tree takes its images; the sample takes all the rest
+    service.saveSample(dict(listed, boxes=[dict(listed["boxes"][0], grids=[listed["boxes"][0]["grids"][0]]),
+                                           listed["boxes"][1]]), sampleId=sample["id"])
+    assert service.mapper.getImage(added["image"]["id"]) is None
+    service.deleteSample(sample["id"])
+    created.remove(sample["id"])
+    row = postgresqlIntegrationDb.fetchOne(
+        'SELECT COUNT(*) AS n FROM facility_images WHERE "sampleId" = %s OR "boxId" = %s',
+        (sample["id"], box["id"]))
+    assert row["n"] == 0
+
+
+def test_AnImageNeedsAnOwnerThatExists(samples):
+    service, _ = samples
+
+    with pytest.raises(HTTPException) as error:
+        service.addImage("grid", 2147483000, _jpeg(40, 30))
+    assert error.value.status_code == 404

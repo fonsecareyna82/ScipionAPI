@@ -217,3 +217,60 @@ def deleteSample(sampleId: int, mapper: PostgresqlFlatMapper = Depends(getMapper
     sample = FacilitySampleService(mapper.db).deleteSample(sampleId)
     recordAudit(mapper, currentUser, "facility.sampleDeleted", "sample", sampleId, sample["code"],
                 _sampleSummary(sample))
+
+
+async def _addImage(ownerKind: str, ownerId: int, request: Request, caption: str, mapper: PostgresqlFlatMapper,
+                    currentUser: dict) -> Dict[str, Any]:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > PHOTO_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Images may be up to %d MB" % (PHOTO_MAX_UPLOAD_BYTES // (1024 * 1024)))
+    data = await request.body()
+    added = await run_in_threadpool(FacilitySampleService(mapper.db).addImage, ownerKind, ownerId, data, caption,
+                                    currentUser.get("id"))
+    sample = added["sample"]
+    recordAudit(mapper, currentUser, "facility.sampleUpdated", "sample", sample["id"], sample["code"],
+                {"image": "added", "to": "%s %d" % (ownerKind, ownerId)})
+    return added
+
+
+@router.post("/samples/{sampleId}/images", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(requireFacilityMode)])
+async def addSampleImage(sampleId: int, request: Request, caption: str = Query("", max_length=200),
+                         mapper: PostgresqlFlatMapper = Depends(getMapper),
+                         currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Keep the image of the request body (PNG, JPEG or WebP) with the sample."""
+    return await _addImage("sample", sampleId, request, caption, mapper, currentUser)
+
+
+@router.post("/boxes/{boxId}/images", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+async def addBoxImage(boxId: int, request: Request, caption: str = Query("", max_length=200),
+                      mapper: PostgresqlFlatMapper = Depends(getMapper),
+                      currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    return await _addImage("box", boxId, request, caption, mapper, currentUser)
+
+
+@router.post("/grids/{gridId}/images", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+async def addGridImage(gridId: int, request: Request, caption: str = Query("", max_length=200),
+                       mapper: PostgresqlFlatMapper = Depends(getMapper),
+                       currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    return await _addImage("grid", gridId, request, caption, mapper, currentUser)
+
+
+@router.get("/images/{imageId}", dependencies=[Depends(requireFacilityMode)])
+def getFacilityImage(imageId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                     currentUser: dict = Depends(requireFacilityStaff)) -> Response:
+    """An image of a sample, box or grid; an image never changes, so it is cached for good."""
+    image = FacilitySampleService(mapper.db).getImage(imageId)
+    return Response(content=bytes(image["data"]), media_type=image["contentType"],
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@router.delete("/images/{imageId}", dependencies=[Depends(requireFacilityMode)])
+def deleteFacilityImage(imageId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                        currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Remove an image; answers the sample it was in."""
+    sample = FacilitySampleService(mapper.db).deleteImage(imageId)
+    recordAudit(mapper, currentUser, "facility.sampleUpdated", "sample", sample["id"], sample["code"],
+                {"image": "removed", "imageId": imageId})
+    return sample

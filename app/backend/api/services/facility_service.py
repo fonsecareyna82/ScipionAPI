@@ -108,8 +108,8 @@ def _pixelSizes(rows: Iterable[Dict[str, Any]]) -> List[Tuple[int, float]]:
     return sorted(table.items(), reverse=True)
 
 
-def photoForWeb(data: bytes) -> bytes:
-    """An uploaded photo as a WebP of at most PHOTO_MAX_SIDE, turned as the camera held it; 400 if no image."""
+def photoForWeb(data: bytes, maxSide: int = PHOTO_MAX_SIDE) -> bytes:
+    """An uploaded photo as a WebP of at most maxSide, turned as the camera held it; 400 if no image."""
     import io
 
     from PIL import Image, ImageOps, UnidentifiedImageError
@@ -124,7 +124,7 @@ def photoForWeb(data: bytes) -> bytes:
         if image.format not in ("PNG", "JPEG", "WEBP"):
             raise _badRequest("The photo must be a PNG, JPEG or WebP image")
         image = ImageOps.exif_transpose(image)
-        image.thumbnail((PHOTO_MAX_SIDE, PHOTO_MAX_SIDE))
+        image.thumbnail((maxSide, maxSide))
         if image.mode not in ("RGB", "RGBA"):
             image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
         output = io.BytesIO()

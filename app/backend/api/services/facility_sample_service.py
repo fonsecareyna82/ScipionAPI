@@ -9,11 +9,15 @@ from typing import Any, Dict, List, Optional, Set
 
 from fastapi import HTTPException, status
 
+from app.backend.api.services.facility_service import PHOTO_CONTENT_TYPE, photoForWeb
 from app.backend.mapper.facility_sample_mapper import (
-    BOX_FIELDS, GRID_FIELDS, SAMPLE_FIELDS, FacilitySamplePostgresqlMapper,
+    BOX_FIELDS, GRID_FIELDS, IMAGE_OWNER_COLUMNS, SAMPLE_FIELDS, FacilitySamplePostgresqlMapper,
 )
 
 GRID_STATUSES = ("stored", "loaded", "used", "discarded")
+# Images of a sample, box or grid (a box photo, a grid's atlas or screening shot): kept as WebP up to this
+IMAGE_MAX_SIDE = 2048
+IMAGES_PER_OWNER = 20
 GRID_POSITIONS = range(1, 13)
 TEXT_LIMIT = 2000
 
@@ -137,6 +141,34 @@ class FacilitySampleService:
         values = self._sampleValues(payload, sampleId)
         boxes = self._boxes(payload.get("boxes") or [], existing)
         return self.getSample(self.mapper.saveSample(sampleId, values, boxes))
+
+    # Images ----------------------------------------------------------------------------------------
+    def addImage(self, ownerKind: str, ownerId: int, data: bytes, caption: str = "",
+                 userId: Optional[int] = None) -> Dict[str, Any]:
+        """Keep an image of a sample, box or grid; answers it and the sample it went to."""
+        if ownerKind not in IMAGE_OWNER_COLUMNS:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown kind: %s" % ownerKind)
+        sampleId = self.mapper.sampleIdOf(ownerKind, ownerId)
+        if sampleId is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such %s" % ownerKind)
+        if self.mapper.countImages(ownerKind, ownerId) >= IMAGES_PER_OWNER:
+            raise _badRequest("A %s keeps up to %d images" % (ownerKind, IMAGES_PER_OWNER))
+        caption = str(caption or "").strip()[:200]
+        image = self.mapper.insertImage(ownerKind, ownerId, caption, PHOTO_CONTENT_TYPE,
+                                        photoForWeb(data, IMAGE_MAX_SIDE), userId)
+        return {"image": image, "sample": self.getSample(sampleId)}
+
+    def getImage(self, imageId: int) -> Dict[str, Any]:
+        image = self.mapper.getImage(imageId)
+        if image is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+        return image
+
+    def deleteImage(self, imageId: int) -> Dict[str, Any]:
+        """Remove an image; answers the sample it was in."""
+        image = self.getImage(imageId)
+        self.mapper.deleteImage(imageId)
+        return self.getSample(int(image["sampleId"]))
 
     def deleteSample(self, sampleId: int) -> Dict[str, Any]:
         sample = self.getSample(sampleId)
