@@ -1,5 +1,8 @@
 """A facility's microscopes and their calibrated pixel sizes, against the migrated database."""
+import io
 from uuid import uuid4
+
+from PIL import Image
 
 import pytest
 from fastapi import HTTPException
@@ -72,4 +75,24 @@ def test_DeletingAMicroscopeDeletesItsTable(facility, postgresqlIntegrationDb):
     assert service.mapper.getMicroscope(microscope["id"]) is None
     row = postgresqlIntegrationDb.fetchOne(
         'SELECT COUNT(*) AS n FROM facility_microscope_pixel_sizes WHERE "microscopeId" = %s', (microscope["id"],))
+    assert row["n"] == 0
+
+
+def test_APhotoIsKeptWithItsMicroscopeAndGoesWithIt(facility, postgresqlIntegrationDb):
+    service, created = facility
+    microscope = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
+    assert microscope["photoUpdatedAt"] is None
+    raw = io.BytesIO()
+    Image.new("RGB", (800, 600), (10, 20, 30)).save(raw, format="JPEG")
+
+    withPhoto = service.savePhoto(microscope["id"], raw.getvalue())
+
+    assert withPhoto["photoUpdatedAt"] is not None
+    photo = service.getPhoto(microscope["id"])
+    assert photo["contentType"] == "image/webp"
+    assert Image.open(io.BytesIO(bytes(photo["data"]))).size == (800, 600)
+
+    service.deleteMicroscope(microscope["id"])
+    row = postgresqlIntegrationDb.fetchOne(
+        'SELECT COUNT(*) AS n FROM facility_microscope_photos WHERE "microscopeId" = %s', (microscope["id"],))
     assert row["n"] == 0

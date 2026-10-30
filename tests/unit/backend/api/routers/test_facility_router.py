@@ -1,7 +1,9 @@
 """Facility mode and the microscopes routes: off, nothing of it exists; on, only the staff see it."""
 import importlib
+import io
 
 import pytest
+from PIL import Image
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -11,7 +13,7 @@ class _Mapper:
         self.store = store
 
     def listMicroscopes(self):
-        return list(self.store.values())
+        return [value for key, value in self.store.items() if not isinstance(key, tuple)]
 
     def getMicroscope(self, microscopeId):
         return self.store.get(microscopeId)
@@ -31,6 +33,15 @@ class _Mapper:
 
     def deleteMicroscope(self, microscopeId):
         self.store.pop(microscopeId)
+
+    def getPhoto(self, microscopeId):
+        return self.store.get(("photo", microscopeId))
+
+    def savePhoto(self, microscopeId, contentType, data):
+        self.store[("photo", microscopeId)] = {"contentType": contentType, "data": data}
+
+    def deletePhoto(self, microscopeId):
+        self.store.pop(("photo", microscopeId), None)
 
 
 @pytest.fixture
@@ -135,3 +146,67 @@ def test_TheCalibratedPixelIsFoundByMagnificationOrNearTheNominalOne(modules):
     # Farther than the tolerance: the nominal one is kept
     assert service.calibratedPixelSize(table, nominalPixelSize=1.0) is None
     assert service.calibratedPixelSize([], magnification=120000) is None
+
+
+def _png(width=2400, height=1800):
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 90, 160)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_AMicroscopeGetsAPhotoKeptAsAWebImage(modules, monkeypatch):
+    store = {}
+    manager = _client(modules, monkeypatch, ["facility.manage"], store=store)
+    microscopeId = manager.post("/facility/microscopes", json=TALOS).json()["id"]
+
+    uploaded = manager.put("/facility/microscopes/%d/photo" % microscopeId, content=_png(),
+                           headers={"Content-Type": "image/png"})
+    assert uploaded.status_code == 200
+
+    technician = _client(modules, monkeypatch, ["facility.sessions"], store=store)
+    photo = technician.get("/facility/microscopes/%d/photo" % microscopeId)
+    assert photo.status_code == 200 and photo.headers["content-type"] == "image/webp"
+    image = Image.open(io.BytesIO(photo.content))
+    assert image.format == "WEBP" and image.size == (1600, 1200)
+    assert manager.events[-1] == "facility.microscopeUpdated"
+
+
+def test_OnlyTheManagerChangesThePhoto(modules, monkeypatch):
+    store = {}
+    microscopeId = _client(modules, monkeypatch, ["facility.manage"], store=store).post(
+        "/facility/microscopes", json=TALOS).json()["id"]
+    technician = _client(modules, monkeypatch, ["facility.sessions"], store=store)
+
+    assert technician.put("/facility/microscopes/%d/photo" % microscopeId, content=_png()).status_code == 403
+    assert technician.delete("/facility/microscopes/%d/photo" % microscopeId).status_code == 403
+    assert technician.get("/facility/microscopes/%d/photo" % microscopeId).status_code == 404
+
+
+@pytest.mark.parametrize("body, statusCode", [
+    (b"", 400),
+    (b"not an image at all", 400),
+    (b"GIF89a" + b"\x00" * 64, 400),
+])
+def test_OnlyImagesAreKeptAsPhotos(modules, monkeypatch, body, statusCode):
+    client = _client(modules, monkeypatch, ["facility.manage"])
+    microscopeId = client.post("/facility/microscopes", json=TALOS).json()["id"]
+
+    assert client.put("/facility/microscopes/%d/photo" % microscopeId, content=body).status_code == statusCode
+
+
+def test_ATooBigPhotoIsRefusedBeforeItIsRead(modules, monkeypatch):
+    _, service = modules
+    client = _client(modules, monkeypatch, ["facility.manage"])
+    microscopeId = client.post("/facility/microscopes", json=TALOS).json()["id"]
+    monkeypatch.setattr(service, "PHOTO_MAX_UPLOAD_BYTES", 10)
+
+    assert client.put("/facility/microscopes/%d/photo" % microscopeId, content=_png(20, 20)).status_code == 413
+
+
+def test_ThePhotoCanBeRemoved(modules, monkeypatch):
+    client = _client(modules, monkeypatch, ["facility.manage"])
+    microscopeId = client.post("/facility/microscopes", json=TALOS).json()["id"]
+    client.put("/facility/microscopes/%d/photo" % microscopeId, content=_png(40, 30))
+
+    assert client.delete("/facility/microscopes/%d/photo" % microscopeId).status_code == 200
+    assert client.get("/facility/microscopes/%d/photo" % microscopeId).status_code == 404

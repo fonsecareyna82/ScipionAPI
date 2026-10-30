@@ -20,6 +20,10 @@ GAIN_ROTATIONS = (0, 90, 180, 270)
 # them with more or fewer decimals than the calibration table
 PIXEL_SIZE_TOLERANCE = 0.02
 FACILITY_PERMISSIONS = ("facility.monitor", "facility.thresholds", "facility.sessions", "facility.manage")
+# A microscope's photo: what may be uploaded, and what it is kept as (a web image, a few hundred KB)
+PHOTO_MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+PHOTO_MAX_SIDE = 1600
+PHOTO_CONTENT_TYPE = "image/webp"
 TEXT_LIMIT = 2000
 
 
@@ -104,6 +108,32 @@ def _pixelSizes(rows: Iterable[Dict[str, Any]]) -> List[Tuple[int, float]]:
     return sorted(table.items(), reverse=True)
 
 
+def photoForWeb(data: bytes) -> bytes:
+    """An uploaded photo as a WebP of at most PHOTO_MAX_SIDE, turned as the camera held it; 400 if no image."""
+    import io
+
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    if not data:
+        raise _badRequest("The photo is empty")
+    if len(data) > PHOTO_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Photos may be up to %d MB" % (PHOTO_MAX_UPLOAD_BYTES // (1024 * 1024)))
+    try:
+        image = Image.open(io.BytesIO(data))
+        if image.format not in ("PNG", "JPEG", "WEBP"):
+            raise _badRequest("The photo must be a PNG, JPEG or WebP image")
+        image = ImageOps.exif_transpose(image)
+        image.thumbnail((PHOTO_MAX_SIDE, PHOTO_MAX_SIDE))
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        output = io.BytesIO()
+        image.save(output, format="WEBP", quality=85)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        raise _badRequest("The photo is not an image that can be read")
+    return output.getvalue()
+
+
 class FacilityService:
     def __init__(self, db):
         self.mapper = FacilityMicroscopePostgresqlMapper(db)
@@ -164,6 +194,24 @@ class FacilityService:
             microscopeId = self.mapper.insertMicroscope(values, pixelSizes)
         else:
             self.mapper.updateMicroscope(microscopeId, values, pixelSizes)
+        return self.getMicroscope(microscopeId)
+
+    def getPhoto(self, microscopeId: int) -> Dict[str, Any]:
+        self.getMicroscope(microscopeId)
+        photo = self.mapper.getPhoto(microscopeId)
+        if photo is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This microscope has no photo")
+        return photo
+
+    def savePhoto(self, microscopeId: int, data: bytes) -> Dict[str, Any]:
+        """Keep an uploaded PNG, JPEG or WebP photo, reduced to PHOTO_MAX_SIDE and stored as WebP."""
+        self.getMicroscope(microscopeId)
+        self.mapper.savePhoto(microscopeId, PHOTO_CONTENT_TYPE, photoForWeb(data))
+        return self.getMicroscope(microscopeId)
+
+    def deletePhoto(self, microscopeId: int) -> Dict[str, Any]:
+        self.getMicroscope(microscopeId)
+        self.mapper.deletePhoto(microscopeId)
         return self.getMicroscope(microscopeId)
 
     def deleteMicroscope(self, microscopeId: int) -> Dict[str, Any]:

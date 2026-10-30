@@ -12,8 +12,17 @@ LIST_MICROSCOPES_SQL = """
                                                        'pixelSize', p."pixelSize")
                                      ORDER BY p.magnification DESC)
                        FROM facility_microscope_pixel_sizes p
-                      WHERE p."microscopeId" = m.id), '[]'::JSON) AS "pixelSizes"
+                      WHERE p."microscopeId" = m.id), '[]'::JSON) AS "pixelSizes",
+           (SELECT ph."updatedAt" FROM facility_microscope_photos ph WHERE ph."microscopeId" = m.id)
+               AS "photoUpdatedAt"
       FROM facility_microscopes m
+"""
+
+SAVE_PHOTO_SQL = """
+    INSERT INTO facility_microscope_photos ("microscopeId", "contentType", data)
+    VALUES (%s, %s, %s)
+    ON CONFLICT ("microscopeId") DO UPDATE
+       SET "contentType" = EXCLUDED."contentType", data = EXCLUDED.data, "updatedAt" = NOW()
 """
 
 _COLUMNS = ", ".join('"%s"' % field if field != field.lower() else field for field in MICROSCOPE_FIELDS)
@@ -56,6 +65,19 @@ class FacilityMicroscopePostgresqlMapper:
 
     def deleteMicroscope(self, microscopeId: int) -> None:
         self.db.execute("DELETE FROM facility_microscopes WHERE id = %s", (int(microscopeId),))
+
+    def getPhoto(self, microscopeId: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne('SELECT "contentType", data, "updatedAt" FROM facility_microscope_photos '
+                               'WHERE "microscopeId" = %s', (int(microscopeId),))
+        return dict(row) if row else None
+
+    def savePhoto(self, microscopeId: int, contentType: str, data: bytes) -> None:
+        import psycopg2
+
+        self.db.execute(SAVE_PHOTO_SQL, (int(microscopeId), contentType, psycopg2.Binary(data)))
+
+    def deletePhoto(self, microscopeId: int) -> None:
+        self.db.execute('DELETE FROM facility_microscope_photos WHERE "microscopeId" = %s', (int(microscopeId),))
 
     def _replacePixelSizes(self, microscopeId: int, pixelSizes: Iterable[Tuple[int, float]]) -> None:
         self.db.execute('DELETE FROM facility_microscope_pixel_sizes WHERE "microscopeId" = %s',

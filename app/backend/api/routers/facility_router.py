@@ -4,14 +4,15 @@ Without facility mode every route but the status answers 404, as if it did not e
 """
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
 from app.backend.api.services.facility_service import (
-    FacilityService, facilityStatus, isFacilityStaff, requireFacilityMode,
+    PHOTO_MAX_UPLOAD_BYTES, FacilityService, facilityStatus, isFacilityStaff, requireFacilityMode,
 )
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
@@ -101,3 +102,37 @@ def deleteMicroscope(microscopeId: int, mapper: PostgresqlFlatMapper = Depends(g
     microscope = _service(mapper).deleteMicroscope(microscopeId)
     recordAudit(mapper, currentUser, "facility.microscopeDeleted", "microscope", microscopeId, microscope["name"],
                 _summary(microscope))
+
+
+@router.get("/microscopes/{microscopeId}/photo", dependencies=[Depends(requireFacilityMode)])
+def getMicroscopePhoto(microscopeId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                       currentUser: dict = Depends(requireFacilityStaff)) -> Response:
+    """The microscope's photo; its address carries photoUpdatedAt, so a cached one is never stale."""
+    photo = _service(mapper).getPhoto(microscopeId)
+    return Response(content=bytes(photo["data"]), media_type=photo["contentType"],
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.put("/microscopes/{microscopeId}/photo", dependencies=[Depends(requireFacilityMode)])
+async def uploadMicroscopePhoto(microscopeId: int, request: Request,
+                                mapper: PostgresqlFlatMapper = Depends(getMapper),
+                                currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    """Keep the image of the request body (PNG, JPEG or WebP) as the microscope's photo."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > PHOTO_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Photos may be up to %d MB" % (PHOTO_MAX_UPLOAD_BYTES // (1024 * 1024)))
+    data = await request.body()
+    microscope = await run_in_threadpool(_service(mapper).savePhoto, microscopeId, data)
+    recordAudit(mapper, currentUser, "facility.microscopeUpdated", "microscope", microscopeId, microscope["name"],
+                {"photo": "uploaded"})
+    return microscope
+
+
+@router.delete("/microscopes/{microscopeId}/photo", dependencies=[Depends(requireFacilityMode)])
+def deleteMicroscopePhoto(microscopeId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    microscope = _service(mapper).deletePhoto(microscopeId)
+    recordAudit(mapper, currentUser, "facility.microscopeUpdated", "microscope", microscopeId, microscope["name"],
+                {"photo": "removed"})
+    return microscope
