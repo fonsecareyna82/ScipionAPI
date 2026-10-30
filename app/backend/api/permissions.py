@@ -54,6 +54,18 @@ DEFAULT_ROLES = (
 )
 
 
+def withPermissions(mapper, userRecord: dict) -> dict:
+    """userRecord with the permissions of its roles and of its groups' roles (a system role holds all)."""
+    from app.backend.mapper.access_mapper import AccessPostgresqlMapper
+
+    held = AccessPostgresqlMapper(mapper.db).getUserPermissions(userRecord["id"])
+    user = dict(userRecord)
+    user["isSystemAdmin"] = held["isSystem"]
+    user["permissions"] = sorted(PERMISSIONS) if held["isSystem"] else sorted(
+        permission for permission in held["permissions"] if permission in PERMISSIONS)
+    return user
+
+
 def hasPermission(user: dict, permission: str) -> bool:
     """Whether the signed-in user (as getCurrentUser gives it) holds permission."""
     if permission not in PERMISSIONS:

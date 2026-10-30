@@ -4,8 +4,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.backend.api.dependencies import withPermissions
-from app.backend.api.permissions import PERMISSIONS
+from app.backend.api.permissions import PERMISSIONS, withPermissions
 from app.backend.api.services.access_service import AccessService
 from app.backend.mapper.access_mapper import AccessPostgresqlMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper

@@ -5,15 +5,18 @@ import pytest
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.backend.api.dependencies import getCurrentUser, withPermissions
-from app.backend.api.project_access import projectRouteAccess
+from app.backend.api.permissions import withPermissions
 from app.backend.api.services.access_service import AccessService
 from app.backend.mapper.access_mapper import AccessPostgresqlMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 
 @pytest.fixture
-def project(postgresqlIntegrationDb, postgresqlMigratedEnv):
+def project(postgresqlIntegrationDb, postgresqlMigratedEnv, authTestEnv):
+    # Imported here: they load the app's database setup, which needs the environment authTestEnv sets
+    from app.backend.api.dependencies import getCurrentUser
+    from app.backend.api.project_access import projectRouteAccess
+
     db = postgresqlIntegrationDb
     flat = PostgresqlFlatMapper(db)
     access = AccessPostgresqlMapper(db)
