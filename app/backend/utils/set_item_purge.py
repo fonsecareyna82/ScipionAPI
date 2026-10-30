@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from app.backend.mapper.set_item_purge_mapper import SetItemPurgePostgresqlMapper
@@ -16,6 +17,10 @@ from app.backend.mapper.set_item_purge_mapper import SetItemPurgePostgresqlMappe
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 20000
+# The background purge rests between batches: millions of deletions in a row write the change log
+# faster than checkpoints recycle it, and on a nearly full disk the database stopped for lack of space
+BACKGROUND_BATCH_SIZE = 5000
+BACKGROUND_PAUSE_SECONDS = 0.2
 PURGES_PER_READ = 100
 # Sets deleted by other processes (protocol workers) are noticed within this time
 POLL_SECONDS = 60.0
@@ -25,8 +30,10 @@ _startLock = threading.Lock()
 _thread: Optional[threading.Thread] = None
 
 
-def purgePendingSetItems(db, batchSize: int = BATCH_SIZE) -> int:
-    """Remove every queued item; returns how many. Does nothing while another process purges."""
+def purgePendingSetItems(db, batchSize: int = BATCH_SIZE, pauseSeconds: float = 0.0) -> int:
+    """Remove every queued item; returns how many. Does nothing while another process purges.
+
+    pauseSeconds is waited after every full batch, to spread the writes of a large purge."""
     mapper = SetItemPurgePostgresqlMapper(db)
     if not mapper.tryLock():
         return 0
@@ -42,6 +49,8 @@ def purgePendingSetItems(db, batchSize: int = BATCH_SIZE) -> int:
                     removed += count
                     if count < batchSize:
                         break
+                    if pauseSeconds > 0:
+                        time.sleep(pauseSeconds)
                 mapper.finishPurge(purge["id"])
     finally:
         mapper.unlock()
@@ -70,7 +79,7 @@ def _run(openDb: Callable[[], object]) -> None:
         try:
             if db is None:
                 db = openDb()
-            removed = purgePendingSetItems(db)
+            removed = purgePendingSetItems(db, BACKGROUND_BATCH_SIZE, BACKGROUND_PAUSE_SECONDS)
             if removed:
                 logger.info("Removed %s items of deleted Sets", removed)
         except Exception:
