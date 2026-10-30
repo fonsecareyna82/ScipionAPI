@@ -37,6 +37,9 @@ class _Mapper:
         self.store[microscopeId] = dict(values, id=microscopeId, detectors=saved)
         return microscopeId
 
+    def countSessions(self, microscopeId):
+        return self.store.get(("sessions", microscopeId), 0)
+
     def deleteMicroscope(self, microscopeId):
         self.store.pop(microscopeId)
 
@@ -335,3 +338,95 @@ def test_TheStaffWhoKeepSamplesAddAndRemoveImagesAndAnyStaffSeesThem(sampleClien
     assert monitor.delete("/facility/images/50").status_code == 403
 
     assert technician.delete("/facility/images/50").status_code == 200
+
+
+def test_AMicroscopeWithSessionsStays(modules, monkeypatch):
+    store = {}
+    client = _client(modules, monkeypatch, ["facility.manage"], store=store)
+    microscopeId = client.post("/facility/microscopes", json=TALOS).json()["id"]
+    store[("sessions", microscopeId)] = 3
+
+    response = client.delete("/facility/microscopes/%d" % microscopeId)
+
+    assert response.status_code == 409 and "out of service" in response.json()["detail"]
+
+
+class _SessionService:
+    """Keeps sessions in memory, as the routes see the service."""
+    store = {}
+    calls = []
+
+    def __init__(self, db):
+        pass
+
+    def listSessions(self, statuses=None, text=""):
+        self.calls.append(("list", statuses, text))
+        return list(self.store.values())
+
+    def getSession(self, sessionId):
+        return self.store[sessionId]
+
+    def saveSession(self, payload, sessionId=None, userId=None):
+        sessionId = sessionId or len(self.store) + 1
+        self.store[sessionId] = dict(payload, id=sessionId, name=payload.get("name") or "2026_10_31_Gaoxin_%06d" % sessionId,
+                                     microscopeName="Talos", createdBy=userId,
+                                     datasets=[dict(row, folder="DATA") for row in payload.get("datasets") or []])
+        return self.store[sessionId]
+
+    def deleteSession(self, sessionId):
+        return self.store.pop(sessionId)
+
+    def addImage(self, ownerKind, ownerId, data, caption="", userId=None):
+        return {"image": {"id": 60, "caption": caption}, "session": {"id": 1, "name": "S"}}
+
+
+@pytest.fixture
+def sessionClient(modules, monkeypatch):
+    router, _ = modules
+    _SessionService.store, _SessionService.calls = {}, []
+    monkeypatch.setattr(router, "FacilitySessionService", _SessionService)
+    return lambda permissions, mode="1": _client(modules, monkeypatch, permissions, mode=mode)
+
+
+SESSION = {"microscopeId": 1, "userId": 7, "bookingRef": "B-1203",
+           "datasets": [{"number": 1, "gridId": 6}, {"number": 2, "gridId": 9}]}
+
+
+def test_TheStaffWhoRunSessionsKeepThem(sessionClient):
+    technician = sessionClient(["facility.sessions"])
+
+    created = technician.post("/facility/sessions", json=SESSION)
+    assert created.status_code == 201
+    session = created.json()
+    assert session["name"] == "2026_10_31_Gaoxin_000001" and session["createdBy"] == 1
+    assert technician.put("/facility/sessions/1", json=dict(SESSION, status="acquiring")).status_code == 200
+    assert technician.delete("/facility/sessions/1").status_code == 204
+    assert technician.events == ["facility.sessionCreated", "facility.sessionUpdated", "facility.sessionDeleted"]
+
+
+def test_TheListShowsTheActiveSessionsUnlessAskedOtherwise(sessionClient):
+    monitor = sessionClient(["facility.monitor"])
+
+    assert monitor.get("/facility/sessions").status_code == 200
+    monitor.get("/facility/sessions?status=all&q=gaoxin")
+    monitor.get("/facility/sessions?status=finished")
+    assert _SessionService.calls == [("list", ["planned", "acquiring"], ""), ("list", [], "gaoxin"),
+                                     ("list", ["finished"], "")]
+
+
+def test_OnlyTheStaffWhoRunSessionsChangeThem(sessionClient):
+    monitor = sessionClient(["facility.monitor"])
+
+    assert monitor.post("/facility/sessions", json=SESSION).status_code == 403
+    assert monitor.post("/facility/sessions/1/images", content=b"jpeg").status_code == 403
+    assert sessionClient(["projects.create"]).get("/facility/sessions").status_code == 403
+    assert sessionClient(["facility.manage"], mode="0").get("/facility/sessions").status_code == 404
+
+
+def test_SessionsAndDatasetsKeepImages(sessionClient):
+    technician = sessionClient(["facility.sessions"])
+
+    added = technician.post("/facility/datasets/4/images?caption=Atlas", content=b"jpeg")
+
+    assert added.status_code == 201 and added.json()["image"]["caption"] == "Atlas"
+    assert technician.events == ["facility.sessionUpdated"]

@@ -11,7 +11,7 @@ from fastapi import HTTPException, status
 
 from app.backend.api.services.facility_service import PHOTO_CONTENT_TYPE, photoForWeb
 from app.backend.mapper.facility_sample_mapper import (
-    BOX_FIELDS, GRID_FIELDS, IMAGE_OWNER_COLUMNS, SAMPLE_FIELDS, FacilitySamplePostgresqlMapper,
+    BOX_FIELDS, GRID_FIELDS, SAMPLE_FIELDS, FacilitySamplePostgresqlMapper,
 )
 
 GRID_STATUSES = ("stored", "loaded", "used", "discarded")
@@ -19,6 +19,7 @@ GRID_STATUSES = ("stored", "loaded", "used", "discarded")
 IMAGE_MAX_SIDE = 2048
 IMAGES_PER_OWNER = 20
 GRID_POSITIONS = range(1, 13)
+SAMPLE_IMAGE_OWNERS = ("sample", "box", "grid")
 TEXT_LIMIT = 2000
 
 
@@ -136,17 +137,28 @@ class FacilitySampleService:
             boxes.append(dict(values, id=boxId, grids=grids))
         return boxes
 
+    def _keepGridsOfSessions(self, gridIds: Set[int]) -> None:
+        """A grid a session took data from stays: the session is the history of what was acquired."""
+        used = self.mapper.sessionsOfGrids(sorted(gridIds))
+        if used:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Grids used in sessions stay: %s" % ", ".join(
+                                    "grid id %d in %s" % (row["gridId"], row["name"]) for row in used))
+
     def saveSample(self, payload: Dict[str, Any], sampleId: Optional[int] = None) -> Dict[str, Any]:
         existing = self.getSample(sampleId) if sampleId is not None else None
         values = self._sampleValues(payload, sampleId)
         boxes = self._boxes(payload.get("boxes") or [], existing)
+        if existing:
+            kept = {grid["id"] for box in boxes for grid in box["grids"] if grid["id"] is not None}
+            self._keepGridsOfSessions({int(grid["id"]) for box in existing["boxes"] for grid in box["grids"]} - kept)
         return self.getSample(self.mapper.saveSample(sampleId, values, boxes))
 
     # Images ----------------------------------------------------------------------------------------
     def addImage(self, ownerKind: str, ownerId: int, data: bytes, caption: str = "",
                  userId: Optional[int] = None) -> Dict[str, Any]:
         """Keep an image of a sample, box or grid; answers it and the sample it went to."""
-        if ownerKind not in IMAGE_OWNER_COLUMNS:
+        if ownerKind not in SAMPLE_IMAGE_OWNERS:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown kind: %s" % ownerKind)
         sampleId = self.mapper.sampleIdOf(ownerKind, ownerId)
         if sampleId is None:
@@ -159,6 +171,7 @@ class FacilitySampleService:
         return {"image": image, "sample": self.getSample(sampleId)}
 
     def getImage(self, imageId: int) -> Dict[str, Any]:
+        """Any facility image (a sample's or a session's)."""
         image = self.mapper.getImage(imageId)
         if image is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
@@ -172,5 +185,6 @@ class FacilitySampleService:
 
     def deleteSample(self, sampleId: int) -> Dict[str, Any]:
         sample = self.getSample(sampleId)
+        self._keepGridsOfSessions({int(grid["id"]) for box in sample["boxes"] for grid in box["grids"]})
         self.mapper.deleteSample(sampleId)
         return sample

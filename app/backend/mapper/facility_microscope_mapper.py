@@ -101,6 +101,11 @@ class FacilityMicroscopePostgresqlMapper:
                             (microscopeId, keptIds), commit=False)
         return microscopeId
 
+    def countSessions(self, microscopeId: int) -> int:
+        row = self.db.fetchOne('SELECT COUNT(*) AS n FROM facility_sessions WHERE "microscopeId" = %s',
+                               (int(microscopeId),))
+        return int(row["n"])
+
     def deleteMicroscope(self, microscopeId: int) -> None:
         self.db.execute("DELETE FROM facility_microscopes WHERE id = %s", (int(microscopeId),))
 

@@ -1,4 +1,4 @@
-"""A facility in ScipionWeb: its mode and its microscopes (see facility_service).
+"""A facility in ScipionWeb: its mode, microscopes, samples and sessions (see the facility_*_service modules).
 
 Without facility mode every route but the status answers 404, as if it did not exist.
 """
@@ -16,6 +16,7 @@ from app.backend.api.services.facility_service import (
     PHOTO_MAX_UPLOAD_BYTES, FacilityService, facilityStatus, isFacilityStaff, requireFacilityMode,
 )
 from app.backend.api.services.facility_sample_service import FacilitySampleService
+from app.backend.api.services.facility_session_service import ACTIVE_STATUSES, FacilitySessionService
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -61,7 +62,7 @@ def requireFacilityStaff(currentUser: dict = Depends(getCurrentUser)) -> dict:
 
 
 def requireSampleKeeper(currentUser: dict = Depends(getCurrentUser)) -> dict:
-    """Who records samples and grids: the staff who run sessions, and the facility managers."""
+    """Who records samples, grids and sessions: the staff who run sessions, and the facility managers."""
     if not (hasPermission(currentUser, "facility.sessions") or hasPermission(currentUser, "facility.manage")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Permission required: facility.sessions or facility.manage")
@@ -96,6 +97,35 @@ class SamplePayload(BaseModel):
     accessRoute: Optional[str] = ""
     notes: Optional[str] = ""
     boxes: List[GridBoxPayload] = []
+
+
+class DatasetPayload(BaseModel):
+    id: Optional[int] = None
+    kind: str = "data"
+    number: Optional[int] = None
+    gridId: Optional[int] = None
+    detectorId: Optional[int] = None
+    notes: Optional[str] = ""
+
+
+class SessionPayload(BaseModel):
+    # Empty: the facility's name, YYYY_MM_DD_<Name-Surname>_<id>
+    name: Optional[str] = ""
+    microscopeId: int
+    technique: str = "spa"
+    status: str = "planned"
+    groupId: Optional[int] = None
+    userId: Optional[int] = None
+    bookingRef: Optional[str] = ""
+    scheduledOn: Optional[date] = None
+    notes: Optional[str] = ""
+    datasets: List[DatasetPayload] = []
+
+
+def _sessionSummary(session: Dict[str, Any]) -> Dict[str, Any]:
+    """What the audit log keeps of a session."""
+    return {"status": session["status"], "microscope": session["microscopeName"],
+            "datasets": {dataset["folder"]: dataset.get("gridId") for dataset in session.get("datasets") or []}}
 
 
 def _sampleSummary(sample: Dict[str, Any]) -> Dict[str, Any]:
@@ -279,8 +309,96 @@ def getFacilityImage(imageId: int, mapper: PostgresqlFlatMapper = Depends(getMap
 @router.delete("/images/{imageId}", dependencies=[Depends(requireFacilityMode)])
 def deleteFacilityImage(imageId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
                         currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
-    """Remove an image; answers the sample it was in."""
+    """Remove an image; answers the sample or the session it was in."""
+    image = FacilitySampleService(mapper.db).getImage(imageId)
+    if image.get("sessionId") is not None:
+        session = FacilitySessionService(mapper.db).deleteImage(imageId)
+        recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", session["id"], session["name"],
+                    {"image": "removed", "imageId": imageId})
+        return session
     sample = FacilitySampleService(mapper.db).deleteImage(imageId)
     recordAudit(mapper, currentUser, "facility.sampleUpdated", "sample", sample["id"], sample["code"],
                 {"image": "removed", "imageId": imageId})
     return sample
+
+
+# Sessions ------------------------------------------------------------------------------------------------
+@router.get("/sessions", dependencies=[Depends(requireFacilityMode)])
+def listSessions(q: str = Query("", max_length=100, description="Text in a session's name, booking, user or group"),
+                 status_: str = Query("active", alias="status",
+                                      description="active (planned and acquiring), all, or one status"),
+                 mapper: PostgresqlFlatMapper = Depends(getMapper),
+                 currentUser: dict = Depends(requireFacilityStaff)) -> List[Dict[str, Any]]:
+    """The sessions, newest first, each with its datasets and their grids."""
+    statuses = list(ACTIVE_STATUSES) if status_ == "active" else [] if status_ == "all" else [status_]
+    return FacilitySessionService(mapper.db).listSessions(statuses, q)
+
+
+@router.get("/sessions/{sessionId}", dependencies=[Depends(requireFacilityMode)])
+def getSession(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+               currentUser: dict = Depends(requireFacilityStaff)) -> Dict[str, Any]:
+    return FacilitySessionService(mapper.db).getSession(sessionId)
+
+
+@router.post("/sessions", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+def createSession(payload: SessionPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    session = FacilitySessionService(mapper.db).saveSession(payload.dict(), userId=currentUser.get("id"))
+    recordAudit(mapper, currentUser, "facility.sessionCreated", "session", session["id"], session["name"],
+                _sessionSummary(session))
+    return session
+
+
+@router.put("/sessions/{sessionId}", dependencies=[Depends(requireFacilityMode)])
+def updateSession(sessionId: int, payload: SessionPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    service = FacilitySessionService(mapper.db)
+    before = service.getSession(sessionId)
+    session = service.saveSession(payload.dict(), sessionId=sessionId)
+    changes = {key: value for key, value in _sessionSummary(session).items() if _sessionSummary(before).get(key) != value}
+    if before["name"] != session["name"]:
+        changes["name"] = {"from": before["name"], "to": session["name"]}
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"], changes)
+    return session
+
+
+@router.delete("/sessions/{sessionId}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(requireFacilityMode)])
+def deleteSession(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(requireSampleKeeper)) -> None:
+    session = FacilitySessionService(mapper.db).deleteSession(sessionId)
+    recordAudit(mapper, currentUser, "facility.sessionDeleted", "session", sessionId, session["name"],
+                _sessionSummary(session))
+
+
+async def _addSessionImage(ownerKind: str, ownerId: int, request: Request, caption: str,
+                           mapper: PostgresqlFlatMapper, currentUser: dict) -> Dict[str, Any]:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > PHOTO_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Images may be up to %d MB" % (PHOTO_MAX_UPLOAD_BYTES // (1024 * 1024)))
+    data = await request.body()
+    added = await run_in_threadpool(FacilitySessionService(mapper.db).addImage, ownerKind, ownerId, data, caption,
+                                    currentUser.get("id"))
+    session = added["session"]
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", session["id"], session["name"],
+                {"image": "added", "to": "%s %d" % (ownerKind, ownerId)})
+    return added
+
+
+@router.post("/sessions/{sessionId}/images", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(requireFacilityMode)])
+async def addSessionImage(sessionId: int, request: Request, caption: str = Query("", max_length=200),
+                          mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Keep the image of the request body (PNG, JPEG or WebP) with the session."""
+    return await _addSessionImage("session", sessionId, request, caption, mapper, currentUser)
+
+
+@router.post("/datasets/{datasetId}/images", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(requireFacilityMode)])
+async def addDatasetImage(datasetId: int, request: Request, caption: str = Query("", max_length=200),
+                          mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Keep the image of the request body with a dataset (the ATLAS or a DATA_NN)."""
+    return await _addSessionImage("dataset", datasetId, request, caption, mapper, currentUser)

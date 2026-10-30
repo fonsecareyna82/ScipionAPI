@@ -1,33 +1,27 @@
 """The queries of a facility's samples, their grid boxes and their grids."""
 from typing import Any, Dict, List, Optional
 
+from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapper, imagesJson
+
 SAMPLE_FIELDS = ("code", "description", "groupId", "ownerId", "accessRoute", "notes")
 BOX_FIELDS = ("label", "vitrificationCode", "vitrifiedOn", "notes")
 GRID_FIELDS = ("position", "gridNumber", "gridType", "concentration", "specimen", "status", "notes")
 
-# The images of a sample, box or grid as the tree lists them: what they are, never their bytes
-def _imagesJson(ownerColumn: str, ownerId: str) -> str:
-    return ("""COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('id', i.id, 'caption', i.caption, 'createdAt', i."createdAt")
-                                ORDER BY i.id)
-                       FROM facility_images i WHERE i."%s" = %s), '[]'::JSON)""" % (ownerColumn, ownerId))
-
-
-IMAGE_OWNER_COLUMNS = {"sample": "sampleId", "box": "boxId", "grid": "gridId"}
 
 LIST_SAMPLES_SQL = """
     SELECT s.id, s.code, s.description, s."groupId", g.name AS "groupName", s."ownerId", u.email AS "ownerEmail",
            TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) AS "ownerName",
            s."accessRoute", s.notes, s."createdAt", s."updatedAt",
-           """ + _imagesJson("sampleId", "s.id") + """ AS images,
+           """ + imagesJson("sampleId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', b.id, 'label', b.label, 'vitrificationCode', b."vitrificationCode",
                          'vitrifiedOn', b."vitrifiedOn", 'notes', b.notes,
-                         'images', """ + _imagesJson("boxId", "b.id") + """,
+                         'images', """ + imagesJson("boxId", "b.id") + """,
                          'grids', COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                                                 'id', gr.id, 'position', gr.position, 'gridNumber', gr."gridNumber",
                                                 'gridType', gr."gridType", 'concentration', gr.concentration,
                                                 'specimen', gr.specimen, 'status', gr.status, 'notes', gr.notes,
-                                                'images', """ + _imagesJson("gridId", "gr.id") + """)
+                                                'images', """ + imagesJson("gridId", "gr.id") + """)
                                             ORDER BY gr.position)
                                               FROM facility_grids gr WHERE gr."boxId" = b.id), '[]'::JSON))
                        ORDER BY b.id)
@@ -61,10 +55,7 @@ INSERT_GRID_SQL = _insertSql("facility_grids", GRID_FIELDS, {"boxId": "%(boxId)s
 UPDATE_GRID_SQL = _updateSql("facility_grids", GRID_FIELDS + ("boxId",))
 
 
-class FacilitySamplePostgresqlMapper:
-    def __init__(self, db):
-        self.db = db
-
+class FacilitySamplePostgresqlMapper(FacilityImagePostgresqlMapper):
     def listSamples(self, text: str = "") -> List[Dict[str, Any]]:
         if text:
             # The text as typed: its % and _ are no wildcards
@@ -119,6 +110,15 @@ class FacilitySamplePostgresqlMapper:
     def deleteSample(self, sampleId: int) -> None:
         self.db.execute("DELETE FROM facility_samples WHERE id = %s", (int(sampleId),))
 
+    def sessionsOfGrids(self, gridIds: List[int]) -> List[Dict[str, Any]]:
+        """The sessions that took data from any of gridIds: the grid and the session's name."""
+        if not gridIds:
+            return []
+        rows = self.db.fetchAll('SELECT DISTINCT d."gridId", s.name FROM facility_session_datasets d '
+                                'JOIN facility_sessions s ON s.id = d."sessionId" '
+                                'WHERE d."gridId" = ANY(%s) ORDER BY s.name', ([int(gridId) for gridId in gridIds],))
+        return [dict(row) for row in rows or []]
+
     # Images ------------------------------------------------------------------------------------
     def sampleIdOf(self, ownerKind: str, ownerId: int) -> Optional[int]:
         """The sample a sample, box or grid belongs to (None: there is no such one)."""
@@ -130,36 +130,6 @@ class FacilitySamplePostgresqlMapper:
         }[ownerKind]
         row = self.db.fetchOne(sql, (int(ownerId),))
         return int(row["sampleId"]) if row else None
-
-    def countImages(self, ownerKind: str, ownerId: int) -> int:
-        row = self.db.fetchOne('SELECT COUNT(*) AS n FROM facility_images WHERE "%s" = %%s'
-                               % IMAGE_OWNER_COLUMNS[ownerKind], (int(ownerId),))
-        return int(row["n"])
-
-    def insertImage(self, ownerKind: str, ownerId: int, caption: str, contentType: str, data: bytes,
-                    userId: Optional[int]) -> Dict[str, Any]:
-        import psycopg2
-
-        with self.db.transaction():
-            row = self.db.fetchOne(
-                'INSERT INTO facility_images ("%s", caption, "contentType", data, "createdBy") '
-                'VALUES (%%s, %%s, %%s, %%s, %%s) RETURNING id, caption, "createdAt"' % IMAGE_OWNER_COLUMNS[ownerKind],
-                (int(ownerId), caption, contentType, psycopg2.Binary(data), userId))
-        return dict(row)
-
-    def getImage(self, imageId: int) -> Optional[Dict[str, Any]]:
-        row = self.db.fetchOne(
-            'SELECT i.id, i."contentType", i.data, i.caption, '
-            'COALESCE(i."sampleId", b."sampleId", gb."sampleId") AS "sampleId" '
-            "FROM facility_images i "
-            'LEFT JOIN facility_grid_boxes b ON b.id = i."boxId" '
-            'LEFT JOIN facility_grids g ON g.id = i."gridId" '
-            'LEFT JOIN facility_grid_boxes gb ON gb.id = g."boxId" '
-            "WHERE i.id = %s", (int(imageId),))
-        return dict(row) if row else None
-
-    def deleteImage(self, imageId: int) -> None:
-        self.db.execute("DELETE FROM facility_images WHERE id = %s", (int(imageId),))
 
     def groupExists(self, groupId: int) -> bool:
         return self.db.fetchOne("SELECT 1 AS found FROM user_groups WHERE id = %s", (int(groupId),)) is not None

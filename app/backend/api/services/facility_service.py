@@ -274,5 +274,10 @@ class FacilityService:
 
     def deleteMicroscope(self, microscopeId: int) -> Dict[str, Any]:
         microscope = self.getMicroscope(microscopeId)
+        sessions = self.mapper.countSessions(microscopeId)
+        if sessions:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="%s has %d sessions: they are its history. Mark it out of service instead."
+                                       % (microscope["name"], sessions))
         self.mapper.deleteMicroscope(microscopeId)
         return microscope
