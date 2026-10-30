@@ -673,6 +673,8 @@ def installCommand(
         "API_MOUNT_PATH": existing.get("API_MOUNT_PATH") or "/api",
         "WEB_DIST_PATH": existing.get("WEB_DIST_PATH") or str((scipionHome / "web" / "dist").resolve()),
         "WEB_API_BASE_URL": existing.get("WEB_API_BASE_URL") or "/api",
+        # The folders users without files.browseServer may browse and launch on (":"-separated); "/" limits nothing
+        "SCIPIONWEB_DATA_ROOTS": existing.get("SCIPIONWEB_DATA_ROOTS") or "/",
         "ADMIN_USERNAME": adminUser,
         "ADMIN_EMAIL": adminEmail,
         "SCIPION_PORT": scipionPort,

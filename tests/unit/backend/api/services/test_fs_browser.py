@@ -124,3 +124,84 @@ def test_TheBrowseServerPermissionOrNoDataFoldersLeaveTheFilesystemOpen(tmp_path
     project = tmp_path / "projects" / "demo"
     open_ = fs_browser.resolveBrowserRoot(Mapper({}), 1, None, str(project), "filesystem", canBrowseServer=False)
     assert open_.allowed is None and open_.toDict()["allowedRoots"] is None
+
+
+class PathProtocol:
+    """A protocol's form with path parameters, as pyworkflow keeps them."""
+
+    def __init__(self, values, inUse=None, pattern=None):
+        from pyworkflow.object import String
+        from pyworkflow.protocol.params import FileParam, Form, PathParam
+
+        self._definition = Form(self)
+        self._definition.addSection("Input")
+        self.inUse = set(inUse if inUse is not None else values)
+        for name, value in values.items():
+            paramClass = FileParam if name == "maskFile" else PathParam
+            self._definition.addParam(name, paramClass, label=name)
+            setattr(self, name, String(value))
+        if pattern is not None:
+            self.filesPattern = String(pattern)
+
+    def evalParamCondition(self, name):
+        return name in self.inUse
+
+    def getObjLabel(self):
+        return "import movies"
+
+
+def test_LaunchingPointsOnlyToTheProjectAndTheDataFoldersWithoutTheBrowseServerPermission(tmp_path, monkeypatch):
+    project = tmp_path / "projects" / "demo"
+    project.mkdir(parents=True)
+    data = tmp_path / "data" / "lab"
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(data))
+
+    def outOfReach(protocol, canBrowseServer=False):
+        return fs_browser.pathsOutOfReach([protocol], str(project), canBrowseServer)
+
+    assert outOfReach(PathProtocol({"filesPath": str(data / "movies"), "maskFile": "Runs/000002_X/mask.mrc"})) == []
+    problems = outOfReach(PathProtocol({"filesPath": str(tmp_path / "data" / "other-lab")}))
+    assert len(problems) == 1 and problems[0].startswith("import movies: filesPath (")
+    # A relative path is read from the project, so leaving it counts
+    assert len(outOfReach(PathProtocol({"maskFile": "../../data/other-lab/mask.mrc"}))) == 1
+    # The pattern of an import reads its folders too, up to its first wildcard
+    assert outOfReach(PathProtocol({"filesPath": str(data)}, pattern="movies/*.tif")) == []
+    assert len(outOfReach(PathProtocol({"filesPath": ""}, pattern="/etc/*.conf"))) == 1
+    # A parameter the form does not use, and a user who may browse the server, are not checked
+    assert outOfReach(PathProtocol({"filesPath": "/etc"}, inUse=[])) == []
+    assert outOfReach(PathProtocol({"filesPath": "/etc"}), canBrowseServer=True) == []
+
+
+def test_LaunchingIsNotLimitedWithoutDataFoldersNorForLaunchesWithoutAUser(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS", raising=False)
+    assert fs_browser.pathsOutOfReach([PathProtocol({"filesPath": "/etc"})], str(tmp_path), False) == []
+
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(tmp_path / "data"))
+    fs_browser.checkLaunchPaths(object(), None, [PathProtocol({"filesPath": "/etc"})], str(tmp_path))
+
+
+def test_LaunchingAPathOutOfReachIsRefusedWithItsReason(tmp_path, monkeypatch):
+    from app.backend.mapper import access_mapper
+
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(tmp_path / "data"))
+    monkeypatch.setattr(access_mapper.AccessPostgresqlMapper, "getUserPermissions",
+                        lambda self, userId: {"isSystem": False, "permissions": ["projects.create"]})
+
+    class MapperWithDb:
+        db = None
+
+    with pytest.raises(HTTPException) as error:
+        fs_browser.checkLaunchPaths(MapperWithDb(), 7, [PathProtocol({"filesPath": "/etc"})], str(tmp_path))
+    assert error.value.status_code == 422
+    assert "files.browseServer" in error.value.detail[0]
+
+
+def test_TheDefaultDataRootLimitsNothing(tmp_path, monkeypatch):
+    """New installations write SCIPIONWEB_DATA_ROOTS=/ so the setting is there to narrow."""
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", "/")
+    project = tmp_path / "projects" / "demo"
+    project.mkdir(parents=True)
+    browser = fs_browser.resolveBrowserRoot(Mapper({}), 1, None, str(project), "filesystem", canBrowseServer=False)
+
+    assert fs_browser.isAllowed(browser, Path("/etc/hosts"))
+    assert fs_browser.pathsOutOfReach([PathProtocol({"filesPath": "/data/any"})], str(project), False) == []

@@ -978,14 +978,15 @@ def updateCommand(
             _printSuccess("Services started.")
 
         _printStep("Writing update metadata", str(envPath))
-        writeEnvFile(
-            envPath,
-            {
-                "SCIPIONAPI_LAST_UPDATE_VERSION": targetVersion,
-                "SCIPIONAPI_LAST_UPDATE_AT": timestamp,
-                "SCIPIONAPI_UPDATE_BASE_URL": effectiveBaseUrl,
-            },
-        )
+        updateMetadata = {
+            "SCIPIONAPI_LAST_UPDATE_VERSION": targetVersion,
+            "SCIPIONAPI_LAST_UPDATE_AT": timestamp,
+            "SCIPIONAPI_UPDATE_BASE_URL": effectiveBaseUrl,
+        }
+        # Installations from before it get the setting, limiting nothing until it is changed
+        if "SCIPIONWEB_DATA_ROOTS" not in readEnvFile(envPath):
+            updateMetadata["SCIPIONWEB_DATA_ROOTS"] = "/"
+        writeEnvFile(envPath, updateMetadata)
         _printSuccess("Update metadata written.")
 
         _printStep("Cleaning old backups")

@@ -686,6 +686,15 @@ class RuntimePostgresqlContinueLauncherService:
             or []
         )
 
+        # Before anything changes: the files every launched form points to must be within the user's reach
+        from app.backend.api.services import fs_browser
+
+        fs_browser.checkLaunchPaths(
+            mapper, currentUserId,
+            [entry["protocol"] for entry in entries
+             if entry.get("action") != CONTINUE_ACTION_SKIP and entry.get("protocol") is not None],
+            currentProject)
+
         preparedItems = []
         skippedItems = []
         restartOutputCleanup = None

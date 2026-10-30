@@ -227,6 +227,11 @@ class RuntimeProtocolLaunchService:
             postgresqlLaunchPointerReport["storedPreparedProtocol"] = False
             postgresqlLaunchPointerReport["persistenceDeferredToNativeLaunch"] = True
 
+            # The files the form points to must be within the user's reach, also when scheduled
+            from app.backend.api.services import fs_browser
+
+            fs_browser.checkLaunchPaths(mapper, currentUserId, [protocol], currentProject)
+
             if not isSchedule:
                 self._validateProtocol(
                     protocol=protocol,

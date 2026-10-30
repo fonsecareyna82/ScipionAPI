@@ -522,6 +522,11 @@ class RuntimePostgresqlRestartLauncherService:
             workflowProtocolMap
         )
 
+        # Before anything changes: the files every form points to must be within the user's reach
+        from app.backend.api.services import fs_browser
+
+        fs_browser.checkLaunchPaths(mapper, currentUserId, [protocol for protocol, _ in items], currentProject)
+
         runtimeStructures = validationInfo.get("runtimeStructures") or {}
 
         preparedItems = []

@@ -193,3 +193,86 @@ def writableTarget(browser: BrowserRoot, requestedPath: str) -> Path:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                                 detail="Files cannot be written into hidden folders")
     return candidate
+
+
+# Launching: the paths a protocol's form points to ------------------------------------------------
+
+_GLOB_CHARACTERS = set("*?[")
+
+
+def _beforeGlob(path: str) -> str:
+    """The folders of a path up to its first pattern (movies/*.tif reads movies)."""
+    parts = []
+    for part in Path(path).parts:
+        if _GLOB_CHARACTERS & set(part):
+            break
+        parts.append(part)
+    return str(Path(*parts)) if parts else ""
+
+
+def protocolPaths(protocol) -> List[Tuple[str, str]]:
+    """(label, path) of every file or folder the protocol's form points to, among the parameters in use."""
+    from pyworkflow.protocol.params import PathParam
+
+    found = []
+    definition = getattr(protocol, "_definition", None)
+    for name, param in (definition.iterAllParams() if definition is not None else ()):
+        if not isinstance(param, PathParam):
+            continue
+        try:
+            if not protocol.evalParamCondition(name):
+                continue
+        except Exception:
+            pass
+        value = getattr(protocol, name, None)
+        text = value.get() if hasattr(value, "get") else value
+        if text not in (None, ""):
+            found.append((str(getattr(param, "label", None) or name), str(text)))
+    # Imports read the files of a pattern under their folder (the pattern may name folders too)
+    pattern = getattr(protocol, "filesPattern", None)
+    pattern = pattern.get() if hasattr(pattern, "get") else pattern
+    if pattern:
+        folder = getattr(protocol, "filesPath", None)
+        folder = folder.get() if hasattr(folder, "get") else folder
+        found.append(("Pattern", os.path.join(str(folder or ""), str(pattern))))
+    return found
+
+
+def pathsOutOfReach(protocols: Iterable, projectPath: str, canBrowseServer: bool) -> List[str]:
+    """The paths of the protocols' forms out of the project and of the data folders, as messages.
+
+    The same reach as browsing: nothing is out of it with files.browseServer or with no data folders set.
+    """
+    roots = dataRoots()
+    if canBrowseServer or not roots:
+        return []
+    project = Path(projectPath).expanduser()
+    allowed = tuple(dict.fromkeys((project.absolute(), project.resolve()))) + roots
+    problems = []
+    for protocol in protocols:
+        name = protocol.getObjLabel() if hasattr(protocol, "getObjLabel") else ""
+        name = name or (protocol.getClassName() if hasattr(protocol, "getClassName") else "Protocol")
+        for label, raw in protocolPaths(protocol):
+            checked = _beforeGlob(raw)
+            absolute = Path(os.path.normpath(os.path.join(str(project.absolute()), checked)))
+            if not any(_within(absolute, folder) for folder in allowed):
+                problems.append(
+                    "%s: %s (%s) is out of the folders you may use (the project and %s). "
+                    "Ask for the files.browseServer permission to use it."
+                    % (name, label, raw, ", ".join(folder.as_posix() for folder in roots)))
+    return problems
+
+
+def checkLaunchPaths(mapper, userId, protocols, currentProject) -> None:
+    """422 when a protocol launched by userId points to files out of their reach (no user: no check)."""
+    if userId is None or not dataRoots():
+        return
+    projectPath = currentProject if isinstance(currentProject, str) else currentProject.getPath()
+    from app.backend.mapper.access_mapper import AccessPostgresqlMapper
+
+    held = AccessPostgresqlMapper(mapper.db).getUserPermissions(int(userId))
+    canBrowseServer = held["isSystem"] or "files.browseServer" in held["permissions"]
+    problems = pathsOutOfReach(protocols, projectPath, canBrowseServer)
+    if problems:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=problems)
+

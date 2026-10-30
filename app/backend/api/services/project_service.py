@@ -3221,6 +3221,9 @@ class ProjectService:
         else:
             project = self.loadProjectFromPostgresql(dbProj=dbProj, mapper=mapper)
 
+        if isinstance(project, dict) and dbProj.get("access"):
+            # What the user may do here (view, work or manage), so the page offers only that
+            project["access"] = dbProj["access"]
         return project
 
     def getProjectEffectiveSettings(
