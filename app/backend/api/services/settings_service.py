@@ -89,6 +89,21 @@ def _getCustomEnvironmentPath() -> str:
     return os.path.join(_getScipionHome(), "config", _customEnvironmentFileName)
 
 
+# ScipionWeb's own settings, listed (and changed) in the web with Scipion's: (name, default, description)
+SCIPIONWEB_VARIABLES = (
+    ("SCIPIONWEB_DATA_ROOTS", "/",
+     "Folders, separated by ':', that users without the files.browseServer permission may browse and point "
+     "their protocols to, besides their projects. '/' limits nothing."),
+)
+
+
+def _registerScipionWebVariables() -> None:
+    from pyworkflow.config import Variable, VariablesRegistry
+
+    for name, default, description in SCIPIONWEB_VARIABLES:
+        VariablesRegistry.register(Variable(name, description, "ScipionWeb", os.environ.get(name, default), default))
+
+
 def _readCustomEnvironmentVariables() -> dict[str, str]:
     path = _getCustomEnvironmentPath()
 
@@ -978,6 +993,8 @@ class SettingsService:
             Manager()
         except Exception:
             logger.exception("Error warming Manager()")
+
+        _registerScipionWebVariables()
         # logger.warning("registry count [after Manager()]: %s", self._registryCount())
 
         # try:

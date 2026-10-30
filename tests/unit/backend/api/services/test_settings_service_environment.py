@@ -401,3 +401,18 @@ def test_WarmupEnvironmentRegistryRefreshesDomainBeforeReadingVariables(
     ]
 
 
+
+
+def test_ScipionWebSettingsAreListedWithScipionsVariables(monkeypatch):
+    """SCIPIONWEB_DATA_ROOTS shows (and can be changed) in the web's environment variables."""
+    from pyworkflow.config import VariablesRegistry
+
+    monkeypatch.setattr(VariablesRegistry, "_variables", {})
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", "/data:/fastdata")
+
+    settingsModule._registerScipionWebVariables()
+
+    variable = VariablesRegistry.variables()["SCIPIONWEB_DATA_ROOTS"]
+    assert (variable.value, variable.default, variable.source) == ("/data:/fastdata", "/", "ScipionWeb")
+    assert "files.browseServer" in variable.description
+    assert variable.isDefault is False
