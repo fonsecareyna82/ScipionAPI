@@ -255,6 +255,11 @@ class PostgresqlTiltSeriesReader:
             )
         return self._storedSet
 
+    def isMovieSet(self) -> bool:
+        """Whether the tilt images are movies (SetOfTiltSeriesM): each tilt is a file of its own frames."""
+        storedSet = self._getStoredSet()
+        return storedSet is not None and str(storedSet.get("setClassName") or "").lower() == "setoftiltseriesm"
+
     def _isTiltSeriesStoredSet(self, storedSet: Dict[str, Any]) -> bool:
         classText = self._getStoredSetClassText(storedSet)
         return "tiltseries" in classText and "ctftomo" not in classText

@@ -1972,6 +1972,7 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
             inline,
             rot,
             shifts,
+            averageFrames=False,
         ):
             self.lastRenderCall = {
                 "filePath": filePath,
@@ -1982,6 +1983,7 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
                 "inline": inline,
                 "rot": rot,
                 "shifts": shifts,
+                "averageFrames": averageFrames,
             }
             return Response(content=b"fake-webp", media_type="image/webp")
 
@@ -2033,6 +2035,8 @@ def test_RenderMetadataImageCellServiceFallsBackToScipionPreviewForMrcFiles(
         "inline": True,
         "rot": None,
         "shifts": None,
+        # Micrographs are single images: only movies are drawn from the mean of their frames
+        "averageFrames": False,
     }
     assert pilOpenCalls == []
 
@@ -2990,3 +2994,67 @@ def test_MetadataImageCacheIsBoundedByMemory(projectServiceModule, service, monk
     assert big.headers["X-Preview-Cache"] == "skip"
     assert "big" not in projectServiceModule._METADATA_IMAGE_CACHE
     assert service._getCachedMetadataImageResponse(3).body == b"x" * 100
+
+
+@pytest.mark.parametrize("setClassName, fileName, averaged", [
+    ("SetOfMovies", "movie_0001.tif", True),
+    ("SetOfMovies", "movie_0001.mrcs", True),
+    ("SetOfMicrographs", "mic_0001.mrc", False),
+])
+def test_MovieCellsAreDrawnFromTheMeanOfTheirFramesEvenWhenPillowReadsThem(
+    service, projectServiceModule, monkeypatch, tmp_path, setClassName, fileName, averaged,
+):
+    """A TIFF movie used to go through Pillow: one 8-bit frame of counts, black once reduced to a cell."""
+    from starlette.responses import Response
+
+    projectPath = tmp_path / "project"
+    imagePath = projectPath / "Runs" / "000002_ProtImportMovies" / "extra" / fileName
+    imagePath.parent.mkdir(parents=True)
+    imagePath.write_bytes(b"fake movie")
+
+    class PathRenderer:
+        def render(self, rawValue, rowValues):
+            return rawValue
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            return {"name": str(projectPath)} if "FROM projects" in query else None
+
+    class FakeMapper:
+        db = FakeDb()
+
+    class StoredSetDao:
+        def _getStoredSetHeader(self):
+            return {"setClassName": setClassName}
+
+    calls = []
+
+    class FakeOutputsPreview:
+        def __init__(self, currentProject, protocol, output, requestHeaders=None):
+            pass
+
+        def renderImageFromFilePath(self, **kwargs):
+            calls.append(kwargs)
+            return Response(content=b"image", media_type="image/png")
+
+    table = FakeTable(name="objects", alias="Movies", columns=[FakeColumn("_filename", "File", PathRenderer())])
+    objMgr = FakeObjectManager(
+        tables={"objects": table},
+        rowsByTable={"objects": [FakeRow(1, ["Runs/000002_ProtImportMovies/extra/%s" % fileName])]},
+        rowCounts={"objects": 1},
+        dao=StoredSetDao(),
+        fileName="postgresql://project/247/protocol/2/output/outputMovies",
+    )
+    patchOpenMetadataTable(service, monkeypatch, objMgr, table)
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+
+    response = service.renderMetadataImageCellService(
+        projectId=247, protocolId=2, outputName="outputMovies", tableName="objects", rowId=None, rowIndex=0,
+        columnName="_filename", size=128, applyTransform=False, inline=True, fmt="png", mapper=FakeMapper(),
+    )
+
+    assert response.status_code == 200
+    if fileName.endswith(".tif") and not averaged:
+        assert calls == []
+    else:
+        assert len(calls) == 1 and calls[0]["averageFrames"] is averaged

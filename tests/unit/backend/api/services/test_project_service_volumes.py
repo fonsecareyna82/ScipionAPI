@@ -1325,7 +1325,7 @@ def test_TheTiltSeriesStackReducesTheAskedTiltsInTheirOrder(service, monkeypatch
     sources.append({"index": 9, "tiltAngle": 9.0, "rot": None, "shiftX": None, "shiftY": None, "error": "missing"})
     reads = []
 
-    def readImage(path, imageIndex):
+    def readImage(path, imageIndex, movie=False, maxDim=1024):
         reads.append(imageIndex)
         return np.full((40, 20), float(imageIndex), dtype=np.float32) + np.arange(20, dtype=np.float32)
 

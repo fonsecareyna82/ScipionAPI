@@ -12,6 +12,8 @@ from pathlib import Path as FsPath, Path
 from typing import Union, List, Dict, Any, Optional, Tuple
 
 from threading import RLock
+import logging
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib
@@ -32,7 +34,7 @@ from app.backend.utils.constants import (
 )
 from app.backend.utils.file_handlers import FileHandlers  # uses _buildPreviewHeaders
 from app.backend.utils.volume_utils import readVolumeSlice2d
-from pwem.emlib.image.image_readers import ImageReadersRegistry, ROT_MODE
+from pwem.emlib.image.image_readers import ImageReadersRegistry, ImageStack, ROT_MODE
 from pwem.objects import (
     SetOfClasses2D,
     SetOfParticles,
@@ -50,6 +52,141 @@ from pwem.viewers.viewers_data import RegistryViewerConfig
 # ------------------------------------------------------------------------------
 _VOLUME_PATHS_CACHE: Dict[Tuple[str, str], List[Path]] = {}
 _VOLUME_PATHS_LOCK = RLock()
+logger = logging.getLogger(__name__)
+
+# A movie is shown as the mean of a few of its frames (one frame is mostly noise), each reduced with
+# Pillow (a box filter in C) to a reference size where the contrast is set, as a bigger preview sets
+# it: set on the small cell itself, the window closes on the little noise left and exaggerates it.
+MOVIE_CONTRAST_SIZE = 512
+# Frames read, spread over the movie: a TIFF frame is decoded on reading (about 0.1 s for a K3 one),
+# the frames of an MRC stack are already in memory once it is open
+TIFF_MOVIE_PREVIEW_FRAMES = 1
+# A movie of this few frames (a tilt of a tilt series, a few e/A^2 split over 2-10 frames) is read
+# whole: one of its frames holds a small part of its little dose
+TIFF_MOVIE_ALL_FRAMES_UPTO = 10
+TIFF_DECODE_THREADS = 4
+MOVIE_PREVIEW_FRAMES = 2
+TIFF_SUFFIXES = (".tif", ".tiff")
+MRC_SUFFIXES = (".mrc", ".mrcs")
+
+
+def _spreadFrames(count: int, wanted: int) -> List[int]:
+    """wanted frames spread over the movie, away from its first and last (dose, drift)."""
+    if count <= wanted:
+        return list(range(count))
+    return [int(round((index + 1) * count / (wanted + 1))) for index in range(wanted)]
+
+
+def _reducedFrame(frame, refSize: int) -> np.ndarray:
+    image = frame if isinstance(frame, Image.Image) else Image.fromarray(
+        np.squeeze(np.asarray(frame, dtype=np.float32)), mode="F")
+    if image.mode != "F":
+        image = image.convert("F")
+    factor = max(1, max(image.size) // refSize)
+    if factor > 1:
+        image = image.reduce(factor)
+    return reduceForDisplay(np.asarray(image, dtype=np.float32), refSize)
+
+
+def _meanOfReduced(frames, refSize: int) -> np.ndarray:
+    total = None
+    count = 0
+    for frame in frames:
+        if isinstance(frame, Image.Image):
+            # Decoded frames (TIFF): each reduced on its own, the decoder holds one at a time
+            frame = _reducedFrame(frame, refSize)
+        frame = np.squeeze(np.asarray(frame))
+        if total is None:
+            total = np.zeros(frame.shape, dtype=np.float32)
+        # In place: a K3 frame is tens of millions of pixels
+        np.add(total, frame, out=total, casting="unsafe")
+        count += 1
+    # Frames read as arrays (MRC) are summed first and reduced once
+    total /= np.float32(count)
+    return _reducedFrame(total, refSize)
+
+
+def _tiffFrame(path, pick: int, refSize: int) -> np.ndarray:
+    with Image.open(str(path)) as image:
+        image.seek(pick)
+        image.load()
+        return _reducedFrame(image, refSize)
+
+
+def _tiffFrames(path, wanted: int, refSize: int) -> List[np.ndarray]:
+    """A few frames of a TIFF movie, read with Pillow and reduced to refSize: pwem's reader gives the
+    first one only, and cannot decode LZW without the imagecodecs package. Several frames are decoded at
+    once (Pillow releases the GIL while decoding, about 0.1 s for a K3 frame)."""
+    with Image.open(str(path)) as image:
+        count = int(getattr(image, "n_frames", 1) or 1)
+        if count <= TIFF_MOVIE_ALL_FRAMES_UPTO:
+            wanted = count
+        if wanted == 1:
+            image.load()
+            return [_reducedFrame(image, refSize)]
+    picks = _spreadFrames(count, wanted)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(len(picks), TIFF_DECODE_THREADS)) as pool:
+        return list(pool.map(lambda pick: _tiffFrame(path, pick, refSize), picks))
+
+
+def _mrcFrames(path, wanted: int):
+    """A few frames of an MRC movie, read from a memory map: only those frames are read from disk."""
+    import mrcfile
+
+    with mrcfile.mmap(str(path), mode="r", permissive=True) as mrc:
+        data = mrc.data
+        if data is None or data.ndim != 3 or data.shape[0] < 2:
+            return
+        for pick in _spreadFrames(int(data.shape[0]), wanted):
+            # A copy in the movie's own type: the map closes once the frames are read
+            yield np.array(data[pick])
+
+
+def movieRefSize(size: int) -> int:
+    """The size a movie is reduced to, and its contrast set at, before it is shrunk to size."""
+    return max(int(size or MOVIE_CONTRAST_SIZE), MOVIE_CONTRAST_SIZE)
+
+
+def movieFrames(path, reader=None, size: int = MOVIE_CONTRAST_SIZE):
+    """The frames a movie is shown from: read with Pillow (TIFF, already reduced for size), from a
+    memory map (MRC), or from pwem's opened stack (reader); nothing for a single image."""
+    suffix = Path(str(path)).suffix.lower()
+    if reader is None and suffix in TIFF_SUFFIXES:
+        return _tiffFrames(path, TIFF_MOVIE_PREVIEW_FRAMES, movieRefSize(size))
+    if reader is None and suffix in MRC_SUFFIXES:
+        return list(_mrcFrames(path, MOVIE_PREVIEW_FRAMES))
+    if reader is not None and len(reader) > 1:
+        return [reader.getImage(index=pick) for pick in _spreadFrames(len(reader), MOVIE_PREVIEW_FRAMES)]
+    return []
+
+
+def movieMeanImage(path, size: int) -> Optional[np.ndarray]:
+    """The mean of a few frames of a movie file, as float32 reduced to movieRefSize(size), or None for a
+    single image: the original values of a movie for viewers that set their own contrast."""
+    frames = []
+    if Path(str(path)).suffix.lower() in TIFF_SUFFIXES + MRC_SUFFIXES:
+        try:
+            frames = movieFrames(path, size=size)
+        except Exception as e:
+            logger.info("Could not read the frames of movie %s on its own: %s", path, e)
+    if not frames:
+        frames = movieFrames(path, ImageReadersRegistry.open(str(path)), size=size)
+    return _meanOfReduced(frames, movieRefSize(size)) if frames else None
+
+
+def movieDisplayImage(frames, size: int) -> np.ndarray:
+    """A movie as uint8 for display at size: the mean of its frames (movieFrames), its contrast set
+    at the reference size."""
+    display = toDisplayUint8(_meanOfReduced(frames, movieRefSize(size)))
+    height, width = display.shape
+    if size and max(height, width) > size:
+        scale = size / float(max(height, width))
+        target = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+        display = np.asarray(Image.fromarray(display, mode="L").resize(target, Image.LANCZOS))
+    return display
+
 
 
 def _outputSignature(out: Any) -> str:
@@ -663,10 +800,13 @@ class OutputsPreview(FileHandlers):
             quality: int = 75,
             applyTransform: bool = True,
             rot=None,
-            shifts=None
+            shifts=None,
+            averageFrames: bool = False,
     ) -> Response:
         """
         Render a single 2D image (or first slice of a stack) from an absolute file path.
+
+        - averageFrames: the file is a movie, shown as the mean of a few frames (movieDisplayImage).
 
         - Uses the same normalization pipeline as gallery thumbnails.
         - Optionally resizes to a square thumbnail with max side = size.
@@ -680,57 +820,74 @@ class OutputsPreview(FileHandlers):
                 detail=f"Image file not found: {p}",
             )
 
+        movie = averageFrames and index in (None, 0)
+        tile = None
+        if movie and p.suffix.lower() in TIFF_SUFFIXES + MRC_SUFFIXES:
+            try:
+                frames = movieFrames(p, size=size)
+                if frames:
+                    tile = movieDisplayImage(frames, size)
+            except Exception as e:
+                logger.info("Could not read the frames of movie %s on its own: %s", p, e)
+
         try:
-            reader = ImageReadersRegistry.open(str(p))
+            # A movie already drawn needs no reader: only its class operations (flip)
+            reader = ImageStack if tile is not None else ImageReadersRegistry.open(str(p))
         except Exception as e:
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not open image file: {e}",
             )
 
-        # The original values (not an 8-bit image): the image is reduced and
-        # its contrast set from them (see image_display).
-        try:
-            if index is None:
-                original = reader.getCentralImage()
-            else:
-                original = reader.getImage(index=index)
-        except Exception:
+        if tile is None and movie:
+            frames = movieFrames(p, reader, size=size)
+            if frames:
+                tile = movieDisplayImage(frames, size)
+
+        if tile is None:
+            # The original values (not an 8-bit image): the image is reduced and
+            # its contrast set from them (see image_display).
             try:
-                original = reader.getCentralImage()
-            except Exception as e:
+                if index is None:
+                    original = reader.getCentralImage()
+                else:
+                    original = reader.getImage(index=index)
+            except Exception:
+                try:
+                    original = reader.getCentralImage()
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Could not read image from file: {e}",
+                    )
+
+            original = np.squeeze(np.asarray(original))
+            if original.ndim != 2 or original.size == 0:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Could not read image from file: {e}",
+                    detail="Empty or invalid image tile",
                 )
+            origHeight, origWidth = original.shape
+            tile = reduceForDisplay(original, size)
 
-        original = np.squeeze(np.asarray(original))
-        if original.ndim != 2 or original.size == 0:
-            raise HTTPException(
-                status_code=500,
-                detail="Empty or invalid image tile",
-            )
-        origHeight, origWidth = original.shape
-        tile = reduceForDisplay(original, size)
+            # Apply alignment transforms in thumbnail space if requested
+            if (
+                    applyTransform
+                    and rot is not None
+                    and shifts is not None
+            ):
+                tileHeight, tileWidth = tile.shape
 
-        # Apply alignment transforms in thumbnail space if requested
-        if (
-                applyTransform
-                and rot is not None
-                and shifts is not None
-        ):
-            tileHeight, tileWidth = tile.shape
+                # Scale shifts from original size to thumbnail size
+                scaleX = tileWidth / float(origWidth)
+                scaleY = tileHeight / float(origHeight)
 
-            # Scale shifts from original size to thumbnail size
-            scaleX = tileWidth / float(origWidth)
-            scaleY = tileHeight / float(origHeight)
+                scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
 
-            scaledShifts = (shifts[0] * scaleX, shifts[1] * scaleY)
+                # Apply transform on the thumbnail, before quantizing it
+                tile = reader.transformSlice(tile, scaledShifts, rot, mode=ROT_MODE.CONDITIONAL)
 
-            # Apply transform on the thumbnail, before quantizing it
-            tile = reader.transformSlice(tile, scaledShifts, rot, mode=ROT_MODE.CONDITIONAL)
-
-        tile = toDisplayUint8(tile)
+            tile = toDisplayUint8(tile)
 
         # Apply flip at the end to match viewer orientation
         tile = reader.flipSlice(tile)

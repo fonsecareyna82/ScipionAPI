@@ -46,7 +46,7 @@ from starlette.responses import JSONResponse
 from tomo.constants import BOTTOM_LEFT_CORNER
 from tomo.objects import SetOfTiltSeries, TiltSeries, Coordinate3D
 
-from app.backend.utils.outputs_preview import OutputsPreview
+from app.backend.utils.outputs_preview import OutputsPreview, movieMeanImage
 from app.backend.utils.tilt_series_stack import (
     STACK_MEDIA_TYPE as TILT_STACK_MEDIA_TYPE,
     cachedReducedTiltImage,
@@ -220,6 +220,11 @@ _METADATA_IMAGE_CACHE_MAX_ITEM_BYTES = 8 * 1024 * 1024
 _metadataImageCacheBytes = 0
 # Bumped when class representatives are drawn differently (see class_average_display).
 CLASS_DISPLAY_VERSION = 3
+# Bumped when metadata image cells are drawn differently (2: movies as the mean of their frames)
+METADATA_IMAGE_DISPLAY_VERSION = 2
+# Tilts of a tilt series movie read at once for the tilt series viewer (each decodes its frames in threads too)
+TILT_MOVIE_READ_THREADS = 4
+MOVIE_SET_CLASSES = ("setofmovies", "setoftiltseriesm", "movie", "tiltimagem")
 
 _VOLUME_SURFACE_INTERACTIVE_MAX_VOXELS = 8_000_000
 _VOLUME_SURFACE_QUALITY_MAX_VOXELS = 40_000_000
@@ -14574,6 +14579,10 @@ class ProjectService:
                         frame.get("path"),
                         fallbackIndex=int(index),
                     )
+                    # A tilt movie is a file of its own frames: drawn from their mean, never frame <index>
+                    movie = pgReader.isMovieSet()
+                    if movie:
+                        imageIndex = 0
 
                     if mapper is not None and getattr(mapper, "db", None) is not None:
                         from app.backend.viewers.postgresql_path_resolver import (
@@ -14639,6 +14648,7 @@ class ProjectService:
                         inline=inline,
                         rot=rot,
                         shifts=shifts,
+                        averageFrames=movie,
                     )
 
                     return self._storeTiltSeriesPreviewInCache(cacheKey, response)
@@ -14706,6 +14716,9 @@ class ProjectService:
             )
 
         imagePath = os.path.abspath(ti.getFileName())
+        movie = self._isTiltSeriesMovieSet(setOfTiltSeries)
+        if movie:
+            index = 0
 
         cacheKey = self._buildTiltSeriesPreviewCacheKey(
             projectId=projectId,
@@ -14748,9 +14761,17 @@ class ProjectService:
             inline=inline,
             rot=rot,
             shifts=shifts,
+            averageFrames=movie,
         )
 
         return self._storeTiltSeriesPreviewInCache(cacheKey, response)
+
+    @staticmethod
+    def _isTiltSeriesMovieSet(setOfTiltSeries) -> bool:
+        try:
+            return str(setOfTiltSeries.getClassName() or "").lower() == "setoftiltseriesm"
+        except Exception:
+            return False
 
     def _tiltSeriesFrameSources(
             self,
@@ -14784,6 +14805,7 @@ class ProjectService:
                     )
                     resolver = PostgresqlProjectPathResolver(db=mapper.db, projectId=projectId)
 
+                movie = pgReader.isMovieSet()
                 sources: List[Dict[str, Any]] = []
                 for position, frame in enumerate(payload.get("frames") or []):
                     rawIndex = frame.get("index")
@@ -14806,7 +14828,8 @@ class ProjectService:
                                 raise FileNotFoundError(f"Tilt image not found: {imagePath}")
                             imagePath = resolvedPath
                         source["imagePath"] = str(imagePath)
-                        source["imageIndex"] = int(imageIndex)
+                        source["imageIndex"] = 0 if movie else int(imageIndex)
+                        source["movie"] = movie
                     except HTTPException as exc:
                         source["error"] = str(exc.detail)
                     except Exception as exc:
@@ -14838,6 +14861,7 @@ class ProjectService:
                 detail=f"TiltSeries '{tiltSeriesId}' not found in output '{outputName}'",
             )
 
+        movie = self._isTiltSeriesMovieSet(setOfTiltSeries)
         sources = []
         for ti in ts.iterItems():
             index = int(ti.getIndex())
@@ -14845,7 +14869,8 @@ class ProjectService:
                 "index": index,
                 "tiltAngle": ti.getTiltAngle(),
                 "imagePath": os.path.abspath(ti.getFileName()),
-                "imageIndex": index,
+                "imageIndex": 0 if movie else index,
+                "movie": movie,
                 "rot": None,
                 "shiftX": None,
                 "shiftY": None,
@@ -14859,7 +14884,12 @@ class ProjectService:
         return sources
 
     @staticmethod
-    def _readTiltImageArray(imagePath: str, imageIndex: int) -> np.ndarray:
+    def _readTiltImageArray(imagePath: str, imageIndex: int, movie: bool = False, maxDim: int = 1024) -> np.ndarray:
+        if movie:
+            # The mean of a few frames, already reduced (see outputs_preview.movieMeanImage)
+            mean = movieMeanImage(imagePath, maxDim)
+            if mean is not None:
+                return mean
         reader = ImageReadersRegistry.open(str(imagePath))
         try:
             return np.asarray(reader.getImage(index=imageIndex))
@@ -14890,25 +14920,33 @@ class ProjectService:
             byIndex = {source["index"]: source for source in sources}
             sources = [byIndex[index] for index in indices if index in byIndex]
 
-        frames: List[Dict[str, Any]] = []
-        for source in sources:
+        def stackFrame(source: Dict[str, Any]) -> Dict[str, Any]:
             frame = {key: source.get(key) for key in ("index", "tiltAngle", "rot", "shiftX", "shiftY")}
             if "error" in source:
                 frame["error"] = source["error"]
-                frames.append(frame)
-                continue
+                return frame
             try:
                 imagePath = source["imagePath"]
                 imageIndex = int(source["imageIndex"])
-                key = (os.path.abspath(imagePath), os.path.getmtime(imagePath), imageIndex, int(maxDim))
+                movie = bool(source.get("movie"))
+                key = (os.path.abspath(imagePath), os.path.getmtime(imagePath), imageIndex, int(maxDim), movie)
                 frame.update(cachedReducedTiltImage(
                     key,
-                    lambda: reduceTiltImage(self._readTiltImageArray(imagePath, imageIndex), maxDim),
+                    lambda: reduceTiltImage(self._readTiltImageArray(imagePath, imageIndex, movie, maxDim), maxDim),
                 ))
             except Exception as exc:
                 logger.warning("Could not reduce tilt image %s of %s: %s", source.get("index"), tiltSeriesId, exc)
                 frame["error"] = str(exc)
-            frames.append(frame)
+            return frame
+
+        if sources and all(source.get("movie") for source in sources):
+            # Each tilt of a tilt series movie is a file of its own: several are read at once
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=TILT_MOVIE_READ_THREADS) as pool:
+                frames = list(pool.map(stackFrame, sources))
+        else:
+            frames = [stackFrame(source) for source in sources]
 
         body = encodeTiltSeriesStack(
             {"tiltSeriesId": str(tiltSeriesId), "maxDim": int(maxDim), "flipVertically": True},
@@ -18393,6 +18431,7 @@ class ProjectService:
             # Class display version and 3D view: a new rendering is a new image
             # (also for the browser, whose ETag comes from this key).
             (CLASS_DISPLAY_VERSION, str(volumeView or "surface")) if enhanced else None,
+            METADATA_IMAGE_DISPLAY_VERSION,
             # What the caller knows of the image file: a streaming protocol rewrites its class averages in place
             None if version is None else str(version),
         )
@@ -18569,6 +18608,39 @@ class ProjectService:
         response.headers["Cache-Control"] = _VOLUME_PREVIEW_CACHE_CONTROL
         self._exposeHeader(response.headers, "ETag")
         return response
+
+    @staticmethod
+    def _isMetadataMovieOutput(objMgr, table) -> bool:
+        """Whether the images of the table are movies (of SPA or of the tilts of a tilt series).
+
+        Kept on the object manager: the cells of a batch share it, and the Set header is one query.
+        """
+        known = getattr(objMgr, "_scipionWebMovieTable", None)
+        if isinstance(known, bool):
+            return known
+        isMovie = ProjectService._readMetadataMovieOutput(objMgr, table)
+        try:
+            objMgr._scipionWebMovieTable = isMovie
+        except Exception:
+            pass
+        return isMovie
+
+    @staticmethod
+    def _readMetadataMovieOutput(objMgr, table) -> bool:
+        dao = getattr(objMgr, "_dao", None)
+        getHeader = getattr(dao, "_getStoredSetHeader", None)
+        if callable(getHeader):
+            try:
+                header = getHeader()
+            except Exception:
+                header = None
+            if isinstance(header, dict) and header.get("setClassName"):
+                return str(header["setClassName"]).strip().lower() in MOVIE_SET_CLASSES
+        getAlias = getattr(table, "getAlias", None)
+        try:
+            return callable(getAlias) and str(getAlias() or "").strip().lower() in MOVIE_SET_CLASSES
+        except Exception:
+            return False
 
     @staticmethod
     def _isMetadataClassAverageOutput(objMgr, table) -> bool:
@@ -18984,6 +19056,9 @@ class ProjectService:
                             useScipionPreview = (
                                     imageIndex not in (None, 0)
                                     or extension not in pillowExtensions
+                                    # Movies (TIFF too, which Pillow reads): the mean of their frames
+                                    # over a robust contrast, never one 8-bit frame of counts
+                                    or self._isMetadataMovieOutput(objMgr, table)
                             )
 
                             if not useScipionPreview:
@@ -19022,6 +19097,8 @@ class ProjectService:
                                         and self._isVolumeLikeImageFile(resolvedPath)
                                 ):
                                     previewIndex = None
+                                # A movie (a stack of frames, not a volume): the mean of its frames
+                                averageFrames = imageIndex in (None, 0) and self._isMetadataMovieOutput(objMgr, table)
 
                                 try:
                                     preview = batchContext.get("preview") if batchContext is not None else None
@@ -19043,6 +19120,7 @@ class ProjectService:
                                         inline=inline,
                                         rot=None,
                                         shifts=None,
+                                        averageFrames=averageFrames,
                                     )
                                     # MRC/MRCS previews return before the
                                     # regular PIL metadata rendering path.

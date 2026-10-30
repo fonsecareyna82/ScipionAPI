@@ -228,6 +228,7 @@ class FakeOutputsPreview:
         inline,
         rot,
         shifts,
+        averageFrames=False,
     ):
         self.lastRenderCall = {
             "filePath": filePath,
@@ -238,6 +239,7 @@ class FakeOutputsPreview:
             "inline": inline,
             "rot": rot,
             "shifts": shifts,
+            "averageFrames": averageFrames,
         }
         return {"rendered": True, "filePath": filePath}
 
@@ -1034,6 +1036,8 @@ def test_RenderTiltSeriesImageServiceDelegatesToOutputsPreview(projectServiceMod
         "inline": False,
         "rot": 20.0,
         "shifts": (6.0, -3.0),
+        # A SetOfTiltSeries: its tilt images are no movies
+        "averageFrames": False,
     }
 
 
@@ -1070,6 +1074,9 @@ def test_RenderTiltSeriesImageServiceResolvesProjectRelativePostgresqlFramePath(
 
     class FakePostgresqlTiltSeriesReader:
         lastSkipReason = None
+
+        def isMovieSet(self):
+            return False
 
         def getTiltImageFrame(self, tiltSeriesId, index):
             return {
@@ -1412,3 +1419,85 @@ def test_ResolveOutputForTiltSeriesReturns404WhenProtocolMissing(service):
 
     assert exc.value.status_code == 404
     assert str(exc.value.detail).startswith("Protocol not found in Scipion runtime:")
+
+
+def test_ATiltOfATiltSeriesMovieIsDrawnFromTheMeanOfItsFrames(
+    projectServiceModule,
+    service,
+    monkeypatch,
+    tmp_path,
+):
+    """Each tilt of a SetOfTiltSeriesM is a movie file of its own: the tilt index is no frame of it."""
+    FakeOutputsPreview.instances = []
+    projectPath = tmp_path / "project"
+    tiltPath = projectPath / "Runs" / "000002_ProtImportTsMovies" / "extra" / "TS_1_005_10.0.tif"
+    tiltPath.parent.mkdir(parents=True)
+    tiltPath.write_bytes(b"fake")
+
+    class FakeDb:
+        def fetchOne(self, query, params):
+            return {"name": str(projectPath)} if "FROM projects" in query else None
+
+    class FakeMapper:
+        db = FakeDb()
+
+    class FakeMovieReader:
+        lastSkipReason = None
+
+        def isMovieSet(self):
+            return True
+
+        def getTiltImageFrame(self, tiltSeriesId, index):
+            return {"index": int(index), "path": "Runs/000002_ProtImportTsMovies/extra/TS_1_005_10.0.tif"}
+
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+    monkeypatch.setattr(service, "_getPostgresqlTiltSeriesReaderIfAvailable", lambda **kwargs: FakeMovieReader())
+
+    service.renderTiltSeriesImageService(
+        projectId=14, protocolId=2, outputName="outputTiltSeriesM", tiltSeriesId="TS_1", index=5, size=512,
+        fmt="png", applyTransform=False, inline=True, mapper=FakeMapper(),
+    )
+
+    call = FakeOutputsPreview.instances[0].lastRenderCall
+    assert call["filePath"] == str(tiltPath.resolve())
+    assert call["index"] == 0
+    assert call["averageFrames"] is True
+
+
+def test_TheTiltsOfATiltSeriesMovieAreReadAtOnceInTheirOrder(service, monkeypatch, tmp_path):
+    import threading
+    import time as timeModule
+    import numpy as np
+    from app.backend.utils.tilt_series_stack import clearFrameCache, decodeTiltSeriesStack
+
+    clearFrameCache()
+    sources = []
+    for index in range(8):
+        path = tmp_path / ("tilt_%d.tif" % index)
+        path.write_bytes(b"x")
+        sources.append({"index": index, "tiltAngle": float(index), "imagePath": str(path), "imageIndex": 0,
+                        "movie": True, "rot": None, "shiftX": None, "shiftY": None})
+    running = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def readImage(path, imageIndex, movie=False, maxDim=1024):
+        assert movie is True and imageIndex == 0
+        with lock:
+            running["now"] += 1
+            running["most"] = max(running["most"], running["now"])
+        timeModule.sleep(0.05)
+        with lock:
+            running["now"] -= 1
+        tilt = int(path.rsplit("_", 1)[1].split(".")[0])
+        return np.full((40, 20), float(tilt), dtype=np.float32) + np.arange(20, dtype=np.float32)
+
+    monkeypatch.setattr(service, "_tiltSeriesFrameSources", lambda **kwargs: sources)
+    monkeypatch.setattr(service, "_readTiltImageArray", readImage)
+
+    response = service.renderTiltSeriesStackService(projectId=14, protocolId=2, outputName="outputTiltSeriesM",
+                                                    tiltSeriesId="TS_1", maxDim=64)
+
+    stack = decodeTiltSeriesStack(response.body)
+    assert [frame["index"] for frame in stack["frames"]] == list(range(8))
+    assert [frame.get("error") for frame in stack["frames"]] == [None] * 8
+    assert running["most"] > 1
