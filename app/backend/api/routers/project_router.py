@@ -2055,6 +2055,7 @@ def createFsDownloadLink(
     """A short-lived signed link to download one file with the browser's own download manager."""
     from app.backend.api.services import fs_download_token
 
+    checkPermission(currentUser, "files.download")
     browser = _fsBrowserRoot(projectId, protocolId, payload.scope, currentUser, mapper, service)
     target = _fsTarget(browser, payload.path)
     if not target.is_file():

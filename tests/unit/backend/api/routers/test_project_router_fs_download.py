@@ -33,10 +33,11 @@ def project(tmp_path):
     return tmp_path / "Proj"
 
 
-def _link(router, project, path, scope="project"):
+def _link(router, project, path, scope="project", permissions=("files.download",)):
     return router.createFsDownloadLink(projectId=7, protocolId="12",
                                        payload=router.FsDownloadLinkRequest(path=path, scope=scope),
-                                       currentUser={"id": 3}, mapper=Mapper(), service=Service(project))
+                                       currentUser={"id": 3, "permissions": list(permissions)},
+                                       mapper=Mapper(), service=Service(project))
 
 
 def test_a_link_downloads_the_file_in_chunks_and_resumes_with_ranges(router, project):
@@ -57,6 +58,13 @@ def test_a_link_downloads_the_file_in_chunks_and_resumes_with_ranges(router, pro
     # The link is bound to its project.
     assert client.get(f"/projects/8/protocols/12/fs/download-file?token={token}").status_code == 403
     assert client.get("/projects/7/protocols/12/fs/download-file?token=fd.forged.x").status_code == 403
+
+
+def test_a_link_needs_the_download_permission(router, project):
+    with pytest.raises(HTTPException) as error:
+        _link(router, project, "Runs/000012_ProtImportMovies/extra/movie.tif", permissions=())
+    assert error.value.status_code == 403
+    assert "files.download" in error.value.detail
 
 
 def test_links_follow_the_browsing_boundary(router, project, tmp_path):
