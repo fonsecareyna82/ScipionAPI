@@ -1,18 +1,24 @@
-"""The queries of a facility's microscopes and their calibrated pixel sizes."""
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+"""The queries of a facility's microscopes, their detectors and the detectors' calibrated pixel sizes."""
+from typing import Any, Dict, List, Optional
 
-MICROSCOPE_FIELDS = ("name", "model", "status", "detectors", "energyFilter", "acquisitionSoftware", "voltageKv",
-                     "csMm", "gainPath", "gainFlip", "gainRotation", "offloadPath", "sessionsEnabled", "notes")
+MICROSCOPE_FIELDS = ("name", "model", "status", "energyFilter", "acquisitionSoftware", "voltageKv", "csMm",
+                     "offloadPath", "sessionsEnabled", "notes")
+DETECTOR_FIELDS = ("name", "metadataName", "energyFiltered", "gainPath", "gainFlip", "gainRotation", "notes")
 
 LIST_MICROSCOPES_SQL = """
-    SELECT m.id, m.name, m.model, m.status, m.detectors, m."energyFilter", m."acquisitionSoftware",
-           m."voltageKv", m."csMm", m."gainPath", m."gainFlip", m."gainRotation", m."offloadPath",
-           m."sessionsEnabled", m.notes, m."createdAt", m."updatedAt",
-           COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('magnification', p.magnification,
-                                                       'pixelSize', p."pixelSize")
-                                     ORDER BY p.magnification DESC)
-                       FROM facility_microscope_pixel_sizes p
-                      WHERE p."microscopeId" = m.id), '[]'::JSON) AS "pixelSizes",
+    SELECT m.id, m.name, m.model, m.status, m."energyFilter", m."acquisitionSoftware",
+           m."voltageKv", m."csMm", m."offloadPath", m."sessionsEnabled", m.notes, m."createdAt", m."updatedAt",
+           COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
+                         'id', d.id, 'name', d.name, 'metadataName', d."metadataName",
+                         'energyFiltered', d."energyFiltered", 'gainPath', d."gainPath", 'gainFlip', d."gainFlip",
+                         'gainRotation', d."gainRotation", 'notes', d.notes,
+                         'pixelSizes', COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('magnification', p.magnification,
+                                                                                   'pixelSize', p."pixelSize")
+                                                                 ORDER BY p.magnification DESC)
+                                                   FROM facility_detector_pixel_sizes p
+                                                  WHERE p."detectorId" = d.id), '[]'::JSON))
+                                     ORDER BY d.id)
+                       FROM facility_detectors d WHERE d."microscopeId" = m.id), '[]'::JSON) AS detectors,
            (SELECT ph."updatedAt" FROM facility_microscope_photos ph WHERE ph."microscopeId" = m.id)
                AS "photoUpdatedAt"
       FROM facility_microscopes m
@@ -25,13 +31,27 @@ SAVE_PHOTO_SQL = """
        SET "contentType" = EXCLUDED."contentType", data = EXCLUDED.data, "updatedAt" = NOW()
 """
 
-_COLUMNS = ", ".join('"%s"' % field if field != field.lower() else field for field in MICROSCOPE_FIELDS)
-_PLACEHOLDERS = ", ".join("%%(%s)s" % field for field in MICROSCOPE_FIELDS)
-_ASSIGNMENTS = ", ".join(('"%s"' % field if field != field.lower() else field) + " = %%(%s)s" % field
-                         for field in MICROSCOPE_FIELDS)
 
-INSERT_MICROSCOPE_SQL = "INSERT INTO facility_microscopes (%s) VALUES (%s) RETURNING id" % (_COLUMNS, _PLACEHOLDERS)
-UPDATE_MICROSCOPE_SQL = 'UPDATE facility_microscopes SET %s, "updatedAt" = NOW() WHERE id = %%(id)s' % _ASSIGNMENTS
+
+def _quoted(field: str) -> str:
+    return '"%s"' % field if field != field.lower() else field
+
+
+def _insertSql(table: str, fields, extra: Dict[str, str]) -> str:
+    columns = [_quoted(field) for field in fields] + [_quoted(name) for name in extra]
+    values = ["%%(%s)s" % field for field in fields] + list(extra.values())
+    return "INSERT INTO %s (%s) VALUES (%s) RETURNING id" % (table, ", ".join(columns), ", ".join(values))
+
+
+def _updateSql(table: str, fields, extra: str = "") -> str:
+    assignments = ", ".join("%s = %%(%s)s" % (_quoted(field), field) for field in fields)
+    return "UPDATE %s SET %s%s WHERE id = %%(id)s" % (table, assignments, extra)
+
+
+INSERT_MICROSCOPE_SQL = _insertSql("facility_microscopes", MICROSCOPE_FIELDS, {})
+UPDATE_MICROSCOPE_SQL = _updateSql("facility_microscopes", MICROSCOPE_FIELDS, ', "updatedAt" = NOW()')
+INSERT_DETECTOR_SQL = _insertSql("facility_detectors", DETECTOR_FIELDS, {"microscopeId": "%(microscopeId)s"})
+UPDATE_DETECTOR_SQL = _updateSql("facility_detectors", DETECTOR_FIELDS)
 
 
 class FacilityMicroscopePostgresqlMapper:
@@ -49,19 +69,37 @@ class FacilityMicroscopePostgresqlMapper:
         row = self.db.fetchOne("SELECT id FROM facility_microscopes WHERE LOWER(name) = LOWER(%s)", (name,))
         return int(row["id"]) if row else None
 
-    def insertMicroscope(self, values: Dict[str, Any], pixelSizes: Iterable[Tuple[int, float]]) -> int:
-        with self.db.transaction():
-            row = self.db.fetchOne(INSERT_MICROSCOPE_SQL, {field: values[field] for field in MICROSCOPE_FIELDS})
-            self._replacePixelSizes(int(row["id"]), pixelSizes)
-        return int(row["id"])
-
-    def updateMicroscope(self, microscopeId: int, values: Dict[str, Any],
-                         pixelSizes: Iterable[Tuple[int, float]]) -> None:
+    def saveMicroscope(self, microscopeId: Optional[int], values: Dict[str, Any],
+                       detectors: List[Dict[str, Any]]) -> int:
+        """Save a microscope and its detectors in one transaction: a detector with an id is updated, one
+        without inserted, and the microscope's detectors missing from detectors deleted. Each detector's
+        pixelSizes, (magnification, pixel size) pairs, replace its calibration."""
         with self.db.transaction():
             params = {field: values[field] for field in MICROSCOPE_FIELDS}
-            params["id"] = int(microscopeId)
-            self.db.execute(UPDATE_MICROSCOPE_SQL, params, commit=False)
-            self._replacePixelSizes(int(microscopeId), pixelSizes)
+            if microscopeId is None:
+                microscopeId = int(self.db.fetchOne(INSERT_MICROSCOPE_SQL, params)["id"])
+            else:
+                microscopeId = int(microscopeId)
+                self.db.execute(UPDATE_MICROSCOPE_SQL, dict(params, id=microscopeId), commit=False)
+            keptIds = []
+            for detector in detectors:
+                detectorParams = {field: detector[field] for field in DETECTOR_FIELDS}
+                if detector.get("id") is None:
+                    detectorId = int(self.db.fetchOne(INSERT_DETECTOR_SQL,
+                                                      dict(detectorParams, microscopeId=microscopeId))["id"])
+                else:
+                    detectorId = int(detector["id"])
+                    self.db.execute(UPDATE_DETECTOR_SQL, dict(detectorParams, id=detectorId), commit=False)
+                keptIds.append(detectorId)
+                self.db.execute('DELETE FROM facility_detector_pixel_sizes WHERE "detectorId" = %s',
+                                (detectorId,), commit=False)
+                for magnification, pixelSize in detector["pixelSizes"]:
+                    self.db.execute('INSERT INTO facility_detector_pixel_sizes ("detectorId", magnification, '
+                                    '"pixelSize") VALUES (%s, %s, %s)',
+                                    (detectorId, int(magnification), float(pixelSize)), commit=False)
+            self.db.execute('DELETE FROM facility_detectors WHERE "microscopeId" = %s AND NOT (id = ANY(%s))',
+                            (microscopeId, keptIds), commit=False)
+        return microscopeId
 
     def deleteMicroscope(self, microscopeId: int) -> None:
         self.db.execute("DELETE FROM facility_microscopes WHERE id = %s", (int(microscopeId),))
@@ -78,11 +116,3 @@ class FacilityMicroscopePostgresqlMapper:
 
     def deletePhoto(self, microscopeId: int) -> None:
         self.db.execute('DELETE FROM facility_microscope_photos WHERE "microscopeId" = %s', (int(microscopeId),))
-
-    def _replacePixelSizes(self, microscopeId: int, pixelSizes: Iterable[Tuple[int, float]]) -> None:
-        self.db.execute('DELETE FROM facility_microscope_pixel_sizes WHERE "microscopeId" = %s',
-                        (microscopeId,), commit=False)
-        for magnification, pixelSize in pixelSizes:
-            self.db.execute('INSERT INTO facility_microscope_pixel_sizes ("microscopeId", magnification, "pixelSize") '
-                            "VALUES (%s, %s, %s)", (microscopeId, int(magnification), float(pixelSize)),
-                            commit=False)

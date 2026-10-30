@@ -1,4 +1,8 @@
-"""Running a facility in ScipionWeb: its mode and its microscopes.
+"""Running a facility in ScipionWeb: its mode, its microscopes and their detectors.
+
+A microscope's detectors (a Falcon and a Ceta, a K3 behind its energy filter) each have their gain
+reference and orientation and their calibrated pixel size per magnification: what a movie needs comes
+from the detector that took it, which its acquisition metadata names.
 
 Facility mode is set per installation (``SCIPIONWEB_FACILITY_MODE``, off by default). Off, ScipionWeb
 is what it always was: the facility routes answer as if they did not exist and the web shows no
@@ -6,12 +10,14 @@ facility menu. Projects never depend on it; a session only points to the project
 """
 import math
 import os
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from fastapi import HTTPException, status
 
 from app.backend.api.permissions import hasPermission
-from app.backend.mapper.facility_microscope_mapper import MICROSCOPE_FIELDS, FacilityMicroscopePostgresqlMapper
+from app.backend.mapper.facility_microscope_mapper import (
+    DETECTOR_FIELDS, MICROSCOPE_FIELDS, FacilityMicroscopePostgresqlMapper,
+)
 
 MICROSCOPE_STATUSES = ("operational", "maintenance", "out_of_service")
 GAIN_FLIPS = ("none", "horizontal", "vertical")
@@ -25,6 +31,7 @@ PHOTO_MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 PHOTO_MAX_SIDE = 1600
 PHOTO_CONTENT_TYPE = "image/webp"
 TEXT_LIMIT = 2000
+DETECTORS_PER_MICROSCOPE = 10
 
 
 def facilityModeEnabled() -> bool:
@@ -48,10 +55,26 @@ def isFacilityStaff(user: dict) -> bool:
     return any(hasPermission(user, name) for name in FACILITY_PERMISSIONS)
 
 
+def detectorFor(detectors: Iterable[Dict[str, Any]], cameraName: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The detector of a microscope that took a movie whose metadata names its camera cameraName.
+
+    The name the metadata gives first, then the detector's own name (both regardless of case); a
+    microscope with a single detector has it. None when that does not tell.
+    """
+    detectors = list(detectors or ())
+    wanted = str(cameraName or "").strip().lower()
+    if wanted:
+        for field in ("metadataName", "name"):
+            for detector in detectors:
+                if str(detector.get(field) or "").strip().lower() == wanted:
+                    return detector
+    return detectors[0] if len(detectors) == 1 else None
+
+
 def calibratedPixelSize(pixelSizes: Iterable[Dict[str, Any]], magnification: Optional[float] = None,
                         nominalPixelSize: Optional[float] = None,
                         tolerance: float = PIXEL_SIZE_TOLERANCE) -> Optional[float]:
-    """The calibrated pixel size of a microscope for an acquisition, or None to keep the nominal one.
+    """The calibrated pixel size of a detector for an acquisition, or None to keep the nominal one.
 
     By magnification when the metadata gives it; otherwise the calibrated size nearest the nominal one,
     if within tolerance.
@@ -108,6 +131,58 @@ def _pixelSizes(rows: Iterable[Dict[str, Any]]) -> List[Tuple[int, float]]:
     return sorted(table.items(), reverse=True)
 
 
+def _gainOrientation(payload: Dict[str, Any]) -> Tuple[str, int]:
+    gainFlip = str(payload.get("gainFlip") or "none")
+    if gainFlip not in GAIN_FLIPS:
+        raise _badRequest("Unknown gain flip: %s" % gainFlip)
+    try:
+        gainRotation = int(payload.get("gainRotation") or 0)
+    except (TypeError, ValueError):
+        gainRotation = -1
+    if gainRotation not in GAIN_ROTATIONS:
+        raise _badRequest("The gain rotation is 0, 90, 180 or 270 degrees")
+    return gainFlip, gainRotation
+
+
+def _detectors(rows: Iterable[Dict[str, Any]], knownIds: Set[int]) -> List[Dict[str, Any]]:
+    """The detectors of a microscope's save; an id must be one of this microscope's."""
+    rows = list(rows or ())
+    if len(rows) > DETECTORS_PER_MICROSCOPE:
+        raise _badRequest("A microscope has up to %d detectors" % DETECTORS_PER_MICROSCOPE)
+    detectors, names, metadataNames, ids = [], set(), set(), set()
+    for row in rows:
+        detectorId = row.get("id")
+        if detectorId is not None and detectorId != "":
+            try:
+                detectorId = int(detectorId)
+            except (TypeError, ValueError):
+                raise _badRequest("A detector's id must be an id")
+            if detectorId not in knownIds:
+                raise _badRequest("Detector %d is not one of this microscope's" % detectorId)
+            if detectorId in ids:
+                raise _badRequest("Detector %d is given twice" % detectorId)
+            ids.add(detectorId)
+        else:
+            detectorId = None
+        name = _text(row, "name", 100)
+        if not name:
+            raise _badRequest("Each detector needs a name (e.g. Falcon 4i)")
+        if name.lower() in names:
+            raise _badRequest("Two detectors are named %s" % name)
+        names.add(name.lower())
+        metadataName = _text(row, "metadataName", 100)
+        if metadataName and metadataName.lower() in metadataNames:
+            raise _badRequest("Two detectors are named %s in the metadata" % metadataName)
+        metadataNames.add(metadataName.lower())
+        gainFlip, gainRotation = _gainOrientation(row)
+        values = {"name": name, "metadataName": metadataName, "energyFiltered": bool(row.get("energyFiltered")),
+                  "gainPath": _text(row, "gainPath"), "gainFlip": gainFlip, "gainRotation": gainRotation,
+                  "notes": _text(row, "notes")}
+        assert set(values) == set(DETECTOR_FIELDS)
+        detectors.append(dict(values, id=detectorId, pixelSizes=_pixelSizes(row.get("pixelSizes") or [])))
+    return detectors
+
+
 def photoForWeb(data: bytes, maxSide: int = PHOTO_MAX_SIDE) -> bytes:
     """An uploaded photo as a WebP of at most maxSide, turned as the camera held it; 400 if no image."""
     import io
@@ -157,27 +232,14 @@ class FacilityService:
         statusValue = str(payload.get("status") or "operational")
         if statusValue not in MICROSCOPE_STATUSES:
             raise _badRequest("Unknown microscope status: %s" % statusValue)
-        gainFlip = str(payload.get("gainFlip") or "none")
-        if gainFlip not in GAIN_FLIPS:
-            raise _badRequest("Unknown gain flip: %s" % gainFlip)
-        try:
-            gainRotation = int(payload.get("gainRotation") or 0)
-        except (TypeError, ValueError):
-            gainRotation = -1
-        if gainRotation not in GAIN_ROTATIONS:
-            raise _badRequest("The gain rotation is 0, 90, 180 or 270 degrees")
         values = {
             "name": name,
             "model": _text(payload, "model", 200),
             "status": statusValue,
-            "detectors": _text(payload, "detectors", 500),
             "energyFilter": _text(payload, "energyFilter", 200),
             "acquisitionSoftware": _text(payload, "acquisitionSoftware", 500),
             "voltageKv": _positiveNumber(payload, "voltageKv"),
             "csMm": _positiveNumber(payload, "csMm"),
-            "gainPath": _text(payload, "gainPath"),
-            "gainFlip": gainFlip,
-            "gainRotation": gainRotation,
             "offloadPath": _text(payload, "offloadPath"),
             "sessionsEnabled": bool(payload.get("sessionsEnabled")),
             "notes": _text(payload, "notes"),
@@ -186,15 +248,11 @@ class FacilityService:
         return values
 
     def saveMicroscope(self, payload: Dict[str, Any], microscopeId: Optional[int] = None) -> Dict[str, Any]:
-        if microscopeId is not None:
-            self.getMicroscope(microscopeId)
+        existing = self.getMicroscope(microscopeId) if microscopeId is not None else None
         values = self._microscopeValues(payload, microscopeId)
-        pixelSizes = _pixelSizes(payload.get("pixelSizes") or [])
-        if microscopeId is None:
-            microscopeId = self.mapper.insertMicroscope(values, pixelSizes)
-        else:
-            self.mapper.updateMicroscope(microscopeId, values, pixelSizes)
-        return self.getMicroscope(microscopeId)
+        knownIds = {int(detector["id"]) for detector in (existing or {}).get("detectors") or []}
+        detectors = _detectors(payload.get("detectors") or [], knownIds)
+        return self.getMicroscope(self.mapper.saveMicroscope(microscopeId, values, detectors))
 
     def getPhoto(self, microscopeId: int) -> Dict[str, Any]:
         self.getMicroscope(microscopeId)

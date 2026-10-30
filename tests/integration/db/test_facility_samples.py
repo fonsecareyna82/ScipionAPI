@@ -166,3 +166,20 @@ def test_AnImageNeedsAnOwnerThatExists(samples):
     with pytest.raises(HTTPException) as error:
         service.addImage("grid", 2147483000, _jpeg(40, 30))
     assert error.value.status_code == 404
+
+
+def test_AnImageIsKeptWithoutAnythingElseCommittingIt(samples, postgresqlIntegrationDb):
+    import threading
+
+    service, created = samples
+    sample = service.saveSample(_nz("NZ%s" % uuid4().hex[:8]))
+    created.append(sample["id"])
+    imageId = service.addImage("sample", sample["id"], _jpeg(40, 30))["image"]["id"]
+
+    # Each thread has its own connection: another one sees only what was committed
+    seen = []
+    reader = threading.Thread(target=lambda: seen.append(postgresqlIntegrationDb.fetchOne(
+        "SELECT COUNT(*) AS n FROM facility_images WHERE id = %s", (imageId,))["n"]))
+    reader.start()
+    reader.join()
+    assert seen == [1]

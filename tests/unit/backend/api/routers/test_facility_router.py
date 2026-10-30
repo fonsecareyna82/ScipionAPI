@@ -13,23 +13,29 @@ class _Mapper:
         self.store = store
 
     def listMicroscopes(self):
-        return [value for key, value in self.store.items() if not isinstance(key, tuple)]
+        return [value for key, value in self.store.items() if isinstance(key, int)]
 
     def getMicroscope(self, microscopeId):
         return self.store.get(microscopeId)
 
     def findMicroscopeIdByName(self, name):
-        return next((key for key, value in self.store.items() if value["name"].lower() == name.lower()), None)
+        return next((key for key, value in self.store.items()
+                     if isinstance(key, int) and value["name"].lower() == name.lower()), None)
 
-    def insertMicroscope(self, values, pixelSizes):
-        microscopeId = len(self.store) + 1
-        self.store[microscopeId] = dict(values, id=microscopeId,
-                                        pixelSizes=[{"magnification": m, "pixelSize": p} for m, p in pixelSizes])
+    def saveMicroscope(self, microscopeId, values, detectors):
+        if microscopeId is None:
+            microscopeId = len(self.store) + 1
+        self.store["lastDetectorId"] = self.store.get("lastDetectorId", 0)
+        saved = []
+        for detector in detectors:
+            detectorId = detector["id"]
+            if detectorId is None:
+                self.store["lastDetectorId"] += 1
+                detectorId = self.store["lastDetectorId"]
+            saved.append(dict(detector, id=detectorId,
+                              pixelSizes=[{"magnification": m, "pixelSize": p} for m, p in detector["pixelSizes"]]))
+        self.store[microscopeId] = dict(values, id=microscopeId, detectors=saved)
         return microscopeId
-
-    def updateMicroscope(self, microscopeId, values, pixelSizes):
-        self.store[microscopeId] = dict(values, id=microscopeId,
-                                        pixelSizes=[{"magnification": m, "pixelSize": p} for m, p in pixelSizes])
 
     def deleteMicroscope(self, microscopeId):
         self.store.pop(microscopeId)
@@ -68,8 +74,14 @@ def _client(modules, monkeypatch, permissions, mode="1", store=None):
     return client
 
 
+FALCON = {"name": "Falcon 4i", "metadataName": "BM-Falcon",
+          "pixelSizes": [{"magnification": 120000, "pixelSize": 0.84}, {"magnification": 73000, "pixelSize": 1.35}]}
 TALOS = {"name": "Talos 200kV", "csMm": 2.7, "sessionsEnabled": True,
-         "pixelSizes": [{"magnification": 120000, "pixelSize": 0.84}, {"magnification": 73000, "pixelSize": 1.35}]}
+         "detectors": [FALCON, {"name": "Ceta-D", "metadataName": "BM-Ceta"}]}
+
+
+def _withFalcon(**change):
+    return dict(TALOS, detectors=[dict(FALCON, **change)])
 
 
 def test_WithoutFacilityModeNothingOfItExists(modules, monkeypatch):
@@ -92,9 +104,13 @@ def test_TheManagerKeepsTheMicroscopes(modules, monkeypatch):
     created = client.post("/facility/microscopes", json=TALOS)
     assert created.status_code == 201
     microscope = created.json()
-    assert [row["magnification"] for row in microscope["pixelSizes"]] == [120000, 73000]
-    edited = client.put("/facility/microscopes/%d" % microscope["id"], json=dict(TALOS, status="maintenance"))
+    falcon, ceta = microscope["detectors"]
+    assert [row["magnification"] for row in falcon["pixelSizes"]] == [120000, 73000] and ceta["pixelSizes"] == []
+    # The detectors kept keep their id
+    edited = client.put("/facility/microscopes/%d" % microscope["id"],
+                        json=dict(TALOS, status="maintenance", detectors=[dict(falcon, gainRotation=90)]))
     assert edited.json()["status"] == "maintenance"
+    assert [(row["id"], row["gainRotation"]) for row in edited.json()["detectors"]] == [(falcon["id"], 90)]
     assert client.delete("/facility/microscopes/%d" % microscope["id"]).status_code == 204
     assert client.events == ["facility.microscopeCreated", "facility.microscopeUpdated",
                              "facility.microscopeDeleted"]
@@ -115,12 +131,16 @@ def test_TheStaffSeeTheMicroscopesAndOnlyTheManagerChangesThem(modules, monkeypa
 @pytest.mark.parametrize("change, message", [
     ({"name": " "}, "needs a name"),
     ({"status": "broken"}, "Unknown microscope status"),
-    ({"gainRotation": 45}, "0, 90, 180 or 270"),
-    ({"gainFlip": "diagonal"}, "Unknown gain flip"),
     ({"csMm": -1}, "positive number"),
-    ({"pixelSizes": [{"magnification": 120000, "pixelSize": 0.84}, {"magnification": 120000, "pixelSize": 0.85}]},
-     "calibrated twice"),
-    ({"pixelSizes": [{"magnification": 0, "pixelSize": 0.84}]}, "positive"),
+    (_withFalcon(gainRotation=45), "0, 90, 180 or 270"),
+    (_withFalcon(gainFlip="diagonal"), "Unknown gain flip"),
+    (_withFalcon(pixelSizes=[{"magnification": 120000, "pixelSize": 0.84},
+                             {"magnification": 120000, "pixelSize": 0.85}]), "calibrated twice"),
+    (_withFalcon(pixelSizes=[{"magnification": 0, "pixelSize": 0.84}]), "positive"),
+    (_withFalcon(name=" "), "Each detector needs a name"),
+    (_withFalcon(id=7), "not one of this microscope's"),
+    ({"detectors": [FALCON, dict(FALCON, name="falcon 4I", metadataName="")]}, "Two detectors are named"),
+    ({"detectors": [FALCON, dict(FALCON, name="Falcon 2")]}, "in the metadata"),
 ])
 def test_AMicroscopeIsCheckedBeforeItIsKept(modules, monkeypatch, change, message):
     client = _client(modules, monkeypatch, ["facility.manage"])
@@ -146,6 +166,20 @@ def test_TheCalibratedPixelIsFoundByMagnificationOrNearTheNominalOne(modules):
     # Farther than the tolerance: the nominal one is kept
     assert service.calibratedPixelSize(table, nominalPixelSize=1.0) is None
     assert service.calibratedPixelSize([], magnification=120000) is None
+
+
+def test_TheDetectorOfAMovieIsTheOneItsMetadataNames(modules):
+    _, service = modules
+    falcon = {"name": "Falcon 4i", "metadataName": "BM-Falcon"}
+    ceta = {"name": "Ceta-D", "metadataName": ""}
+
+    assert service.detectorFor([falcon, ceta], "bm-falcon") is falcon
+    assert service.detectorFor([falcon, ceta], "CETA-D") is ceta
+    # Unknown or unnamed: only a microscope with a single detector tells
+    assert service.detectorFor([falcon, ceta], "EF-CCD") is None
+    assert service.detectorFor([falcon, ceta]) is None
+    assert service.detectorFor([falcon], None) is falcon
+    assert service.detectorFor([], "BM-Falcon") is None
 
 
 def _png(width=2400, height=1800):

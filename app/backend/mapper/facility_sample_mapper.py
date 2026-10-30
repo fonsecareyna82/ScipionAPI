@@ -140,10 +140,11 @@ class FacilitySamplePostgresqlMapper:
                     userId: Optional[int]) -> Dict[str, Any]:
         import psycopg2
 
-        row = self.db.fetchOne(
-            'INSERT INTO facility_images ("%s", caption, "contentType", data, "createdBy") VALUES (%%s, %%s, %%s, %%s, %%s) '
-            'RETURNING id, caption, "createdAt"' % IMAGE_OWNER_COLUMNS[ownerKind],
-            (int(ownerId), caption, contentType, psycopg2.Binary(data), userId))
+        with self.db.transaction():
+            row = self.db.fetchOne(
+                'INSERT INTO facility_images ("%s", caption, "contentType", data, "createdBy") '
+                'VALUES (%%s, %%s, %%s, %%s, %%s) RETURNING id, caption, "createdAt"' % IMAGE_OWNER_COLUMNS[ownerKind],
+                (int(ownerId), caption, contentType, psycopg2.Binary(data), userId))
         return dict(row)
 
     def getImage(self, imageId: int) -> Optional[Dict[str, Any]]:

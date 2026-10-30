@@ -27,22 +27,30 @@ class PixelSizePayload(BaseModel):
     pixelSize: float
 
 
+class DetectorPayload(BaseModel):
+    id: Optional[int] = None
+    name: str
+    metadataName: Optional[str] = ""
+    energyFiltered: bool = False
+    gainPath: Optional[str] = ""
+    gainFlip: str = "none"
+    gainRotation: int = 0
+    notes: Optional[str] = ""
+    pixelSizes: List[PixelSizePayload] = []
+
+
 class MicroscopePayload(BaseModel):
     name: str
     model: Optional[str] = ""
     status: str = "operational"
-    detectors: Optional[str] = ""
     energyFilter: Optional[str] = ""
     acquisitionSoftware: Optional[str] = ""
     voltageKv: Optional[float] = None
     csMm: Optional[float] = None
-    gainPath: Optional[str] = ""
-    gainFlip: str = "none"
-    gainRotation: int = 0
     offloadPath: Optional[str] = ""
     sessionsEnabled: bool = False
     notes: Optional[str] = ""
-    pixelSizes: List[PixelSizePayload] = []
+    detectors: List[DetectorPayload] = []
 
 
 def requireFacilityStaff(currentUser: dict = Depends(getCurrentUser)) -> dict:
@@ -103,7 +111,9 @@ def _service(mapper: PostgresqlFlatMapper) -> FacilityService:
 def _summary(microscope: Dict[str, Any]) -> Dict[str, Any]:
     """What the audit log keeps of a microscope."""
     return {"status": microscope["status"], "sessionsEnabled": bool(microscope["sessionsEnabled"]),
-            "pixelSizes": {str(row["magnification"]): row["pixelSize"] for row in microscope.get("pixelSizes") or []}}
+            "detectors": {detector["name"]: {str(row["magnification"]): row["pixelSize"]
+                                             for row in detector.get("pixelSizes") or []}
+                          for detector in microscope.get("detectors") or []}}
 
 
 @router.get("/status")

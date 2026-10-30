@@ -1,4 +1,4 @@
-"""A facility's microscopes and their calibrated pixel sizes, against the migrated database."""
+"""A facility's microscopes, their detectors and the detectors' calibrated pixel sizes, against the migrated database."""
 import io
 from uuid import uuid4
 
@@ -7,7 +7,7 @@ from PIL import Image
 import pytest
 from fastapi import HTTPException
 
-from app.backend.api.services.facility_service import FacilityService, calibratedPixelSize
+from app.backend.api.services.facility_service import FacilityService, calibratedPixelSize, detectorFor
 
 
 @pytest.fixture
@@ -23,37 +23,77 @@ def facility(postgresqlIntegrationDb, postgresqlMigratedEnv):
 
 
 def _talos(name):
-    return {"name": name, "model": "Talos Arctica", "detectors": "Falcon 4i, Ceta-D", "acquisitionSoftware": "EPU",
-            "voltageKv": 200, "csMm": 2.7, "gainPath": "/data/gains/*Talos*gain*.mrc",
-            "offloadPath": "/mnt/micros/talos_offload", "sessionsEnabled": True,
-            "pixelSizes": [{"magnification": 120000, "pixelSize": 0.84}, {"magnification": 190000, "pixelSize": 0.52},
-                           {"magnification": 92000, "pixelSize": 1.14}]}
+    return {"name": name, "model": "Talos Arctica", "acquisitionSoftware": "EPU",
+            "voltageKv": 200, "csMm": 2.7, "offloadPath": "/mnt/micros/talos_offload", "sessionsEnabled": True,
+            "detectors": [
+                {"name": "Falcon 4i", "metadataName": "BM-Falcon", "gainPath": "/data/gains/*Talos*gain*.mrc",
+                 "pixelSizes": [{"magnification": 120000, "pixelSize": 0.84},
+                                {"magnification": 190000, "pixelSize": 0.52},
+                                {"magnification": 92000, "pixelSize": 1.14}]},
+                {"name": "Ceta-D", "metadataName": "BM-Ceta", "gainFlip": "vertical",
+                 "pixelSizes": [{"magnification": 120000, "pixelSize": 1.21}]},
+            ]}
 
 
-def test_AMicroscopeKeepsItsCalibratedPixelSizes(facility):
+def test_EachDetectorKeepsItsGainAndCalibratedPixelSizes(facility):
     service, created = facility
     microscope = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
     created.append(microscope["id"])
 
-    assert microscope["csMm"] == 2.7 and microscope["gainFlip"] == "none" and microscope["gainRotation"] == 0
-    assert [row["magnification"] for row in microscope["pixelSizes"]] == [190000, 120000, 92000]
+    falcon, ceta = microscope["detectors"]
+    assert microscope["csMm"] == 2.7 and falcon["gainFlip"] == "none" and ceta["gainFlip"] == "vertical"
+    assert [row["magnification"] for row in falcon["pixelSizes"]] == [190000, 120000, 92000]
+    # The same magnification is another pixel on each detector: the movie's metadata names which
+    assert calibratedPixelSize(detectorFor(microscope["detectors"], "BM-Falcon")["pixelSizes"],
+                               magnification=120000) == 0.84
+    assert calibratedPixelSize(detectorFor(microscope["detectors"], "BM-Ceta")["pixelSizes"],
+                               magnification=120000) == 1.21
     # The calibrated pixel replaces the nominal one read from EPU, which carries other decimals
-    assert calibratedPixelSize(microscope["pixelSizes"], magnification=120000) == 0.84
-    assert calibratedPixelSize(microscope["pixelSizes"], nominalPixelSize=0.8387) == 0.84
+    assert calibratedPixelSize(falcon["pixelSizes"], nominalPixelSize=0.8387) == 0.84
 
 
-def test_EditingAMicroscopeReplacesItsTable(facility):
+def test_EditingKeepsTheIdsOfTheDetectorsAndDeletesTheOnesLeftOut(facility, postgresqlIntegrationDb):
     service, created = facility
     microscope = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
     created.append(microscope["id"])
+    falcon, ceta = microscope["detectors"]
 
-    payload = dict(_talos(microscope["name"]), status="maintenance",
-                   pixelSizes=[{"magnification": 73000, "pixelSize": 1.35}])
+    payload = dict(microscope, status="maintenance",
+                   detectors=[dict(falcon, pixelSizes=[{"magnification": 73000, "pixelSize": 1.35}])])
     edited = service.saveMicroscope(payload, microscopeId=microscope["id"])
 
     assert edited["status"] == "maintenance"
-    assert edited["pixelSizes"] == [{"magnification": 73000, "pixelSize": 1.35}]
+    assert [detector["id"] for detector in edited["detectors"]] == [falcon["id"]]
+    assert edited["detectors"][0]["pixelSizes"] == [{"magnification": 73000, "pixelSize": 1.35}]
     assert edited["updatedAt"] >= microscope["updatedAt"]
+    row = postgresqlIntegrationDb.fetchOne(
+        'SELECT COUNT(*) AS n FROM facility_detector_pixel_sizes WHERE "detectorId" = %s', (ceta["id"],))
+    assert row["n"] == 0
+
+
+def test_TheDetectorsOfAnotherMicroscopeCannotBeTaken(facility):
+    service, created = facility
+    one = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
+    other = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
+    created.extend([one["id"], other["id"]])
+
+    with pytest.raises(HTTPException) as error:
+        service.saveMicroscope(dict(one, detectors=[other["detectors"][0]]), microscopeId=one["id"])
+    assert error.value.status_code == 400 and "not one of this microscope's" in error.value.detail
+
+
+def test_TwoDetectorsCanSwapTheirNames(facility):
+    service, created = facility
+    microscope = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
+    created.append(microscope["id"])
+    falcon, ceta = microscope["detectors"]
+
+    edited = service.saveMicroscope(dict(microscope, detectors=[dict(falcon, name="Ceta-D"),
+                                                                dict(ceta, name="Falcon 4i")]),
+                                    microscopeId=microscope["id"])
+
+    assert [(row["id"], row["name"]) for row in edited["detectors"]] == [(falcon["id"], "Ceta-D"),
+                                                                         (ceta["id"], "Falcon 4i")]
 
 
 def test_NamesAreUniqueWhateverTheirCase(facility):
@@ -66,7 +106,7 @@ def test_NamesAreUniqueWhateverTheirCase(facility):
     assert error.value.status_code == 409
 
 
-def test_DeletingAMicroscopeDeletesItsTable(facility, postgresqlIntegrationDb):
+def test_DeletingAMicroscopeDeletesItsDetectors(facility, postgresqlIntegrationDb):
     service, created = facility
     microscope = service.saveMicroscope(_talos("Talos %s" % uuid4().hex))
 
@@ -74,7 +114,7 @@ def test_DeletingAMicroscopeDeletesItsTable(facility, postgresqlIntegrationDb):
 
     assert service.mapper.getMicroscope(microscope["id"]) is None
     row = postgresqlIntegrationDb.fetchOne(
-        'SELECT COUNT(*) AS n FROM facility_microscope_pixel_sizes WHERE "microscopeId" = %s', (microscope["id"],))
+        'SELECT COUNT(*) AS n FROM facility_detectors WHERE "microscopeId" = %s', (microscope["id"],))
     assert row["n"] == 0
 
 
