@@ -176,3 +176,55 @@ def test_ANameIsMadeOfTheDayThePersonAndTheId():
 
     assert sessionName(datetime.date(2026, 10, 31), "Gaoxin Lü", 123) == "2026_10_31_Gaoxin-Lu_000123"
     assert sessionName(datetime.date(2026, 10, 31), "  ", 7) == "2026_10_31_Facility_000007"
+
+
+def test_TheWatcherFollowsTheDataOfASessionThatAcquires(facility, tmp_path):
+    import os
+    import shutil
+    from pathlib import Path
+
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    db = sessions.mapper.db
+    falcon = microscope["detectors"][0]
+    calibrated = dict(falcon, metadataName="BM-Falcon", pixelSizes=[{"magnification": 92000, "pixelSize": 1.55}])
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path),
+                                            detectors=[calibrated, microscope["detectors"][1]]),
+                                       microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring"))
+    waiting = sessions.getSession(session["id"])["datasets"][1]
+    assert waiting["watch"] == "pending"
+
+    watchSessions(db)
+    assert sessions.getSession(session["id"])["datasets"][1]["watch"] == "noFolder"
+
+    # EPU makes DATA_01 and writes a movie with its metadata (EMPIAR-11502's)
+    epu = Path(__file__).resolve().parents[2] / "resources" / "epu"
+    data = tmp_path / ("%s_DATA_01" % session["name"]) / "Images-Disc1" / "GridSquare_1" / "Data"
+    data.mkdir(parents=True)
+    for name in ("FoilHole_15867355_Data_12771432_12771434_20200417_031214.xml",
+                 "FoilHole_15867355_Data_12771432_12771434_20200417_031214_Fractions.xml"):
+        shutil.copy(epu / name, data / name)
+    (data / "FoilHole_15867355_Data_12771432_12771434_20200417_031214_Fractions.mrc").write_bytes(b"\0" * 100)
+    (tmp_path / ("%s_DATA_02" % session["name"])).mkdir()
+
+    assert watchSessions(db) == 2
+    first, second = sessions.getSession(session["id"])["datasets"][1:]
+    assert (first["watch"], first["movieCount"], first["movieBytes"]) == ("receiving", 1, 100)
+    assert first["acquisition"]["detectorName"] == "Falcon 4i" and first["detectorName"] == "Falcon 4i"
+    assert first["acquisition"]["pixelSize"] == 1.55 and first["acquisition"]["frames"] == 13
+    assert first["firstMovieAt"] is not None and second["watch"] == "waiting"
+
+    # More movies arrive: they are counted, and the first movie's reading is kept
+    (data / "FoilHole_2_Data_2_3_20200417_031400_Fractions.mrc").write_bytes(b"\0" * 50)
+    # (a file system with coarse times might not move the folder's modification time within the test)
+    os.utime(data, (data.stat().st_atime, data.stat().st_mtime + 5))
+    watchSessions(db)
+    first = sessions.getSession(session["id"])["datasets"][1]
+    assert (first["movieCount"], first["movieBytes"]) == (2, 150)
+    assert first["acquisition"]["firstMovie"].endswith("031214_Fractions.mrc")
+
+    # A session that does not acquire is not watched
+    sessions.saveSession(dict(_multigrid(microscope, sample), status="finished"), sessionId=session["id"])
+    assert watchSessions(db) == 0

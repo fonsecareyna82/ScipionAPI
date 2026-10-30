@@ -226,10 +226,19 @@ def startSetItemPurge():
     start(lambda: getMapper().db)
 
 
+def startFacilitySessionWatcher():
+    """Watch the folders of the facility's sessions that acquire (it idles while facility mode is off)."""
+    from app.backend.api.services.facility_session_watcher import startSessionWatcher
+    from app.backend.database import getMapper
+
+    startSessionWatcher(lambda: getMapper().db)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     resumeBackgroundDeletes()
     startSetItemPurge()
+    startFacilitySessionWatcher()
     yield
 
 

@@ -1,4 +1,5 @@
 """The queries of a facility's acquisition sessions and their datasets (the ATLAS and DATA_NN folders)."""
+import json
 from typing import Any, Dict, List, Optional
 
 from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapper, imagesJson
@@ -12,11 +13,17 @@ LIST_SESSIONS_SQL = """
            s."groupId", g.name AS "groupName", s."userId", u.email AS "userEmail",
            TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) AS "userName",
            s."bookingRef", s."scheduledOn", s."startedAt", s."finishedAt", s.notes, s."createdBy",
-           s."createdAt", s."updatedAt",
+           s."createdAt", s."updatedAt", m."offloadPath",
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
-                         'detectorId', d."detectorId", 'detectorName', det.name, 'notes', d.notes,
+                         'detectorId', d."detectorId", 'notes', d.notes,
+                         -- The detector the staff gave it, else the one its first movie names
+                         'detectorName', COALESCE(det.name, d.acquisition->>'detectorName'),
+                         'movieCount', d."movieCount", 'movieBytes', d."movieBytes",
+                         'firstMovieAt', d."firstMovieAt", 'lastMovieAt', d."lastMovieAt", 'scannedAt', d."scannedAt",
+                         'acquisition', d.acquisition, 'folderFound', (d."scanState"->>'exists')::BOOLEAN,
+                         'minutesSinceLastMovie', EXTRACT(EPOCH FROM NOW() - d."lastMovieAt") / 60,
                          'grid', CASE WHEN gr.id IS NULL THEN NULL ELSE JSON_BUILD_OBJECT(
                                      'gridNumber', gr."gridNumber", 'position', gr.position, 'gridType', gr."gridType",
                                      'specimen', gr.specimen, 'status', gr.status, 'boxLabel', b.label,
@@ -50,6 +57,30 @@ INSERT_DATASET_SQL = 'INSERT INTO facility_session_datasets ("sessionId", %s) VA
     ", ".join(_quoted(field) for field in DATASET_FIELDS), ", ".join("%%(%s)s" % field for field in DATASET_FIELDS))
 UPDATE_DATASET_SQL = "UPDATE facility_session_datasets SET %s WHERE id = %%(id)s" % ", ".join(
     "%s = %%(%s)s" % (_quoted(field), field) for field in DATASET_FIELDS)
+
+
+WATCH_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('facility_session_watch')) AS locked"
+WATCH_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('facility_session_watch')) AS unlocked"
+
+LIST_WATCHED_DATASETS_SQL = """
+    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d."detectorId", d."movieCount",
+           d."firstMovieAt", d.acquisition IS NOT NULL AS "acquisitionRead", d."scanState",
+           s."microscopeId", m."offloadPath"
+      FROM facility_session_datasets d
+      JOIN facility_sessions s ON s.id = d."sessionId"
+      JOIN facility_microscopes m ON m.id = s."microscopeId"
+     WHERE s.status = 'acquiring' AND d.kind = 'data'
+     ORDER BY s.id, d.number
+"""
+
+SAVE_SCAN_SQL = """
+    UPDATE facility_session_datasets
+       SET "movieCount" = %(movieCount)s, "movieBytes" = %(movieBytes)s,
+           "firstMovieAt" = COALESCE("firstMovieAt", %(firstMovieAt)s), "lastMovieAt" = %(lastMovieAt)s,
+           "scannedAt" = NOW(), "scanState" = %(scanState)s::JSONB,
+           acquisition = COALESCE(%(acquisition)s::JSONB, acquisition)
+     WHERE id = %(id)s
+"""
 
 
 class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
@@ -120,6 +151,27 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
     def getGroupName(self, groupId: int) -> Optional[str]:
         row = self.db.fetchOne("SELECT name FROM user_groups WHERE id = %s", (int(groupId),))
         return row["name"] if row else None
+
+    # The watcher of the folders --------------------------------------------------------------
+    def tryWatchLock(self) -> bool:
+        """Only one server process looks at the folders at a time; the others skip their turn."""
+        row = self.db.fetchOne(WATCH_LOCK_SQL) or {}
+        return bool(row.get("locked"))
+
+    def unlockWatch(self) -> None:
+        self.db.fetchOne(WATCH_UNLOCK_SQL)
+
+    def listWatchedDatasets(self) -> List[Dict[str, Any]]:
+        """The DATA of the sessions acquiring, with their microscope's offload folder."""
+        return [dict(row) for row in self.db.fetchAll(LIST_WATCHED_DATASETS_SQL) or []]
+
+    def saveScan(self, datasetId: int, movieCount: int, movieBytes: int, firstMovieAt, lastMovieAt,
+                 scanState: Dict[str, Any], acquisition: Optional[Dict[str, Any]]) -> None:
+        """Keep what a look at a dataset's folder found; an acquisition already read is kept when None."""
+        self.db.execute(SAVE_SCAN_SQL, {
+            "id": int(datasetId), "movieCount": int(movieCount), "movieBytes": int(movieBytes),
+            "firstMovieAt": firstMovieAt, "lastMovieAt": lastMovieAt, "scanState": json.dumps(scanState),
+            "acquisition": json.dumps(acquisition) if acquisition is not None else None})
 
     # Images ------------------------------------------------------------------------------------
     def sessionIdOf(self, ownerKind: str, ownerId: int) -> Optional[int]:

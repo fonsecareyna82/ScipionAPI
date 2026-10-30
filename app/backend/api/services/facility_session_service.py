@@ -29,6 +29,8 @@ SESSION_IMAGE_OWNERS = ("session", "dataset")
 # A folder name EPU and every file system take
 SESSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 SESSION_NAME_LIMIT = 100
+# A DATA acquiring that got no movie for this long is shown stalled
+STALL_MINUTES = 20
 TEXT_LIMIT = 2000
 
 
@@ -73,6 +75,28 @@ def sessionName(day: datetime.date, person: str, sessionId: int) -> str:
     return "%s_%s_%06d" % (day.strftime("%Y_%m_%d"), _nameWord(person) or "Facility", sessionId)
 
 
+def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str]:
+    """Where a DATA is in its acquisition, as the watcher of the folders saw it.
+
+    receiving / stalled (no movie for STALL_MINUTES) once movies arrived; while none did: idle (the session
+    does not acquire), noOffload (its microscope has no offload folder), pending (not looked at yet), noFolder
+    (the microscope has not made it) or waiting.
+    """
+    if dataset["kind"] != "data":
+        return None
+    acquiring = session["status"] == "acquiring"
+    if dataset.get("movieCount"):
+        minutes = dataset.get("minutesSinceLastMovie")
+        return "stalled" if acquiring and minutes is not None and minutes > STALL_MINUTES else "receiving"
+    if not acquiring:
+        return "idle"
+    if not session.get("offloadPath"):
+        return "noOffload"
+    if dataset.get("scannedAt") is None:
+        return "pending"
+    return "noFolder" if dataset.get("folderFound") is False else "waiting"
+
+
 def datasetFolder(sessionName: str, dataset: Dict[str, Any]) -> str:
     """The folder the microscope writes a dataset to."""
     if dataset["kind"] == "atlas":
@@ -88,6 +112,7 @@ class FacilitySessionService:
     def _withFolders(self, session: Dict[str, Any]) -> Dict[str, Any]:
         for dataset in session.get("datasets") or []:
             dataset["folder"] = datasetFolder(session["name"], dataset)
+            dataset["watch"] = watchState(session, dataset)
         return session
 
     def listSessions(self, statuses: Optional[List[str]] = None, text: str = "") -> List[Dict[str, Any]]:
@@ -211,7 +236,13 @@ class FacilitySessionService:
         assert set(values) == set(SESSION_FIELDS)
         detectorIds = {int(detector["id"]) for detector in microscope.get("detectors") or []}
         datasets = self._datasets(payload.get("datasets") or [], existing, detectorIds)
-        return self.getSession(self.mapper.saveSession(sessionId, isNew, values, datasets, createdBy=userId))
+        saved = self.getSession(self.mapper.saveSession(sessionId, isNew, values, datasets, createdBy=userId))
+        if saved["status"] == "acquiring":
+            # Its folders are looked at now, not at the watcher's next turn
+            from app.backend.api.services.facility_session_watcher import requestWatch
+
+            requestWatch()
+        return saved
 
     def deleteSession(self, sessionId: int) -> Dict[str, Any]:
         """Only a session still planned goes; one that acquired is history, to archive."""
