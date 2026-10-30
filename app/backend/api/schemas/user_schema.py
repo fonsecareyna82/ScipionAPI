@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, validator
 
@@ -42,6 +42,9 @@ class UserOut(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     postalCode: Optional[str] = None
+    # What the user may do: their roles' and their groups' roles' permissions
+    permissions: List[str] = []
+    isSystemAdmin: bool = False
 
     class Config:
         orm_mode = True
@@ -56,14 +59,17 @@ class AdminUserOut(BaseModel):
     role: str
     isActive: bool
     isVerified: bool
+    roleIds: List[int] = []
+    groupIds: List[int] = []
 
     class Config:
         orm_mode = True
 
 
 class AdminUserUpdate(BaseModel):
-    role: Optional[Literal["user", "admin"]] = None
     isActive: Optional[bool] = None
+    roleIds: Optional[List[int]] = None
+    groupIds: Optional[List[int]] = None
 
 
 class LoginRequest(BaseModel):

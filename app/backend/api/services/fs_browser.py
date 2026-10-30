@@ -6,7 +6,10 @@ Three kinds of browsing:
   under it may lead elsewhere, as Scipion links its inputs).
 - ``filesystem``: the files a protocol form points to. Imports in particular
   need data anywhere (other disks, mounted volumes), so the whole filesystem
-  is readable; browsing starts in the protocol (or project) folder.
+  is readable; browsing starts in the protocol (or project) folder. A user
+  without the files.browseServer permission only reaches the project folder and
+  the data folders of ``SCIPIONWEB_DATA_ROOTS`` (separated by ``:``), and sees
+  only the folders leading to them; with no data folders set, nothing is limited.
 - import (project and protocol ids -1): projects and workflows to import,
   under ``SCIPION_IMPORT_BROWSER_ROOT``, never above
   ``SCIPION_IMPORT_BROWSER_CEILING`` (``/home``): a project elsewhere is copied
@@ -23,7 +26,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
@@ -45,6 +48,8 @@ class BrowserRoot:
     # The project folder, when browsing for a project (absolute).
     projectRoot: Optional[Path]
     kind: str
+    # The only folders reachable (absolute), or None for no limit
+    allowed: Optional[Tuple[Path, ...]] = None
 
     def toDict(self) -> dict:
         return {
@@ -53,6 +58,8 @@ class BrowserRoot:
             "protocolRoot": self.protocolRoot,
             "projectRootAbs": self.projectRoot.as_posix() if self.projectRoot else None,
             "scope": self.kind,
+            # The folders the user may browse, when limited (shortcuts for the browser)
+            "allowedRoots": [folder.as_posix() for folder in self.allowed] if self.allowed is not None else None,
         }
 
 
@@ -74,6 +81,46 @@ def importRoot() -> Path:
     return ceiling
 
 
+def dataRoots() -> Tuple[Path, ...]:
+    """The data folders every user may browse (SCIPIONWEB_DATA_ROOTS)."""
+    raw = os.environ.get("SCIPIONWEB_DATA_ROOTS") or ""
+    return tuple(Path(part).expanduser().absolute() for part in raw.split(os.pathsep) if part.strip())
+
+
+def _within(path: Path, folder: Path) -> bool:
+    return path == folder or folder in path.parents
+
+
+def isAllowed(browser: BrowserRoot, absolutePath: Path) -> bool:
+    """Whether a path (lexical, absolute) is inside one of the browser's reachable folders."""
+    if browser.allowed is None:
+        return True
+    return any(_within(absolutePath, folder) for folder in browser.allowed)
+
+
+def leadsToAllowed(browser: BrowserRoot, absolutePath: Path) -> bool:
+    """Whether a folder is reachable or on the way to a reachable one (to browse down to it)."""
+    if browser.allowed is None:
+        return True
+    return isAllowed(browser, absolutePath) or any(_within(folder, absolutePath) for folder in browser.allowed)
+
+
+def checkAllowed(browser: BrowserRoot, absolutePath: Path, folder: bool = False) -> None:
+    allowed = leadsToAllowed(browser, absolutePath) if folder else isAllowed(browser, absolutePath)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This folder is out of reach: ask for the files.browseServer permission")
+
+
+def filterListing(browser: BrowserRoot, folder: Path, entries: Iterable[dict]) -> List[dict]:
+    """The entries of a listed folder the browser may reach or go through."""
+    entries = list(entries)
+    if browser.allowed is None or isAllowed(browser, folder):
+        return entries
+    return [entry for entry in entries
+            if entry.get("isDir") is not False and leadsToAllowed(browser, folder / str(entry.get("name") or ""))]
+
+
 def _relative(path: Path, root: Path) -> str:
     try:
         relative = path.relative_to(root).as_posix()
@@ -87,7 +134,8 @@ def protocolFolder(projectPath: str, protocolId, protocolClassName: str) -> Path
     return Path(projectPath) / "Runs" / ("%06d_%s" % (int(protocolId), protocolClassName))
 
 
-def resolveBrowserRoot(mapper, projectId, protocolId, projectPath: Optional[str], scope: str = "project") -> BrowserRoot:
+def resolveBrowserRoot(mapper, projectId, protocolId, projectPath: Optional[str], scope: str = "project",
+                       canBrowseServer: bool = True) -> BrowserRoot:
     """The browsing boundary of a request (see the module docstring)."""
     if isImportMode(projectId, protocolId):
         root = importRoot()
@@ -111,8 +159,12 @@ def resolveBrowserRoot(mapper, projectId, protocolId, projectPath: Optional[str]
 
     if scope == "filesystem":
         root = Path("/")
+        roots = dataRoots()
+        # The project as named and as reached (a linked project is browsed through its target)
+        projectFolders = tuple(dict.fromkeys((Path(projectPath).expanduser().absolute(), projectRoot)))
+        allowed = None if canBrowseServer or not roots else projectFolders + roots
         return BrowserRoot(root=root, start=_relative(folder, root), protocolRoot=_relative(folder, root),
-                           projectRoot=projectRoot, kind="filesystem")
+                           projectRoot=projectRoot, kind="filesystem", allowed=allowed)
     return BrowserRoot(root=projectRoot, start=_relative(folder, projectRoot),
                        protocolRoot=_relative(folder, projectRoot), projectRoot=projectRoot, kind="project")
 

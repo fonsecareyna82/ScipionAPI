@@ -79,8 +79,10 @@ class ProjectImportOut(ProjectOut):
 
 
 class ProjectShareCreate(BaseModel):
-    userIds = []
-    permission: Optional[str] = "full"
+    userIds: List[int] = []
+    groupIds: List[int] = []
+    # view, work or manage
+    permission: Optional[str] = "work"
 
 
 class TiltSeriesNewSetRequest(BaseModel):

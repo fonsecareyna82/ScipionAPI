@@ -34,6 +34,7 @@ from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.utils.security import hashPassword, verifyPassword
 from app.backend.utils.jwt import createAccessToken, createRefreshToken, verifyToken
 from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.services.access_service import AccessService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -71,6 +72,9 @@ async def signup(
         isVerified=True,
         verificationCode=verificationCode,
     )
+
+    # The default roles (User, unless an administrator chose others); the account still waits for activation
+    AccessService(mapper.db).giveDefaultRoles(userId)
 
     # Return confirmation message and new user ID
     return {
@@ -166,7 +170,8 @@ def getMe(
             detail="User not found"
         )
 
-    return userProfile
+    return dict(userProfile, permissions=currentUser.get("permissions") or [],
+                isSystemAdmin=bool(currentUser.get("isSystemAdmin")))
 
 
 @router.put(

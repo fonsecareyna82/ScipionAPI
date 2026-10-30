@@ -70,15 +70,17 @@ async def getCurrentUser(
             detail="User account is inactive",
         )
 
-    return userRecord
+    return withPermissions(mapper, userRecord)
 
 
-async def requireAdmin(currentUser: dict = Depends(getCurrentUser)) -> dict:
-    # requireAdmin
-    role = str(currentUser.get("role") or "user").lower()
-    if role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin privileges required",
-        )
-    return currentUser
+def withPermissions(mapper, userRecord: dict) -> dict:
+    """userRecord with the permissions of its roles and of its groups' roles (a system role holds all)."""
+    from app.backend.api.permissions import PERMISSIONS
+    from app.backend.mapper.access_mapper import AccessPostgresqlMapper
+
+    held = AccessPostgresqlMapper(mapper.db).getUserPermissions(userRecord["id"])
+    user = dict(userRecord)
+    user["isSystemAdmin"] = held["isSystem"]
+    user["permissions"] = sorted(PERMISSIONS) if held["isSystem"] else sorted(
+        permission for permission in held["permissions"] if permission in PERMISSIONS)
+    return user

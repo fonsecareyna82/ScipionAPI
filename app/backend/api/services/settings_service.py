@@ -782,13 +782,10 @@ class SettingsService:
         return _modelValidate(UserSettingsOut, stored or {})
 
     def _requireAdmin(self, currentUser: Any) -> None:
-        # requireAdmin
-        role = _getUserRole(currentUser)
-        if role not in ("admin", "manager"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin privileges required",
-            )
+        # The instance settings, host and environment belong to whoever may change them
+        from app.backend.api.permissions import checkPermission
+
+        checkPermission(currentUser if isinstance(currentUser, dict) else {}, "settings.manage")
 
     def getInstanceSettings(
         self,

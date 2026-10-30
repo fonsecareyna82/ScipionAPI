@@ -601,9 +601,9 @@ def pluginClient(
     app = FastAPI()
     app.include_router(pluginRouterModule.router)
     # Plugins are changed by an administrator
-    administrator = {"id": 1, "email": "admin@example.com", "role": "admin", "isActive": True}
+    administrator = {"id": 1, "email": "admin@example.com", "role": "admin", "isActive": True,
+                     "permissions": ["plugins.manage"]}
     app.dependency_overrides[pluginRouterModule.getCurrentUser] = lambda: administrator
-    app.dependency_overrides[pluginRouterModule.requireAdmin] = lambda: administrator
 
     with TestClient(app) as client:
         yield client

@@ -8,8 +8,9 @@ from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services.xmipp_picking_session_service import XmippPickingSessionService
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.api.project_access import projectRouteAccess
 
-router = APIRouter(prefix="/projects", tags=["xmipp-picking"])
+router = APIRouter(prefix="/projects", tags=["xmipp-picking"], dependencies=[Depends(projectRouteAccess(getMapper))])
 
 
 class PickingPointPayload(BaseModel):

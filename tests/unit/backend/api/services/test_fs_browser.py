@@ -1,4 +1,6 @@
 """Where the remote file browser may look and write."""
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 
@@ -83,3 +85,42 @@ def test_writes_stay_in_the_project_or_are_json_files_in_the_import_area(tmp_pat
         with pytest.raises(HTTPException) as error:
             fs_browser.writableTarget(importArea, refused)
         assert error.value.status_code == 403
+
+
+def _limitedBrowser(tmp_path, monkeypatch, canBrowseServer=False):
+    project = tmp_path / "projects" / "demo"
+    (project / "Runs").mkdir(parents=True)
+    data = tmp_path / "data" / "lab"
+    (data / "movies").mkdir(parents=True)
+    (tmp_path / "data" / "other-lab").mkdir()
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(data))
+    browser = fs_browser.resolveBrowserRoot(Mapper({}), 1, None, str(project), "filesystem",
+                                            canBrowseServer=canBrowseServer)
+    return browser, project, data
+
+
+def test_WithoutTheBrowseServerPermissionOnlyTheProjectAndTheDataFoldersAreReached(tmp_path, monkeypatch):
+    browser, project, data = _limitedBrowser(tmp_path, monkeypatch)
+
+    assert browser.toDict()["allowedRoots"] == [project.as_posix(), data.as_posix()]
+    assert fs_browser.isAllowed(browser, project / "Runs")
+    assert fs_browser.isAllowed(browser, data / "movies" / "a.tif")
+    assert not fs_browser.isAllowed(browser, tmp_path / "data" / "other-lab")
+    with pytest.raises(HTTPException) as error:
+        fs_browser.checkAllowed(browser, Path("/etc/passwd"))
+    assert error.value.status_code == 403
+    # Folders on the way to a data folder can be listed, showing only that way
+    fs_browser.checkAllowed(browser, tmp_path / "data", folder=True)
+    listing = [{"name": "lab", "isDir": True}, {"name": "other-lab", "isDir": True}, {"name": "x.txt", "isDir": False}]
+    assert fs_browser.filterListing(browser, tmp_path / "data", listing) == [{"name": "lab", "isDir": True}]
+    assert fs_browser.filterListing(browser, data, listing) == listing
+
+
+def test_TheBrowseServerPermissionOrNoDataFoldersLeaveTheFilesystemOpen(tmp_path, monkeypatch):
+    browser, _, _ = _limitedBrowser(tmp_path, monkeypatch, canBrowseServer=True)
+    assert browser.allowed is None and fs_browser.isAllowed(browser, Path("/etc"))
+
+    monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS")
+    project = tmp_path / "projects" / "demo"
+    open_ = fs_browser.resolveBrowserRoot(Mapper({}), 1, None, str(project), "filesystem", canBrowseServer=False)
+    assert open_.allowed is None and open_.toDict()["allowedRoots"] is None

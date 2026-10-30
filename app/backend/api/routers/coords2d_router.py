@@ -34,10 +34,11 @@ from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services.coords2d_service import Coords2dService
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.api.project_access import projectRouteAccess
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["coordinates2d"])
+router = APIRouter(prefix="/projects", tags=["coordinates2d"], dependencies=[Depends(projectRouteAccess(getMapper))])
 
 
 class Coords2dPointPayload(BaseModel):

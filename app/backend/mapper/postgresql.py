@@ -817,6 +817,56 @@ PROJECT_REVISION_SQL = """
 """
 
 
+# What a user may do in a project: the most of being its owner (manage), its shares with the user or
+# their groups (view, work or manage), and their roles (projects.manageAll or the system role: manage;
+# projects.viewAll: view). Projects the user cannot reach are left out.
+PROJECT_ACCESS_SQL = """
+    WITH held AS (
+        SELECT "roleId" FROM user_access_roles WHERE "userId" = %%(userId)s
+        UNION
+        SELECT gr."roleId"
+          FROM user_group_members m
+          JOIN user_group_roles gr ON gr."groupId" = m."groupId"
+         WHERE m."userId" = %%(userId)s
+    ),
+    byRole AS (
+        SELECT CASE
+                   WHEN EXISTS (SELECT 1 FROM held JOIN access_roles r ON r.id = held."roleId"
+                                 WHERE r."isSystem")
+                     OR EXISTS (SELECT 1 FROM held JOIN access_role_permissions rp ON rp."roleId" = held."roleId"
+                                 WHERE rp.permission = 'projects.manageAll') THEN 3
+                   WHEN EXISTS (SELECT 1 FROM held JOIN access_role_permissions rp ON rp."roleId" = held."roleId"
+                                 WHERE rp.permission = 'projects.viewAll') THEN 1
+                   ELSE 0
+               END AS rank
+    ),
+    ranked AS (
+        SELECT p.*,
+               (p."ownerId" = %%(userId)s) AS "isOwner",
+               COALESCE(shared.rank, 0) > 0 AS "isShared",
+               GREATEST(CASE WHEN p."ownerId" = %%(userId)s THEN 3 ELSE 0 END,
+                        COALESCE(shared.rank, 0),
+                        (SELECT rank FROM byRole)) AS rank
+          FROM projects p
+          LEFT JOIN LATERAL (
+              SELECT MAX(CASE s.permission WHEN 'manage' THEN 3 WHEN 'work' THEN 2 ELSE 1 END) AS rank
+                FROM project_shares s
+               WHERE s."projectId" = p.id
+                 AND (s."userId" = %%(userId)s
+                      OR s."groupId" IN (SELECT "groupId" FROM user_group_members WHERE "userId" = %%(userId)s))
+          ) shared ON TRUE
+         WHERE p.status IS DISTINCT FROM 'deleting'
+           %(projectFilter)s
+    )
+    SELECT p.*,
+           (ARRAY['view', 'work', 'manage'])[p.rank] AS access,
+           CASE WHEN p."isOwner" THEN 'owner' ELSE (ARRAY['view', 'work', 'manage'])[p.rank] END AS permission
+      FROM ranked p
+     WHERE p.rank > 0
+     %(orderBy)s
+"""
+
+
 class PostgresqlFlatMapper(Mapper):
     """Flat mapper to handle Users, Projects and Protocols in PostgreSQL."""
 
@@ -1600,58 +1650,15 @@ class PostgresqlFlatMapper(Mapper):
 
     def getProject(self, projectId: int, userId: int) -> Optional[Dict]:
         """
-        Retrieve a project by id that is accessible to the given user.
-        A project is accessible if:
-          - The user is the owner, or
-          - There is an entry in project_shares for (projectId, userId).
-
-        It also annotates the row with:
-          - isOwner: bool
-          - isShared: bool
-          - permission: text
+        A project the user can access, annotated with how (see PROJECT_ACCESS_SQL):
+          - access: view, work or manage;
+          - isOwner, isShared (shared with the user or one of their groups);
+          - permission: "owner" for the owner, else the access.
         """
-        query = """
-            SELECT
-                p.*,
-                (p."ownerId" = %s) AS "isOwner",
-                EXISTS (
-                    SELECT 1
-                    FROM project_shares s
-                    WHERE s."projectId" = p.id
-                      AND s."userId" = %s
-                ) AS "isShared",
-                COALESCE(
-                    (
-                        SELECT s."permission"
-                        FROM project_shares s
-                        WHERE s."projectId" = p.id
-                          AND s."userId" = %s
-                        LIMIT 1
-                    ),
-                    'full'
-                ) AS "permission"
-            FROM projects p
-            WHERE p.id = %s
-              AND p.status IS DISTINCT FROM 'deleting'
-              AND (
-                  p."ownerId" = %s
-                  OR EXISTS (
-                      SELECT 1
-                      FROM project_shares s
-                      WHERE s."projectId" = p.id
-                        AND s."userId" = %s
-                  )
-              )
-        """
-        params = (
-            userId,
-            userId,
-            userId,
-            projectId,
-            userId,
-            userId,
+        return self.db.fetchOne(
+            PROJECT_ACCESS_SQL % {"projectFilter": "AND p.id = %(projectId)s", "orderBy": ""},
+            {"userId": int(userId), "projectId": int(projectId)},
         )
-        return self.db.fetchOne(query, params)
 
     def getProjectRuntimeMetadata(
             self,
@@ -1748,10 +1755,8 @@ class PostgresqlFlatMapper(Mapper):
     # -----------------------------
     # Project share methods
     # -----------------------------
-    def shareProjectWithUser(self, projectId: int, targetUserId: int, permission: str = "full") -> Dict[str, Any]:
-        """
-        Create or update a project share entry between projectId and targetUserId.
-        """
+    def shareProjectWithUser(self, projectId: int, targetUserId: int, permission: str = "work") -> Dict[str, Any]:
+        """Create or update the share of projectId with targetUserId at an access level."""
         cur = self.db.execute(
             """
             INSERT INTO project_shares ("projectId", "userId", "permission")
@@ -1760,19 +1765,30 @@ class PostgresqlFlatMapper(Mapper):
             DO UPDATE SET
                 "permission" = EXCLUDED."permission",
                 "updatedAt" = NOW()
-            RETURNING id,
-                      "projectId",
-                      "userId",
-                      "permission",
-                      "createdAt",
-                      "updatedAt"
+            RETURNING id, "projectId", "userId", "groupId", "permission", "createdAt", "updatedAt"
             """,
             (projectId, targetUserId, permission),
         )
         return cur.fetchone()
 
+    def shareProjectWithGroup(self, projectId: int, groupId: int, permission: str = "work") -> Dict[str, Any]:
+        """Create or update the share of projectId with every member of groupId at an access level."""
+        cur = self.db.execute(
+            """
+            INSERT INTO project_shares ("projectId", "groupId", "permission")
+            VALUES (%s, %s, %s)
+            ON CONFLICT ("projectId", "groupId") WHERE "groupId" IS NOT NULL
+            DO UPDATE SET
+                "permission" = EXCLUDED."permission",
+                "updatedAt" = NOW()
+            RETURNING id, "projectId", "userId", "groupId", "permission", "createdAt", "updatedAt"
+            """,
+            (projectId, groupId, permission),
+        )
+        return cur.fetchone()
+
     def revokeProjectShare(self, projectId: int, userId: int) -> bool:
-        """Remove a share from project_shares."""
+        """Remove the share of projectId with userId."""
         cursor = self.db.execute(
             """
             DELETE FROM project_shares
@@ -1783,58 +1799,49 @@ class PostgresqlFlatMapper(Mapper):
         )
         return cursor.rowcount > 0
 
+    def revokeProjectGroupShare(self, projectId: int, groupId: int) -> bool:
+        """Remove the share of projectId with groupId."""
+        cursor = self.db.execute(
+            'DELETE FROM project_shares WHERE "projectId" = %s AND "groupId" = %s',
+            (projectId, groupId),
+        )
+        return cursor.rowcount > 0
+
     def listProjectShares(self, projectId: int) -> List[Dict[str, Any]]:
-        """List all shares for a given project."""
+        """The shares of a project, with the user's or the group's name."""
         return self.db.fetchAll(
             """
-            SELECT id,
-                   "projectId",
-                   "userId",
-                   "permission",
-                   "createdAt",
-                   "updatedAt"
-              FROM project_shares
-             WHERE "projectId" = %s
-             ORDER BY "createdAt" ASC
+            SELECT s.id,
+                   s."projectId",
+                   s."userId",
+                   s."groupId",
+                   s."permission",
+                   s."createdAt",
+                   s."updatedAt",
+                   u.email,
+                   u."firstName",
+                   u."lastName",
+                   g.name AS "groupName"
+              FROM project_shares s
+              LEFT JOIN users u ON u.id = s."userId"
+              LEFT JOIN user_groups g ON g.id = s."groupId"
+             WHERE s."projectId" = %s
+             ORDER BY s."createdAt" ASC
             """,
             (projectId,),
         )
 
     def listProjects(self, ownerId: int) -> List[Dict]:
         """
-        List all projects the user can see (owned + shared).
+        Every project the user (ownerId) can access: owned, shared with them or their groups, or
+        visible through their roles; annotated as getProject() annotates one.
         """
         return self.db.fetchAll(
-            """
-            SELECT *
-            FROM (
-                SELECT
-                    p.*,
-                    TRUE  AS "isOwner",
-                    FALSE AS "isShared",
-                    'owner'::text AS "permission"
-                FROM projects p
-                WHERE p."ownerId" = %s
-                  AND p.status IS DISTINCT FROM 'deleting'
-
-                UNION ALL
-
-                SELECT
-                    p.*,
-                    FALSE AS "isOwner",
-                    TRUE  AS "isShared",
-                    COALESCE(ps."permission", 'full') AS "permission"
-                FROM projects p
-                JOIN project_shares ps
-                  ON ps."projectId" = p.id
-                WHERE ps."userId" = %s
-                  AND p."ownerId" <> %s
-                  AND p.status IS DISTINCT FROM 'deleting'
-            ) AS sub
-            ORDER BY COALESCE("updatedAt", "createdAt") DESC NULLS LAST,
-                     id DESC
-            """,
-            (ownerId, ownerId, ownerId),
+            PROJECT_ACCESS_SQL % {
+                "projectFilter": "",
+                "orderBy": 'ORDER BY COALESCE(p."updatedAt", p."createdAt") DESC NULLS LAST, p.id DESC',
+            },
+            {"userId": int(ownerId)},
         )
 
     def touchProject(self, projectId: int) -> bool:

@@ -72,6 +72,7 @@ def ensureAdminUser(adminName: str, adminEmail: str, adminPassword: str) -> None
             user.verificationCode = None
 
         session.commit()
+        _grantSystemRole(session, user.id)
     finally:
         session.close()
 
@@ -94,3 +95,13 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _grantSystemRole(session, userId):
+    """The administrator holds the Administrator role, which gives every permission."""
+    from sqlalchemy import text
+
+    from app.backend.mapper.access_mapper import GRANT_SYSTEM_ROLE_SQL
+
+    session.execute(text(GRANT_SYSTEM_ROLE_SQL.replace("%(userId)s", ":userId")), {"userId": int(userId)})
+    session.commit()

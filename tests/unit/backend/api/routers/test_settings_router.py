@@ -270,11 +270,13 @@ def settingsClient(settingsRouterModule, fakeProjectMapper, fakeSettingsService)
         "email": "user@example.com",
         "role": "user",
     }
-    app.dependency_overrides[settingsRouterModule.requireAdmin] = lambda: {
+    administrator = lambda: {
         "id": 99,
         "email": "admin@example.com",
         "role": "admin",
     }
+    for permission in ("settings.manage", "jobs.manage"):
+        app.dependency_overrides[settingsRouterModule.requirePermission(permission)] = administrator
 
     with TestClient(app) as client:
         yield client

@@ -76,8 +76,13 @@ logger = logging.getLogger(__name__)
 
 from app.backend.utils.tilt_series_stack import parseIndices as parseTiltStackIndices
 from app.backend.utils.file_handlers import FileHandlers
+from app.backend.api.project_access import projectRouteAccess
+from app.backend.api.permissions import checkPermission, checkProjectAccess, hasPermission
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+# Every project route checks the signed-in user's access to its project (see project_access)
+router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(projectRouteAccess(getMapper))])
+# Routes reached without a signed-in user (a download link carries its own grant)
+publicRouter = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def getProjectService() -> ProjectService:
@@ -422,6 +427,7 @@ def shareProject(
         currentUser=currentUser,
         targetUserIds=payload.userIds,
         permission=payload.permission,
+        targetGroupIds=payload.groupIds,
     )
 
 @router.delete(
@@ -445,6 +451,28 @@ def revokeProjectShare(
         projectId=projectId,
         currentUser=currentUser,
         targetUserId=targetUserId,
+    )
+    return {"success": True}
+
+
+@router.delete(
+    "/{projectId}/share/group/{targetGroupId}",
+    status_code=status.HTTP_200_OK,
+)
+def revokeProjectGroupShare(
+    projectId: int,
+    targetGroupId: int,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    projectService: ProjectService = Depends(getProjectService),
+    currentUser: dict = Depends(getCurrentUser),
+) -> Dict[str, bool]:
+    """Revoke the sharing of a project with a group."""
+    projectService.revokeProjectShareForUser(
+        mapper=mapper,
+        projectId=projectId,
+        currentUser=currentUser,
+        targetUserId=0,
+        targetGroupId=targetGroupId,
     )
     return {"success": True}
 
@@ -1852,7 +1880,17 @@ def _fsBrowserRoot(projectId: int, protocolId: Union[int, str], scope: str, curr
     dbProj = service.getProjectDbRow(mapper, projectId, currentUser)
     if not dbProj:
         raise HTTPException(status_code=404, detail="Project not found")
-    return fs_browser.resolveBrowserRoot(mapper, projectId, protocolId, str(dbProj["name"]), scope)
+    return fs_browser.resolveBrowserRoot(mapper, projectId, protocolId, str(dbProj["name"]), scope,
+                                         canBrowseServer=hasPermission(currentUser, "files.browseServer"))
+
+
+def _fsTarget(browser, path: str, folder: bool = False):
+    """The path a request names, if the browser may reach it (403 otherwise)."""
+    from app.backend.api.services import fs_browser
+
+    target = FileHandlers(None)._resolveWithinRoot(browser.root, path)
+    fs_browser.checkAllowed(browser, target, folder=folder)
+    return target
 
 
 _FS_SCOPE = Query(
@@ -1883,8 +1921,11 @@ def listProtocolDir(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
+    from app.backend.api.services import fs_browser
+
     browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
-    return FileHandlers(None).listRemoteDirectoryUnderRoot(browser.root, path)
+    folder = _fsTarget(browser, path, folder=True)
+    return fs_browser.filterListing(browser, folder, FileHandlers(None).listRemoteDirectoryUnderRoot(browser.root, path))
 
 
 @router.get("/{projectId}/protocols/{protocolId}/fs/preview2", response_model=None)
@@ -1898,6 +1939,7 @@ def previewProtocolText(
     service: ProjectService = Depends(getProjectService),
 ):
     browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    _fsTarget(browser, path)
     return FileHandlers(None).previewTextFileUnderRoot(browser.root, path)
 
 
@@ -1912,6 +1954,7 @@ def previewRemoteEntry(
     service: ProjectService = Depends(getProjectService),
 ):
     browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    _fsTarget(browser, path)
     return FileHandlers(None).previewRemoteEntryUnderRoot(
         browser.root, path, databaseInspector=service._inspectScipionSqliteDatabase)
 
@@ -1927,7 +1970,11 @@ def previewProtocolImageFile(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
+    if not inline:
+        # Shown inside the page it is a preview; saved, it is a download
+        checkPermission(currentUser, "files.download")
     browser = _fsBrowserRoot(projectId, protocolId, scope, currentUser, mapper, service)
+    _fsTarget(browser, path)
     return FileHandlers(None).previewImageFileUnderRoot(browser.root, path, inline)
 
 
@@ -1949,7 +1996,7 @@ def createFsDownloadLink(
     from app.backend.api.services import fs_download_token
 
     browser = _fsBrowserRoot(projectId, protocolId, payload.scope, currentUser, mapper, service)
-    target = FileHandlers(None)._resolveWithinRoot(browser.root, payload.path)
+    target = _fsTarget(browser, payload.path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     grant = fs_download_token.signDownload(str(target), int(currentUser["id"]), int(projectId))
@@ -1962,7 +2009,7 @@ def createFsDownloadLink(
     }
 
 
-@router.get("/{projectId}/protocols/{protocolId}/fs/download-file", response_model=None)
+@publicRouter.get("/{projectId}/protocols/{protocolId}/fs/download-file", response_model=None)
 def downloadFsFile(
     projectId: int,
     protocolId: Union[int, str],
@@ -4091,14 +4138,7 @@ def putTomogramReviewSchema(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if (
-            not bool(project.get("isOwner"))
-            and str(project.get("permission") or "").strip().lower() != "full"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Project write permission is required",
-        )
+    checkProjectAccess(project, "work")
 
     createdByUserId = (
         currentUser.get("id")
@@ -4145,14 +4185,7 @@ def patchTomogramReview(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if (
-            not bool(project.get("isOwner"))
-            and str(project.get("permission") or "").strip().lower() != "full"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Project write permission is required",
-        )
+    checkProjectAccess(project, "work")
 
     reviewedByUserId = (
         currentUser.get("id")
@@ -4206,14 +4239,7 @@ def createTomogramReviewSubset(
             detail="Project not found",
         )
 
-    if (
-            not bool(project.get("isOwner"))
-            and str(project.get("permission") or "").strip().lower() != "full"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Project write permission is required",
-        )
+    checkProjectAccess(project, "work")
 
     try:
         return service.createTomogramReviewSubsetService(

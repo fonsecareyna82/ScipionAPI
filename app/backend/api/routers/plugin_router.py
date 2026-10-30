@@ -9,7 +9,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.backend.api.dependencies import getCurrentUser, requireAdmin
+from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.permissions import requirePermission
 from app.backend.api.services.protocol_viewer_inventory_service import buildProtocolViewerInventory
 from app.backend.api.services.scipion_domain_refresh_service import getScipionViewersSnapshot
 from app.backend.api.services.protocol_viewer_resolution_service import (
@@ -351,7 +352,7 @@ def loadPlugins(currentUser=Depends(getCurrentUser)):
 
 
 @router.post("/devel/validate", response_model=Any)
-def validateDevelPluginPath(payload: DevelPluginPathRequest, currentUser=Depends(requireAdmin)):
+def validateDevelPluginPath(payload: DevelPluginPathRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         return develService.validateDevelPluginPath(payload.path)
     except Exception as e:
@@ -359,7 +360,7 @@ def validateDevelPluginPath(payload: DevelPluginPathRequest, currentUser=Depends
 
 
 @router.get("/devel", response_model=Any)
-def listDevelPlugins(currentUser=Depends(requireAdmin)):
+def listDevelPlugins(currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         return develService.listDevelPlugins()
     except Exception as e:
@@ -367,7 +368,7 @@ def listDevelPlugins(currentUser=Depends(requireAdmin)):
 
 
 @router.get("/devel/browser/paths", response_model=Any)
-def getDevelPluginBrowserPaths(currentUser=Depends(requireAdmin)):
+def getDevelPluginBrowserPaths(currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         return develService.getDevelPluginBrowserPaths()
     except Exception as e:
@@ -375,7 +376,7 @@ def getDevelPluginBrowserPaths(currentUser=Depends(requireAdmin)):
 
 
 @router.get("/devel/browser/list", response_model=Any)
-def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative path inside the devel plugin browser root"), currentUser=Depends(requireAdmin)):
+def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative path inside the devel plugin browser root"), currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         return develService.listDevelPluginBrowserDirectory(path)
     except FileNotFoundError as e:
@@ -389,7 +390,7 @@ def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative 
 
 
 @router.post("/devel/install", response_model=TaskStartResponse)
-async def installDevelPlugin(payload: InstallDevelPluginRequest, currentUser=Depends(requireAdmin)):
+async def installDevelPlugin(payload: InstallDevelPluginRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         validation = develService.validateDevelPluginPath(payload.path)
 
@@ -541,7 +542,7 @@ def listPluginTasks(
 )
 def acknowledgePluginTasks(
         payload: AcknowledgePluginTasksRequest,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("plugins.manage")),
 ):
     allowedStatuses = {
         "SUCCESS",
@@ -596,7 +597,7 @@ def acknowledgePluginTasks(
     "/tasks/{taskId}/acknowledge",
     response_model=SystemTaskResponse,
 )
-def acknowledgePluginTask(taskId: str, currentUser=Depends(requireAdmin)):
+def acknowledgePluginTask(taskId: str, currentUser=Depends(requirePermission("plugins.manage"))):
     task = systemTaskService.acknowledgeTask(taskId)
 
     if task is None:
@@ -653,7 +654,7 @@ def loadPlugin(pluginName: str, currentUser=Depends(getCurrentUser)):
 async def installPluginBinary(
         pluginName: str,
         binaryTarget: str,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("plugins.manage")),
 ):
     try:
         payload = {
@@ -698,7 +699,7 @@ async def installPluginBinary(
 async def uninstallPluginBinary(
         pluginName: str,
         binaryTarget: str,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("plugins.manage")),
 ):
     try:
         payload = {
@@ -740,7 +741,7 @@ async def uninstallPluginBinary(
     "/tasks/{taskId}/cancel",
     response_model=SystemTaskResponse,
 )
-def cancelPluginTask(taskId: str, currentUser=Depends(requireAdmin)):
+def cancelPluginTask(taskId: str, currentUser=Depends(requirePermission("plugins.manage"))):
     task = systemTaskService.getTask(
         taskId
     )
@@ -852,7 +853,7 @@ def cancelPluginTask(taskId: str, currentUser=Depends(requireAdmin)):
     "/tasks/{taskId}/retry",
     response_model=TaskStartResponse,
 )
-async def retryPluginTask(taskId: str, currentUser=Depends(requireAdmin)):
+async def retryPluginTask(taskId: str, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         originalTask = systemTaskService.getTask(taskId)
 
@@ -1295,7 +1296,7 @@ async def _startInProcessTask(
 
 
 @router.post("/install-batch", response_model=TaskStartResponse)
-async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=Depends(requireAdmin)):
+async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         plugins = []
         seen = set()
@@ -1388,7 +1389,7 @@ async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=D
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
-async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser=Depends(requireAdmin)):
+async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
             taskId = uuid4().hex
@@ -1438,7 +1439,7 @@ async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser
 
 
 @router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
-async def uninstallPlugin(pluginName: str, currentUser=Depends(requireAdmin)):
+async def uninstallPlugin(pluginName: str, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         if (
                 _celeryAppAvailable

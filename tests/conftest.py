@@ -27,6 +27,8 @@ def _makeRouterModule(moduleName: str) -> types.ModuleType:
     module = types.ModuleType(moduleName)
     router = APIRouter()
     module.router = router
+    # The projects module also has the routes reached without a signed-in user
+    module.publicRouter = APIRouter()
     return module
 
 
@@ -1224,12 +1226,13 @@ class FakeProjectService:
         }
         return self.deleteProjectResult
 
-    def shareProjectWithUser(self, mapper, projectId, currentUser, targetUserIds, permission):
+    def shareProjectWithUser(self, mapper, projectId, currentUser, targetUserIds, permission, targetGroupIds=None):
         self.lastShareProjectCall = {
             "mapper": mapper,
             "projectId": projectId,
             "currentUser": currentUser,
             "targetUserIds": targetUserIds,
+            "targetGroupIds": targetGroupIds,
             "permission": permission,
         }
         return self.shareProjectResult
@@ -2182,10 +2185,18 @@ def projectRouterModule(authTestEnv):
     return importlib.import_module("app.backend.api.routers.project_router")
 
 
+class OwnedProjectMapper:
+    """Every project is the signed-in user's own (manage access); routes are what these tests check."""
+
+    def getProject(self, projectId, userId):
+        return {"id": int(projectId), "ownerId": int(userId), "isOwner": True, "access": "manage",
+                "permission": "owner"}
+
+
 @pytest.fixture
 def fakeProjectMapper():
     # fakeProjectMapper
-    return object()
+    return OwnedProjectMapper()
 
 
 @pytest.fixture
@@ -2211,6 +2222,9 @@ def projectClient(
         "role": "user",
     }
     app.dependency_overrides[projectRouterModule.getProjectService] = lambda: fakeProjectService
+    # These tests check what each route asks its service; the access to projects has its own tests
+    for dependency in projectRouterModule.router.dependencies:
+        app.dependency_overrides[dependency.dependency] = lambda: None
 
     with TestClient(app) as client:
         yield client
@@ -2396,6 +2410,18 @@ def authClient(authTestEnv, fakeMapper, monkeypatch: pytest.MonkeyPatch) -> Iter
         "verifyToken",
         lambda token, expected_type="refresh": {"sub": "user@example.com"} if token == "valid-refresh" else {},
     )
+
+    # A new account gets the default roles (their rules are tested against the database)
+    class DefaultRoles:
+        def __init__(self, db):
+            pass
+
+        def giveDefaultRoles(self, userId):
+            fakeMapper.defaultRolesGiven.append(userId)
+
+    fakeMapper.defaultRolesGiven = []
+    fakeMapper.db = None
+    monkeypatch.setattr(authRouterModule, "AccessService", DefaultRoles)
 
     app = FastAPI()
     app.include_router(authRouterModule.router)

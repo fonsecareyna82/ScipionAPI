@@ -111,7 +111,8 @@ def test_ShareProjectDelegatesToService(projectClient, fakeProjectService):
         "/projects/1/share",
         json={
             "userIds": [2, 3],
-            "permission": "read",
+            "groupIds": [5],
+            "permission": "view",
         },
     )
 
@@ -127,7 +128,8 @@ def test_ShareProjectDelegatesToService(projectClient, fakeProjectService):
             "role": "user",
         },
         "targetUserIds": [2, 3],
-        "permission": "read",
+        "targetGroupIds": [5],
+        "permission": "view",
     }
 
 

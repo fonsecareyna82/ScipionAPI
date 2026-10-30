@@ -212,7 +212,12 @@ class FakeMapper:
 
     def getProject(self, projectId, userId):
         self.lastGetProjectCall = {"projectId": projectId, "userId": userId}
-        return self.projectsById.get((projectId, userId))
+        row = self.projectsById.get((projectId, userId))
+        if row is None or "access" in row:
+            return row
+        # As the database answers: the owner manages it, a share gives its level
+        shared = row.get("permission") if row.get("permission") in ("view", "work", "manage") else "work"
+        return dict(row, access="manage" if row.get("ownerId") == userId else shared)
 
     def updateProject(self, projectId, userId, newPath, description):
         self.lastUpdateProjectCall = {
@@ -301,6 +306,7 @@ def currentUser():
         "id": 1,
         "email": "user@example.com",
         "role": "user",
+        "permissions": ["files.download", "projects.create", "projects.share"],
     }
 
 
@@ -386,6 +392,7 @@ def test_UpdateProjectReturns404WhenProjectPathMissingOnDisk(service, mapper, cu
     missingPath = service.manager.getProjectPath("demo")
     mapper.projectsById[(1, 1)] = {
         "id": 1,
+        "ownerId": 1,
         "name": missingPath,
         "description": "demo description",
     }
@@ -405,6 +412,7 @@ def test_UpdateProjectRejectsExternalImportedProjects(service, mapper, currentUs
 
     mapper.projectsById[(1, 1)] = {
         "id": 1,
+        "ownerId": 1,
         "name": str(externalPath),
         "description": "demo description",
     }
@@ -424,6 +432,7 @@ def test_UpdateProjectRenamesManagedProjectAndFallsBackDescription(service, mapp
 
     mapper.projectsById[(1, 1)] = {
         "id": 1,
+        "ownerId": 1,
         "name": str(currentPath),
         "description": "old description",
     }
@@ -458,6 +467,7 @@ def test_UpdateProjectRenamesLinkedProjectUsingOsRename(service, mapper, current
 
     mapper.projectsById[(1, 1)] = {
         "id": 1,
+        "ownerId": 1,
         "name": str(linkPath),
         "description": "linked description",
     }
@@ -688,11 +698,11 @@ def test_ShareProjectWithUserReturns404WhenProjectMissing(service, mapper, curre
             projectId=1,
             currentUser=currentUser,
             targetUserIds=[2, 3],
-            permission="read",
+            permission="view",
         )
 
     assert exc.value.status_code == 404
-    assert exc.value.detail == "Project not found or you are not the owner"
+    assert exc.value.detail == "Project not found"
 
 
 def test_ShareProjectWithUserDelegatesAndReturnsLastShareRow(service, mapper, currentUser):
@@ -707,17 +717,18 @@ def test_ShareProjectWithUserDelegatesAndReturnsLastShareRow(service, mapper, cu
         projectId=1,
         currentUser=currentUser,
         targetUserIds=[2, 3],
-        permission="read",
+        permission="view",
     )
 
     assert mapper.lastShareProjectWithUserCalls == [
-        {"projectId": 1, "targetUserId": 2, "permission": "read"},
-        {"projectId": 1, "targetUserId": 3, "permission": "read"},
+        {"projectId": 1, "targetUserId": 2, "permission": "view"},
+        {"projectId": 1, "targetUserId": 3, "permission": "view"},
     ]
     assert result == {
         "id": 701,
         "projectId": 1,
         "userId": 3,
+        "groupId": None,
         "permission": "read",
         "createdAt": "2026-04-15T10:00:01",
         "updatedAt": "2026-04-15T10:00:01",
@@ -774,7 +785,7 @@ def test_RevokeProjectShareForUserReturns403WhenCurrentUserIsNotOwner(service, m
         )
 
     assert exc.value.status_code == 403
-    assert exc.value.detail == "Only project owner can revoke shares"
+    assert exc.value.detail == "This needs manage access to the project"
 
 
 def test_RevokeProjectShareForUserRejectsRemovingOwner(service, mapper, currentUser):

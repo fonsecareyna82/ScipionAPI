@@ -144,6 +144,7 @@ def test_PatchEnvironmentVariablesPersistsRuntimeOverrideWithoutRewritingScipion
         service.patchEnvironmentVariables(
             currentUser={
                 "role": "admin",
+                "permissions": ["settings.manage"],
             },
             patch={
                 "TEST_PLUGIN_HOME":
@@ -278,7 +279,7 @@ def test_ResetEnvironmentVariableRemovesOverrideAndRestoresBase(
     )
 
     result = service.resetEnvironmentVariable(
-        currentUser={"role": "admin"},
+        currentUser={"role": "admin", "permissions": ["settings.manage"]},
         variableName="TEST_PLUGIN_HOME",
     )
 

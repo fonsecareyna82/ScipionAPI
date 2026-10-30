@@ -45,6 +45,7 @@ def test_SignupCreatesUser(authClient, fakeMapper):
     assert createdUser["hashedPassword"] == "hashed::secret123"
     assert createdUser["role"] == "user"
     assert createdUser["isActive"] is False
+    assert fakeMapper.defaultRolesGiven == [1]
     assert createdUser["isVerified"] is True
 
 

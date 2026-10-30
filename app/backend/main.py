@@ -39,7 +39,7 @@ prepareEnvironment()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.backend.api.routers.project_router import router as projects
+from app.backend.api.routers.project_router import router as projects, publicRouter as publicProjects
 # from app.backend.api.routers.protocol_router import router as protocols
 from app.backend.api.routers.plugin_router import router as plugins
 from app.backend.api.routers.auth_router import router as auth
@@ -49,6 +49,7 @@ from app.backend.api.routers.coords2d_router import router as coords2dRouter
 from app.backend.api.routers.xmipp_picking_router import router as xmippPickingRouter
 from app.backend.api.routers.system_router import router as systemRouter
 from app.backend.api.routers.workspace_router import router as workspaceRouter
+from app.backend.api.routers.access_router import router as accessRouter
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHttpException
@@ -133,6 +134,7 @@ def _buildApiApp() -> FastAPI:
 
     # includeRouters
     apiApp.include_router(projects)
+    apiApp.include_router(publicProjects)
     # apiApp.include_router(protocols)
     apiApp.include_router(plugins)
     apiApp.include_router(auth)
@@ -142,6 +144,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(xmippPickingRouter)
     apiApp.include_router(systemRouter)
     apiApp.include_router(workspaceRouter)
+    apiApp.include_router(accessRouter)
 
     @apiApp.get("/health")
     def health_check():

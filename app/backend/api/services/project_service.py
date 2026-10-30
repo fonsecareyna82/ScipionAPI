@@ -80,6 +80,7 @@ from app.backend.api.services.protocol_viewer_file_token_service import (
     resolveViewerFileTokenPaths,
 )
 from app.backend.api.services.protocol_service import ProtocolService
+from app.backend.api.permissions import PROJECT_ACCESS_LEVELS, checkPermission, checkProjectAccess
 from app.backend.api.services.protocol_catalog_service import ProtocolCatalogService
 from app.backend.api.services.protocol_suggestions_service import ProtocolSuggestionsService
 from app.backend.api.services.scipion_domain_refresh_service import refreshScipionDomainIfNeeded
@@ -2816,6 +2817,7 @@ class ProjectService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
             )
+        checkProjectAccess(dbProj, "manage")
 
         currentPath = self._normalizeProjectPath(dbProj["name"])
 
@@ -2855,14 +2857,12 @@ class ProjectService:
         if description is None:
             description = dbProj.get("description")
 
-        project = mapper.updateProject(
+        return mapper.updateProject(
             projectId,
-            currentUser["id"],
+            dbProj["ownerId"],
             newPath,
             description,
         )
-
-        return project
 
     def deleteProject(self, mapper: PostgresqlFlatMapper, currentUser, projectId) -> Optional[dict]:
         """Delete a project at once for the user; its data goes away in the background.
@@ -2881,11 +2881,13 @@ class ProjectService:
                 detail="Project not found",
             )
 
+        checkProjectAccess(dbProj, "manage")
+
         projectPath = self._normalizeProjectPath(dbProj["name"])
         isManagedEntry = self._isManagedProjectPath(projectPath)
         isLinkedEntry = self._isLinkedProjectPath(projectPath)
 
-        if not mapper.markProjectDeleting(projectId, currentUser["id"]):
+        if not mapper.markProjectDeleting(projectId, dbProj["ownerId"]):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found",
@@ -3081,43 +3083,59 @@ class ProjectService:
             projectId: int,
             currentUser: dict,
             targetUserIds: list,
-            permission: str = "full",
+            permission: str = "work",
+            targetGroupIds: Optional[list] = None,
     ) -> dict:
         """
-        Share a project owned by currentUser with another user.
+        Share a project with users and groups at an access level (view, work or manage).
 
-        Only the project owner is allowed to call this method.
+        It needs manage access to the project and the projects.share permission.
         """
-        # Ensure project exists and is owned by currentUser
         dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found or you are not the owner",
+                detail="Project not found",
+            )
+        checkProjectAccess(dbProj, "manage")
+        checkPermission(currentUser, "projects.share")
+
+        level = str(permission or "work").strip().lower()
+        if level not in PROJECT_ACCESS_LEVELS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unknown access level: %s" % permission,
             )
 
-        if targetUserIds == currentUser["id"]:
+        userIds = [int(userId) for userId in targetUserIds or ()]
+        groupIds = [int(groupId) for groupId in targetGroupIds or ()]
+        if int(currentUser["id"]) in userIds:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="You cannot share a project with yourself",
             )
-
-        for userId in targetUserIds:
-            shareRow = mapper.shareProjectWithUser(
-                projectId=projectId,
-                targetUserId=int(userId),
-                permission=permission or "full",
+        if not userIds and not groupIds:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose the users or groups to share the project with",
             )
+
+        shares = [mapper.shareProjectWithUser(projectId=projectId, targetUserId=userId, permission=level)
+                  for userId in userIds]
+        shares += [mapper.shareProjectWithGroup(projectId=projectId, groupId=groupId, permission=level)
+                   for groupId in groupIds]
 
         self._touchProjectModificationTime(
             mapper=mapper,
             projectId=projectId,
         )
 
+        shareRow = shares[-1]
         return {
             "id": shareRow["id"],
             "projectId": shareRow["projectId"],
-            "userId": shareRow["userId"],
+            "userId": shareRow.get("userId"),
+            "groupId": shareRow.get("groupId"),
             "permission": shareRow["permission"],
             "createdAt": shareRow.get("createdAt"),
             "updatedAt": shareRow.get("updatedAt"),
@@ -3149,22 +3167,25 @@ class ProjectService:
             projectId: int,
             targetUserId: int,
             currentUser: dict,
+            targetGroupId: Optional[int] = None,
     ) -> dict:
         """
-        Revoke project access for targetUserId.
-        Only the project owner is allowed to perform this action.
+        Revoke the project access of targetUserId (or of targetGroupId).
+        It needs manage access to the project.
         """
-        # Ensure currentUser has access and get full project row
         dbProj = mapper.getProject(projectId=projectId, userId=currentUser["id"])
         if not dbProj:
             raise HTTPException(status_code=404, detail="Project not found")
+        checkProjectAccess(dbProj, "manage")
 
-        # Ensure current user is the owner
-        if int(dbProj["ownerId"]) != int(currentUser["id"]):
-            raise HTTPException(status_code=403, detail="Only project owner can revoke shares")
+        if targetGroupId is not None:
+            if not mapper.revokeProjectGroupShare(projectId=projectId, groupId=int(targetGroupId)):
+                raise HTTPException(status_code=404, detail="Share entry not found")
+            self._touchProjectModificationTime(mapper=mapper, projectId=projectId)
+            return {"success": True}
 
         # Prevent removing owner from a project
-        if int(targetUserId) == int(currentUser["id"]):
+        if int(targetUserId) == int(dbProj["ownerId"]):
             raise HTTPException(status_code=400, detail="Owner cannot be removed from the project")
 
         deleted = mapper.revokeProjectShare(projectId=projectId, userId=targetUserId)

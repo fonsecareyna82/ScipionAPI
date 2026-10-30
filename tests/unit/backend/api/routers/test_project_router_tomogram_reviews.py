@@ -16,6 +16,7 @@ class FakeTomogramReviewService:
             "id": 7,
             "isOwner": True,
             "permission": "owner",
+            "access": "manage",
         }
         self.contextResult = {
             "setId": 47,
@@ -301,7 +302,8 @@ def test_PatchTomogramReviewRejectsReadOnlyProjectAccess(
     fakeTomogramReviewService.projectDbRowResult = {
         "id": 7,
         "isOwner": False,
-        "permission": "read",
+        "permission": "view",
+        "access": "view",
     }
 
     response = tomogramReviewClient.patch(
@@ -315,7 +317,7 @@ def test_PatchTomogramReviewRejectsReadOnlyProjectAccess(
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "Project write permission is required"
+    assert response.json()["detail"] == "This needs work access to the project"
     assert fakeTomogramReviewService.lastSaveCall is None
 
 
@@ -397,7 +399,8 @@ def test_PutTomogramReviewSchemaRejectsReadOnlyProjectAccess(
     fakeTomogramReviewService.projectDbRowResult = {
         "id": 7,
         "isOwner": False,
-        "permission": "read",
+        "permission": "view",
+        "access": "view",
     }
 
     response = tomogramReviewClient.put(
@@ -409,7 +412,7 @@ def test_PutTomogramReviewSchemaRejectsReadOnlyProjectAccess(
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "Project write permission is required"
+    assert response.json()["detail"] == "This needs work access to the project"
     assert fakeTomogramReviewService.lastSchemaCall is None
 
 
@@ -475,7 +478,8 @@ def test_PostTomogramReviewSubsetRejectsReadOnlyProjectAccess(
     fakeTomogramReviewService.projectDbRowResult = {
         "id": 7,
         "isOwner": False,
-        "permission": "read",
+        "permission": "view",
+        "access": "view",
     }
 
     response = tomogramReviewClient.post(
@@ -486,7 +490,7 @@ def test_PostTomogramReviewSubsetRejectsReadOnlyProjectAccess(
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "Project write permission is required"
+    assert response.json()["detail"] == "This needs work access to the project"
     assert fakeTomogramReviewService.lastSubsetCall is None
 
 

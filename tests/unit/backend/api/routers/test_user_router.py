@@ -68,6 +68,8 @@ class FakeUserMapper:
         }
 
         self.updatedUserFields = []
+        # The access service is replaced by FakeAccessService; it only gets this connection
+        self.db = None
 
     def listUsers(self, excludeUserId=None):
         self.lastListUsersCall = {
@@ -86,17 +88,40 @@ class FakeUserMapper:
         self.updatedUserFields.append((userId, fields))
 
 
+class FakeAccessService:
+    """Roles and groups as the access service keeps them; its rules are tested against the database."""
+    access = {}
+    updates = []
+
+    def __init__(self, db=None):
+        pass
+
+    def withAccess(self, users):
+        return [dict(user, **self.access.get(user["id"], {"roleIds": [], "groupIds": []})) for user in users]
+
+    def updateUserAccess(self, actor, userId, updates, updateUserFields):
+        self.updates.append((actor["id"], userId, dict(updates)))
+        if updates.get("isActive") is not None:
+            updateUserFields(userId, {"isActive": updates["isActive"]})
+        current = self.access.setdefault(userId, {"roleIds": [], "groupIds": []})
+        for key in ("roleIds", "groupIds"):
+            if updates.get(key) is not None:
+                current[key] = list(updates[key])
+
+
 @pytest.fixture
-def adminUserClient(userRouterModule, fakeUserMapper):
+def adminUserClient(userRouterModule, fakeUserMapper, monkeypatch):
     app = FastAPI()
     app.include_router(userRouterModule.router)
 
     app.dependency_overrides[userRouterModule.getMapper] = lambda: fakeUserMapper
-    app.dependency_overrides[userRouterModule.requireAdmin] = lambda: {
+    app.dependency_overrides[userRouterModule.requirePermission("users.manage")] = lambda: {
         "id": 1,
         "email": "admin@example.com",
         "role": "admin",
     }
+    FakeAccessService.access, FakeAccessService.updates = {}, []
+    monkeypatch.setattr(userRouterModule, "AccessService", FakeAccessService)
 
     with TestClient(app) as client:
         yield client
@@ -176,14 +201,16 @@ def test_AdminCanDeactivateUser(adminUserClient, fakeUserMapper):
     ]
 
 
-def test_AdminCanChangeUserRole(adminUserClient, fakeUserMapper):
+def test_AdminGivesRolesAndGroups(adminUserClient):
     response = adminUserClient.patch(
         "/users/admin/2",
-        json={"role": "admin"},
+        json={"roleIds": [4, 3], "groupIds": [7]},
     )
 
     assert response.status_code == 200
-    assert response.json()["role"] == "admin"
+    assert response.json()["roleIds"] == [4, 3]
+    assert response.json()["groupIds"] == [7]
+    assert FakeAccessService.updates == [(1, 2, {"roleIds": [4, 3], "groupIds": [7]})]
 
 
 def test_AdminCannotDeactivateOwnAccount(adminUserClient):
@@ -194,16 +221,6 @@ def test_AdminCannotDeactivateOwnAccount(adminUserClient):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "You cannot deactivate your own account"
-
-
-def test_AdminCannotRemoveOwnAdminRole(adminUserClient):
-    response = adminUserClient.patch(
-        "/users/admin/1",
-        json={"role": "user"},
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "You cannot remove your own admin role"
 
 
 def test_AdminUserUpdateReturns404(adminUserClient):

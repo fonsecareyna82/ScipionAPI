@@ -29,7 +29,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Any, Dict, List
-from app.backend.api.dependencies import getCurrentUser, requireAdmin
+from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.permissions import requirePermission
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -159,7 +160,7 @@ def patchUserSettings(
     status_code=status.HTTP_200_OK,
 )
 def getInstanceSettings(
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: SettingsService = Depends(getSettingsService),
 ):
@@ -185,7 +186,7 @@ def getInstanceSettings(
 )
 def getInstanceResources(
     currentUser=Depends(
-        requireAdmin
+        requirePermission("settings.manage")
     ),
     service: SettingsService = Depends(
         getSettingsService
@@ -232,7 +233,7 @@ def getJobsOverview(
         ge=1,
         le=100,
     ),
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("jobs.manage")),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: JobMonitoringService = Depends(getJobMonitoringService),
 ):
@@ -271,7 +272,7 @@ def getJobNodeCapabilities(
         ge=0.5,
         le=30.0,
     ),
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("jobs.manage")),
     service: JobMonitoringService = Depends(getJobMonitoringService),
 ):
     try:
@@ -306,7 +307,7 @@ def controlJobWorker(
     workerKind: str,
     action: str,
     currentUser=Depends(
-        requireAdmin
+        requirePermission("jobs.manage")
     ),
     service: WorkerControlService = Depends(
         getWorkerControlService
@@ -358,7 +359,7 @@ def controlJobWorker(
 )
 def putInstanceSettings(
     payload: InstanceSettingsIn,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: SettingsService = Depends(getSettingsService),
 ):
@@ -384,7 +385,7 @@ def putInstanceSettings(
 )
 def patchInstanceSettings(
     patch: InstanceSettingsPatch,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: SettingsService = Depends(getSettingsService),
 ):
@@ -409,7 +410,7 @@ def patchInstanceSettings(
     status_code=status.HTTP_200_OK,
 )
 def getEnvironmentVariables(
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     service: SettingsService = Depends(getSettingsService),
 ):
     try:
@@ -431,7 +432,7 @@ def getEnvironmentVariables(
 )
 def patchEnvironmentVariables(
     patch: Dict[str, str],
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     service: SettingsService = Depends(getSettingsService),
 ):
     try:
@@ -453,7 +454,7 @@ def patchEnvironmentVariables(
 )
 def resetEnvironmentVariable(
     variableName: str,
-    currentUser=Depends(requireAdmin),
+    currentUser=Depends(requirePermission("settings.manage")),
     service: SettingsService = Depends(getSettingsService),
 ):
     try:
@@ -480,7 +481,7 @@ def resetEnvironmentVariable(
     status_code=status.HTTP_200_OK,
 )
 def getHostSettings(
-        currentUser=Depends(requireAdmin),
+        currentUser=Depends(requirePermission("settings.manage")),
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: SettingsService = Depends(getSettingsService),
 ):
@@ -506,7 +507,7 @@ def getHostSettings(
 )
 def putHostSettings(
         payload: HostSettingsIn,
-        currentUser=Depends(requireAdmin),
+        currentUser=Depends(requirePermission("settings.manage")),
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: SettingsService = Depends(getSettingsService),
 ):
@@ -532,7 +533,7 @@ def putHostSettings(
 )
 def patchHostSettings(
         patch: HostSettingsPatch,
-        currentUser=Depends(requireAdmin),
+        currentUser=Depends(requirePermission("settings.manage")),
         mapper: PostgresqlFlatMapper = Depends(getMapper),
         service: SettingsService = Depends(getSettingsService),
 ):

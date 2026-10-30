@@ -77,6 +77,7 @@ def ensureAdminUser(env: Dict[str, str], adminPassword: Optional[str] = None) ->
             )
             session.add(user)
             session.commit()
+            _grantSystemRole(session, user.id)
             return
 
         # updateExistingAdminUser
@@ -89,6 +90,7 @@ def ensureAdminUser(env: Dict[str, str], adminPassword: Optional[str] = None) ->
             user.firstName = adminName
 
         session.commit()
+        _grantSystemRole(session, user.id)
 
     except Exception:
         # rollbackOnError
@@ -96,3 +98,13 @@ def ensureAdminUser(env: Dict[str, str], adminPassword: Optional[str] = None) ->
         raise
     finally:
         session.close()
+
+
+def _grantSystemRole(session, userId):
+    """The administrator holds the Administrator role, which gives every permission."""
+    from sqlalchemy import text
+
+    from app.backend.mapper.access_mapper import GRANT_SYSTEM_ROLE_SQL
+
+    session.execute(text(GRANT_SYSTEM_ROLE_SQL.replace("%(userId)s", ":userId")), {"userId": int(userId)})
+    session.commit()
