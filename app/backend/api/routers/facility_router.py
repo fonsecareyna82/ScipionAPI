@@ -2,18 +2,20 @@
 
 Without facility mode every route but the status answers 404, as if it did not exist.
 """
+from datetime import date
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.permissions import requirePermission
+from app.backend.api.permissions import hasPermission, requirePermission
 from app.backend.api.services.facility_service import (
     PHOTO_MAX_UPLOAD_BYTES, FacilityService, facilityStatus, isFacilityStaff, requireFacilityMode,
 )
+from app.backend.api.services.facility_sample_service import FacilitySampleService
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -48,6 +50,50 @@ def requireFacilityStaff(currentUser: dict = Depends(getCurrentUser)) -> dict:
     if not isFacilityStaff(currentUser):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This is for the facility staff")
     return currentUser
+
+
+def requireSampleKeeper(currentUser: dict = Depends(getCurrentUser)) -> dict:
+    """Who records samples and grids: the staff who run sessions, and the facility managers."""
+    if not (hasPermission(currentUser, "facility.sessions") or hasPermission(currentUser, "facility.manage")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Permission required: facility.sessions or facility.manage")
+    return currentUser
+
+
+class GridPayload(BaseModel):
+    id: Optional[int] = None
+    position: int
+    gridNumber: Optional[int] = None
+    gridType: Optional[str] = ""
+    concentration: Optional[str] = ""
+    specimen: Optional[str] = ""
+    status: str = "stored"
+    notes: Optional[str] = ""
+
+
+class GridBoxPayload(BaseModel):
+    id: Optional[int] = None
+    label: str
+    vitrificationCode: Optional[str] = ""
+    vitrifiedOn: Optional[date] = None
+    notes: Optional[str] = ""
+    grids: List[GridPayload] = []
+
+
+class SamplePayload(BaseModel):
+    code: str
+    description: Optional[str] = ""
+    groupId: Optional[int] = None
+    ownerId: Optional[int] = None
+    accessRoute: Optional[str] = ""
+    notes: Optional[str] = ""
+    boxes: List[GridBoxPayload] = []
+
+
+def _sampleSummary(sample: Dict[str, Any]) -> Dict[str, Any]:
+    """What the audit log keeps of a sample."""
+    boxes = sample.get("boxes") or []
+    return {"boxes": len(boxes), "grids": sum(len(box.get("grids") or []) for box in boxes)}
 
 
 def _service(mapper: PostgresqlFlatMapper) -> FacilityService:
@@ -136,3 +182,38 @@ def deleteMicroscopePhoto(microscopeId: int, mapper: PostgresqlFlatMapper = Depe
     recordAudit(mapper, currentUser, "facility.microscopeUpdated", "microscope", microscopeId, microscope["name"],
                 {"photo": "removed"})
     return microscope
+
+
+@router.get("/samples", dependencies=[Depends(requireFacilityMode)])
+def listSamples(q: str = Query("", max_length=100, description="Text in a sample's code or description"),
+                mapper: PostgresqlFlatMapper = Depends(getMapper),
+                currentUser: dict = Depends(requireFacilityStaff)) -> List[Dict[str, Any]]:
+    """The samples, newest first, each with its boxes and grids."""
+    return FacilitySampleService(mapper.db).listSamples(q)
+
+
+@router.post("/samples", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+def createSample(payload: SamplePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                 currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    sample = FacilitySampleService(mapper.db).saveSample(payload.dict())
+    recordAudit(mapper, currentUser, "facility.sampleCreated", "sample", sample["id"], sample["code"],
+                _sampleSummary(sample))
+    return sample
+
+
+@router.put("/samples/{sampleId}", dependencies=[Depends(requireFacilityMode)])
+def updateSample(sampleId: int, payload: SamplePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                 currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    sample = FacilitySampleService(mapper.db).saveSample(payload.dict(), sampleId=sampleId)
+    recordAudit(mapper, currentUser, "facility.sampleUpdated", "sample", sampleId, sample["code"],
+                _sampleSummary(sample))
+    return sample
+
+
+@router.delete("/samples/{sampleId}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(requireFacilityMode)])
+def deleteSample(sampleId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                 currentUser: dict = Depends(requireSampleKeeper)) -> None:
+    sample = FacilitySampleService(mapper.db).deleteSample(sampleId)
+    recordAudit(mapper, currentUser, "facility.sampleDeleted", "sample", sampleId, sample["code"],
+                _sampleSummary(sample))

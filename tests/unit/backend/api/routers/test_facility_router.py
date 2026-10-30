@@ -210,3 +210,65 @@ def test_ThePhotoCanBeRemoved(modules, monkeypatch):
 
     assert client.delete("/facility/microscopes/%d/photo" % microscopeId).status_code == 200
     assert client.get("/facility/microscopes/%d/photo" % microscopeId).status_code == 404
+
+
+class _SampleService:
+    """Keeps samples in memory, as the routes see the service."""
+    store = {}
+
+    def __init__(self, db):
+        pass
+
+    def listSamples(self, text=""):
+        return [sample for sample in self.store.values() if text.lower() in sample["code"].lower()]
+
+    def saveSample(self, payload, sampleId=None):
+        sampleId = sampleId or len(self.store) + 1
+        self.store[sampleId] = dict(payload, id=sampleId)
+        return self.store[sampleId]
+
+    def deleteSample(self, sampleId):
+        return self.store.pop(sampleId)
+
+
+@pytest.fixture
+def sampleClient(modules, monkeypatch):
+    router, _ = modules
+    _SampleService.store = {}
+    monkeypatch.setattr(router, "FacilitySampleService", _SampleService)
+    return lambda permissions, mode="1": _client(modules, monkeypatch, permissions, mode=mode)
+
+
+NZ = {"code": "NZ251", "boxes": [{"label": "1", "vitrifiedOn": "2026-09-28",
+                                  "grids": [{"position": 1, "gridNumber": 1, "gridType": "Graphene"}]}]}
+
+
+def test_TheStaffWhoRunSessionsRecordSamples(sampleClient):
+    technician = sampleClient(["facility.sessions"])
+
+    created = technician.post("/facility/samples", json=NZ)
+    assert created.status_code == 201
+    sampleId = created.json()["id"]
+    assert technician.put("/facility/samples/%d" % sampleId, json=dict(NZ, description="nsp9")).status_code == 200
+    assert [sample["code"] for sample in technician.get("/facility/samples?q=nz2").json()] == ["NZ251"]
+    assert technician.delete("/facility/samples/%d" % sampleId).status_code == 204
+    assert technician.events == ["facility.sampleCreated", "facility.sampleUpdated", "facility.sampleDeleted"]
+
+
+def test_TheMonitorSeesSamplesButDoesNotRecordThem(sampleClient):
+    sampleClient(["facility.manage"]).post("/facility/samples", json=NZ)
+    monitor = sampleClient(["facility.monitor"])
+
+    assert monitor.get("/facility/samples").status_code == 200
+    assert monitor.post("/facility/samples", json=dict(NZ, code="NZ252")).status_code == 403
+    assert sampleClient(["projects.create"]).get("/facility/samples").status_code == 403
+
+
+def test_WithoutFacilityModeThereAreNoSamples(sampleClient):
+    assert sampleClient(["facility.manage"], mode="0").get("/facility/samples").status_code == 404
+
+
+def test_ABoxDateIsADate(sampleClient):
+    payload = dict(NZ, boxes=[dict(NZ["boxes"][0], vitrifiedOn="28/09/2026")])
+
+    assert sampleClient(["facility.manage"]).post("/facility/samples", json=payload).status_code == 422
