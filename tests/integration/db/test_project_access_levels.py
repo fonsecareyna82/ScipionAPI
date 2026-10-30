@@ -117,3 +117,48 @@ def test_SharingNeedsTheSharePermission(project):
 
     assert asUser("owner").post("/projects/%s/share" % projectId).status_code == 403
     assert asUser("owner").delete("/projects/%s" % projectId).status_code == 200
+
+
+def test_APiReachesTheProjectsOfTheirGroupsMembersAtTheGroupsPiAccess(project):
+    projectId, asUser, flat, users = project
+    access = AccessPostgresqlMapper(flat.db)
+    # A Guest holds no permission of their own: only being the PI of the owner's group reaches the project
+    pi = flat.insertUser(email="pi-%s@example.com" % uuid4().hex, hashedPassword="x", firstName="pi", lastName="",
+                         institution=None, role="user", isActive=True, isVerified=True, verificationCode="")
+    users["pi"] = pi
+    access.setUserRoles(pi, [role["id"] for role in access.listRoles() if role["name"] == "Guest"])
+    members = [{"userId": users["owner"], "groupRole": "member"}, {"userId": pi, "groupRole": "pi"}]
+    groupId = access.insertGroup("Lab of the PI %s" % uuid4().hex, "", [], members)
+
+    def reached():
+        row = flat.getProject(projectId=projectId, userId=pi)
+        return row and (row["access"], row["accessVia"])
+
+    try:
+        assert reached() == ("view", "group")
+        assert asUser("pi").get("/projects/%s/protocols" % projectId).status_code == 200
+        assert asUser("pi").post("/projects/%s/launch" % projectId).status_code == 403
+
+        access.updateGroup(groupId, "Lab of the PI %s" % uuid4().hex, "", [], members, piAccess="work")
+        assert reached() == ("work", "group")
+        assert asUser("pi").post("/projects/%s/launch" % projectId).status_code == 200
+
+        access.updateGroup(groupId, "Lab of the PI %s" % uuid4().hex, "", [], members, piAccess="none")
+        assert not reached()
+
+        # A plain member of the group is no PI: the group alone does not reach the owner's projects
+        access.updateGroup(groupId, "Lab of the PI %s" % uuid4().hex, "", [],
+                           [dict(member, groupRole="member") for member in members], piAccess="manage")
+        assert not reached()
+    finally:
+        flat.db.execute("DELETE FROM user_groups WHERE id = %s", (groupId,))
+
+
+def test_TheAccessSaysWhereItComesFrom(project):
+    projectId, _, flat, users = project
+
+    def via(name):
+        return (flat.getProject(projectId=projectId, userId=users[name]) or {}).get("accessVia")
+
+    assert [via(name) for name in ("owner", "viewer", "member", "technician", "admin")] == [
+        "owner", "share", "share", "role", "role"]

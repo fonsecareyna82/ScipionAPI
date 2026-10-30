@@ -31,7 +31,7 @@ LIST_ROLES_SQL = """
 """
 
 LIST_GROUPS_SQL = """
-    SELECT g.id, g.name, g.description,
+    SELECT g.id, g.name, g.description, g."piAccess",
            COALESCE((SELECT ARRAY_AGG(gr."roleId" ORDER BY gr."roleId")
                        FROM user_group_roles gr WHERE gr."groupId" = g.id), ARRAY[]::INTEGER[]) AS "roleIds",
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('userId', m."userId", 'groupRole', m."groupRole",
@@ -146,18 +146,18 @@ class AccessPostgresqlMapper:
         return next((group for group in self.listGroups() if int(group["id"]) == int(groupId)), None)
 
     def insertGroup(self, name: str, description: str, roleIds: Iterable[int],
-                    members: Iterable[Dict[str, Any]]) -> int:
+                    members: Iterable[Dict[str, Any]], piAccess: str = "view") -> int:
         with self.db.transaction():
-            row = self.db.fetchOne('INSERT INTO user_groups (name, description) VALUES (%s, %s) RETURNING id',
-                                   (name, description))
+            row = self.db.fetchOne('INSERT INTO user_groups (name, description, "piAccess") VALUES (%s, %s, %s) '
+                                   'RETURNING id', (name, description, piAccess))
             self._replaceGroupContents(int(row["id"]), roleIds, members)
         return int(row["id"])
 
     def updateGroup(self, groupId: int, name: str, description: str, roleIds: Iterable[int],
-                    members: Iterable[Dict[str, Any]]) -> None:
+                    members: Iterable[Dict[str, Any]], piAccess: str = "view") -> None:
         with self.db.transaction():
-            self.db.execute("UPDATE user_groups SET name = %s, description = %s WHERE id = %s",
-                            (name, description, int(groupId)), commit=False)
+            self.db.execute('UPDATE user_groups SET name = %s, description = %s, "piAccess" = %s WHERE id = %s',
+                            (name, description, piAccess, int(groupId)), commit=False)
             self._replaceGroupContents(int(groupId), roleIds, members)
 
     def deleteGroup(self, groupId: int) -> None:

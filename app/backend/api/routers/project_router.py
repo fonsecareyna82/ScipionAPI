@@ -78,6 +78,7 @@ from app.backend.utils.tilt_series_stack import parseIndices as parseTiltStackIn
 from app.backend.utils.file_handlers import FileHandlers
 from app.backend.api.project_access import projectRouteAccess
 from app.backend.api.permissions import checkPermission, checkProjectAccess, hasPermission
+from app.backend.api.audit import recordAudit
 
 # Every project route checks the signed-in user's access to its project (see project_access)
 router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(projectRouteAccess(getMapper))])
@@ -271,6 +272,45 @@ def listProjects(
     return service.listProjects(mapper, currentUser)
 
 
+def _field(record, name: str):
+    """A field of a dict or a model."""
+    return record.get(name) if isinstance(record, dict) else getattr(record, name, None)
+
+
+def _projectName(mapper, projectId: int, currentUser: dict) -> Optional[str]:
+    """The project's name as the audit log shows it (None when it cannot be read)."""
+    try:
+        row = mapper.getProject(projectId=projectId, userId=currentUser["id"])
+        return os.path.basename(str(row["name"]).rstrip("/")) if row else None
+    except Exception:
+        return None
+
+
+def _auditProject(mapper, currentUser: dict, action: str, projectId, projectName: Optional[str],
+                  details: Optional[Dict[str, Any]] = None) -> None:
+    if projectName:
+        projectName = os.path.basename(str(projectName).rstrip("/")) or str(projectName)
+    recordAudit(mapper, currentUser, action, "project", projectId, projectName, details)
+
+
+def _shareTargets(mapper, userIds, groupIds) -> Dict[str, List[str]]:
+    """The emails and group names a project is shared with or taken from."""
+    from app.backend.mapper.access_mapper import AccessPostgresqlMapper
+
+    targets: Dict[str, List[str]] = {}
+    try:
+        if userIds:
+            targets["users"] = [(mapper.getUserById(int(userId)) or {}).get("email") or "#%s" % userId
+                                for userId in userIds]
+        if groupIds:
+            access = AccessPostgresqlMapper(mapper.db)
+            targets["groups"] = [(access.getGroup(int(groupId)) or {}).get("name") or "#%s" % groupId
+                                 for groupId in groupIds]
+    except Exception:
+        targets = {"userIds": list(userIds or ()), "groupIds": list(groupIds or ())}
+    return targets
+
+
 @router.post("/", response_model=ProjectOut)
 def createProject(
     projectData: ProjectCreate,
@@ -278,7 +318,9 @@ def createProject(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    return service.createProject(mapper, projectData, currentUser)
+    project = service.createProject(mapper, projectData, currentUser)
+    _auditProject(mapper, currentUser, "projects.created", _field(project, "id"), _field(project, "name"))
+    return project
 
 
 @router.post("/import", response_model=ProjectImportOut, status_code=status.HTTP_201_CREATED)
@@ -288,7 +330,10 @@ def importProject(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    return service.importProject(mapper, projectData, currentUser)
+    project = service.importProject(mapper, projectData, currentUser)
+    _auditProject(mapper, currentUser, "projects.imported", _field(project, "id"), _field(project, "name"),
+                  {"source": projectData.projectLocation})
+    return project
 
 
 @router.get("/{projectId}", response_model=Any)
@@ -390,7 +435,12 @@ def updateProject(
     mapper: PostgresqlFlatMapper = Depends(getMapper),
     service: ProjectService = Depends(getProjectService),
 ):
-    return service.updateProject(mapper, projectId, currentUser, projectData)
+    previousName = _projectName(mapper, projectId, currentUser)
+    project = service.updateProject(mapper, projectId, currentUser, projectData)
+    newName = _projectName(mapper, projectId, currentUser)
+    _auditProject(mapper, currentUser, "projects.updated", projectId, newName,
+                  {"renamedFrom": previousName} if previousName and previousName != newName else {})
+    return project
 
 
 @router.delete("/{projectId}", status_code=status.HTTP_200_OK)
@@ -403,7 +453,10 @@ def deleteProject(
     """
     Delete a project owned by the authenticated user.
     """
-    return service.deleteProject(mapper, currentUser, projectId)
+    projectName = _projectName(mapper, projectId, currentUser)
+    result = service.deleteProject(mapper, currentUser, projectId)
+    _auditProject(mapper, currentUser, "projects.deleted", projectId, projectName)
+    return result
 
 
 # ======================================================================
@@ -421,7 +474,7 @@ def shareProject(
     """
     Share a project with another users.
     """
-    return projectService.shareProjectWithUser(
+    share = projectService.shareProjectWithUser(
         mapper=mapper,
         projectId=projectId,
         currentUser=currentUser,
@@ -429,6 +482,9 @@ def shareProject(
         permission=payload.permission,
         targetGroupIds=payload.groupIds,
     )
+    _auditProject(mapper, currentUser, "projects.shared", projectId, _projectName(mapper, projectId, currentUser),
+                  dict(_shareTargets(mapper, payload.userIds, payload.groupIds), level=share.get("permission")))
+    return share
 
 @router.delete(
     "/{projectId}/share/{targetUserId}",
@@ -452,6 +508,8 @@ def revokeProjectShare(
         currentUser=currentUser,
         targetUserId=targetUserId,
     )
+    _auditProject(mapper, currentUser, "projects.unshared", projectId, _projectName(mapper, projectId, currentUser),
+                  _shareTargets(mapper, [targetUserId], []))
     return {"success": True}
 
 
@@ -474,6 +532,8 @@ def revokeProjectGroupShare(
         targetUserId=0,
         targetGroupId=targetGroupId,
     )
+    _auditProject(mapper, currentUser, "projects.unshared", projectId, _projectName(mapper, projectId, currentUser),
+                  _shareTargets(mapper, [], [targetGroupId]))
     return {"success": True}
 
 

@@ -840,13 +840,20 @@ PROJECT_ACCESS_SQL = """
                    ELSE 0
                END AS rank
     ),
-    ranked AS (
+    -- The groups the user is a PI of, with what their PIs may do in their members' projects
+    supervising AS (
+        SELECT m."groupId",
+               CASE g."piAccess" WHEN 'manage' THEN 3 WHEN 'work' THEN 2 WHEN 'view' THEN 1 ELSE 0 END AS rank
+          FROM user_group_members m
+          JOIN user_groups g ON g.id = m."groupId"
+         WHERE m."userId" = %%(userId)s AND m."groupRole" = 'pi' AND g."piAccess" <> 'none'
+    ),
+    sourced AS (
         SELECT p.*,
                (p."ownerId" = %%(userId)s) AS "isOwner",
-               COALESCE(shared.rank, 0) > 0 AS "isShared",
-               GREATEST(CASE WHEN p."ownerId" = %%(userId)s THEN 3 ELSE 0 END,
-                        COALESCE(shared.rank, 0),
-                        (SELECT rank FROM byRole)) AS rank
+               COALESCE(shared.rank, 0) AS "shareRank",
+               COALESCE(supervised.rank, 0) AS "piRank",
+               (SELECT rank FROM byRole) AS "roleRank"
           FROM projects p
           LEFT JOIN LATERAL (
               SELECT MAX(CASE s.permission WHEN 'manage' THEN 3 WHEN 'work' THEN 2 ELSE 1 END) AS rank
@@ -855,10 +862,26 @@ PROJECT_ACCESS_SQL = """
                  AND (s."userId" = %%(userId)s
                       OR s."groupId" IN (SELECT "groupId" FROM user_group_members WHERE "userId" = %%(userId)s))
           ) shared ON TRUE
+          LEFT JOIN LATERAL (
+              SELECT MAX(sv.rank) AS rank
+                FROM supervising sv
+                JOIN user_group_members owner ON owner."groupId" = sv."groupId" AND owner."userId" = p."ownerId"
+          ) supervised ON TRUE
          WHERE p.status IS DISTINCT FROM 'deleting'
            %(projectFilter)s
+    ),
+    ranked AS (
+        SELECT p.*,
+               p."shareRank" > 0 AS "isShared",
+               GREATEST(CASE WHEN p."isOwner" THEN 3 ELSE 0 END, p."shareRank", p."piRank", p."roleRank") AS rank
+          FROM sourced p
     )
     SELECT p.*,
+           -- Where the access comes from: owner, share, group (the user is a PI of the owner's group) or role
+           CASE WHEN p."isOwner" THEN 'owner'
+                WHEN p."shareRank" = p.rank THEN 'share'
+                WHEN p."piRank" = p.rank THEN 'group'
+                ELSE 'role' END AS "accessVia",
            (ARRAY['view', 'work', 'manage'])[p.rank] AS access,
            CASE WHEN p."isOwner" THEN 'owner' ELSE (ARRAY['view', 'work', 'manage'])[p.rank] END AS permission
       FROM ranked p
@@ -1653,6 +1676,7 @@ class PostgresqlFlatMapper(Mapper):
         A project the user can access, annotated with how (see PROJECT_ACCESS_SQL):
           - access: view, work or manage;
           - isOwner, isShared (shared with the user or one of their groups);
+          - accessVia: owner, share, group (a PI of a group the owner is in) or role;
           - permission: "owner" for the owner, else the access.
         """
         return self.db.fetchOne(

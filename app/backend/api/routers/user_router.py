@@ -33,6 +33,7 @@ from app.backend.database import getMapper
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
 from app.backend.api.services.access_service import AccessService
+from app.backend.api.audit import recordAudit, userLabel
 from app.backend.api.schemas.user_schema import AdminUserOut, AdminUserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -85,7 +86,11 @@ def updateAdminUser(
         )
 
     # Roles, groups and activation change together; no one gives what they do not hold
-    AccessService(mapper.db).updateUserAccess(adminUser, userId, updateFields, mapper.updateUserFields)
+    changes = AccessService(mapper.db).updateUserAccess(adminUser, userId, updateFields, mapper.updateUserFields)
+    if updateFields.get("isActive") is not None and bool(updateFields["isActive"]) != bool(user.get("isActive")):
+        changes["isActive"] = bool(updateFields["isActive"])
+    if changes:
+        recordAudit(mapper, adminUser, "users.updated", "user", userId, userLabel(user), changes)
 
     updatedUser = mapper.getUserById(userId)
     if not updatedUser:

@@ -8,10 +8,16 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from fastapi import HTTPException, status
 
-from app.backend.api.permissions import PERMISSIONS, validPermissions
+from app.backend.api.permissions import PERMISSIONS, PROJECT_ACCESS_RANK, validPermissions
 from app.backend.mapper.access_mapper import AccessPostgresqlMapper
 
 GROUP_ROLES = ("member", "pi")
+
+# What a group's PIs may do in the projects its members own; a new group starts at view
+PI_ACCESS_LEVELS = ("none", "view", "work", "manage")
+DEFAULT_PI_ACCESS = "view"
+# Raising it is giving access to others' projects: the actor must hold as much over every project
+PI_ACCESS_NEEDS = {"view": "projects.viewAll", "work": "projects.manageAll", "manage": "projects.manageAll"}
 
 
 def _badRequest(detail: str) -> HTTPException:
@@ -122,22 +128,36 @@ class AccessService:
             if groupRole not in GROUP_ROLES:
                 raise _badRequest("Unknown group role: %s" % groupRole)
             members.append({"userId": int(member["userId"]), "groupRole": groupRole})
+        piAccess = str(payload.get("piAccess") or DEFAULT_PI_ACCESS).strip().lower()
+        if piAccess not in PI_ACCESS_LEVELS:
+            raise _badRequest("Unknown PI access: %s" % piAccess)
         roles = self._rolesFor(roleIds)
+        previousPiAccess = DEFAULT_PI_ACCESS
         # Its roles reach every member, so the actor must hold what they give (also the ones it had)
         if groupId is not None:
             current = self.mapper.getGroup(groupId)
             if current is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
             roles += self._rolesFor(current["roleIds"])
+            previousPiAccess = current.get("piAccess") or DEFAULT_PI_ACCESS
         self._checkCanGive(actor, roles)
+        self._checkCanRaisePiAccess(actor, previousPiAccess, piAccess)
         description = str(payload.get("description") or "").strip()
         with self.db.transaction():
             if groupId is None:
-                groupId = self.mapper.insertGroup(name, description, roleIds, members)
+                groupId = self.mapper.insertGroup(name, description, roleIds, members, piAccess)
             else:
-                self.mapper.updateGroup(groupId, name, description, roleIds, members)
+                self.mapper.updateGroup(groupId, name, description, roleIds, members, piAccess)
             self._checkAnAdministratorRemains()
         return self.mapper.getGroup(groupId)
+
+    @staticmethod
+    def _checkCanRaisePiAccess(actor: dict, previous: str, level: str) -> None:
+        if PROJECT_ACCESS_RANK.get(level, 0) <= PROJECT_ACCESS_RANK.get(previous, 0):
+            return
+        needed = PI_ACCESS_NEEDS[level]
+        if not actor.get("isSystemAdmin") and needed not in set(actor.get("permissions") or ()):
+            raise _forbidden("Giving the PIs %s access to their members' projects needs %s" % (level, needed))
 
     def deleteGroup(self, actor: dict, groupId: int) -> None:
         group = self.mapper.getGroup(groupId)
@@ -153,23 +173,43 @@ class AccessService:
         access = self.mapper.listUsersAccess()
         return [dict(user, **access.get(int(user["id"]), {"roleIds": [], "groupIds": []})) for user in users]
 
-    def updateUserAccess(self, actor: dict, userId: int, updates: Dict[str, Any], updateUserFields) -> None:
-        """Apply isActive, roleIds and groupIds of updates to userId, all or nothing."""
+    def updateUserAccess(self, actor: dict, userId: int, updates: Dict[str, Any], updateUserFields) -> Dict[str, Any]:
+        """Apply isActive, roleIds and groupIds of updates to userId, all or nothing.
+
+        Returns the roles and groups given and taken away, by name (for the audit log).
+        """
         current = self.mapper.listUsersAccess().get(int(userId), {"roleIds": [], "groupIds": []})
+        changes: Dict[str, Any] = {}
         with self.db.transaction():
             if "roleIds" in updates and updates["roleIds"] is not None:
                 roleIds = [int(roleId) for roleId in updates["roleIds"]]
                 changed = set(roleIds) ^ set(current["roleIds"])
                 self._checkCanGive(actor, self._rolesFor(changed))
                 self.mapper.setUserRoles(userId, roleIds, commit=False)
+                changes.update(self._namesOfChange("roles", self._rolesById(), current["roleIds"], roleIds))
             if "groupIds" in updates and updates["groupIds"] is not None:
                 groupIds = [int(groupId) for groupId in updates["groupIds"]]
                 changed = set(groupIds) ^ set(current["groupIds"])
                 self._checkCanGive(actor, self._groupRoles(changed))
                 self.mapper.setUserGroups(userId, groupIds, commit=False)
+                groupsById = {int(group["id"]): group for group in self.mapper.listGroups()}
+                changes.update(self._namesOfChange("groups", groupsById, current["groupIds"], groupIds))
             if "isActive" in updates and updates["isActive"] is not None:
                 updateUserFields(userId, {"isActive": bool(updates["isActive"])})
             self._checkAnAdministratorRemains()
+        return changes
+
+    @staticmethod
+    def _namesOfChange(kind: str, byId: Dict[int, Dict[str, Any]], before: Iterable[int],
+                       after: Iterable[int]) -> Dict[str, List[str]]:
+        before, after = {int(itemId) for itemId in before}, {int(itemId) for itemId in after}
+        names = lambda ids: sorted(str(byId.get(itemId, {}).get("name") or "#%s" % itemId) for itemId in ids)
+        change = {}
+        if after - before:
+            change["%sAdded" % kind] = names(after - before)
+        if before - after:
+            change["%sRemoved" % kind] = names(before - after)
+        return change
 
     def giveDefaultRoles(self, userId: int) -> None:
         self.mapper.setUserRoles(userId, self.mapper.listDefaultRoleIds())

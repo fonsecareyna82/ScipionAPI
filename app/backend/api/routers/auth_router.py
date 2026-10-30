@@ -35,6 +35,7 @@ from app.backend.utils.security import hashPassword, verifyPassword
 from app.backend.utils.jwt import createAccessToken, createRefreshToken, verifyToken
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services.access_service import AccessService
+from app.backend.api.audit import recordAudit
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -75,6 +76,8 @@ async def signup(
 
     # The default roles (User, unless an administrator chose others); the account still waits for activation
     AccessService(mapper.db).giveDefaultRoles(userId)
+    recordAudit(mapper, {"id": userId, "email": userData.email}, "auth.signUp", "user", userId,
+                userData.email)
 
     # Return confirmation message and new user ID
     return {
@@ -128,14 +131,18 @@ def login(
 ):
     user = mapper.getUserByEmail(loginData.email)
     if not user:
+        recordAudit(mapper, None, "auth.signInFailed", details={"reason": "unknown account"},
+                    actorEmail=loginData.email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Invalid credentials")
 
     if not verifyPassword(loginData.password, user["hashedPassword"]):
+        recordAudit(mapper, user, "auth.signInFailed", details={"reason": "wrong password"})
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Invalid credentials")
 
     if not bool(user.get("isActive", True)):
+        recordAudit(mapper, user, "auth.signInFailed", details={"reason": "account not active"})
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ACCOUNT_NOT_ACTIVE_MESSAGE,
@@ -147,6 +154,7 @@ def login(
 
     accessToken = createAccessToken(data={"sub": user["email"]})
     refreshToken = createRefreshToken(data={"sub": user["email"]})
+    recordAudit(mapper, user, "auth.signIn")
     return LoginResponse(accessToken=accessToken, refreshToken=refreshToken, tokenType="bearer")
 
 
@@ -234,6 +242,7 @@ def changeMyPassword(
         currentUser["id"],
         hashPassword(passwordData.newPassword),
     )
+    recordAudit(mapper, currentUser, "auth.passwordChanged", "user", currentUser["id"], currentUser.get("email"))
 
     return {"message": "Password changed successfully"}
 

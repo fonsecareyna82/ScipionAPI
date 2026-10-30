@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Any, Dict, List
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
+from app.backend.api.audit import recordAudit, recordAuditOwnConnection
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -76,6 +77,14 @@ def getJobMonitoringService() -> JobMonitoringService:
 def getWorkerControlService() -> WorkerControlService:
     return WorkerControlService()
 
+
+
+def _changedFields(model) -> Dict[str, Any]:
+    """The settings a request sets, by name (for the audit log)."""
+    try:
+        return {"changed": sorted(model.dict(exclude_unset=True))}
+    except Exception:
+        return {}
 
 @router.get(
     "/user",
@@ -314,10 +323,13 @@ def controlJobWorker(
     ),
 ):
     try:
-        return service.control(
+        result = service.control(
             workerKind=workerKind,
             action=action,
         )
+        recordAuditOwnConnection(currentUser, "jobs.worker", "worker", workerKind, workerKind,
+                                 {"action": action})
+        return result
 
     except ValueError as error:
         raise HTTPException(
@@ -367,7 +379,9 @@ def putInstanceSettings(
     Replace instance-wide settings (admin-only).
     """
     try:
-        return service.putInstanceSettings(mapper, currentUser, payload)
+        result = service.putInstanceSettings(mapper, currentUser, payload)
+        recordAudit(mapper, currentUser, "settings.instance", details=_changedFields(payload))
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -393,7 +407,9 @@ def patchInstanceSettings(
     Partially update instance-wide settings (admin-only).
     """
     try:
-        return service.patchInstanceSettings(mapper, currentUser, patch)
+        result = service.patchInstanceSettings(mapper, currentUser, patch)
+        recordAudit(mapper, currentUser, "settings.instance", details=_changedFields(patch))
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -436,7 +452,10 @@ def patchEnvironmentVariables(
     service: SettingsService = Depends(getSettingsService),
 ):
     try:
-        return service.patchEnvironmentVariables(currentUser, patch)
+        result = service.patchEnvironmentVariables(currentUser, patch)
+        # The names only: a value may be a secret
+        recordAuditOwnConnection(currentUser, "settings.environment", details={"changed": sorted(patch or {})})
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -458,10 +477,12 @@ def resetEnvironmentVariable(
     service: SettingsService = Depends(getSettingsService),
 ):
     try:
-        return service.resetEnvironmentVariable(
+        result = service.resetEnvironmentVariable(
             currentUser,
             variableName,
         )
+        recordAuditOwnConnection(currentUser, "settings.environment", details={"reset": [variableName]})
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -515,7 +536,9 @@ def putHostSettings(
     Replace host execution settings (admin-only).
     """
     try:
-        return service.putHostSettings(mapper, currentUser, payload)
+        result = service.putHostSettings(mapper, currentUser, payload)
+        recordAudit(mapper, currentUser, "settings.host", details=_changedFields(payload))
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -541,7 +564,9 @@ def patchHostSettings(
     Partially update host execution settings (admin-only).
     """
     try:
-        return service.patchHostSettings(mapper, currentUser, patch)
+        result = service.patchHostSettings(mapper, currentUser, patch)
+        recordAudit(mapper, currentUser, "settings.host", details=_changedFields(patch))
+        return result
     except HTTPException:
         raise
     except Exception as e:

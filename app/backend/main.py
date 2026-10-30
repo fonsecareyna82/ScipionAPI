@@ -50,6 +50,7 @@ from app.backend.api.routers.xmipp_picking_router import router as xmippPickingR
 from app.backend.api.routers.system_router import router as systemRouter
 from app.backend.api.routers.workspace_router import router as workspaceRouter
 from app.backend.api.routers.access_router import router as accessRouter
+from app.backend.api.audit import ClientAddressMiddleware
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHttpException
@@ -82,6 +83,9 @@ def _buildApiApp() -> FastAPI:
 
     # registerCustomErrorHandlers
     registerAllErrorHandlers(apiApp)
+
+    # The audit log keeps where each request came from
+    apiApp.add_middleware(ClientAddressMiddleware)
 
     apiApp.add_middleware(
         CORSMiddleware,

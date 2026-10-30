@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
+from app.backend.api.audit import audited
 from app.backend.api.services.protocol_viewer_inventory_service import buildProtocolViewerInventory
 from app.backend.api.services.scipion_domain_refresh_service import getScipionViewersSnapshot
 from app.backend.api.services.protocol_viewer_resolution_service import (
@@ -390,6 +391,7 @@ def listDevelPluginBrowserDirectory(path: str = Query("", description="Relative 
 
 
 @router.post("/devel/install", response_model=TaskStartResponse)
+@audited("plugins.installed", "plugin", lambda kw: (kw["payload"].path, kw["payload"].path, {"devel": True}))
 async def installDevelPlugin(payload: InstallDevelPluginRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         validation = develService.validateDevelPluginPath(payload.path)
@@ -651,6 +653,7 @@ def loadPlugin(pluginName: str, currentUser=Depends(getCurrentUser)):
     "/{pluginName}/binaries/{binaryTarget}/install",
     response_model=TaskStartResponse,
 )
+@audited("plugins.binaryInstalled", "plugin", lambda kw: (kw["pluginName"], kw["pluginName"], {"binary": kw["binaryTarget"]}))
 async def installPluginBinary(
         pluginName: str,
         binaryTarget: str,
@@ -696,6 +699,7 @@ async def installPluginBinary(
     "/{pluginName}/binaries/{binaryTarget}/uninstall",
     response_model=TaskStartResponse,
 )
+@audited("plugins.binaryUninstalled", "plugin", lambda kw: (kw["pluginName"], kw["pluginName"], {"binary": kw["binaryTarget"]}))
 async def uninstallPluginBinary(
         pluginName: str,
         binaryTarget: str,
@@ -1296,6 +1300,8 @@ async def _startInProcessTask(
 
 
 @router.post("/install-batch", response_model=TaskStartResponse)
+@audited("plugins.installed", "plugin", lambda kw: (None, ", ".join(kw["payload"].plugins),
+                                                    {"plugins": list(kw["payload"].plugins)}))
 async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         plugins = []
@@ -1389,6 +1395,8 @@ async def installPluginsBatch(payload: InstallPluginsBatchRequest, currentUser=D
 
 
 @router.post("/install/{pluginName}", response_model=TaskStartResponse)
+@audited("plugins.installed", "plugin", lambda kw: (kw["pluginName"], kw["pluginName"],
+                                                    {"skipBinaries": bool(kw.get("skipBinaries"))}))
 async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         if _celeryAppAvailable and _celeryInstallAvailable and installPluginTask is not None:
@@ -1439,6 +1447,7 @@ async def installPlugin(pluginName: str, skipBinaries: bool = False, currentUser
 
 
 @router.post("/uninstall/{pluginName}", response_model=TaskStartResponse)
+@audited("plugins.uninstalled", "plugin", lambda kw: (kw["pluginName"], kw["pluginName"], {}))
 async def uninstallPlugin(pluginName: str, currentUser=Depends(requirePermission("plugins.manage"))):
     try:
         if (

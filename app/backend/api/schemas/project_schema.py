@@ -64,6 +64,8 @@ class ProjectOut(BaseModel):
     isOwner: bool
     isShared: bool
     permission: str
+    # owner, share, group (a PI of the owner's group) or role
+    accessVia: Optional[str] = None
     projectOwnerId: int
     thumbnailItemsUrl: Optional[str] = None
     thumbnailUrl: Optional[str] = None
