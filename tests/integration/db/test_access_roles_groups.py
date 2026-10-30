@@ -49,8 +49,10 @@ def test_TheMigrationStartsWithTheDefaultRoles(access):
     assert set(roles) >= {"Administrator", "Facility manager", "Technician", "User", "Guest"}
     assert roles["Administrator"]["isSystem"] and not roles["User"]["isSystem"]
     assert roles["User"]["isDefault"]
-    assert roles["User"]["permissions"] == ["files.download", "projects.create", "projects.share"]
+    assert roles["User"]["permissions"] == ["files.download", "files.upload", "projects.create", "projects.share"]
     assert roles["Guest"]["permissions"] == []
+    # Uploading came later (f2b8d4c6a917): the roles that download got it, as new installations
+    assert all("files.upload" in roles[name]["permissions"] for name in ("Technician", "Facility manager"))
 
 
 def test_AUserHoldsTheirRolesAndTheirGroupsRoles(access):
@@ -64,7 +66,8 @@ def test_AUserHoldsTheirRolesAndTheirGroupsRoles(access):
     created["groups"].append(group["id"])
 
     held = withPermissions(MapperStub(access[0]), member)["permissions"]
-    assert set(held) == {"projects.create", "projects.share", "files.download"} | set(technician["permissions"])
+    assert set(held) == ({"projects.create", "projects.share", "files.download", "files.upload"}
+                         | set(technician["permissions"]))
     assert admin["isSystemAdmin"] and admin["permissions"] == sorted(PERMISSIONS)
 
 

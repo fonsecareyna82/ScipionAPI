@@ -94,6 +94,9 @@ SCIPIONWEB_VARIABLES = (
     ("SCIPIONWEB_DATA_ROOTS", "/",
      "Folders, separated by ':', that users without the files.browseServer permission may browse and point "
      "their protocols to, besides their projects. '/' limits nothing."),
+    ("SCIPIONWEB_UPLOAD_MAX_GB", "10",
+     "Largest file, in GB, a user may upload from their computer into a project's Uploads folder. "
+     "0 limits nothing."),
 )
 
 

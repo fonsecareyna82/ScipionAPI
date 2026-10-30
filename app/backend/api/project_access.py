@@ -46,6 +46,9 @@ PERMISSION_ROUTES = {
     ("POST", "/projects/import"): "projects.create",
     ("POST", "/projects/{projectId}/share"): "projects.share",
     ("POST", "/projects/{projectId}/protocols/{protocolId}/fs/download-link"): "files.download",
+    ("POST", "/projects/{projectId}/uploads"): "files.upload",
+    ("PUT", "/projects/{projectId}/uploads/{uploadId}"): "files.upload",
+    ("POST", "/projects/{projectId}/uploads/{uploadId}/complete"): "files.upload",
 }
 
 

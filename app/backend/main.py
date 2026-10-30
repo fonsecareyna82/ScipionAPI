@@ -50,6 +50,7 @@ from app.backend.api.routers.xmipp_picking_router import router as xmippPickingR
 from app.backend.api.routers.system_router import router as systemRouter
 from app.backend.api.routers.workspace_router import router as workspaceRouter
 from app.backend.api.routers.access_router import router as accessRouter
+from app.backend.api.routers.project_upload_router import router as projectUploadRouter
 from app.backend.api.audit import ClientAddressMiddleware
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
@@ -149,6 +150,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(systemRouter)
     apiApp.include_router(workspaceRouter)
     apiApp.include_router(accessRouter)
+    apiApp.include_router(projectUploadRouter)
 
     @apiApp.get("/health")
     def health_check():

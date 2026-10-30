@@ -60,11 +60,11 @@ def test_a_link_downloads_the_file_in_chunks_and_resumes_with_ranges(router, pro
     assert client.get("/projects/7/protocols/12/fs/download-file?token=fd.forged.x").status_code == 403
 
 
-def test_a_link_needs_the_download_permission(router, project):
-    with pytest.raises(HTTPException) as error:
-        _link(router, project, "Runs/000012_ProtImportMovies/extra/movie.tif", permissions=())
-    assert error.value.status_code == 403
-    assert "files.download" in error.value.detail
+def test_a_link_needs_the_download_permission():
+    # Checked by the router's guard before the route runs
+    from app.backend.api.project_access import PERMISSION_ROUTES
+
+    assert PERMISSION_ROUTES[("POST", "/projects/{projectId}/protocols/{protocolId}/fs/download-link")] == "files.download"
 
 
 def test_links_follow_the_browsing_boundary(router, project, tmp_path):

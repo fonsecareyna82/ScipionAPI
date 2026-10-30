@@ -25,6 +25,7 @@ PERMISSIONS: Dict[str, str] = {
     # Files
     "files.browseServer": "Browse the whole file system of the server",
     "files.download": "Download files of the projects one can see",
+    "files.upload": "Upload files from one's computer into the projects one works on",
     # Facility
     "facility.monitor": "See the facility monitor with every active stream",
     # A project's own monitor thresholds need work access to the project, not this
@@ -44,13 +45,13 @@ DEFAULT_ROLES = (
     (SYSTEM_ROLE_NAME, "Everything, now and in the future", True, False, tuple(PERMISSIONS)),
     ("Facility manager", "Runs the facility: users, groups, microscopes and templates", False, False,
      ("users.manage", "groups.manage", "projects.create", "projects.share", "projects.viewAll",
-      "files.browseServer", "files.download", "facility.monitor", "facility.thresholds", "facility.sessions",
-      "facility.manage")),
+      "files.browseServer", "files.download", "files.upload", "facility.monitor", "facility.thresholds",
+      "facility.sessions", "facility.manage")),
     ("Technician", "Facility staff: sessions, the monitor and the projects of the facility", False, False,
      ("projects.create", "projects.share", "projects.viewAll", "files.browseServer", "files.download",
-      "facility.monitor", "facility.thresholds", "facility.sessions")),
+      "files.upload", "facility.monitor", "facility.thresholds", "facility.sessions")),
     ("User", "Works on their own projects and the ones shared with them", False, True,
-     ("projects.create", "projects.share", "files.download")),
+     ("projects.create", "projects.share", "files.download", "files.upload")),
     ("Guest", "Only sees what is shared with them", False, False, ()),
 )
 
