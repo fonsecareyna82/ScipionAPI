@@ -1,15 +1,23 @@
-"""A protocol's summary (the desktop Summary tab), computed in a child process.
+"""A protocol's summary (the desktop Summary tab), computed in a child process and kept while it holds.
 
 The request is authorized here, before any plugin code runs; the child loads the project and the
-protocol, runs ``summary()`` and answers its lines and the objects they link to.
+protocol, runs ``summary()`` and answers its lines and the objects they link to. Loading the project is
+most of the cost, so the answer is kept with a fingerprint of what the summary reads (the protocol, its
+objects, its sets and its parents' sets: ``ProtocolSummaryMapper``). A read whose fingerprint has not
+changed answers the kept summary with one query: a finished protocol is computed once, and polling a
+running one computes again only when its data change.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+import threading
+import time
+from collections import OrderedDict
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from app.backend.api.services.protocol_viewer_dynamic_form_service import (
     DynamicProtocolViewerFormError, _run_worker,
 )
+from app.backend.mapper.protocol_summary_mapper import ProtocolSummaryMapper
 
 _WORKER_MODULE = 'app.backend.api.services.protocol_summary_worker'
 _REPLY_MARKER = b'__SCIPION_SUMMARY_JSON__:'
@@ -18,6 +26,48 @@ _MAX_REPLY = 262144
 _TIMEOUT = 60
 _MAX_LINES = 400
 _MAX_LINE = 4000
+# Kept summaries: the most recent ones; one is computed again after a while anyway (a run folder that
+# went missing, an updated plugin)
+_CACHE_SIZE = 512
+_CACHE_SECONDS = 3600
+
+
+class _SummaryCache:
+    """{(projectId, protocolId): (fingerprint, keptAt, summary)}, with one computation at a time per key."""
+
+    def __init__(self, size: int = _CACHE_SIZE, seconds: float = _CACHE_SECONDS):
+        self.size, self.seconds = size, seconds
+        self._entries: "OrderedDict[Tuple[int, int], Tuple[str, float, dict]]" = OrderedDict()
+        self._lock = threading.Lock()
+        self._keyLocks: Dict[Tuple[int, int], threading.Lock] = {}
+
+    def get(self, key, fingerprint: str) -> Optional[dict]:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or entry[0] != fingerprint or time.monotonic() - entry[1] > self.seconds:
+                return None
+            self._entries.move_to_end(key)
+            return entry[2]
+
+    def put(self, key, fingerprint: str, summary: dict) -> None:
+        with self._lock:
+            self._entries[key] = (fingerprint, time.monotonic(), summary)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self.size:
+                oldest, _ = self._entries.popitem(last=False)
+                self._keyLocks.pop(oldest, None)
+
+    def keyLock(self, key) -> threading.Lock:
+        with self._lock:
+            return self._keyLocks.setdefault(key, threading.Lock())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._keyLocks.clear()
+
+
+_cache = _SummaryCache()
 
 
 class ProtocolSummaryError(RuntimeError):
@@ -57,6 +107,33 @@ def getProtocolSummary(*, mapper: Any, current_user: Mapping[str, Any], project_
     row = mapper.getProjectProtocolByProtocolId(projectId=project_id, protocolId=protocol_id)
     if not isinstance(row, dict):
         raise ProtocolSummaryError('not_found')
+    key = (project_id, protocol_id)
+    fingerprint = _fingerprint(mapper, project_id, protocol_id)
+    if fingerprint is not None:
+        kept = _cache.get(key, fingerprint)
+        if kept is not None:
+            return kept
+    # Two readers of the same protocol (two tabs polling) compute it once
+    with _cache.keyLock(key):
+        if fingerprint is not None:
+            kept = _cache.get(key, fingerprint)
+            if kept is not None:
+                return kept
+        summary = _compute(row, project_id, protocol_id, worker_runner)
+        if fingerprint is not None:
+            _cache.put(key, fingerprint, summary)
+        return summary
+
+
+def _fingerprint(mapper: Any, project_id: int, protocol_id: int) -> Optional[str]:
+    """None when it cannot be read: the summary is then computed and not kept."""
+    try:
+        return ProtocolSummaryMapper(mapper.db).getFingerprint(project_id, protocol_id)
+    except Exception:
+        return None
+
+
+def _compute(row: dict, project_id: int, protocol_id: int, worker_runner) -> dict:
     request = {'projectId': project_id, 'protocolId': protocol_id, 'protocolDbId': int(row['id'])}
     try:
         if worker_runner is not None:

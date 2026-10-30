@@ -176,3 +176,106 @@ def test_the_child_refuses_an_unexpected_request():
     assert worker._valid_request(REQUEST)
     assert not worker._valid_request(dict(REQUEST, action="x"))
     assert not worker._valid_request(dict(REQUEST, projectId="7"))
+
+
+# Kept summaries ------------------------------------------------------------------------------------
+
+class FingerprintDb:
+    """The database as the fingerprint query sees it: one text per protocol."""
+
+    def __init__(self):
+        self.fingerprints = {}
+
+    def fetchOne(self, query, params):
+        value = self.fingerprints.get((params["projectId"], params["protocolId"]))
+        return {"fingerprint": value} if value is not None else None
+
+
+class KeepingMapper(Mapper):
+    def __init__(self):
+        super().__init__()
+        self.db = FingerprintDb()
+
+
+@pytest.fixture
+def keeping():
+    service._cache.clear()
+    mapper = KeepingMapper()
+    mapper.db.fingerprints[(7, "2")] = "running|10:00|a"
+    yield mapper
+    service._cache.clear()
+
+
+def test_an_unchanged_protocol_answers_its_kept_summary_without_a_child(keeping):
+    child = Worker({"lines": ["*40* movies"]})
+    ask = lambda: service.getProtocolSummary(mapper=keeping, current_user=USER, project_id=7, protocol_id=2,
+                                             worker_runner=child)
+
+    assert ask()["lines"] == ["*40* movies"]
+    assert ask()["lines"] == ["*40* movies"]
+    assert len(child.requests) == 1
+
+    # New items, a new status, a new comment: a new fingerprint, computed again
+    keeping.db.fingerprints[(7, "2")] = "running|10:05|b"
+    child.reply = {"lines": ["*52* movies"]}
+    assert ask()["lines"] == ["*52* movies"]
+    assert len(child.requests) == 2
+
+
+def test_a_summary_is_computed_again_after_a_while(keeping, monkeypatch):
+    child = Worker({"lines": ["Done"]})
+    ask = lambda: service.getProtocolSummary(mapper=keeping, current_user=USER, project_id=7, protocol_id=2,
+                                             worker_runner=child)
+    now = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+
+    ask()
+    now[0] += service._CACHE_SECONDS + 1
+    ask()
+
+    assert len(child.requests) == 2
+
+
+def test_without_a_fingerprint_nothing_is_kept(keeping):
+    keeping.db.fingerprints.clear()
+    child = Worker({"lines": ["Done"]})
+    for _ in range(2):
+        service.getProtocolSummary(mapper=keeping, current_user=USER, project_id=7, protocol_id=2,
+                                   worker_runner=child)
+    assert len(child.requests) == 2
+
+
+def test_two_readers_of_the_same_protocol_start_one_child(keeping):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slowChild(request, timeout):
+        calls.append(request)
+        started.set()
+        release.wait(5)
+        return {"lines": ["Done"]}
+
+    answers = []
+    readers = [threading.Thread(target=lambda: answers.append(service.getProtocolSummary(
+        mapper=keeping, current_user=USER, project_id=7, protocol_id=2, worker_runner=slowChild)))
+        for _ in range(2)]
+    readers[0].start()
+    started.wait(5)
+    readers[1].start()
+    release.set()
+    for reader in readers:
+        reader.join(5)
+
+    assert len(calls) == 1
+    assert [answer["lines"] for answer in answers] == [["Done"], ["Done"]]
+
+
+def test_the_cache_keeps_the_most_recent_summaries():
+    cache = service._SummaryCache(size=2)
+    for protocolId in (1, 2, 3):
+        cache.put((7, protocolId), "f", {"lines": [str(protocolId)]})
+    assert cache.get((7, 1), "f") is None
+    assert cache.get((7, 3), "f") == {"lines": ["3"]}
+    assert cache.get((7, 3), "other") is None
