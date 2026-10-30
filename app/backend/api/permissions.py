@@ -27,7 +27,8 @@ PERMISSIONS: Dict[str, str] = {
     "files.download": "Download files of the projects one can see",
     # Facility
     "facility.monitor": "See the facility monitor with every active stream",
-    "facility.thresholds": "Change the quality thresholds",
+    # A project's own monitor thresholds need work access to the project, not this
+    "facility.thresholds": "Change the facility's default quality thresholds",
     "facility.sessions": "Create and close acquisition sessions",
     "facility.manage": "Manage microscopes and processing templates",
 }
