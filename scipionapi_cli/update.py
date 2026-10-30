@@ -734,6 +734,71 @@ def _installUpdatedApi(repoRoot: Path) -> None:
     )
 
 
+# Free space an update needs where it writes: downloads, the extracted API, the backup, the wheels pip
+# builds and the packages it installs. A full disk also stops PostgreSQL, so an update never starts short.
+UPDATE_MIN_FREE_GB = 5.0
+
+
+def _minFreeBytes(env: Dict[str, str]) -> int:
+    raw = env.get("SCIPIONAPI_UPDATE_MIN_FREE_GB") or os.environ.get("SCIPIONAPI_UPDATE_MIN_FREE_GB")
+    try:
+        gigabytes = float(raw) if raw not in (None, "") else UPDATE_MIN_FREE_GB
+    except ValueError:
+        gigabytes = UPDATE_MIN_FREE_GB
+    return int(max(0.0, gigabytes) * 1024 ** 3)
+
+
+def _existingAncestor(path: Path) -> Path:
+    path = Path(path).expanduser().absolute()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return path
+
+
+def _checkFreeSpace(paths: Dict[str, Path], minFreeBytes: int) -> None:
+    """Stop before changing anything when a disk the update writes to has less than minFreeBytes free."""
+    if minFreeBytes <= 0:
+        return
+    seenDevices = set()
+    short = []
+    for label, path in paths.items():
+        existing = _existingAncestor(path)
+        try:
+            device = existing.stat().st_dev
+            if device in seenDevices:
+                continue
+            seenDevices.add(device)
+            free = shutil.disk_usage(existing).free
+        except OSError:
+            continue
+        _printInfo(f"Free space for {label} ({existing}): {_humanSize(free)}")
+        if free < minFreeBytes:
+            short.append(f"{label} ({existing}): {_humanSize(free)} free")
+    if short:
+        raise RuntimeError(
+            "Not enough free disk space to update; at least "
+            f"{_humanSize(minFreeBytes)} is needed on each disk the update writes to: " + "; ".join(short)
+            + ". Free some space (a full disk also stops PostgreSQL) or set SCIPIONAPI_UPDATE_MIN_FREE_GB."
+        )
+
+
+def _useUpdateTemp(tempDir: Path) -> None:
+    """Temporary files of the update (pip builds, the Web archive check) go under scipion_home, not /tmp."""
+    tempDir.mkdir(parents=True, exist_ok=True)
+    os.environ["TMPDIR"] = str(tempDir)
+    tempfile.tempdir = str(tempDir)
+
+
+def _cleanupWorkDirs(scipionHome: Path, keep: Optional[Path] = None) -> None:
+    """Remove update work directories (downloads, extracted archives, temporary files); never reused."""
+    workDir = _updatesDir(scipionHome) / "work"
+    if not workDir.exists():
+        return
+    for path in workDir.iterdir():
+        if path.is_dir() and (keep is None or path.resolve() != keep.resolve()):
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def _cleanupOldBackups(scipionHome: Path, keepBackups: int) -> None:
     # cleanupOldBackups
     if keepBackups <= 0:
@@ -866,9 +931,17 @@ def updateCommand(
         if not includeWeb:
             return
 
+    spacePaths = {"scipion_home": scipionHome, "Python environment": Path(sys.prefix)}
     if dryRun:
+        try:
+            _checkFreeSpace(spacePaths, _minFreeBytes(env))
+        except RuntimeError as exc:
+            _printWarning(str(exc))
         _printSuccess("Dry run completed. No files were changed.")
         return
+    # Leftovers of earlier updates (a failed one keeps its work directory) take space on the same disk
+    _cleanupWorkDirs(scipionHome)
+    _checkFreeSpace(spacePaths, _minFreeBytes(env))
 
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     workRoot = _updatesDir(scipionHome) / "work" / timestamp
@@ -876,6 +949,7 @@ def updateCommand(
     extractDir = workRoot / "extract"
     downloadsDir.mkdir(parents=True, exist_ok=True)
     extractDir.mkdir(parents=True, exist_ok=True)
+    _useUpdateTemp(workRoot / "tmp")
 
     apiZipPath = downloadsDir / Path(apiFile).name
     webZipPath = downloadsDir / Path(webFile).name
@@ -991,6 +1065,7 @@ def updateCommand(
 
         _printStep("Cleaning old backups")
         _cleanupOldBackups(scipionHome, keepBackups)
+        _cleanupWorkDirs(scipionHome)
 
         _printKeyValueTable(
             "Update summary",
@@ -999,7 +1074,7 @@ def updateCommand(
                 ("API updated", "yes" if includeApi else "no"),
                 ("Web updated", "yes" if includeWeb else "no"),
                 ("Backup", backupRoot),
-                ("Work directory", workRoot),
+                ("Work directory", "removed"),
                 ("Services", "stopped" if noRestart else "started"),
                 ("Metadata", envPath),
             ],
@@ -1007,5 +1082,7 @@ def updateCommand(
         _printPanel("Update completed", "ScipionAPI update finished successfully.")
 
     except Exception as exc:
+        # The work directory stays for a look (the next update removes it), but not its temporary files
+        shutil.rmtree(workRoot / "tmp", ignore_errors=True)
         _printPanel("Update failed", str(exc))
         raise

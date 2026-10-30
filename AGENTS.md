@@ -23,7 +23,7 @@ FastAPI + Uvicorn, PostgreSQL via SQLAlchemy 2.0 + Alembic migrations, Celery + 
 - `app/backend/project/`, `app/backend/runtime/` — the layer that actually talks to Scipion (`pyworkflow`/`pwem` imports live here).
 - `app/backend/utils/`, `app/backend/viewers/` — including `outputs_preview.py`, which imports `pwem.emlib`/`pwem.viewers` directly.
 - `app/workers/` — Celery worker + config (`celery_worker.py`, `celeryconfig.py`).
-- `scipionapi_cli/` — a separate, packaged admin/provisioning CLI (`scipionapi` console script): `bootstrap.py`, `provision.py`, `db.py`, `admin.py`, `doctor.py`. This is what sets up Postgres/Valkey/the Scipion env for a fresh install — not "clone and pytest," there's a real provisioning flow.
+- `scipionapi_cli/` — a separate, packaged admin/provisioning CLI (`scipionapi` console script): `bootstrap.py`, `provision.py`, `db.py`, `admin.py`, `doctor.py`. This is what sets up Postgres/Valkey/the Scipion env for a fresh install — not "clone and pytest," there's a real provisioning flow. `update.py` (`scipionapi update`) checks before changing anything that each disk it writes to (scipion_home, the Python environment) has `SCIPIONAPI_UPDATE_MIN_FREE_GB` free (default 5; a full `/` stopped PostgreSQL and a pip build on a server), keeps its temporary files (pip builds, the Web archive check) under `scipion_home/updates/work/<stamp>/tmp` instead of `/tmp`, and removes its work directories when it ends (a failed one stays until the next update, without its temporary files).
 - `tests/{unit,integration,smoke}/` — `integration/` needs real Postgres+Valkey running (`tests/integration/db/test_migrations.py`, `tests/integration/workers/test_task_queue.py` will fail without them); `unit/` and `smoke/` don't.
 
 ## Packaging
