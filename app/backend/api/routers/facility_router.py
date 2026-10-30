@@ -1,0 +1,103 @@
+"""A facility in ScipionWeb: its mode and its microscopes (see facility_service).
+
+Without facility mode every route but the status answers 404, as if it did not exist.
+"""
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+
+from app.backend.api.audit import recordAudit
+from app.backend.api.dependencies import getCurrentUser
+from app.backend.api.permissions import requirePermission
+from app.backend.api.services.facility_service import (
+    FacilityService, facilityStatus, isFacilityStaff, requireFacilityMode,
+)
+from app.backend.database import getMapper
+from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
+router = APIRouter(prefix="/facility", tags=["Facility"])
+
+
+class PixelSizePayload(BaseModel):
+    magnification: int
+    pixelSize: float
+
+
+class MicroscopePayload(BaseModel):
+    name: str
+    model: Optional[str] = ""
+    status: str = "operational"
+    detectors: Optional[str] = ""
+    energyFilter: Optional[str] = ""
+    acquisitionSoftware: Optional[str] = ""
+    voltageKv: Optional[float] = None
+    csMm: Optional[float] = None
+    gainPath: Optional[str] = ""
+    gainFlip: str = "none"
+    gainRotation: int = 0
+    offloadPath: Optional[str] = ""
+    sessionsEnabled: bool = False
+    notes: Optional[str] = ""
+    pixelSizes: List[PixelSizePayload] = []
+
+
+def requireFacilityStaff(currentUser: dict = Depends(getCurrentUser)) -> dict:
+    """Any facility permission: the staff see the microscopes."""
+    if not isFacilityStaff(currentUser):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This is for the facility staff")
+    return currentUser
+
+
+def _service(mapper: PostgresqlFlatMapper) -> FacilityService:
+    return FacilityService(mapper.db)
+
+
+def _summary(microscope: Dict[str, Any]) -> Dict[str, Any]:
+    """What the audit log keeps of a microscope."""
+    return {"status": microscope["status"], "sessionsEnabled": bool(microscope["sessionsEnabled"]),
+            "pixelSizes": {str(row["magnification"]): row["pixelSize"] for row in microscope.get("pixelSizes") or []}}
+
+
+@router.get("/status")
+def getFacilityStatus(currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    """Whether facility mode is on and the facility permissions the user holds (the web's menu)."""
+    return facilityStatus(currentUser)
+
+
+@router.get("/microscopes", dependencies=[Depends(requireFacilityMode)])
+def listMicroscopes(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                    currentUser: dict = Depends(requireFacilityStaff)) -> List[Dict[str, Any]]:
+    return _service(mapper).listMicroscopes()
+
+
+@router.post("/microscopes", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+def createMicroscope(payload: MicroscopePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                     currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    microscope = _service(mapper).saveMicroscope(payload.dict())
+    recordAudit(mapper, currentUser, "facility.microscopeCreated", "microscope", microscope["id"],
+                microscope["name"], _summary(microscope))
+    return microscope
+
+
+@router.put("/microscopes/{microscopeId}", dependencies=[Depends(requireFacilityMode)])
+def updateMicroscope(microscopeId: int, payload: MicroscopePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                     currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    service = _service(mapper)
+    before = service.getMicroscope(microscopeId)
+    microscope = service.saveMicroscope(payload.dict(), microscopeId=microscopeId)
+    changes = {key: value for key, value in _summary(microscope).items() if _summary(before).get(key) != value}
+    if before["name"] != microscope["name"]:
+        changes["renamedFrom"] = before["name"]
+    recordAudit(mapper, currentUser, "facility.microscopeUpdated", "microscope", microscopeId, microscope["name"],
+                changes)
+    return microscope
+
+
+@router.delete("/microscopes/{microscopeId}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(requireFacilityMode)])
+def deleteMicroscope(microscopeId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                     currentUser: dict = Depends(requirePermission("facility.manage"))) -> None:
+    microscope = _service(mapper).deleteMicroscope(microscopeId)
+    recordAudit(mapper, currentUser, "facility.microscopeDeleted", "microscope", microscopeId, microscope["name"],
+                _summary(microscope))

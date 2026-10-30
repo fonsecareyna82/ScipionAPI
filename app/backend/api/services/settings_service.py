@@ -94,6 +94,9 @@ SCIPIONWEB_VARIABLES = (
     ("SCIPIONWEB_DATA_ROOTS", "/",
      "Folders, separated by ':', that users without the files.browseServer permission may browse and point "
      "their protocols to, besides their projects. '/' limits nothing."),
+    ("SCIPIONWEB_FACILITY_MODE", "0",
+     "1 when this installation runs a facility: microscopes, acquisition sessions and their processing, "
+     "and the facility menu. 0 leaves ScipionWeb as it always was."),
     ("SCIPIONWEB_UPLOAD_MAX_GB", "10",
      "Largest file, in GB, a user may upload from their computer into a project's Uploads folder. "
      "0 limits nothing."),

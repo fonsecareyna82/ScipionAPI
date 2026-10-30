@@ -21,6 +21,7 @@ AUDIT_CATEGORIES: Dict[str, str] = {
     "settings": "Instance, host and environment settings",
     "plugins": "Plugins installed and uninstalled",
     "jobs": "Workers started, stopped and restarted",
+    "facility": "Facility: microscopes, sessions and samples",
 }
 
 # Where the request came from, set for every request by ClientAddressMiddleware
