@@ -58,8 +58,10 @@ class BrowserRoot:
             "protocolRoot": self.protocolRoot,
             "projectRootAbs": self.projectRoot.as_posix() if self.projectRoot else None,
             "scope": self.kind,
-            # The folders the user may browse, when limited (shortcuts for the browser)
+            # The folders the user may browse, when limited, and among them the data folders (shortcuts)
             "allowedRoots": [folder.as_posix() for folder in self.allowed] if self.allowed is not None else None,
+            "dataRoots": ([folder.as_posix() for folder in dataRoots() if folder.as_posix() != "/"]
+                          if self.allowed is not None else None),
         }
 
 
@@ -265,7 +267,9 @@ def pathsOutOfReach(protocols: Iterable, projectPath: str, canBrowseServer: bool
 
 def checkLaunchPaths(mapper, userId, protocols, currentProject) -> None:
     """422 when a protocol launched by userId points to files out of their reach (no user: no check)."""
-    if userId is None or not dataRoots():
+    roots = dataRoots()
+    # No data folders, or the whole server as one (the default "/"): every path is in reach
+    if userId is None or not roots or any(folder == Path(folder.anchor) for folder in roots):
         return
     projectPath = currentProject if isinstance(currentProject, str) else currentProject.getPath()
     from app.backend.mapper.access_mapper import AccessPostgresqlMapper

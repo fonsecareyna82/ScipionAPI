@@ -73,6 +73,17 @@ ACTIVE_SYSTEM_USERS_SQL = """
 """
 
 
+# Accounts waiting for an administrator, created after a time
+PENDING_ACCOUNTS_SQL = """
+    SELECT id, email, "firstName", "lastName", "createdAt"
+      FROM users
+     WHERE NOT "isActive"
+       AND "createdAt" > %s
+     ORDER BY "createdAt" DESC
+     LIMIT %s
+"""
+
+
 class AccessPostgresqlMapper:
     def __init__(self, db):
         self.db = db
@@ -88,6 +99,9 @@ class AccessPostgresqlMapper:
 
     def listActiveSystemUserIds(self) -> List[int]:
         return [int(row["id"]) for row in self.db.fetchAll(ACTIVE_SYSTEM_USERS_SQL) or []]
+
+    def listPendingAccountsSince(self, since, limit: int) -> List[Dict[str, Any]]:
+        return self.db.fetchAll(PENDING_ACCOUNTS_SQL, (since, int(limit))) or []
 
     # Roles -------------------------------------------------------------------------------------
     def listRoles(self) -> List[Dict[str, Any]]:

@@ -103,6 +103,7 @@ def test_WithoutTheBrowseServerPermissionOnlyTheProjectAndTheDataFoldersAreReach
     browser, project, data = _limitedBrowser(tmp_path, monkeypatch)
 
     assert browser.toDict()["allowedRoots"] == [project.as_posix(), data.as_posix()]
+    assert browser.toDict()["dataRoots"] == [data.as_posix()]
     assert fs_browser.isAllowed(browser, project / "Runs")
     assert fs_browser.isAllowed(browser, data / "movies" / "a.tif")
     assert not fs_browser.isAllowed(browser, tmp_path / "data" / "other-lab")
@@ -178,6 +179,10 @@ def test_LaunchingIsNotLimitedWithoutDataFoldersNorForLaunchesWithoutAUser(tmp_p
 
     monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(tmp_path / "data"))
     fs_browser.checkLaunchPaths(object(), None, [PathProtocol({"filesPath": "/etc"})], str(tmp_path))
+
+    # With the whole server as data folder nothing is out of reach: not even the permissions are read
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", "/")
+    fs_browser.checkLaunchPaths(object(), 7, [PathProtocol({"filesPath": "/etc"})], object())
 
 
 def test_LaunchingAPathOutOfReachIsRefusedWithItsReason(tmp_path, monkeypatch):

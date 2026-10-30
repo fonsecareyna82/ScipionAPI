@@ -1,6 +1,6 @@
 # models/user_model.py
 
-from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, func
 from sqlalchemy.orm import relationship
 from app.backend.database import Base
 
@@ -34,6 +34,9 @@ class User(Base):
 
     isVerified = Column(Boolean, default=False)
     verificationCode = Column(String, nullable=True)
+
+    # When the account was created (new sign-ups are told to the administrators)
+    createdAt = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     projects = relationship("Project", back_populates="owner")
 

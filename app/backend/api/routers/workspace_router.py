@@ -9,6 +9,7 @@ from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.services import workspace_service
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
+from app.backend.api.permissions import hasPermission
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -30,5 +31,6 @@ def getProtocolActivity(
             sinceTime = datetime.fromisoformat(since.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=422, detail="since must be an ISO 8601 time")
-    payload = workspace_service.protocolActivity(mapper, _userId(currentUser), sinceTime)
+    payload = workspace_service.protocolActivity(mapper, _userId(currentUser), sinceTime,
+                                                 canManageUsers=hasPermission(currentUser, "users.manage"))
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})

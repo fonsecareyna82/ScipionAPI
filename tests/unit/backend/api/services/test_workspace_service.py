@@ -128,3 +128,38 @@ def test_tilt_series_alerts_reach_the_bell_too(monkeypatch):
 
     assert [(e["label"], e["status"], e["threshold"]) for e in payload["events"]] == [
         ("Fewer than 30 tilts: TS_07", "alert", "minTilts")]
+
+
+class AccountsDb(Db):
+    """No project runs; two accounts wait for an administrator."""
+
+    def __init__(self, accounts):
+        super().__init__(rows=[])
+        self.accounts = accounts
+
+    def fetchAll(self, query, params):
+        self.calls.append(("all", params))
+        return self.accounts if "FROM users" in query else []
+
+
+def test_whoever_manages_users_hears_of_the_accounts_waiting_for_activation():
+    created = NOW - timedelta(seconds=10)
+    db = AccountsDb([{"id": 12, "email": "ana@example.com", "firstName": "Ana", "lastName": "Pi", "createdAt": created},
+                     {"id": 13, "email": "bo@example.com", "firstName": None, "lastName": None, "createdAt": created}])
+
+    payload = workspace.protocolActivity(Mapper([], db), 3, NOW - timedelta(seconds=30), now=NOW, canManageUsers=True)
+
+    assert [event["label"] for event in payload["events"]] == [
+        "Ana Pi (ana@example.com) signed up and waits for activation",
+        "bo@example.com signed up and waits for activation"]
+    assert {event["status"] for event in payload["events"]} == {"account"}
+    assert payload["events"][0]["protocolId"] == "user-12" and payload["events"][0]["endedAt"] == created.isoformat()
+    assert db.calls[-1][1][0] == NOW - timedelta(seconds=30)
+
+
+def test_other_users_and_a_first_call_hear_of_no_account():
+    db = AccountsDb([{"id": 12, "email": "ana@example.com", "createdAt": NOW}])
+
+    assert workspace.protocolActivity(Mapper([], db), 3, NOW - timedelta(seconds=30), now=NOW)["events"] == []
+    assert workspace.protocolActivity(Mapper([], db), 3, None, now=NOW, canManageUsers=True)["events"] == []
+    assert db.calls == []

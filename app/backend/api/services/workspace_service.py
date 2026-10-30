@@ -8,7 +8,9 @@ their clock does not matter.
 
 Streaming projects (those with a protocol running) also tell when a run of
 micrographs starts going past one of their monitor thresholds (status
-"alert"); see streaming_monitor.alertsSince.
+"alert"); see streaming_monitor.alertsSince. Whoever may manage users also
+hears of the accounts created since, which wait for an administrator to
+activate them (status "account").
 """
 from __future__ import annotations
 
@@ -62,6 +64,27 @@ def _monitorAlerts(mapper, projects: Dict[int, Dict[str, Any]], projectIds: List
     return events
 
 
+def _pendingAccounts(mapper, since: datetime) -> List[Dict[str, Any]]:
+    """New accounts waiting for activation, told as the bell tells runs (they belong to no project)."""
+    from app.backend.mapper.access_mapper import AccessPostgresqlMapper
+
+    events = []
+    for row in AccessPostgresqlMapper(mapper.db).listPendingAccountsSince(since, MAX_EVENTS):
+        name = " ".join(part for part in (row.get("firstName"), row.get("lastName")) if part)
+        who = "%s (%s)" % (name, row["email"]) if name else row["email"]
+        createdAt = row.get("createdAt")
+        events.append({
+            "projectId": 0,
+            "projectName": "Users",
+            "protocolId": "user-%s" % row["id"],
+            "protocolClassName": "",
+            "label": "%s signed up and waits for activation" % who,
+            "status": "account",
+            "endedAt": createdAt.isoformat() if hasattr(createdAt, "isoformat") else str(createdAt or ""),
+        })
+    return events
+
+
 def _accessibleProjects(mapper, userId: int) -> Dict[int, Dict[str, Any]]:
     return {int(row["id"]): row for row in (mapper.listProjects(int(userId)) or [])}
 
@@ -73,7 +96,8 @@ def _projectName(row: Dict[str, Any]) -> str:
     return str(row.get("name") or "").rstrip("/").rsplit("/", 1)[-1]
 
 
-def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Optional[datetime] = None) -> Dict[str, Any]:
+def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Optional[datetime] = None,
+                     canManageUsers: bool = False) -> Dict[str, Any]:
     """Runs of the user's projects that ended after ``since``, and how many still run."""
     now = now or datetime.now(timezone.utc)
     projects = _accessibleProjects(mapper, userId)
@@ -102,5 +126,9 @@ def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Option
                 })
             if live:
                 events.extend(_monitorAlerts(mapper, projects, projectIds, since))
-                events = sorted(events, key=lambda event: event["endedAt"], reverse=True)[:MAX_EVENTS]
+    if canManageUsers and since is not None:
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        events.extend(_pendingAccounts(mapper, max(since, now - MAX_LOOKBACK)))
+    events = sorted(events, key=lambda event: event["endedAt"], reverse=True)[:MAX_EVENTS]
     return {"now": now.isoformat(), "live": live, "events": events}
