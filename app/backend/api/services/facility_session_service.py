@@ -227,11 +227,17 @@ class FacilitySessionService:
             startedAt = now
         if statusValue in ("finished", "archived") and finishedAt is None:
             finishedAt = now
+        elif statusValue in ("planned", "acquiring"):
+            # Reopened (finished by mistake): it has not finished
+            finishedAt = None
         values = {
             "name": self._name(payload, existing, sessionId, sessionUserId, groupId, scheduledOn),
             "microscopeId": microscopeId, "technique": technique, "status": statusValue, "groupId": groupId,
             "userId": sessionUserId, "bookingRef": _text(payload, "bookingRef", 100), "scheduledOn": scheduledOn,
             "startedAt": startedAt, "finishedAt": finishedAt, "notes": _text(payload, "notes"),
+            # The workflow its DATA are processed with (an id of the web's workflow list), and whether by itself
+            "templateId": _text(payload, "templateId", 300),
+            "autoProcess": bool(payload.get("autoProcess", True)),
         }
         assert set(values) == set(SESSION_FIELDS)
         detectorIds = {int(detector["id"]) for detector in microscope.get("detectors") or []}
@@ -243,6 +249,26 @@ class FacilitySessionService:
 
             requestWatch()
         return saved
+
+    def queueProcessing(self, datasetId: int) -> Dict[str, Any]:
+        """Ask for a DATA's project now (again, after a failure); the watcher makes it at its next turn."""
+        dataset = self.mapper.getDatasetForProcessing(datasetId)
+        if dataset is None or dataset["kind"] != "data":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DATA not found")
+        if dataset["projectId"] is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This DATA has its project already")
+        if not dataset["templateId"]:
+            raise _badRequest("The session has no processing template")
+        if dataset["status"] != "acquiring":
+            raise _badRequest("Only the DATA of a session acquiring are processed")
+        if not dataset["acquisition"] or dataset["acquisition"].get("error"):
+            raise _badRequest("The first movie of this DATA has not been read yet")
+        self.mapper.saveProcessing(datasetId, {"state": "queued", "at": datetime.datetime.now(
+            datetime.timezone.utc).isoformat()})
+        from app.backend.api.services.facility_session_watcher import requestWatch
+
+        requestWatch()
+        return self.getSession(int(dataset["sessionId"]))
 
     def deleteSession(self, sessionId: int) -> Dict[str, Any]:
         """Only a session still planned goes; one that acquired is history, to archive."""

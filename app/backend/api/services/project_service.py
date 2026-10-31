@@ -286,6 +286,44 @@ from app.backend.utils.background_delete import deleteInBackground
 from app.backend.utils.set_item_purge import requestSetItemPurge
 
 
+
+class _EnvironmentOrAsWritten(dict):
+    """The environment for a template's %(NAME)s: a name it lacks is left as written."""
+
+    def __missing__(self, key: str) -> str:
+        return "%(" + key + ")s"
+
+def findWorkflowTemplate(templates: List[Any], workflowId: str) -> Any:
+    """The workflow template named workflowId: by its id, name, source:name, path or position; None if none."""
+    def getTemplateValue(template: Any, key: str, default: Any = None) -> Any:
+        if isinstance(template, dict):
+            return template.get(key, default)
+        return getattr(template, key, default)
+
+    def toCleanString(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    for index, template in enumerate(templates or []):
+        templateName = toCleanString(getTemplateValue(template, "name"))
+        templateSource = toCleanString(getTemplateValue(template, "source"))
+        candidates = {toCleanString(getTemplateValue(template, "id")), templateName,
+                      toCleanString(getTemplateValue(template, "templatePath")), str(index)}
+        if templateSource and templateName:
+            candidates.add("%s:%s" % (templateSource, templateName))
+        # The id the workflow list gives it (Template.getObjId: source-name)
+        getObjId = getattr(template, "getObjId", None)
+        if callable(getObjId):
+            try:
+                candidates.add(toCleanString(getObjId()))
+            except Exception:
+                pass
+        candidates.discard("")
+        if str(workflowId).strip() in candidates:
+            return template
+    return None
+
 class ProjectService:
     def __init__(self):
         self.projectsPath = self._resolveProjectsPath()
@@ -4571,6 +4609,39 @@ class ProjectService:
 
         return workflows
 
+    def materializeWorkflowTemplate(self, workflowId: str, aliasValues: Optional[Dict[str, Any]] = None) -> Any:
+        """The workflow of a template as JSON content, its ~Title|value|type|alias~ fields filled.
+
+        Like Scipion's ``scipion template``: the environment variables are replaced, the fields parsed, and a
+        field whose alias is in aliasValues takes that value (one it does not take keeps its own). Raises
+        HTTPException 404 for an unknown template.
+        """
+        template = findWorkflowTemplate(self.listProjectWorkflows(raw=True) or [], workflowId)
+        if template is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workflow '{workflowId}' not found")
+        # As Template.replaceEnvVariables, but a variable this environment lacks stays as written
+        template.content = (template.getContent() % _EnvironmentOrAsWritten(os.environ)).split("~")
+        template.parseContent()
+        for alias, value in (aliasValues or {}).items():
+            if value is None:
+                continue
+            try:
+                # A field's value is written into the JSON text as it is
+                template.setParamValue(alias, str(value))
+            except Exception:
+                logger.info("Template %s does not take %s=%s", workflowId, alias, value)
+        workflowFile = template.createTemplateFile()
+        importInfo = self._prepareWorkflowFileForImport(workflowFile)
+        try:
+            text = Path(str(importInfo.get("workflowFile") or workflowFile)).read_text(encoding="utf-8")
+            return json.loads(self._extractWorkflowJsonText(text))
+        finally:
+            for path in {str(workflowFile), str(importInfo.get("cleanupFile") or workflowFile)}:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
     def applyWorkflowToProject(
             self,
             mapper: PostgresqlFlatMapper,
@@ -4597,49 +4668,7 @@ class ProjectService:
 
         # 3) Find the template by id or name
         workflowIdStr = str(workflowId).strip()
-        selectedTemplate: Any = None
-
-        def getTemplateValue(template: Any, key: str, default: Any = None) -> Any:
-            if isinstance(template, dict):
-                return template.get(key, default)
-            return getattr(template, key, default)
-
-        def toCleanString(value: Any) -> str:
-            if value is None:
-                return ""
-            return str(value).strip()
-
-        def buildTemplateCandidateIds(template: Any, fallbackIndex: int) -> TypingSet[str]:
-            templateId = toCleanString(getTemplateValue(template, "id"))
-            templateName = toCleanString(getTemplateValue(template, "name"))
-            templateSource = toCleanString(getTemplateValue(template, "source"))
-            templatePath = toCleanString(getTemplateValue(template, "templatePath"))
-
-            candidates: TypingSet[str] = set()
-
-            if templateId:
-                candidates.add(templateId)
-
-            if templateName:
-                candidates.add(templateName)
-
-            if templateSource and templateName:
-                candidates.add("%s:%s" % (templateSource, templateName))
-
-            if templatePath:
-                candidates.add(templatePath)
-
-            candidates.add(str(fallbackIndex))
-
-            return candidates
-
-        # 3) Find the template by normalized id, source:name, name or path
-        for index, template in enumerate(templates):
-            candidateIds = buildTemplateCandidateIds(template, index)
-
-            if workflowIdStr in candidateIds:
-                selectedTemplate = template
-                break
+        selectedTemplate: Any = findWorkflowTemplate(templates, workflowIdStr)
 
         if selectedTemplate is None:
             raise HTTPException(

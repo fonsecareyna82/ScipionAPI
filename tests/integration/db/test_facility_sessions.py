@@ -10,6 +10,7 @@ from PIL import Image
 
 from app.backend.api.services.facility_sample_service import FacilitySampleService
 from app.backend.api.services.facility_service import FacilityService
+from app.backend.api.services.facility_session_processing import FacilitySessionProcessor
 from app.backend.api.services.facility_session_service import FacilitySessionService
 
 
@@ -169,6 +170,8 @@ def test_TheListFindsSessionsByStatusAndText(facility):
     assert [found["id"] for found in sessions.listSessions(["planned", "acquiring"], marker)] == [planned["id"]]
     assert {found["id"] for found in sessions.listSessions([], marker)} == {planned["id"], finished["id"]}
     assert finished["finishedAt"] is not None and finished["startedAt"] is not None
+    reopened = sessions.saveSession(dict(_multigrid(microscope, sample), status="acquiring"), sessionId=finished["id"])
+    assert reopened["finishedAt"] is None and reopened["startedAt"] == finished["startedAt"]
 
 
 def test_ANameIsMadeOfTheDayThePersonAndTheId():
@@ -228,3 +231,160 @@ def test_TheWatcherFollowsTheDataOfASessionThatAcquires(facility, tmp_path):
     # A session that does not acquire is not watched
     sessions.saveSession(dict(_multigrid(microscope, sample), status="finished"), sessionId=session["id"])
     assert watchSessions(db) == 0
+
+
+class _Projects:
+    """ProjectService as the processing sees it: real project rows, the rest recorded."""
+
+    def __init__(self, flat, workflow, calls):
+        self.flat, self.workflow, self.calls = flat, workflow, calls
+
+    def materializeWorkflowTemplate(self, workflowId, aliasValues=None):
+        self.calls.append(("template", workflowId, aliasValues.get("sr")))
+        return [dict(protocol) for protocol in self.workflow]
+
+    def createProject(self, mapper, projectData, currentUser):
+        projectId = self.flat.insertProject(ownerId=currentUser["id"], name="/tmp/%s-%s" % (projectData.name, uuid4().hex),
+                                            description=projectData.description)
+        self.calls.append(("create", projectData.name, currentUser["id"]))
+        return {"id": projectId}
+
+    def loadPostgresqlRuntimeProjectForMutation(self, mapper, projectId, currentUser):
+        return {"id": projectId}
+
+    def importWorkflowProtocolsService(self, mapper, projectId, currentUser, payload):
+        self.calls.append(("import", payload.workflow))
+        return {"status": 0, "errors": [], "created": [{"sourceId": item["object.id"], "newId": str(100 + index)}
+                                                        for index, item in enumerate(payload.workflow)]}
+
+    def restartProtocolAll(self, mapper, projectId, protocolId, currentUserId=None):
+        self.calls.append(("launch", projectId, protocolId))
+        return {"status": 0, "errors": []}
+
+
+@pytest.fixture
+def owner(postgresqlIntegrationDb):
+    """A user who may create projects."""
+    from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
+    db = postgresqlIntegrationDb
+    flat = PostgresqlFlatMapper(db)
+    userId = flat.insertUser(email="facility-%s@example.com" % uuid4().hex, hashedPassword="test", firstName="Gaoxin",
+                             lastName="Lu", institution=None, role="user", isActive=True, isVerified=True,
+                             verificationCode="")
+    role = db.fetchOne('SELECT r.id FROM access_roles r JOIN access_role_permissions p ON p."roleId" = r.id '
+                       "WHERE p.permission = 'projects.create' AND NOT r.\"isSystem\" ORDER BY r.id LIMIT 1")
+    db.execute('INSERT INTO user_access_roles ("userId", "roleId") VALUES (%s, %s)', (userId, role["id"]))
+    try:
+        yield flat, userId
+    finally:
+        db.execute('DELETE FROM projects WHERE "ownerId" = %s', (userId,))
+        db.execute("DELETE FROM users WHERE id = %s", (userId,))
+
+
+def _epuMovie(tmp_path, sessionName, number=1):
+    import shutil
+    from pathlib import Path
+
+    epu = Path(__file__).resolve().parents[2] / "resources" / "epu"
+    data = tmp_path / ("%s_DATA_%02d" % (sessionName, number)) / "Images-Disc1" / "GridSquare_1" / "Data"
+    data.mkdir(parents=True)
+    for name in ("FoilHole_15867355_Data_12771432_12771434_20200417_031214.xml",
+                 "FoilHole_15867355_Data_12771432_12771434_20200417_031214_Fractions.xml"):
+        shutil.copy(epu / name, data / name)
+    (data / "FoilHole_15867355_Data_12771432_12771434_20200417_031214_Fractions.mrc").write_bytes(b"\0" * 10)
+
+
+def _processWith(monkeypatch, flat, workflow, calls):
+    from app.backend.api.services import facility_session_processing as processing
+
+    monkeypatch.setattr(processing, "FacilitySessionProcessor",
+                        lambda mapper: FacilitySessionProcessor(
+                            mapper, projectServiceFactory=lambda: _Projects(flat, workflow, calls)))
+
+
+DEMO_WORKFLOW = [{"object.className": "ProtImportMovies", "object.id": "2", "samplingRate": 3.54, "dosePerFrame": 0.0},
+                 {"object.className": "ProtMotionCorr", "object.id": "3", "inputMovies": "2.outputMovies"}]
+
+
+def test_ADataGetsItsProjectWhenItsFirstMovieIsRead(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    falcon = dict(microscope["detectors"][0], metadataName="BM-Falcon",
+                  pixelSizes=[{"magnification": 92000, "pixelSize": 1.55}])
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path), csMm=2.7,
+                                            detectors=[falcon, microscope["detectors"][1]]), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                              templateId="scipion:demo"), userId=userId)
+    calls = []
+    _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+
+    watchSessions(db)
+    assert calls == []
+    _epuMovie(tmp_path, session["name"])
+    watchSessions(db)
+
+    first = sessions.getSession(session["id"])["datasets"][1]
+    assert first["processing"]["state"] == "launched" and first["projectId"] is not None
+    assert first["processing"]["projectName"] == session["name"] + "_DATA_01"
+    assert calls[0] == ("template", "scipion:demo", 1.55) and calls[1] == ("create", session["name"] + "_DATA_01", userId)
+    imported = calls[2][1][0]
+    assert imported["filesPath"] == str(tmp_path / (session["name"] + "_DATA_01"))
+    assert imported["filesPattern"] == "Images-Disc*/GridSquare_*/Data/*_Fractions.mrc"
+    assert (imported["samplingRate"], imported["voltage"], imported["sphericalAberration"]) == (1.55, 200.0, 2.7)
+    assert imported["dataStreaming"] is True
+    assert calls[3] == ("launch", first["projectId"], "100")
+
+    # Made once: the next turns leave it
+    watchSessions(db)
+    assert len([call for call in calls if call[0] == "create"]) == 1
+
+
+def test_AFailureIsKeptAndTheStaffAskAgain(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                              templateId="scipion:ctf-only"), userId=userId)
+    calls = []
+    _processWith(monkeypatch, flat, [{"object.className": "ProtCTFFind", "object.id": "2"}], calls)
+    _epuMovie(tmp_path, session["name"])
+
+    watchSessions(db)
+    first = sessions.getSession(session["id"])["datasets"][1]
+    assert first["processing"]["state"] == "error" and "no Import Movies" in first["processing"]["message"]
+    assert first["projectId"] is None
+    watchSessions(db)
+    assert len([call for call in calls if call[0] == "template"]) == 1
+
+    _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+    queued = sessions.queueProcessing(first["id"])
+    assert queued["datasets"][1]["processing"]["state"] == "queued"
+    watchSessions(db)
+    assert sessions.getSession(session["id"])["datasets"][1]["processing"]["state"] == "launched"
+    with pytest.raises(HTTPException) as error:
+        sessions.queueProcessing(first["id"])
+    assert error.value.status_code == 409
+
+
+def test_ASessionThatDoesNotProcessByItselfWaitsForTheStaff(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                              templateId="scipion:demo", autoProcess=False), userId=userId)
+    calls = []
+    _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+    _epuMovie(tmp_path, session["name"])
+
+    watchSessions(db)
+    assert calls == [] and sessions.getSession(session["id"])["datasets"][1]["processing"] is None

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapper, imagesJson
 
 SESSION_FIELDS = ("name", "microscopeId", "technique", "status", "groupId", "userId", "bookingRef", "scheduledOn",
-                  "startedAt", "finishedAt", "notes")
+                  "startedAt", "finishedAt", "notes", "templateId", "autoProcess")
 DATASET_FIELDS = ("kind", "number", "gridId", "detectorId", "notes")
 
 LIST_SESSIONS_SQL = """
@@ -13,7 +13,7 @@ LIST_SESSIONS_SQL = """
            s."groupId", g.name AS "groupName", s."userId", u.email AS "userEmail",
            TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) AS "userName",
            s."bookingRef", s."scheduledOn", s."startedAt", s."finishedAt", s.notes, s."createdBy",
-           s."createdAt", s."updatedAt", m."offloadPath",
+           s."createdAt", s."updatedAt", m."offloadPath", s."templateId", s."autoProcess",
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
@@ -23,6 +23,7 @@ LIST_SESSIONS_SQL = """
                          'movieCount', d."movieCount", 'movieBytes', d."movieBytes",
                          'firstMovieAt', d."firstMovieAt", 'lastMovieAt', d."lastMovieAt", 'scannedAt', d."scannedAt",
                          'acquisition', d.acquisition, 'folderFound', (d."scanState"->>'exists')::BOOLEAN,
+                         'projectId', d."projectId", 'processing', d.processing,
                          'minutesSinceLastMovie', EXTRACT(EPOCH FROM NOW() - d."lastMovieAt") / 60,
                          'grid', CASE WHEN gr.id IS NULL THEN NULL ELSE JSON_BUILD_OBJECT(
                                      'gridNumber', gr."gridNumber", 'position', gr.position, 'gridType', gr."gridType",
@@ -70,6 +71,24 @@ LIST_WATCHED_DATASETS_SQL = """
       JOIN facility_sessions s ON s.id = d."sessionId"
       JOIN facility_microscopes m ON m.id = s."microscopeId"
      WHERE s.status = 'acquiring' AND d.kind = 'data'
+     ORDER BY s.id, d.number
+"""
+
+# The DATA whose first movie was read and whose project is to be made: by itself when their session processes
+# so (and they were never tried), or because the staff asked again
+LIST_DATASETS_TO_PROCESS_SQL = """
+    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d."detectorId", d.acquisition, d.processing,
+           s."templateId", s."userId", s."createdBy", s."groupId", s."microscopeId", m."offloadPath",
+           smp.code AS "sampleCode", b.label AS "boxLabel", gr."gridNumber"
+      FROM facility_session_datasets d
+      JOIN facility_sessions s ON s.id = d."sessionId"
+      JOIN facility_microscopes m ON m.id = s."microscopeId"
+      LEFT JOIN facility_grids gr ON gr.id = d."gridId"
+      LEFT JOIN facility_grid_boxes b ON b.id = gr."boxId"
+      LEFT JOIN facility_samples smp ON smp.id = b."sampleId"
+     WHERE d.kind = 'data' AND d."projectId" IS NULL AND s.status = 'acquiring' AND s."templateId" <> ''
+       AND d.acquisition IS NOT NULL AND d.acquisition->>'error' IS NULL AND m."offloadPath" <> ''
+       AND (d.processing->>'state' = 'queued' OR (s."autoProcess" AND d.processing IS NULL))
      ORDER BY s.id, d.number
 """
 
@@ -172,6 +191,22 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
             "id": int(datasetId), "movieCount": int(movieCount), "movieBytes": int(movieBytes),
             "firstMovieAt": firstMovieAt, "lastMovieAt": lastMovieAt, "scanState": json.dumps(scanState),
             "acquisition": json.dumps(acquisition) if acquisition is not None else None})
+
+    # Processing ------------------------------------------------------------------------------
+    def listDatasetsToProcess(self) -> List[Dict[str, Any]]:
+        return [dict(row) for row in self.db.fetchAll(LIST_DATASETS_TO_PROCESS_SQL) or []]
+
+    def saveProcessing(self, datasetId: int, processing: Dict[str, Any], projectId: Optional[int] = None) -> None:
+        """Keep how a DATA's processing goes; a project, once given, stays."""
+        self.db.execute('UPDATE facility_session_datasets SET processing = %s::JSONB, '
+                        '"projectId" = COALESCE(%s, "projectId") WHERE id = %s',
+                        (json.dumps(processing, default=str), projectId, int(datasetId)))
+
+    def getDatasetForProcessing(self, datasetId: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne('SELECT d.id, d."sessionId", d.kind, d."projectId", d.acquisition, d.processing, '
+                               's."templateId", s.status FROM facility_session_datasets d '
+                               'JOIN facility_sessions s ON s.id = d."sessionId" WHERE d.id = %s', (int(datasetId),))
+        return dict(row) if row else None
 
     # Images ------------------------------------------------------------------------------------
     def sessionIdOf(self, ownerKind: str, ownerId: int) -> Optional[int]:

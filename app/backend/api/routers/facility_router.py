@@ -119,6 +119,9 @@ class SessionPayload(BaseModel):
     bookingRef: Optional[str] = ""
     scheduledOn: Optional[date] = None
     notes: Optional[str] = ""
+    # An id of GET /projects/workflows: the template each DATA's project is made from
+    templateId: Optional[str] = ""
+    autoProcess: bool = True
     datasets: List[DatasetPayload] = []
 
 
@@ -402,3 +405,13 @@ async def addDatasetImage(datasetId: int, request: Request, caption: str = Query
                           currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
     """Keep the image of the request body with a dataset (the ATLAS or a DATA_NN)."""
     return await _addSessionImage("dataset", datasetId, request, caption, mapper, currentUser)
+
+
+@router.post("/datasets/{datasetId}/process", dependencies=[Depends(requireFacilityMode)])
+def processDataset(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Make the project of a DATA now (the session processes by itself otherwise, or it failed); answers the session."""
+    session = FacilitySessionService(mapper.db).queueProcessing(datasetId)
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", session["id"], session["name"],
+                {"processing": "queued", "datasetId": datasetId})
+    return session

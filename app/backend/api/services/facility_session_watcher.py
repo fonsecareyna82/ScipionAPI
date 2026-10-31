@@ -133,7 +133,8 @@ def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
         acquisition = readAcquisition(metadata, detectors, detectorId)
     except (ValueError, OSError) as error:
         return {"metadataFile": metadata.name, "error": str(error)}
-    acquisition["firstMovie"] = firstMovie.name
+    # Relative to the DATA folder: its project's Import Movies reads the movies with a pattern made from it
+    acquisition["firstMovie"] = str(firstMovie.relative_to(root))
     acquisition["gainFile"] = _gainFile(root)
     return acquisition
 
@@ -164,9 +165,21 @@ def watchSessions(db, now: Optional[float] = None) -> int:
             sessions.saveScan(dataset["id"], scan["count"], scan["bytes"], _when(scan["oldest"]), _when(scan["newest"]),
                               scan["state"], acquisition)
             looked += 1
+        _processPending(db)
     finally:
         sessions.unlockWatch()
     return looked
+
+
+def _processPending(db) -> None:
+    """Make and launch the projects of the DATA whose first movie was just read (one failing does not stop the rest)."""
+    from app.backend.api.services.facility_session_processing import FacilitySessionProcessor
+    from app.backend.mapper.postgresql import PostgresqlFlatMapper
+
+    try:
+        FacilitySessionProcessor(PostgresqlFlatMapper(db)).processPending()
+    except Exception:
+        logger.warning("Could not process the sessions' new DATA", exc_info=True)
 
 
 def requestWatch() -> None:
