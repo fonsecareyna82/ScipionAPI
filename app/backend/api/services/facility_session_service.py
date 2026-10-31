@@ -78,16 +78,18 @@ def sessionName(day: datetime.date, person: str, sessionId: int) -> str:
 def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str]:
     """Where a DATA is in its acquisition, as the watcher of the folders saw it.
 
-    receiving / stalled (no movie for STALL_MINUTES) once movies arrived; while none did: idle (the session
-    does not acquire), noOffload (its microscope has no offload folder), pending (not looked at yet), noFolder
-    (the microscope has not made it) or waiting.
+    receiving / stalled (no movie for STALL_MINUTES) once movies arrived, and acquired once the session no
+    longer acquires; while none did: idle (the session does not acquire), noOffload (its microscope has no
+    offload folder), pending (not looked at yet), noFolder (the microscope has not made it) or waiting.
     """
     if dataset["kind"] != "data":
         return None
     acquiring = session["status"] == "acquiring"
     if dataset.get("movieCount"):
+        if not acquiring:
+            return "acquired"
         minutes = dataset.get("minutesSinceLastMovie")
-        return "stalled" if acquiring and minutes is not None and minutes > STALL_MINUTES else "receiving"
+        return "stalled" if minutes is not None and minutes > STALL_MINUTES else "receiving"
     if not acquiring:
         return "idle"
     if not session.get("offloadPath"):

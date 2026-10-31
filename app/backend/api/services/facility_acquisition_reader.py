@@ -9,7 +9,9 @@ of it, what the facility knows:
   camera name: EPU 2.x writes no detector commercial name, and its Falcon XML carries Ceta keys too;
 * the frames come from the movie's ``_Fractions.xml`` when the XML does not give them;
 * the pixel is the detector's calibrated one for the magnification (``calibratedPixelSize``), and the doses per A^2
-  are re-expressed for it; the nominal pixel is kept.
+  are re-expressed for it; the nominal pixel is kept. A calibration farther than ``MAX_CALIBRATION_DIFFERENCE`` from
+  EPU's pixel is not one: the detector, its table or the movie's microscope is wrong, so EPU's pixel stays, with a
+  warning.
 """
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -21,6 +23,8 @@ from app.backend.vendor import cryo_import_metadata as reader
 # What a movie's metadata file is called next to it: EPU names movies <image>_Fractions.<ext> or <image>_EER.eer
 MOVIE_NAME_SUFFIXES = ("_Fractions", "_EER")
 METADATA_SUFFIXES = (".xml", ".mdoc")
+# A facility's calibration differs from EPU's nominal pixel by a few percent
+MAX_CALIBRATION_DIFFERENCE = 0.10
 
 
 def metadataFileOf(moviePath: Path) -> Optional[Path]:
@@ -105,6 +109,9 @@ def readAcquisition(metadataPath: Path, detectors: Iterable[Dict[str, Any]],
     magnification = _value(report, "magnification")
     nominal = _value(report, "pixel")
     calibrated = calibratedPixelSize(detector.get("pixelSizes") or [], magnification, nominal) if detector else None
+    rejected = None
+    if calibrated is not None and nominal and abs(nominal - calibrated) / calibrated > MAX_CALIBRATION_DIFFERENCE:
+        rejected, calibrated = calibrated, None
     if calibrated is not None and nominal:
         exposure = _value(report, "exposure")
         if report.format.startswith("EPU XML (Gatan"):
@@ -115,6 +122,10 @@ def readAcquisition(metadataPath: Path, detectors: Iterable[Dict[str, Any]],
             reader.apply_calibrated_pixel(report, nominal, calibrated, exposure)
         warnings = list(report.warnings)
 
+    if rejected is not None:
+        warnings.append("The calibrated pixel of %s at %sx (%.4g A) differs from EPU's %.4g A by %+.0f %%: it was not "
+                        "used. Check the detector, its calibration table, and that the movie is from this microscope."
+                        % (detector["name"], magnification, rejected, nominal, (rejected - nominal) / nominal * 100))
     totalDose = _value(report, "total_dose")
     dosePerFrame = _value(report, "dose_per_frame")
     if dosePerFrame is None and totalDose and frames:

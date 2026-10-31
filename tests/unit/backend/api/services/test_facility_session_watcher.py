@@ -52,6 +52,17 @@ def test_TheDetectorTheStaffGaveIsTheOneCalibrated():
     assert acquisition["detectorName"] == "Falcon 4i" and acquisition["pixelSize"] == 1.6
 
 
+def test_ACalibrationFarFromEPUsPixelIsNotOne():
+    # The Talos' 1.14 A at 92000x on a movie of a Glacios (EPU: 1.568 A)
+    talos = dict(FALCON, pixelSizes=[{"magnification": 92000, "pixelSize": 1.14}])
+
+    acquisition = readAcquisition(EPU / (IMAGE + ".xml"), [talos])
+
+    assert not acquisition["pixelCalibrated"] and acquisition["pixelSize"] == pytest.approx(1.5678, abs=1e-4)
+    assert any("was not used" in warning and "Falcon 3" in warning for warning in acquisition["warnings"])
+    assert acquisition["cameraDose"] == pytest.approx(30.84, abs=0.01)
+
+
 def test_WithoutACalibrationTheNominalPixelStays():
     acquisition = readAcquisition(EPU / (IMAGE + ".xml"), [])
 
@@ -120,7 +131,7 @@ def test_MoviesInTheFolderItselfCountTooAndAMissingFolderIsSaid(tmp_path):
 @pytest.mark.parametrize("session, dataset, state", [
     ({"status": "acquiring", "offloadPath": "/mnt"}, {"movieCount": 5, "minutesSinceLastMovie": 2}, "receiving"),
     ({"status": "acquiring", "offloadPath": "/mnt"}, {"movieCount": 5, "minutesSinceLastMovie": 45}, "stalled"),
-    ({"status": "finished", "offloadPath": "/mnt"}, {"movieCount": 5, "minutesSinceLastMovie": 600}, "receiving"),
+    ({"status": "finished", "offloadPath": "/mnt"}, {"movieCount": 5, "minutesSinceLastMovie": 600}, "acquired"),
     ({"status": "planned", "offloadPath": "/mnt"}, {"movieCount": 0}, "idle"),
     ({"status": "acquiring", "offloadPath": ""}, {"movieCount": 0}, "noOffload"),
     ({"status": "acquiring", "offloadPath": "/mnt"}, {"movieCount": 0, "scannedAt": None}, "pending"),
