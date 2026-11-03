@@ -195,6 +195,7 @@ def watchSessions(db, now: Optional[float] = None) -> int:
                               scan["state"], acquisition)
             looked += 1
         _processPending(db)
+        _refreshAlerts(db)
     finally:
         sessions.unlockWatch()
     return looked
@@ -209,6 +210,18 @@ def _processPending(db) -> None:
         FacilitySessionProcessor(PostgresqlFlatMapper(db)).processPending()
     except Exception:
         logger.warning("Could not process the sessions' new DATA", exc_info=True)
+
+
+def _refreshAlerts(db) -> None:
+    """Open and resolve the facility's alerts, and mail the new ones (a failure here stops nothing else)."""
+    from app.backend.api.services.facility_alerts import FacilityAlerts
+
+    try:
+        alerts = FacilityAlerts(db)
+        alerts.refresh()
+        alerts.mailNew()
+    except Exception:
+        logger.warning("Could not refresh the facility's alerts", exc_info=True)
 
 
 def watchOnce(db) -> int:

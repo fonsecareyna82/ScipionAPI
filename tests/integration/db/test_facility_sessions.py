@@ -554,3 +554,122 @@ def test_TheWatchersTurnLeavesNoTransactionOpen(facility):
     watchOnce(db)
 
     assert db.conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_IDLE
+
+
+@pytest.fixture
+def keptSettings(postgresqlIntegrationDb):
+    """The facility's settings are put back after the test."""
+    from app.backend.mapper.facility_settings_mapper import FacilitySettingsPostgresqlMapper
+
+    db = postgresqlIntegrationDb
+    kept = [dict(row) for row in db.fetchAll("SELECT key, value FROM facility_settings") or []]
+    try:
+        yield
+    finally:
+        db.execute("DELETE FROM facility_settings")
+        for row in kept:
+            FacilitySettingsPostgresqlMapper(db).saveSettings({row["key"]: row["value"]}, None)
+
+
+def test_AnAlertIsOpenedOnceForADataThatStopsAndResolvedWhenMoviesComeBack(facility):
+    from app.backend.api.services.facility_alerts import FacilityAlerts
+
+    sessions, microscope, sample = facility
+    db = sessions.mapper.db
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring"))
+    first = session["datasets"][1]
+    db.execute('UPDATE facility_session_datasets SET "movieCount" = 40, "lastMovieAt" = NOW() - INTERVAL %s '
+               "WHERE id = %s", ("45 minutes", first["id"]))
+    alerts = FacilityAlerts(db)
+
+    opened = alerts.refresh(stallMinutes=20)
+    assert len(opened) == 1 and alerts.refresh(stallMinutes=20) == []
+    alert = next(alert for alert in alerts.listAlerts() if alert["id"] == opened[0])
+    assert alert["kind"] == "stalled" and alert["folder"] == first["folder"]
+    assert "no new movie for 45 minutes (40 movies so far)" in alert["message"]
+
+    db.execute('UPDATE facility_session_datasets SET "lastMovieAt" = NOW() WHERE id = %s', (first["id"],))
+    alerts.refresh(stallMinutes=20)
+    assert opened[0] not in [alert["id"] for alert in alerts.listAlerts()]
+    assert next(alert for alert in alerts.listAlerts(openOnly=False) if alert["id"] == opened[0])["resolvedAt"]
+
+
+def test_AFailedProcessingOrProtocolIsAnAlertThatSomeoneTakes(facility, owner):
+    from app.backend.api.services.facility_alerts import FacilityAlerts
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring"))
+    first, second = session["datasets"][1:]
+    projectId = flat.insertProject(ownerId=userId, name="/tmp/alerts-%s" % uuid4().hex, description="alerts")
+    sessions.mapper.saveProcessing(first["id"], {"state": "error", "message": "The template has no Import Movies"})
+    sessions.mapper.saveProcessing(second["id"], {"state": "launched"}, projectId=projectId)
+    db.execute('INSERT INTO protocols ("protocolId", "projectId", "protocolClassName", params, status) '
+               "VALUES (%s, %s, %s, %s, %s)", (7, projectId, "ProtMotionCorr", "{}", "failed"))
+    alerts = FacilityAlerts(db)
+
+    alerts.refresh()
+
+    kinds = {alert["kind"]: alert for alert in alerts.listAlerts() if alert["sessionId"] == session["id"]}
+    assert set(kinds) == {"processingFailed", "protocolFailed"}
+    assert "The template has no Import Movies" in kinds["processingFailed"]["message"]
+    assert "protocol 7 (ProtMotionCorr) failed" in kinds["protocolFailed"]["message"]
+    taken = alerts.acknowledge(kinds["protocolFailed"]["id"], userId)
+    assert taken["acknowledgedBy"] == userId and taken["acknowledgedByName"] == "Gaoxin Lu"
+
+    db.execute('UPDATE protocols SET status = %s WHERE "projectId" = %s', ("finished", projectId))
+    alerts.refresh()
+    assert {alert["kind"] for alert in alerts.listAlerts() if alert["sessionId"] == session["id"]} == {"processingFailed"}
+
+
+def test_TheNewAlertsAreMailedOnceAndThePasswordIsNeverAnswered(facility, keptSettings, postgresqlIntegrationDb,
+                                                              monkeypatch):
+    import smtplib
+
+    from app.backend.api.services.facility_alerts import FacilityAlerts
+    from app.backend.api.services.facility_mail import FacilityMail
+
+    sent = []
+
+    class FakeSmtp:
+        def __init__(self, host, port, timeout=None):
+            sent.append({"server": (host, port)})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, context=None):
+            sent[-1]["tls"] = True
+
+        def login(self, user, password):
+            sent[-1]["login"] = (user, password)
+
+        def send_message(self, message):
+            sent[-1]["message"] = message
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSmtp)
+    sessions, microscope, sample = facility
+    db = sessions.mapper.db
+    mail = FacilityMail(db)
+    settings = mail.saveSettings({"host": "smtp.cnb.csic.es", "port": 587, "security": "starttls", "user": "facility",
+                                  "password": "s3cret", "sender": "facility@cnb.csic.es",
+                                  "recipients": "ops1@cnb.csic.es; ops2@cnb.csic.es"})
+    assert settings["passwordSet"] and "password" not in settings and "passwordEncrypted" not in settings
+    stored = db.fetchOne("SELECT value FROM facility_settings WHERE key = 'mail'")["value"]
+    assert "s3cret" not in str(stored)
+    # Left out, the password stays
+    assert mail.saveSettings({"host": "smtp.cnb.csic.es", "sender": "facility@cnb.csic.es"})["passwordSet"]
+
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring"))
+    sessions.mapper.saveProcessing(session["datasets"][1]["id"], {"state": "error", "message": "boom"})
+    alerts = FacilityAlerts(db)
+    alerts.refresh()
+
+    assert alerts.mailNew() == ["ops1@cnb.csic.es", "ops2@cnb.csic.es"]
+    assert sent[0]["tls"] and sent[0]["login"] == ("facility", "s3cret")
+    assert "boom" in sent[0]["message"].get_content() and sent[0]["message"]["To"] == "ops1@cnb.csic.es, ops2@cnb.csic.es"
+    assert alerts.mailNew() is None and len(sent) == 1
