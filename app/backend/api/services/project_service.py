@@ -4613,8 +4613,8 @@ class ProjectService:
         """The workflow of a template as JSON content, its ~Title|value|type|alias~ fields filled.
 
         Like Scipion's ``scipion template``: the environment variables are replaced, the fields parsed, and a
-        field whose alias is in aliasValues takes that value (one it does not take keeps its own). Raises
-        HTTPException 404 for an unknown template.
+        field whose alias is in aliasValues (whatever its case) takes that value; one it does not take keeps its
+        own. Raises HTTPException 404 for an unknown template.
         """
         template = findWorkflowTemplate(self.listProjectWorkflows(raw=True) or [], workflowId)
         if template is None:
@@ -4622,9 +4622,12 @@ class ProjectService:
         # As Template.replaceEnvVariables, but a variable this environment lacks stays as written
         template.content = (template.getContent() % _EnvironmentOrAsWritten(os.environ)).split("~")
         template.parseContent()
-        for alias, value in (aliasValues or {}).items():
-            if value is None:
+        wanted = {str(alias).lower(): value for alias, value in (aliasValues or {}).items() if value is not None}
+        for param in (template.getParams() or {}).values():
+            alias = param.getAlias()
+            if not alias or str(alias).lower() not in wanted:
                 continue
+            value = wanted[str(alias).lower()]
             try:
                 # A field's value is written into the JSON text as it is
                 template.setParamValue(alias, str(value))

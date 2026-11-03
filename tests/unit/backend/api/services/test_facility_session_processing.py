@@ -71,3 +71,30 @@ def test_ATomographyDataIsReadFromItsTiltSeriesFolders():
     assert (workflow[1]["filesPath"], workflow[1]["mdocPattern"]) == ("/offload/S_DATA_01", "*/frames/*.mdoc")
     labelBranch(workflow, "DATA_02")
     assert [protocol["object.label"] for protocol in workflow] == ["DATA_02 · import movies", "DATA_02 · compose"]
+
+
+def test_ATemplateWithEMhubsAliasesTakesTheMoviesValues(tmp_path, monkeypatch):
+    """The CNB's templates, filled by EMhub with `scipion template ... sampling=... spherical=...`."""
+    from pyworkflow.template import LocalTemplate
+
+    from app.backend.api.services.facility_session_processing import TEMPLATE_ALIASES
+    from app.backend.api.services.project_service import ProjectService
+
+    path = tmp_path / "spa-basic.json.template"
+    # As a template is written: text fields quoted, numbers not
+    path.write_text('[{"object.className": "ProtImportMovies", "object.id": "2", '
+                    '"filesPath": "~Movies folder|/data/|2|moviesPath~", "filesPattern": "~Pattern|*.tiff|0|filesPattern~", '
+                    '"samplingRate": ~Pixel|1.0|4|sampling~, "voltage": ~Voltage|300|4|voltage~, '
+                    '"sphericalAberration": ~Cs|2.7|4|spherical~, "dosePerFrame": ~Dose|1.0|4|dosePerFrame~}]')
+    service = ProjectService.__new__(ProjectService)
+    monkeypatch.setattr(service, "listProjectWorkflows", lambda raw=False: [LocalTemplate("cnb", str(path))])
+    values = {"filesPath": str(tmp_path), "filesPattern": "Images-Disc*/GridSquare_*/Data/*_Fractions.tiff",
+              "samplingRate": 0.84, "voltage": 200.0, "sphericalAberration": 2.7, "dosePerFrame": 1.07}
+
+    workflow = service.materializeWorkflowTemplate(
+        "cnb:spa-basic", {alias: values.get(param) for alias, param in TEMPLATE_ALIASES.items()})
+
+    imported = workflow[0]
+    assert imported["filesPath"] == str(tmp_path)
+    assert imported["filesPattern"] == "Images-Disc*/GridSquare_*/Data/*_Fractions.tiff"
+    assert (imported["samplingRate"], imported["voltage"], imported["dosePerFrame"]) == (0.84, 200.0, 1.07)

@@ -32,11 +32,16 @@ logger = logging.getLogger(__name__)
 IMPORT_MOVIES_CLASSES = ("ProtImportMovies",)
 # Tomography in streaming: the tilt movies are imported as movies, and this composes the tilt series from the mdocs
 COMPOSE_TILT_SERIES_CLASSES = ("ProtComposeTS",)
-# The aliases of a template's ~Title|value|type|alias~ fields that take what the first movie says
+# The aliases of a template's ~Title|value|type|alias~ fields that take what the first movie says (whatever their
+# case): EMhub's (moviesPath, filesPattern, voltage, spherical, magnification, sampling, dosePerFrame, the ones the
+# CNB's templates use with `scipion template`), Scipion's demo ones (sr, volt, sa, dose) and the parameters' names
 TEMPLATE_ALIASES = {
     "moviespath": "filesPath", "filespath": "filesPath", "pattern": "filesPattern", "filespattern": "filesPattern",
-    "sr": "samplingRate", "samplingrate": "samplingRate", "volt": "voltage", "voltage": "voltage",
-    "sa": "sphericalAberration", "cs": "sphericalAberration", "dose": "dosePerFrame", "doseperframe": "dosePerFrame",
+    "sampling": "samplingRate", "sr": "samplingRate", "samplingrate": "samplingRate",
+    "voltage": "voltage", "volt": "voltage",
+    "spherical": "sphericalAberration", "sa": "sphericalAberration", "cs": "sphericalAberration",
+    "sphericalaberration": "sphericalAberration",
+    "doseperframe": "dosePerFrame", "dose": "dosePerFrame",
     "gain": "gainFile", "gainfile": "gainFile", "mag": "magnification", "magnification": "magnification",
 }
 
