@@ -673,3 +673,45 @@ def test_TheNewAlertsAreMailedOnceAndThePasswordIsNeverAnswered(facility, keptSe
     assert sent[0]["tls"] and sent[0]["login"] == ("facility", "s3cret")
     assert "boom" in sent[0]["message"].get_content() and sent[0]["message"]["To"] == "ops1@cnb.csic.es, ops2@cnb.csic.es"
     assert alerts.mailNew() is None and len(sent) == 1
+
+
+def test_AUserSeesTheirSessionsAndThePiThoseOfTheGroupWithoutWhatIsTheStaffs(facility, owner, keptSettings):
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+
+    def person(first):
+        return flat.insertUser(email="%s-%s@example.com" % (first, uuid4().hex), hashedPassword="test", firstName=first,
+                               lastName="X", institution=None, role="user", isActive=True, isVerified=True,
+                               verificationCode="")
+    pi, stranger = person("Pi"), person("Stranger")
+    group = db.fetchOne("INSERT INTO user_groups (name) VALUES (%s) RETURNING id", ("Lab %s" % uuid4().hex[:6],))
+    db.execute('INSERT INTO user_group_members ("groupId", "userId", "groupRole") VALUES (%s, %s, %s), (%s, %s, %s)',
+               (group["id"], userId, "member", group["id"], pi, "pi"))
+    try:
+        FacilitySettingsService(db).saveSettings({"rawRetentionDays": 30, "processedRetentionDays": 7,
+                                                  "downloadInstructions": "Take your data with the iRODS ticket."})
+        session = sessions.saveSession(_multigrid(microscope, sample, status="finished", userId=userId,
+                                                  groupId=group["id"], notes="Internal: the gun was unstable",
+                                                  userNotes="Thin ice on grid 6; the other grids are fine."))
+        sessions.mapper.saveProcessing(session["datasets"][1]["id"], {"state": "error", "message": "Traceback (internal)"})
+
+        mine = sessions.sessionsOf({"id": userId})
+        seen = next(found for found in mine["sessions"] if found["id"] == session["id"])
+        assert not seen["asPi"] and seen["userNotes"].startswith("Thin ice") and "notes" not in seen
+        assert seen["datasets"][1]["processing"] == {"state": "error"}
+        assert "notes" not in seen["datasets"][1] and "Internal" not in str(seen)
+        finished = datetime.datetime.fromisoformat(session["finishedAt"]) if isinstance(session["finishedAt"], str) \
+            else session["finishedAt"]
+        assert seen["rawKeptUntil"] == (finished + datetime.timedelta(days=30)).isoformat()
+        assert mine["downloadInstructions"] == "Take your data with the iRODS ticket." and not mine["isPi"]
+
+        asPi = sessions.sessionsOf({"id": pi})
+        assert asPi["isPi"] and next(found for found in asPi["sessions"] if found["id"] == session["id"])["asPi"]
+        assert session["id"] not in [found["id"] for found in sessions.sessionsOf({"id": stranger})["sessions"]]
+    finally:
+        db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
+        db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
+        db.execute("DELETE FROM users WHERE id = ANY(%s)", ([pi, stranger],))

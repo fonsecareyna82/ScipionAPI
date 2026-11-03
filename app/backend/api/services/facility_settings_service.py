@@ -6,7 +6,16 @@ from fastapi import HTTPException, status
 from app.backend.api.services import facility_conventions as conventions
 from app.backend.mapper.facility_settings_mapper import FacilitySettingsPostgresqlMapper
 
-DEFAULTS = {"sessionNamePattern": conventions.DEFAULT_SESSION_NAME_PATTERN}
+DEFAULTS = {
+    "sessionNamePattern": conventions.DEFAULT_SESSION_NAME_PATTERN,
+    # How long the facility keeps a session's data once it finished (0: not said), told to its users
+    "rawRetentionDays": 0,
+    "processedRetentionDays": 0,
+    # How the users take their data home (iRODS, rsync, a disk...), shown in their sessions
+    "downloadInstructions": "",
+}
+TEXT_LIMIT = 5000
+MAX_RETENTION_DAYS = 36500
 
 
 def _badRequest(detail: str) -> HTTPException:
@@ -37,8 +46,24 @@ class FacilitySettingsService:
             raise _badRequest(str(error))
 
     def saveSettings(self, payload: Dict[str, Any], userId: Optional[int] = None) -> Dict[str, Any]:
-        values = {key: str(payload[key]).strip() for key in DEFAULTS if payload.get(key) is not None}
+        values: Dict[str, Any] = {}
+        for key in DEFAULTS:
+            if payload.get(key) is None:
+                continue
+            if isinstance(DEFAULTS[key], int):
+                try:
+                    values[key] = int(payload[key])
+                except (TypeError, ValueError):
+                    raise _badRequest("%s is a number of days" % key)
+                if not 0 <= values[key] <= MAX_RETENTION_DAYS:
+                    raise _badRequest("%s is 0 to %d days" % (key, MAX_RETENTION_DAYS))
+            else:
+                values[key] = str(payload[key]).strip()
+                if len(values[key]) > TEXT_LIMIT:
+                    raise _badRequest("%s is up to %d characters" % (key, TEXT_LIMIT))
         if "sessionNamePattern" in values:
+            if not values["sessionNamePattern"]:
+                raise _badRequest("The session name pattern is empty")
             self.preview({"sessionNamePattern": values["sessionNamePattern"]})
         self.mapper.saveSettings(values, userId)
         return self.getSettings()

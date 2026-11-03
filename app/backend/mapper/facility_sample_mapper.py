@@ -66,6 +66,13 @@ class FacilitySamplePostgresqlMapper(FacilityImagePostgresqlMapper):
             rows = self.db.fetchAll(LIST_SAMPLES_SQL + ' ORDER BY s."createdAt" DESC, s.id DESC')
         return [dict(row) for row in rows or []]
 
+    def listSamplesOf(self, userId: int, piGroupIds: List[int]) -> List[Dict[str, Any]]:
+        """The samples a user owns, and those of the groups they are the PI of."""
+        rows = self.db.fetchAll(LIST_SAMPLES_SQL + ' WHERE s."ownerId" = %s OR s."groupId" = ANY(%s) '
+                                'ORDER BY s."createdAt" DESC, s.id DESC',
+                                (int(userId), [int(groupId) for groupId in piGroupIds]))
+        return [dict(row) for row in rows or []]
+
     def getSample(self, sampleId: int) -> Optional[Dict[str, Any]]:
         row = self.db.fetchOne(LIST_SAMPLES_SQL + " WHERE s.id = %s", (int(sampleId),))
         return dict(row) if row else None

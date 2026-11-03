@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapper, imagesJson
 
 SESSION_FIELDS = ("name", "microscopeId", "technique", "status", "groupId", "userId", "bookingRef", "scheduledOn",
-                  "startedAt", "finishedAt", "notes", "templateId", "autoProcess", "oneProject")
+                  "startedAt", "finishedAt", "notes", "templateId", "autoProcess", "oneProject", "userNotes")
 DATASET_FIELDS = ("kind", "number", "gridId", "detectorId", "notes", "folder")
 
 LIST_SESSIONS_SQL = """
@@ -14,6 +14,7 @@ LIST_SESSIONS_SQL = """
            TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) AS "userName",
            s."bookingRef", s."scheduledOn", s."startedAt", s."finishedAt", s.notes, s."createdBy",
            s."createdAt", s."updatedAt", m."offloadPath", s."templateId", s."autoProcess", s."oneProject",
+           s."userNotes",
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
@@ -121,6 +122,18 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
             params.extend([pattern] * 5)
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         return [dict(row) for row in self.db.fetchAll(LIST_SESSIONS_SQL + where + _ORDER, tuple(params)) or []]
+
+    def listSessionsOf(self, userId: int, piGroupIds: List[int]) -> List[Dict[str, Any]]:
+        """The sessions for a user, and those of the groups they are the PI of."""
+        rows = self.db.fetchAll(LIST_SESSIONS_SQL + ' WHERE s."userId" = %s OR s."groupId" = ANY(%s)' + _ORDER,
+                                (int(userId), [int(groupId) for groupId in piGroupIds]))
+        return [dict(row) for row in rows or []]
+
+    def piGroupIds(self, userId: int) -> List[int]:
+        """The groups a user is the PI of."""
+        rows = self.db.fetchAll('SELECT "groupId" FROM user_group_members WHERE "userId" = %s AND "groupRole" = \'pi\'',
+                                (int(userId),))
+        return [int(row["groupId"]) for row in rows or []]
 
     def getSession(self, sessionId: int) -> Optional[Dict[str, Any]]:
         row = self.db.fetchOne(LIST_SESSIONS_SQL + " WHERE s.id = %s", (int(sessionId),))

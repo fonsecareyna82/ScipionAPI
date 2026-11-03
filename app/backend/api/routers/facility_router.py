@@ -130,6 +130,8 @@ class SessionPayload(BaseModel):
     # An id of GET /projects/workflows: the template each DATA's project is made from
     templateId: Optional[str] = ""
     autoProcess: bool = True
+    # What the technician tells its user (and the group's PI)
+    userNotes: Optional[str] = ""
     # One project for all its DATA (each its own branch) instead of one per DATA
     oneProject: bool = False
     datasets: List[DatasetPayload] = []
@@ -347,6 +349,14 @@ def listSessions(q: str = Query("", max_length=100, description="Text in a sessi
     return FacilitySessionService(mapper.db).listSessions(statuses, q)
 
 
+@router.get("/my-sessions", dependencies=[Depends(requireFacilityMode)])
+def listMySessions(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    """Any signed-in user's sessions and samples (and those of the groups they are the PI of), read only, with how
+    long their data are kept and how to take them home."""
+    return FacilitySessionService(mapper.db).sessionsOf(currentUser)
+
+
 @router.get("/sessions/{sessionId}", dependencies=[Depends(requireFacilityMode)])
 def getSession(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
                currentUser: dict = Depends(requireFacilityStaff)) -> Dict[str, Any]:
@@ -431,6 +441,10 @@ def processDataset(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMap
 class SettingsPayload(BaseModel):
     # The pattern of a session's name, e.g. {date:%Y_%m_%d}_{user}_{id:06d}
     sessionNamePattern: Optional[str] = None
+    # Days the data are kept once the session finished (0: not said), and how to take them home
+    rawRetentionDays: Optional[int] = None
+    processedRetentionDays: Optional[int] = None
+    downloadInstructions: Optional[str] = None
 
 
 class ConventionsPreviewPayload(BaseModel):

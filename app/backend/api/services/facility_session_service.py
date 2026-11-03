@@ -26,6 +26,13 @@ SESSION_STATUSES = ("planned", "acquiring", "finished", "archived")
 ACTIVE_STATUSES = ("planned", "acquiring")
 TECHNIQUES = ("spa", "tomo")
 SESSION_IMAGE_OWNERS = ("session", "dataset")
+# What a session's user (and the group's PI) see of it: none of what is the staff's
+USER_SESSION_FIELDS = ("id", "name", "microscopeName", "technique", "status", "groupName", "userName", "userEmail",
+                       "bookingRef", "scheduledOn", "startedAt", "finishedAt", "userNotes", "images")
+USER_DATASET_FIELDS = ("id", "kind", "number", "folder", "grid", "detectorName", "watch", "movieCount", "movieBytes",
+                       "firstMovieAt", "lastMovieAt", "acquisition", "projectId", "images")
+USER_SAMPLE_FIELDS = ("id", "code", "description", "groupName", "ownerName", "ownerEmail", "boxes", "images",
+                      "createdAt")
 # A folder name EPU and every file system take
 SESSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 SESSION_NAME_LIMIT = 100
@@ -271,6 +278,8 @@ class FacilitySessionService:
             "autoProcess": bool(payload.get("autoProcess", True)),
             # Every DATA in the session's project (each its own branch), instead of a project per DATA
             "oneProject": bool(payload.get("oneProject", False)),
+            # What the technician tells the session's user (and the group's PI); notes stay the staff's
+            "userNotes": _text(payload, "userNotes"),
         }
         assert set(values) == set(SESSION_FIELDS)
         datasets = self._datasets(payload.get("datasets") or [], existing, microscope, values["name"])
@@ -281,6 +290,38 @@ class FacilitySessionService:
 
             requestWatch()
         return saved
+
+    def sessionsOf(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        """What a user sees of the facility ("My sessions"): their sessions and samples, and those of the groups they
+        are the PI of, read only and without what is the staff's (their notes, the processing's messages)."""
+        from app.backend.mapper.facility_sample_mapper import FacilitySamplePostgresqlMapper
+
+        userId = int(user["id"])
+        piGroups = self.mapper.piGroupIds(userId)
+        settings = FacilitySettingsService(self.mapper.db).getSettings()["settings"]
+        sessions = [self._forUser(self._withFolders(session), userId, settings)
+                    for session in self.mapper.listSessionsOf(userId, piGroups)]
+        samples = [{key: sample[key] for key in USER_SAMPLE_FIELDS if key in sample}
+                   for sample in FacilitySamplePostgresqlMapper(self.mapper.db).listSamplesOf(userId, piGroups)]
+        return {"sessions": sessions, "samples": samples, "isPi": bool(piGroups),
+                "downloadInstructions": settings["downloadInstructions"],
+                "rawRetentionDays": settings["rawRetentionDays"],
+                "processedRetentionDays": settings["processedRetentionDays"]}
+
+    @staticmethod
+    def _forUser(session: Dict[str, Any], userId: int, settings: Dict[str, Any]) -> Dict[str, Any]:
+        seen = {key: session[key] for key in USER_SESSION_FIELDS if key in session}
+        seen["asPi"] = session.get("userId") != userId
+        seen["datasets"] = []
+        for dataset in session.get("datasets") or []:
+            shown = {key: dataset[key] for key in USER_DATASET_FIELDS if key in dataset}
+            shown["processing"] = {"state": dataset["processing"]["state"]} if dataset.get("processing") else None
+            seen["datasets"].append(shown)
+        finished = session.get("finishedAt")
+        for key, days in (("rawKeptUntil", settings["rawRetentionDays"]),
+                          ("processedKeptUntil", settings["processedRetentionDays"])):
+            seen[key] = (finished + datetime.timedelta(days=int(days))).isoformat() if finished and days else None
+        return seen
 
     def queueProcessing(self, datasetId: int) -> Dict[str, Any]:
         """Ask for a DATA's project now (again, after a failure); the watcher makes it at its next turn."""
