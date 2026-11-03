@@ -793,3 +793,59 @@ def test_ASessionsCtfLimitsAreCheckedAndGoIntoItsDataProjects(facility, owner, t
     assert (consensus["useDefocus"], consensus["minDefocus"], consensus["maxDefocus"], consensus["resolution"]) == (
         True, 6000.0, 35000.0, 7.5)
     assert sessions.getSession(session["id"])["datasets"][1]["processing"]["ctfLimits"]["resolution"] == 7.5
+
+
+def test_TheRoomScreenShowsEachMicroscopesStateToWhoHasItsLinkOnly(facility, owner, keptSettings):
+    from app.backend.api.services.facility_room import FacilityRoom
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    room = FacilityRoom(db)
+    with pytest.raises(HTTPException) as error:
+        room.checkToken("anything")
+    assert error.value.status_code == 404
+    token = room.newLink(userId)["token"]
+    room.checkToken(token)
+    other = room.newLink(userId)["token"]
+    with pytest.raises(HTTPException):
+        room.checkToken(token)
+    room.checkToken(other)
+
+    pi = flat.insertUser(email="pi-%s@example.com" % uuid4().hex, hashedPassword="test", firstName="Ashleigh",
+                         lastName="Shannon", institution=None, role="user", isActive=True, isVerified=True,
+                         verificationCode="")
+    group = db.fetchOne("INSERT INTO user_groups (name) VALUES (%s) RETURNING id", ("Lab %s" % uuid4().hex[:6],))
+    db.execute('INSERT INTO user_group_members ("groupId", "userId", "groupRole") VALUES (%s, %s, %s)',
+               (group["id"], pi, "pi"))
+    try:
+        today = datetime.date.today()
+        acquiring = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                                    groupId=group["id"], notes="Internal: gun unstable"), userId=userId)
+        sessions.saveSession(_multigrid(microscope, sample, scheduledOn=str(today + datetime.timedelta(days=2)),
+                                        userId=userId, groupId=group["id"]), userId=userId)
+        db.execute('UPDATE facility_session_datasets SET "movieCount" = 12, "lastMovieAt" = NOW() WHERE id = %s',
+                   (acquiring["datasets"][1]["id"],))
+
+        view = room.view(today)
+
+        mine = next(item for item in view["microscopes"] if item["id"] == microscope["id"])
+        assert mine["state"] == "acquiring" and mine["session"]["name"] == acquiring["name"]
+        assert (mine["session"]["technician"], mine["session"]["user"], mine["session"]["pi"]) == (
+            "Gaoxin Lu", "Gaoxin Lu", "Ashleigh Shannon")
+        assert mine["session"]["datasets"][0]["movieCount"] == 12
+        assert mine["session"]["datasets"][0]["sample"] == sample["code"]
+        upcoming = [item for item in view["upcoming"] if item["microscope"] == microscope["name"]]
+        assert len(upcoming) == 1 and upcoming[0]["pi"] == "Ashleigh Shannon"
+        # Names and states only
+        assert "@" not in str(view) and "Internal" not in str(view) and str(microscope["offloadPath"] or "/x") not in str(view)
+
+        FacilityService(db).saveMicroscope(dict(microscope, status="maintenance"), microscopeId=microscope["id"])
+        assert next(item for item in room.view(today)["microscopes"] if item["id"] == microscope["id"])["state"] == "maintenance"
+        room.turnOff(userId)
+        with pytest.raises(HTTPException):
+            room.checkToken(other)
+    finally:
+        db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
+        db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
+        db.execute("DELETE FROM users WHERE id = %s", (pi,))

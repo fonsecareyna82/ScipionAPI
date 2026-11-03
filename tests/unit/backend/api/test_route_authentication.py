@@ -7,7 +7,8 @@ from fastapi.routing import APIRoute
 
 ROUTERS_DIR = Path(__file__).resolve().parents[4] / "app" / "backend" / "api" / "routers"
 
-# Signing in, the version shown on the login page, and downloads through a signed link
+# Signing in, the version shown on the login page, downloads through a signed link, and the facility's room
+# screen, which its link's token opens (it shows names and states only)
 PUBLIC_ROUTES = {
     ("POST", "/auth/signup"),
     ("POST", "/auth/verify"),
@@ -17,6 +18,8 @@ PUBLIC_ROUTES = {
     ("GET", "/system/version"),
     ("GET", "/system/update-check"),
     ("GET", "/projects/{projectId}/protocols/{protocolId}/fs/download-file"),
+    ("GET", "/facility/room"),
+    ("GET", "/facility/room/microscopes/{microscopeId}/photo"),
 }
 
 

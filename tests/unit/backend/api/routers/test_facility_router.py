@@ -430,3 +430,34 @@ def test_SessionsAndDatasetsKeepImages(sessionClient):
 
     assert added.status_code == 201 and added.json()["image"]["caption"] == "Atlas"
     assert technician.events == ["facility.sessionUpdated"]
+
+
+def test_TheRoomScreenNeedsItsTokenNotAUser(modules, monkeypatch):
+    router, _ = modules
+
+    class Room:
+        def __init__(self, db):
+            pass
+
+        def checkToken(self, token):
+            if token != "good":
+                raise HTTPException(status_code=404, detail="No such screen")
+
+        def view(self):
+            return {"microscopes": [], "upcoming": []}
+
+        def link(self):
+            return {"enabled": True, "token": "good"}
+
+    monkeypatch.setattr(router, "FacilityRoom", Room)
+    client = _client(modules, monkeypatch, [])
+    # No user at all: the screen's routes do not ask for one
+    client.app.dependency_overrides.clear()
+    database = importlib.import_module("app.backend.database")
+    client.app.dependency_overrides[database.getMapper] = lambda: type("Mapper", (), {"db": None})()
+
+    assert client.get("/facility/room?token=good").json() == {"microscopes": [], "upcoming": []}
+    assert client.get("/facility/room?token=bad").status_code == 404
+    assert client.get("/facility/room").status_code == 404
+    assert _client(modules, monkeypatch, ["facility.sessions"]).get("/facility/settings/room-screen").status_code == 403
+    assert _client(modules, monkeypatch, ["facility.manage"]).get("/facility/settings/room-screen").json()["token"] == "good"

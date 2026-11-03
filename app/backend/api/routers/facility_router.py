@@ -20,6 +20,7 @@ from app.backend.api.services.facility_session_service import ACTIVE_STATUSES, F
 from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.api.services.facility_alerts import FacilityAlerts
 from app.backend.api.services.facility_mail import FacilityMail
+from app.backend.api.services.facility_room import FacilityRoom
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -548,3 +549,47 @@ def sendFacilityTestMail(payload: TestMailPayload, mapper: PostgresqlFlatMapper 
                          currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
     """Send a test mail (to the given address, else to the alerts' recipients); 400 says why it did not go."""
     return FacilityMail(mapper.db).sendTest(payload.to)
+
+
+# The room's screen: opened with its link's token, no signed-in user -----------------------------------------
+@router.get("/room", dependencies=[Depends(requireFacilityMode)])
+def getRoomScreen(token: str = Query("", max_length=200), mapper: PostgresqlFlatMapper = Depends(getMapper)
+                  ) -> Dict[str, Any]:
+    """Each microscope's state and session, and the sessions of the next days (names and states only)."""
+    room = FacilityRoom(mapper.db)
+    room.checkToken(token)
+    return room.view()
+
+
+@router.get("/room/microscopes/{microscopeId}/photo", dependencies=[Depends(requireFacilityMode)])
+def getRoomMicroscopePhoto(microscopeId: int, token: str = Query("", max_length=200),
+                           mapper: PostgresqlFlatMapper = Depends(getMapper)) -> Response:
+    room = FacilityRoom(mapper.db)
+    room.checkToken(token)
+    photo = room.photo(microscopeId)
+    return Response(content=bytes(photo["data"]), media_type=photo["contentType"],
+                    headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get("/settings/room-screen", dependencies=[Depends(requireFacilityMode)])
+def getRoomScreenLink(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                      currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    """The room screen's link (its token), or that it is off."""
+    return FacilityRoom(mapper.db).link()
+
+
+@router.post("/settings/room-screen", dependencies=[Depends(requireFacilityMode)])
+def makeRoomScreenLink(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                       currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    """A new link for the room screen; the old one stops working."""
+    link = FacilityRoom(mapper.db).newLink(currentUser.get("id"))
+    recordAudit(mapper, currentUser, "facility.settingsUpdated", "facility", None, "room screen", {"link": "new"})
+    return link
+
+
+@router.delete("/settings/room-screen", dependencies=[Depends(requireFacilityMode)])
+def turnOffRoomScreen(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                      currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    link = FacilityRoom(mapper.db).turnOff(currentUser.get("id"))
+    recordAudit(mapper, currentUser, "facility.settingsUpdated", "facility", None, "room screen", {"link": "off"})
+    return link
