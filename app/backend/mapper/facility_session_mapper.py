@@ -6,7 +6,7 @@ from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapp
 
 SESSION_FIELDS = ("name", "microscopeId", "technique", "status", "groupId", "userId", "bookingRef", "scheduledOn",
                   "startedAt", "finishedAt", "notes", "templateId", "autoProcess", "oneProject")
-DATASET_FIELDS = ("kind", "number", "gridId", "detectorId", "notes")
+DATASET_FIELDS = ("kind", "number", "gridId", "detectorId", "notes", "folder")
 
 LIST_SESSIONS_SQL = """
     SELECT s.id, s.name, s."microscopeId", m.name AS "microscopeName", s.technique, s.status,
@@ -17,7 +17,7 @@ LIST_SESSIONS_SQL = """
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
-                         'detectorId', d."detectorId", 'notes', d.notes,
+                         'detectorId', d."detectorId", 'notes', d.notes, 'folder', d.folder,
                          -- The detector the staff gave it, else the one its first movie names
                          'detectorName', COALESCE(det.name, d.acquisition->>'detectorName'),
                          'movieCount', d."movieCount", 'movieBytes', d."movieBytes",
@@ -64,7 +64,7 @@ WATCH_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('facility_session_watch')
 WATCH_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('facility_session_watch')) AS unlocked"
 
 LIST_WATCHED_DATASETS_SQL = """
-    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d."detectorId", d."movieCount",
+    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d.folder, d."detectorId", d."movieCount",
            d."firstMovieAt", d.acquisition IS NOT NULL AS "acquisitionRead", d."scanState", s.technique,
            s."microscopeId", m."offloadPath"
       FROM facility_session_datasets d
@@ -77,7 +77,7 @@ LIST_WATCHED_DATASETS_SQL = """
 # The DATA whose first movie was read and whose project is to be made: by itself when their session processes
 # so (and they were never tried), or because the staff asked again
 LIST_DATASETS_TO_PROCESS_SQL = """
-    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d."detectorId", d.acquisition, d.processing,
+    SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d.folder, d."detectorId", d.acquisition, d.processing,
            s."templateId", s."userId", s."createdBy", s."groupId", s."microscopeId", m."offloadPath",
            s."oneProject", s.technique,
            -- With one project for the session: the one an earlier DATA made
@@ -169,6 +169,13 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
 
     def getUser(self, userId: int) -> Optional[Dict[str, Any]]:
         row = self.db.fetchOne('SELECT id, email, "firstName", "lastName" FROM users WHERE id = %s', (int(userId),))
+        return dict(row) if row else None
+
+    def getGroupPi(self, groupId: int) -> Optional[Dict[str, Any]]:
+        """The PI of a group (its member with the pi role; the first if there are several)."""
+        row = self.db.fetchOne('SELECT u.id, u.email, u."firstName", u."lastName" FROM user_group_members m '
+                               'JOIN users u ON u.id = m."userId" WHERE m."groupId" = %s AND m."groupRole" = \'pi\' '
+                               'ORDER BY u.id LIMIT 1', (int(groupId),))
         return dict(row) if row else None
 
     def getGroupName(self, groupId: int) -> Optional[str]:

@@ -199,7 +199,8 @@ class FacilitySessionProcessor:
 
     def processDataset(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Make, fill and launch a DATA's project (or its branch in the session's); keeps and answers how it went."""
-        dataName = "%s_DATA_%02d" % (row["sessionName"], int(row["number"]))
+        # The DATA's folder (named by its microscope's pattern) names its project too
+        dataName = row.get("folder") or "%s_DATA_%02d" % (row["sessionName"], int(row["number"]))
         oneProject = bool(row.get("oneProject"))
         projectName = row["sessionName"] if oneProject else dataName
         processing: Dict[str, Any] = {"state": "running", "at": _now(), "templateId": row["templateId"],

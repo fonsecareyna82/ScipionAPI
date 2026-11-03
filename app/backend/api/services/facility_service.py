@@ -244,8 +244,37 @@ class FacilityService:
             "sessionsEnabled": bool(payload.get("sessionsEnabled")),
             "notes": _text(payload, "notes"),
         }
+        values.update(self._conventions(payload, name))
         assert set(values) == set(MICROSCOPE_FIELDS)
         return values
+
+    def _conventions(self, payload: Dict[str, Any], name: str) -> Dict[str, Any]:
+        """How the microscope's sessions name their folders: its code, its DATA and ATLAS patterns, its slots."""
+        from app.backend.api.services import facility_conventions as conventions
+
+        code = _text(payload, "code", 20)
+        if code and conventions.nameWord(code) != code:
+            raise _badRequest("A microscope's code goes in folder names: letters, digits and '-' only")
+        dataPattern = _text(payload, "dataFolderPattern", conventions.PATTERN_LIMIT) or conventions.DEFAULT_DATA_FOLDER_PATTERN
+        atlasPattern = payload.get("atlasFolderPattern")
+        atlasPattern = conventions.DEFAULT_ATLAS_FOLDER_PATTERN if atlasPattern is None else _text(
+            payload, "atlasFolderPattern", conventions.PATTERN_LIMIT)
+        try:
+            slots = int(payload.get("gridSlots") or 12)
+        except (TypeError, ValueError):
+            slots = 0
+        if not 1 <= slots <= 99:
+            raise _badRequest("An autoloader takes 1 to 99 grids")
+        try:
+            examples = conventions.examples("{microscope}_{id}", dataPattern, atlasPattern,
+                                            code or conventions.nameWord(name) or "M")
+        except ValueError as error:
+            raise _badRequest(str(error))
+        if len(set(examples["data"])) < 2:
+            raise _badRequest("The DATA folders' pattern needs {n}: each grid has its folder")
+        if examples["atlas"] in examples["data"]:
+            raise _badRequest("The ATLAS folder would be named as a DATA one")
+        return {"code": code, "dataFolderPattern": dataPattern, "atlasFolderPattern": atlasPattern, "gridSlots": slots}
 
     def saveMicroscope(self, payload: Dict[str, Any], microscopeId: Optional[int] = None) -> Dict[str, Any]:
         existing = self.getMicroscope(microscopeId) if microscopeId is not None else None

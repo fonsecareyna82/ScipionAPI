@@ -1,19 +1,20 @@
 """A facility's acquisition sessions: who a stay on a microscope is for, and the folders it writes.
 
-A session's name makes its folders, ``<name>_ATLAS`` and ``<name>_DATA_NN``, the names the operator types into
-EPU; it follows the facility's convention (``YYYY_MM_DD_<Name-Surname>_<6-digit id>``) unless one is given, and
-holds still once the acquisition starts. Each DATA is a grid of a sample (multigrid: up to twelve), so a dataset
+A session's name makes its folders (by its microscope's patterns, e.g. ``<name>_ATLAS`` and ``<name>_DATA_NN``),
+the names the operator types into EPU; it follows the facility's pattern (``facility_conventions``) unless one
+is given, and holds still once the acquisition starts. Each dataset keeps the folder it was given. Each DATA is a grid of a sample (multigrid: up to twelve), so a dataset
 says what was acquired; the session keeps its ATLAS always. A session saved with its datasets keeps their ids:
 the watcher will record on them the detector that took them and the project that processes them.
 """
 import datetime
 import re
-import unicodedata
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
+from app.backend.api.services import facility_conventions as conventions
 from app.backend.api.services.facility_sample_service import IMAGE_MAX_SIDE, IMAGES_PER_OWNER
+from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.api.services.facility_service import PHOTO_CONTENT_TYPE, photoForWeb
 from app.backend.mapper.facility_microscope_mapper import FacilityMicroscopePostgresqlMapper
 from app.backend.mapper.facility_session_mapper import (
@@ -24,7 +25,6 @@ SESSION_STATUSES = ("planned", "acquiring", "finished", "archived")
 # What the sessions list shows unless asked otherwise: the ones still to come or under way
 ACTIVE_STATUSES = ("planned", "acquiring")
 TECHNIQUES = ("spa", "tomo")
-DATA_NUMBERS = range(1, 13)
 SESSION_IMAGE_OWNERS = ("session", "dataset")
 # A folder name EPU and every file system take
 SESSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -64,17 +64,6 @@ def _date(value: Any) -> Optional[datetime.date]:
         raise _badRequest("Dates are written YYYY-MM-DD: %s" % value)
 
 
-def _nameWord(text: str) -> str:
-    """Text as a part of a folder name: plain letters and digits, words joined by '-'."""
-    ascii = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
-    return "-".join(re.findall(r"[A-Za-z0-9]+", ascii))
-
-
-def sessionName(day: datetime.date, person: str, sessionId: int) -> str:
-    """The facility's name for a session: YYYY_MM_DD_<Name-Surname>_<6-digit id>."""
-    return "%s_%s_%06d" % (day.strftime("%Y_%m_%d"), _nameWord(person) or "Facility", sessionId)
-
-
 def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str]:
     """Where a DATA is in its acquisition, as the watcher of the folders saw it.
 
@@ -99,11 +88,14 @@ def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str
     return "noFolder" if dataset.get("folderFound") is False else "waiting"
 
 
-def datasetFolder(sessionName: str, dataset: Dict[str, Any]) -> str:
-    """The folder the microscope writes a dataset to."""
+def datasetFolder(sessionName: str, dataset: Dict[str, Any], microscope: Dict[str, Any]) -> str:
+    """The folder the microscope writes a dataset to, by its patterns."""
+    code = conventions.microscopeCode(microscope)
     if dataset["kind"] == "atlas":
-        return "%s_ATLAS" % sessionName
-    return "%s_DATA_%02d" % (sessionName, int(dataset["number"]))
+        return conventions.folderName(microscope.get("atlasFolderPattern") or conventions.DEFAULT_ATLAS_FOLDER_PATTERN,
+                                      sessionName, 0, code)
+    return conventions.folderName(microscope.get("dataFolderPattern") or conventions.DEFAULT_DATA_FOLDER_PATTERN,
+                                  sessionName, int(dataset["number"]), code)
 
 
 class FacilitySessionService:
@@ -113,7 +105,6 @@ class FacilitySessionService:
 
     def _withFolders(self, session: Dict[str, Any]) -> Dict[str, Any]:
         for dataset in session.get("datasets") or []:
-            dataset["folder"] = datasetFolder(session["name"], dataset)
             dataset["watch"] = watchState(session, dataset)
         return session
 
@@ -130,21 +121,35 @@ class FacilitySessionService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
         return self._withFolders(session)
 
-    def _person(self, userId: Optional[int], groupId: Optional[int]) -> str:
-        """Who a session is named after: its user (name and surname, else the address), else its group."""
+    @staticmethod
+    def _personWord(user: Optional[Dict[str, Any]]) -> str:
+        """A person in names: Name-Surname, else the address' name."""
+        if not user:
+            return ""
+        full = "%s %s" % (user.get("firstName") or "", user.get("lastName") or "")
+        return conventions.nameWord(full.strip() or str(user.get("email") or "").split("@")[0])
+
+    def _nameValues(self, payload: Dict[str, Any], sessionId: int, userId: Optional[int], groupId: Optional[int],
+                    scheduledOn: Optional[datetime.date], microscope: Dict[str, Any], technique: str) -> Dict[str, Any]:
+        """The pieces of the facility's session name pattern for this session."""
         user = self.mapper.getUser(userId) if userId is not None else None
-        if user:
-            full = "%s %s" % (user.get("firstName") or "", user.get("lastName") or "")
-            return full.strip() or str(user.get("email") or "").split("@")[0]
-        return (self.mapper.getGroupName(groupId) if groupId is not None else None) or ""
+        pi = self.mapper.getGroupPi(groupId) if groupId is not None else None
+        group = self.mapper.getGroupName(groupId) if groupId is not None else None
+        return {"date": scheduledOn or datetime.date.today(), "user": self._personWord(user), "pi": self._personWord(pi),
+                "group": conventions.nameWord(group), "microscope": conventions.microscopeCode(microscope),
+                "booking": conventions.nameWord(payload.get("bookingRef")), "technique": technique, "id": sessionId}
 
     def _name(self, payload: Dict[str, Any], existing: Optional[Dict[str, Any]], sessionId: int,
-              userId: Optional[int], groupId: Optional[int], scheduledOn: Optional[datetime.date]) -> str:
+              nameValues: Dict[str, Any]) -> str:
         name = _text(payload, "name", SESSION_NAME_LIMIT)
         if not name:
             if existing:
                 return existing["name"]
-            return sessionName(scheduledOn or datetime.date.today(), self._person(userId, groupId), sessionId)
+            pattern = FacilitySettingsService(self.mapper.db).sessionNamePattern()
+            try:
+                return conventions.sessionName(pattern, nameValues)
+            except ValueError as error:
+                raise _badRequest("The facility's session name pattern makes no name: %s" % error)
         if not SESSION_NAME_PATTERN.match(name):
             raise _badRequest("A session's name makes folder names: letters, digits, '_', '-' and '.' only")
         if existing and name != existing["name"] and existing["status"] != "planned":
@@ -155,12 +160,29 @@ class FacilitySessionService:
         return name
 
     def _datasets(self, rows: List[Dict[str, Any]], existing: Optional[Dict[str, Any]],
-                  detectorIds: set) -> List[Dict[str, Any]]:
-        """The datasets of a save: one ATLAS always (its id kept), and DATA_01..12 each with its grid."""
+                  microscope: Dict[str, Any], name: str) -> List[Dict[str, Any]]:
+        """The datasets of a save: the ATLAS (its id kept; none when the microscope makes no atlas folder), and a
+        DATA per position of the autoloader that has a grid. Each keeps its folder, made again only when the
+        session (still planned) changes its name."""
+        detectorIds = {int(detector["id"]) for detector in microscope.get("detectors") or []}
+        slots = int(microscope.get("gridSlots") or 12)
+        renamed = existing is not None and existing["name"] != name
         known = {int(dataset["id"]): dataset for dataset in (existing or {}).get("datasets") or []}
+
+        def folder(dataset: Dict[str, Any], known: Optional[Dict[str, Any]]) -> str:
+            if known and known.get("folder") and not renamed:
+                return known["folder"]
+            try:
+                return datasetFolder(name, dataset, microscope)
+            except ValueError as error:
+                raise _badRequest("%s's folder patterns make no folder: %s" % (microscope["name"], error))
+
         atlas = next((dataset for dataset in known.values() if dataset["kind"] == "atlas"), None)
-        datasets = [{"id": atlas["id"] if atlas else None, "kind": "atlas", "number": 0, "gridId": None,
-                     "detectorId": None, "notes": atlas["notes"] if atlas else ""}]
+        datasets = []
+        if atlas or str(microscope.get("atlasFolderPattern") or "").strip():
+            datasets.append({"id": atlas["id"] if atlas else None, "kind": "atlas", "number": 0, "gridId": None,
+                             "detectorId": None, "notes": atlas["notes"] if atlas else ""})
+            datasets[0]["folder"] = folder(datasets[0], atlas)
         numbers, ids = set(), set()
         for row in rows or []:
             datasetId = _optionalId(row, "id")
@@ -173,15 +195,16 @@ class FacilitySessionService:
             if str(row.get("kind") or "data") == "atlas":
                 if datasetId is not None and known[datasetId]["kind"] != "atlas":
                     raise _badRequest("Dataset %d is not the session's ATLAS" % datasetId)
-                datasets[0]["notes"] = _text(row, "notes")
+                if datasets and datasets[0]["kind"] == "atlas":
+                    datasets[0]["notes"] = _text(row, "notes")
                 continue
             if datasetId is not None and known[datasetId]["kind"] == "atlas":
                 raise _badRequest("Dataset %d is the session's ATLAS" % datasetId)
             number = _optionalId(row, "number")
-            if number not in DATA_NUMBERS:
-                raise _badRequest("A session has DATA_01 to DATA_12")
+            if number is None or not 1 <= number <= slots:
+                raise _badRequest("%s's autoloader has positions 1 to %d" % (microscope["name"], slots))
             if number in numbers:
-                raise _badRequest("DATA_%02d is given twice" % number)
+                raise _badRequest("Position %d is given twice" % number)
             numbers.add(number)
             gridId = _optionalId(row, "gridId")
             if gridId is not None and not self.mapper.gridExists(gridId):
@@ -191,8 +214,12 @@ class FacilitySessionService:
                 raise _badRequest("Detector %d is not one of this session's microscope" % detectorId)
             values = {"kind": "data", "number": number, "gridId": gridId, "detectorId": detectorId,
                       "notes": _text(row, "notes")}
+            values["folder"] = folder(values, known.get(datasetId) if datasetId is not None else None)
             assert set(values) == set(DATASET_FIELDS)
             datasets.append(dict(values, id=datasetId))
+        folders = [dataset["folder"] for dataset in datasets]
+        if len(set(folders)) != len(folders):
+            raise _badRequest("Two of the session's folders would have the same name")
         return datasets
 
     def saveSession(self, payload: Dict[str, Any], sessionId: Optional[int] = None,
@@ -233,7 +260,9 @@ class FacilitySessionService:
             # Reopened (finished by mistake): it has not finished
             finishedAt = None
         values = {
-            "name": self._name(payload, existing, sessionId, sessionUserId, groupId, scheduledOn),
+            "name": self._name(payload, existing, sessionId,
+                               self._nameValues(payload, sessionId, sessionUserId, groupId, scheduledOn, microscope,
+                                                technique)),
             "microscopeId": microscopeId, "technique": technique, "status": statusValue, "groupId": groupId,
             "userId": sessionUserId, "bookingRef": _text(payload, "bookingRef", 100), "scheduledOn": scheduledOn,
             "startedAt": startedAt, "finishedAt": finishedAt, "notes": _text(payload, "notes"),
@@ -244,8 +273,7 @@ class FacilitySessionService:
             "oneProject": bool(payload.get("oneProject", False)),
         }
         assert set(values) == set(SESSION_FIELDS)
-        detectorIds = {int(detector["id"]) for detector in microscope.get("detectors") or []}
-        datasets = self._datasets(payload.get("datasets") or [], existing, detectorIds)
+        datasets = self._datasets(payload.get("datasets") or [], existing, microscope, values["name"])
         saved = self.getSession(self.mapper.saveSession(sessionId, isNew, values, datasets, createdBy=userId))
         if saved["status"] == "acquiring":
             # Its folders are looked at now, not at the watcher's next turn

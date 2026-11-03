@@ -17,6 +17,7 @@ from app.backend.api.services.facility_service import (
 )
 from app.backend.api.services.facility_sample_service import FacilitySampleService
 from app.backend.api.services.facility_session_service import ACTIVE_STATUSES, FacilitySessionService
+from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -51,6 +52,11 @@ class MicroscopePayload(BaseModel):
     offloadPath: Optional[str] = ""
     sessionsEnabled: bool = False
     notes: Optional[str] = ""
+    # How its sessions name their folders (facility_conventions); None keeps the defaults
+    code: Optional[str] = ""
+    dataFolderPattern: Optional[str] = None
+    atlasFolderPattern: Optional[str] = None
+    gridSlots: int = 12
     detectors: List[DetectorPayload] = []
 
 
@@ -417,3 +423,39 @@ def processDataset(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMap
     recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", session["id"], session["name"],
                 {"processing": "queued", "datasetId": datasetId})
     return session
+
+
+# Settings: the facility's own conventions ---------------------------------------------------------------
+class SettingsPayload(BaseModel):
+    # The pattern of a session's name, e.g. {date:%Y_%m_%d}_{user}_{id:06d}
+    sessionNamePattern: Optional[str] = None
+
+
+class ConventionsPreviewPayload(BaseModel):
+    sessionNamePattern: Optional[str] = None
+    dataFolderPattern: Optional[str] = None
+    atlasFolderPattern: Optional[str] = None
+    microscopeCode: Optional[str] = None
+
+
+@router.get("/settings", dependencies=[Depends(requireFacilityMode)])
+def getFacilitySettings(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                        currentUser: dict = Depends(requireFacilityStaff)) -> Dict[str, Any]:
+    """The facility's settings (over the defaults), what they make for an example session, and the presets."""
+    return FacilitySettingsService(mapper.db).getSettings()
+
+
+@router.put("/settings", dependencies=[Depends(requireFacilityMode)])
+def saveFacilitySettings(payload: SettingsPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                         currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    settings = FacilitySettingsService(mapper.db).saveSettings(payload.dict(), userId=currentUser.get("id"))
+    recordAudit(mapper, currentUser, "facility.settingsUpdated", "facility", None, "settings",
+                {key: value for key, value in payload.dict().items() if value is not None})
+    return settings
+
+
+@router.post("/settings/preview", dependencies=[Depends(requireFacilityMode)])
+def previewFacilityConventions(payload: ConventionsPreviewPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                               currentUser: dict = Depends(requireFacilityStaff)) -> Dict[str, Any]:
+    """What patterns make for an example session (the session, its ATLAS and two DATA); 400 for a wrong one."""
+    return FacilitySettingsService(mapper.db).preview(payload.dict())

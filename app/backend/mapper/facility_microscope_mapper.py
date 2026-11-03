@@ -2,12 +2,14 @@
 from typing import Any, Dict, List, Optional
 
 MICROSCOPE_FIELDS = ("name", "model", "status", "energyFilter", "acquisitionSoftware", "voltageKv", "csMm",
-                     "offloadPath", "sessionsEnabled", "notes")
+                     "offloadPath", "sessionsEnabled", "notes", "code", "dataFolderPattern", "atlasFolderPattern",
+                     "gridSlots")
 DETECTOR_FIELDS = ("name", "metadataName", "energyFiltered", "gainPath", "gainFlip", "gainRotation", "notes")
 
 LIST_MICROSCOPES_SQL = """
     SELECT m.id, m.name, m.model, m.status, m."energyFilter", m."acquisitionSoftware",
            m."voltageKv", m."csMm", m."offloadPath", m."sessionsEnabled", m.notes, m."createdAt", m."updatedAt",
+           m.code, m."dataFolderPattern", m."atlasFolderPattern", m."gridSlots",
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'name', d.name, 'metadataName', d."metadataName",
                          'energyFiltered', d."energyFiltered", 'gainPath', d."gainPath", 'gainFlip', d."gainFlip",

@@ -50,8 +50,9 @@ def isMovie(name: str, technique: str = "spa") -> bool:
     return FRACTIONS_MARK in lower or lower.endswith(TOMO_MOVIE_EXTENSIONS if technique == "tomo" else MOVIE_EXTENSIONS)
 
 
-def dataFolder(offloadPath: str, sessionName: str, number: int) -> Path:
-    return Path(offloadPath) / ("%s_DATA_%02d" % (sessionName, int(number)))
+def dataFolder(offloadPath: str, folder: str) -> Path:
+    """Where a DATA is: its folder (named by its microscope's pattern) in the offload."""
+    return Path(offloadPath) / folder
 
 
 def _movieFolders(root: Path) -> List[Path]:
@@ -182,7 +183,7 @@ def watchSessions(db, now: Optional[float] = None) -> int:
         for dataset in sessions.listWatchedDatasets():
             if not dataset["offloadPath"]:
                 continue
-            root = dataFolder(dataset["offloadPath"], dataset["sessionName"], dataset["number"])
+            root = dataFolder(dataset["offloadPath"], dataset["folder"])
             scan = scanFolder(root, dataset["scanState"] or {}, now, technique=dataset.get("technique") or "spa")
             acquisition = None
             if scan["count"] and not dataset["acquisitionRead"]:

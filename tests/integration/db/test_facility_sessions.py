@@ -45,12 +45,40 @@ def _multigrid(microscope, sample, **change):
                 **change)
 
 
-def test_ASessionIsNamedAsTheFacilityDoesAndKnowsItsFolders(facility):
+@pytest.fixture
+def cnbNames(postgresqlIntegrationDb):
+    """The facility names its sessions as the CNB (EMhub); its settings are put back after the test."""
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+    db = postgresqlIntegrationDb
+    kept = [dict(row) for row in db.fetchAll("SELECT key, value FROM facility_settings") or []]
+    FacilitySettingsService(db).saveSettings({"sessionNamePattern": "{date:%Y_%m_%d}_{user}_{id:06d}"})
+    try:
+        yield
+    finally:
+        db.execute("DELETE FROM facility_settings")
+        for row in kept:
+            FacilitySettingsService(db).mapper.saveSettings({row["key"]: row["value"]}, None)
+
+
+def test_ASessionIsNamedByTheNeutralPatternUnlessTheFacilitySetsItsOwn(facility, postgresqlIntegrationDb):
+    sessions, microscope, sample = facility
+    saved = postgresqlIntegrationDb.fetchOne("SELECT COUNT(*) AS n FROM facility_settings")["n"]
+    if saved:
+        pytest.skip("this database has its own facility settings")
+
+    session = sessions.saveSession(_multigrid(microscope, sample))
+
+    # {date:%Y%m%d}_{microscope}_{id:04d}: the microscope's code, else its name as a word
+    assert session["name"] == "20261031_%s_%04d" % (microscope["name"].replace(" ", "-"), session["id"])
+
+
+def test_ASessionIsNamedAsTheFacilityDoesAndKnowsItsFolders(facility, cnbNames):
     sessions, microscope, sample = facility
 
     session = sessions.saveSession(_multigrid(microscope, sample))
 
-    assert re.match(r"^2026_10_31_Facility_\d{6}$", session["name"])
+    assert re.match(r"^2026_10_31_\d{6}$", session["name"])
     assert session["name"].endswith("%06d" % session["id"]) and session["status"] == "planned"
     assert [dataset["folder"] for dataset in session["datasets"]] == [
         session["name"] + "_ATLAS", session["name"] + "_DATA_01", session["name"] + "_DATA_02"]
@@ -107,7 +135,7 @@ def test_WhatASessionUsedStays(facility):
 
 
 @pytest.mark.parametrize("change, message", [
-    ({"datasets": [{"number": 13}]}, "DATA_01 to DATA_12"),
+    ({"datasets": [{"number": 13}]}, "autoloader has positions 1 to 12"),
     ({"datasets": [{"number": 1}, {"number": 1}]}, "given twice"),
     ({"datasets": [{"number": 1, "gridId": 2147483000}]}, "Unknown grid"),
     ({"datasets": [{"number": 1, "detectorId": 2147483000}]}, "not one of this session's microscope"),
@@ -174,11 +202,45 @@ def test_TheListFindsSessionsByStatusAndText(facility):
     assert reopened["finishedAt"] is None and reopened["startedAt"] == finished["startedAt"]
 
 
-def test_ANameIsMadeOfTheDayThePersonAndTheId():
-    from app.backend.api.services.facility_session_service import sessionName
+def test_EachMicroscopeNamesItsFoldersAndADatasetKeepsItsOwn(facility, owner):
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    FacilityService(db).saveMicroscope(dict(microscope, code="KRIOS", dataFolderPattern="{session}_Grid{n}",
+                                            atlasFolderPattern="", gridSlots=4), microscopeId=microscope["id"])
+    group = db.fetchOne("INSERT INTO user_groups (name) VALUES (%s) RETURNING id", ("Shannon lab %s" % uuid4().hex[:6],))
+    db.execute('INSERT INTO user_group_members ("groupId", "userId", "groupRole") VALUES (%s, %s, %s)',
+               (group["id"], userId, "pi"))
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
 
-    assert sessionName(datetime.date(2026, 10, 31), "Gaoxin Lü", 123) == "2026_10_31_Gaoxin-Lu_000123"
-    assert sessionName(datetime.date(2026, 10, 31), "  ", 7) == "2026_10_31_Facility_000007"
+    kept = [dict(row) for row in db.fetchAll("SELECT key, value FROM facility_settings") or []]
+    FacilitySettingsService(db).saveSettings({"sessionNamePattern": "{date:%Y%m%d}_{microscope}_{pi}_{group}_{id}"})
+    try:
+        session = sessions.saveSession(_multigrid(microscope, sample, groupId=group["id"]))
+        assert session["name"] == "20261031_KRIOS_Gaoxin-Lu_Shannon-lab-%s_%d" % (
+            db.fetchOne("SELECT name FROM user_groups WHERE id = %s", (group["id"],))["name"].split(" ")[-1],
+            session["id"])
+        # No atlas folder on this microscope, and its grids are named its way
+        assert [dataset["folder"] for dataset in session["datasets"]] == [
+            session["name"] + "_Grid1", session["name"] + "_Grid2"]
+        with pytest.raises(HTTPException) as error:
+            sessions.saveSession(_multigrid(microscope, sample, datasets=[{"number": 5}]))
+        assert "positions 1 to 4" in error.value.detail
+
+        # A later change of the pattern renames no folder the microscope may be writing
+        FacilityService(db).saveMicroscope(dict(microscope, code="KRIOS", dataFolderPattern="{session}_D{n:02d}",
+                                                atlasFolderPattern="", gridSlots=4), microscopeId=microscope["id"])
+        edited = sessions.saveSession(dict(_multigrid(microscope, sample), name=session["name"],
+                                           datasets=[dict(dataset) for dataset in session["datasets"]] + [{"number": 3}]),
+                                      sessionId=session["id"])
+        assert [dataset["folder"] for dataset in edited["datasets"]] == [
+            session["name"] + "_Grid1", session["name"] + "_Grid2", session["name"] + "_D03"]
+    finally:
+        db.execute("DELETE FROM facility_settings")
+        for row in kept:
+            FacilitySettingsService(db).mapper.saveSettings({row["key"]: row["value"]}, None)
+        db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
+        db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
 
 
 def test_TheWatcherFollowsTheDataOfASessionThatAcquires(facility, tmp_path):
