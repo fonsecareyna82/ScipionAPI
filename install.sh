@@ -7,6 +7,11 @@ set -euo pipefail
 # resolves and downloads a paired ScipionAPI + ScipionWeb release, extracts the
 # API into a stable installation directory, and delegates the actual runtime
 # installation to `scripts/scipionapi provision`.
+#
+# The release archives (ScipionAPI-<version>.zip, ScipionWeb-<version>-dist.zip,
+# and optionally manifest.json) are taken from the folder of this script, or
+# from --local-dir, when they are there: nothing is downloaded then, so an
+# installation does not need the download server.
 
 DEFAULT_BASE_URL="https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
 DEFAULT_INSTALL_DIR="${HOME}/scipionweb"
@@ -16,6 +21,9 @@ CLI_ALIAS_BEGIN="# >>> ScipionWeb scipionapi >>>"
 CLI_ALIAS_END="# <<< ScipionWeb scipionapi <<<"
 
 BASE_URL="${SCIPIONWEB_DOWNLOAD_BASE_URL:-${DEFAULT_BASE_URL}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_DIR="${SCIPIONWEB_LOCAL_DIR:-${SCRIPT_DIR}}"
+LOCAL_RELEASE=0
 INSTALL_DIR="${SCIPIONWEB_INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
 REQUESTED_VERSION="${SCIPIONWEB_VERSION:-${DEFAULT_VERSION}}"
 ADMIN_USER="${SCIPIONWEB_ADMIN_USER:-}"
@@ -62,6 +70,9 @@ Options:
   --email EMAIL        ScipionWeb administrator email.
   --version VERSION    Release to install, e.g. v4.0.0. Default: latest
   --base-url URL       Release download base URL.
+  --local-dir PATH     Folder with the release archives to install without downloading
+                       (ScipionAPI-<version>.zip, ScipionWeb-<version>-dist.zip and,
+                       optionally, manifest.json). Default: the folder of this script.
   --api-port PORT      Optional fixed API/Web port. If omitted, provision decides.
   --create-alias       Add a managed 'scipionapi' alias to ~/.bashrc.
   --no-create-alias    Do not create the shell alias.
@@ -77,6 +88,7 @@ Environment equivalents:
   SCIPIONWEB_ADMIN_PASSWORD
   SCIPIONWEB_VERSION
   SCIPIONWEB_DOWNLOAD_BASE_URL
+  SCIPIONWEB_LOCAL_DIR
   SCIPIONWEB_API_PORT
   SCIPIONAPI_CONDA_EXE
   SCIPIONWEB_CREATE_ALIAS
@@ -86,6 +98,7 @@ Examples:
   ./install.sh
   ./install.sh --check-only
   ./install.sh --install-dir /data/scipionweb --version v4.0.0
+  ./install.sh --local-dir /media/usb/scipionweb-v4.0.0   # archives copied there, no download
 
 For unattended installation:
   SCIPIONWEB_ADMIN_PASSWORD='secret' ./install.sh \\
@@ -133,6 +146,7 @@ while [[ $# -gt 0 ]]; do
     --email) need_arg "$1" "${2:-}"; ADMIN_EMAIL="$2"; shift 2 ;;
     --version) need_arg "$1" "${2:-}"; REQUESTED_VERSION="$2"; shift 2 ;;
     --base-url) need_arg "$1" "${2:-}"; BASE_URL="$2"; shift 2 ;;
+    --local-dir) need_arg "$1" "${2:-}"; LOCAL_DIR="$2"; shift 2 ;;
     --api-port) need_arg "$1" "${2:-}"; API_PORT="$2"; shift 2 ;;
     --create-alias) CREATE_CLI_ALIAS="1"; shift ;;
     --no-create-alias) CREATE_CLI_ALIAS="0"; shift ;;
@@ -373,13 +387,53 @@ print(normalize(sorted(versions, key=key)[-1]))
 PY
 }
 
+# The release in LOCAL_DIR, if both its archives are there: from its manifest.json when it has one (with the
+# checksums), else by the archives' names (the newest for "latest"). Sets LOCAL_RELEASE=1 when found.
+resolve_local_release() {
+  local requested_version="$1" local_manifest="${LOCAL_DIR%/}/manifest.json" listing_path="${TMP_DIR}/local-archives.txt"
+  [[ -d "${LOCAL_DIR}" ]] || return 1
+
+  RELEASE_VERSION=""; API_FILE=""; API_SHA256=""; WEB_FILE=""; WEB_SHA256=""
+  if [[ -f "${local_manifest}" ]]; then
+    local release_values=()
+    if mapfile -t release_values < <(resolve_release_from_manifest "${local_manifest}" "${requested_version}" 2>/dev/null) \
+        && [[ ${#release_values[@]} -eq 5 ]]; then
+      RELEASE_VERSION="${release_values[0]}"
+      API_FILE="${release_values[1]##*/}"; API_SHA256="${release_values[2]}"
+      WEB_FILE="${release_values[3]##*/}"; WEB_SHA256="${release_values[4]}"
+    fi
+  fi
+  if [[ -z "${RELEASE_VERSION}" ]]; then
+    if [[ "${requested_version}" == "latest" ]]; then
+      ( cd "${LOCAL_DIR}" && ls -1 ScipionAPI-*.zip 2>/dev/null ) > "${listing_path}" || true
+      [[ -s "${listing_path}" ]] || return 1
+      RELEASE_VERSION="$(resolve_latest_from_listing "${listing_path}" 2>/dev/null)" || return 1
+    else
+      RELEASE_VERSION="${requested_version}"
+    fi
+    API_FILE="ScipionAPI-${RELEASE_VERSION}.zip"
+    WEB_FILE="ScipionWeb-${RELEASE_VERSION}-dist.zip"
+  fi
+  [[ -f "${LOCAL_DIR%/}/${API_FILE}" && -f "${LOCAL_DIR%/}/${WEB_FILE}" ]] || return 1
+  LOCAL_RELEASE=1
+}
+
 resolve_release() {
   local requested_version manifest_path="${TMP_DIR}/manifest.json" listing_path="${TMP_DIR}/downloads.html"
   requested_version="$(normalize_version "${REQUESTED_VERSION}")"
 
   print_step "Resolving ScipionWeb release"
-  print_line "Base URL: ${BASE_URL}"
   print_line "Requested version: ${requested_version}"
+
+  if resolve_local_release "${requested_version}"; then
+    print_ok "Using the local release archives in ${LOCAL_DIR}: nothing is downloaded"
+    print_ok "Resolved release: ${RELEASE_VERSION}"
+    print_line "  API: ${LOCAL_DIR%/}/${API_FILE}"
+    print_line "  Web: ${LOCAL_DIR%/}/${WEB_FILE}"
+    return 0
+  fi
+  print_line "No local archives of this release in ${LOCAL_DIR}; downloading."
+  print_line "Base URL: ${BASE_URL}"
 
   local manifest_ok=0
   if download_quiet "${BASE_URL}manifest.json" "${manifest_path}" 2>/dev/null; then manifest_ok=1; fi
@@ -388,6 +442,7 @@ resolve_release() {
 
   if [[ ${manifest_ok} -eq 1 ]]; then
     local release_values=()
+    RELEASE_VERSION=""
     if mapfile -t release_values < <(resolve_release_from_manifest "${manifest_path}" "${requested_version}"); then
       if [[ ${#release_values[@]} -eq 5 ]]; then
         RELEASE_VERSION="${release_values[0]}"
@@ -402,7 +457,11 @@ resolve_release() {
   if [[ -z "${RELEASE_VERSION}" ]]; then
     print_warn "manifest.json could not resolve the requested release; using archive naming fallback."
     if [[ "${requested_version}" == "latest" ]]; then
-      if ! download_quiet "${BASE_URL}" "${listing_path}"; then print_error "Could not retrieve the release directory listing."; exit 1; fi
+      if ! download_quiet "${BASE_URL}" "${listing_path}"; then
+        print_error "Could not retrieve the release directory listing from ${BASE_URL}."
+        print_local_hint
+        exit 1
+      fi
       RELEASE_VERSION="$(resolve_latest_from_listing "${listing_path}")"
     else
       RELEASE_VERSION="${requested_version}"
@@ -414,6 +473,12 @@ resolve_release() {
   print_ok "Resolved release: ${RELEASE_VERSION}"
   print_line "  API: ${API_FILE}"
   print_line "  Web: ${WEB_FILE}"
+}
+
+print_local_hint() {
+  print_error "To install without the download server, put ScipionAPI-<version>.zip and"
+  print_error "ScipionWeb-<version>-dist.zip (and manifest.json, if you have it) next to this"
+  print_error "script, or in a folder given with --local-dir, and run it again."
 }
 
 verify_sha256() {
@@ -810,14 +875,19 @@ main() {
   TMP_DIR="$(mktemp -d -t scipionweb-install-XXXXXX)"
   resolve_release
 
-  local api_zip="${TMP_DIR}/${API_FILE##*/}"
-  local web_zip="${TMP_DIR}/${WEB_FILE##*/}"
-
-  print_step "Downloading ScipionWeb release ${RELEASE_VERSION}"
-  print_line "ScipionAPI:"
-  download_file "$(asset_url "${API_FILE}")" "${api_zip}"
-  print_line "ScipionWeb:"
-  download_file "$(asset_url "${WEB_FILE}")" "${web_zip}"
+  local api_zip web_zip
+  if [[ ${LOCAL_RELEASE} -eq 1 ]]; then
+    api_zip="${LOCAL_DIR%/}/${API_FILE}"
+    web_zip="${LOCAL_DIR%/}/${WEB_FILE}"
+  else
+    api_zip="${TMP_DIR}/${API_FILE##*/}"
+    web_zip="${TMP_DIR}/${WEB_FILE##*/}"
+    print_step "Downloading ScipionWeb release ${RELEASE_VERSION}"
+    print_line "ScipionAPI:"
+    download_file "$(asset_url "${API_FILE}")" "${api_zip}" || { print_error "Could not download ${API_FILE}."; print_local_hint; exit 1; }
+    print_line "ScipionWeb:"
+    download_file "$(asset_url "${WEB_FILE}")" "${web_zip}" || { print_error "Could not download ${WEB_FILE}."; print_local_hint; exit 1; }
+  fi
 
   print_step "Verifying release archives"
   verify_sha256 "${api_zip}" "${API_SHA256}"

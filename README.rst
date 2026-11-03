@@ -300,6 +300,17 @@ Notes:
 
 The wrapper script ``./scripts/scipionapi`` is the main entry point for end users.
 
+``install.sh`` downloads the release from the download server, unless the
+release archives are next to it: with ``ScipionAPI-<version>.zip`` and
+``ScipionWeb-<version>-dist.zip`` (and, if available, ``manifest.json``, which
+gives the latest version and the archives' SHA256) in the folder of the script,
+or in a folder given with ``--local-dir`` (``SCIPIONWEB_LOCAL_DIR``), nothing is
+downloaded. ``--version`` picks one of them; otherwise the newest one there is
+installed. This lets a machine be installed while the download server is down,
+or with no network::
+
+    ./install.sh --local-dir /media/usb/scipionweb-v4.0.0
+
 When using the guided ``install.sh``, the installer can optionally add a
 managed ``scipionapi`` alias to ``~/.bashrc``. Interactive installation enables
 this by default after confirmation, allowing runtime commands to be executed
@@ -430,7 +441,11 @@ Options include ``--api-only``/``--web-only`` to update a single side,
 ``--dry-run`` to print the resolved plan without changing files, and
 ``--no-restart``/``--force`` for finer control. See ``update --help`` for
 the full list (including ``--base-url``/``--api-zip-url``/``--web-zip-url``
-for custom release sources).
+for custom release sources). They take ``file://`` addresses too, so an update
+can come from a local folder holding the release archives and its
+``manifest.json`` when the download server is down::
+
+    ./scripts/scipionapi update --base-url file:///media/usb/scipionweb-v4.1.0/
 
 Build a paired ScipionAPI/ScipionWeb release locally (developer/admin use):
 
