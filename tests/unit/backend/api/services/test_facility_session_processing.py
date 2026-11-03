@@ -98,3 +98,22 @@ def test_ATemplateWithEMhubsAliasesTakesTheMoviesValues(tmp_path, monkeypatch):
     assert imported["filesPath"] == str(tmp_path)
     assert imported["filesPattern"] == "Images-Disc*/GridSquare_*/Data/*_Fractions.tiff"
     assert (imported["samplingRate"], imported["voltage"], imported["dosePerFrame"]) == (0.84, 200.0, 1.07)
+
+
+def test_TheSessionsCtfLimitsGoIntoTheCtfConsensus():
+    from app.backend.api.services.facility_session_processing import fillCtfConsensus
+
+    workflow = [{"object.className": "XmippProtCTFConsensus", "useDefocus": False, "minDefocus": 4000, "maxDefocus": 50000,
+                 "useResolution": True, "resolution": 17},
+                {"object.className": "CistemProtCTFFind", "lowRes": 30}]
+
+    assert fillCtfConsensus(workflow, 5000, 40000, 8) == 1
+    assert {key: workflow[0][key] for key in ("useDefocus", "minDefocus", "maxDefocus", "useResolution", "resolution")} == \
+        {"useDefocus": True, "minDefocus": 5000.0, "maxDefocus": 40000.0, "useResolution": True, "resolution": 8.0}
+    assert workflow[1] == {"object.className": "CistemProtCTFFind", "lowRes": 30}
+
+    # A limit not given keeps the template's
+    kept = [{"object.className": "XmippProtCTFConsensus", "useDefocus": False, "minDefocus": 4000, "resolution": 17}]
+    fillCtfConsensus(kept, None, None, 6)
+    assert kept[0]["useDefocus"] is False and kept[0]["minDefocus"] == 4000 and kept[0]["resolution"] == 6.0
+    assert fillCtfConsensus([{"object.className": "ProtImportMovies"}], 5000, None, None) == 0

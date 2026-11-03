@@ -715,3 +715,81 @@ def test_AUserSeesTheirSessionsAndThePiThoseOfTheGroupWithoutWhatIsTheStaffs(fac
         db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
         db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
         db.execute("DELETE FROM users WHERE id = ANY(%s)", ([pi, stranger],))
+
+
+def test_TheFacilitysPoliciesAreCheckedAndDecideWhoOwnsADatasProject(facility, owner, keptSettings, tmp_path,
+                                                                     monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+    sessions, microscope, sample = facility
+    flat, staffId = owner
+    db = sessions.mapper.db
+    settings = FacilitySettingsService(db)
+    for wrong in ({"projectOwner": "group"}, {"projectShareLevel": "manage"}, {"stallMinutes": 0},
+                  {"calibrationTolerancePercent": 90}, {"watchSeconds": "soon"}):
+        with pytest.raises(HTTPException):
+            settings.saveSettings(wrong)
+    assert settings.values()["projectOwner"] == "staff" and settings.values()["stallMinutes"] == 20
+
+    settings.saveSettings({"projectOwner": "user", "projectShareLevel": "work", "stallMinutes": 45})
+    userId = flat.insertUser(email="owner-%s@example.com" % uuid4().hex, hashedPassword="test", firstName="Ana",
+                             lastName="User", institution=None, role="user", isActive=True, isVerified=True,
+                             verificationCode="")
+    role = db.fetchOne('SELECT r.id FROM access_roles r JOIN access_role_permissions p ON p."roleId" = r.id '
+                       "WHERE p.permission = 'projects.create' AND NOT r.\"isSystem\" ORDER BY r.id LIMIT 1")
+    db.execute('INSERT INTO user_access_roles ("userId", "roleId") VALUES (%s, %s)', (userId, role["id"]))
+    try:
+        FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+        session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                                  templateId="scipion:demo"), userId=staffId)
+        calls = []
+        _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+        _epuMovie(tmp_path, session["name"])
+        watchSessions(db)
+
+        projectId = sessions.getSession(session["id"])["datasets"][1]["projectId"]
+        assert db.fetchOne('SELECT "ownerId" FROM projects WHERE id = %s', (projectId,))["ownerId"] == userId
+        shares = {row["userId"]: row["permission"] for row in db.fetchAll(
+            'SELECT "userId", permission FROM project_shares WHERE "projectId" = %s AND "userId" IS NOT NULL',
+            (projectId,))}
+        assert shares == {staffId: "manage"}
+        # 30 minutes without movies is not stalled for a facility that allows 45
+        db.execute('UPDATE facility_session_datasets SET "lastMovieAt" = NOW() - INTERVAL %s WHERE "sessionId" = %s',
+                   ("30 minutes", session["id"]))
+        assert sessions.getSession(session["id"])["datasets"][1]["watch"] == "receiving"
+    finally:
+        db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
+        db.execute('DELETE FROM projects WHERE "ownerId" = %s', (userId,))
+        db.execute("DELETE FROM users WHERE id = %s", (userId,))
+
+
+def test_ASessionsCtfLimitsAreCheckedAndGoIntoItsDataProjects(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    for wrong, message in (({"ctfMinDefocus": 40000, "ctfMaxDefocus": 5000}, "minimum defocus is below"),
+                           ({"ctfMaxResolution": "fine"}, "is a number")):
+        with pytest.raises(HTTPException) as error:
+            sessions.saveSession(_multigrid(microscope, sample, **wrong))
+        assert message in error.value.detail
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", templateId="scipion:demo",
+                                              ctfMinDefocus=6000, ctfMaxDefocus=35000, ctfMaxResolution=7.5),
+                                   userId=userId)
+    assert (session["ctfMinDefocus"], session["ctfMaxDefocus"], session["ctfMaxResolution"]) == (6000, 35000, 7.5)
+    calls = []
+    workflow = DEMO_WORKFLOW + [{"object.className": "XmippProtCTFConsensus", "object.id": "5", "useDefocus": False,
+                                 "minDefocus": 4000, "maxDefocus": 50000, "resolution": 17}]
+    _processWith(monkeypatch, flat, workflow, calls)
+    _epuMovie(tmp_path, session["name"])
+
+    watchSessions(db)
+
+    imported = [call[1] for call in calls if call[0] == "import"][0]
+    consensus = next(protocol for protocol in imported if protocol["object.className"] == "XmippProtCTFConsensus")
+    assert (consensus["useDefocus"], consensus["minDefocus"], consensus["maxDefocus"], consensus["resolution"]) == (
+        True, 6000.0, 35000.0, 7.5)
+    assert sessions.getSession(session["id"])["datasets"][1]["processing"]["ctfLimits"]["resolution"] == 7.5

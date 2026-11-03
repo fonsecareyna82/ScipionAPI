@@ -71,10 +71,10 @@ def _date(value: Any) -> Optional[datetime.date]:
         raise _badRequest("Dates are written YYYY-MM-DD: %s" % value)
 
 
-def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str]:
+def watchState(session: Dict[str, Any], dataset: Dict[str, Any], stallMinutes: float = STALL_MINUTES) -> Optional[str]:
     """Where a DATA is in its acquisition, as the watcher of the folders saw it.
 
-    receiving / stalled (no movie for STALL_MINUTES) once movies arrived, and acquired once the session no
+    receiving / stalled (no movie for stallMinutes, the facility's) once movies arrived, and acquired once the session no
     longer acquires; while none did: idle (the session does not acquire), noOffload (its microscope has no
     offload folder), pending (not looked at yet), noFolder (the microscope has not made it) or waiting.
     """
@@ -85,7 +85,7 @@ def watchState(session: Dict[str, Any], dataset: Dict[str, Any]) -> Optional[str
         if not acquiring:
             return "acquired"
         minutes = dataset.get("minutesSinceLastMovie")
-        return "stalled" if minutes is not None and minutes > STALL_MINUTES else "receiving"
+        return "stalled" if minutes is not None and minutes > stallMinutes else "receiving"
     if not acquiring:
         return "idle"
     if not session.get("offloadPath"):
@@ -110,9 +110,15 @@ class FacilitySessionService:
         self.mapper = FacilitySessionPostgresqlMapper(db)
         self.microscopes = FacilityMicroscopePostgresqlMapper(db)
 
+    def _stallMinutes(self) -> float:
+        if not hasattr(self, "_stall"):
+            self._stall = float(FacilitySettingsService(self.mapper.db).values()["stallMinutes"])
+        return self._stall
+
     def _withFolders(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        stall = self._stallMinutes()
         for dataset in session.get("datasets") or []:
-            dataset["watch"] = watchState(session, dataset)
+            dataset["watch"] = watchState(session, dataset, stall)
         return session
 
     def listSessions(self, statuses: Optional[List[str]] = None, text: str = "") -> List[Dict[str, Any]]:
@@ -280,6 +286,7 @@ class FacilitySessionService:
             "oneProject": bool(payload.get("oneProject", False)),
             # What the technician tells the session's user (and the group's PI); notes stay the staff's
             "userNotes": _text(payload, "userNotes"),
+            **self._ctfLimits(payload),
         }
         assert set(values) == set(SESSION_FIELDS)
         datasets = self._datasets(payload.get("datasets") or [], existing, microscope, values["name"])
@@ -298,7 +305,7 @@ class FacilitySessionService:
 
         userId = int(user["id"])
         piGroups = self.mapper.piGroupIds(userId)
-        settings = FacilitySettingsService(self.mapper.db).getSettings()["settings"]
+        settings = FacilitySettingsService(self.mapper.db).values()
         sessions = [self._forUser(self._withFolders(session), userId, settings)
                     for session in self.mapper.listSessionsOf(userId, piGroups)]
         samples = [{key: sample[key] for key in USER_SAMPLE_FIELDS if key in sample}
@@ -322,6 +329,26 @@ class FacilitySessionService:
                           ("processedKeptUntil", settings["processedRetentionDays"])):
             seen[key] = (finished + datetime.timedelta(days=int(days))).isoformat() if finished and days else None
         return seen
+
+    @staticmethod
+    def _ctfLimits(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """The CTF limits a session sets for its DATA's CTF consensus (None keeps the template's)."""
+        limits = {}
+        for field, label in (("ctfMinDefocus", "minimum defocus"), ("ctfMaxDefocus", "maximum defocus"),
+                             ("ctfMaxResolution", "CTF resolution")):
+            value = payload.get(field)
+            if value is None or value == "":
+                limits[field] = None
+                continue
+            try:
+                limits[field] = float(value)
+            except (TypeError, ValueError):
+                raise _badRequest("The %s is a number (A)" % label)
+            if not 0 < limits[field] < 1e6:
+                raise _badRequest("The %s is a positive number of A" % label)
+        if limits["ctfMinDefocus"] and limits["ctfMaxDefocus"] and limits["ctfMinDefocus"] >= limits["ctfMaxDefocus"]:
+            raise _badRequest("The minimum defocus is below the maximum")
+        return limits
 
     def queueProcessing(self, datasetId: int) -> Dict[str, Any]:
         """Ask for a DATA's project now (again, after a failure); the watcher makes it at its next turn."""

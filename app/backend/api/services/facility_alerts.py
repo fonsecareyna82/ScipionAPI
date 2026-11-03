@@ -3,7 +3,7 @@
 Every turn of the watcher (``refresh``) opens an alert for what is wrong now and resolves the ones whose cause
 is over:
 
-* stalled: a DATA acquiring had no new movie for ``STALL_MINUTES``;
+* stalled: a DATA acquiring had no new movie for the facility's ``stallMinutes``;
 * processingFailed: its project could not be made or launched;
 * protocolFailed: a protocol of its project failed.
 
@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from app.backend.api.services.facility_mail import FacilityMail
-from app.backend.api.services.facility_session_service import STALL_MINUTES
+from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.mapper.facility_alerts_mapper import FacilityAlertsPostgresqlMapper
 
 logger = logging.getLogger(__name__)
@@ -41,8 +41,10 @@ class FacilityAlerts:
         self.mapper = FacilityAlertsPostgresqlMapper(db)
         self.mail = FacilityMail(db)
 
-    def refresh(self, stallMinutes: float = STALL_MINUTES) -> List[int]:
+    def refresh(self, stallMinutes: Optional[float] = None) -> List[int]:
         """Open the alerts of what is wrong now and resolve the others; answers the ids opened."""
+        if stallMinutes is None:
+            stallMinutes = float(FacilitySettingsService(self.mapper.db).values()["stallMinutes"])
         opened = []
         for kind in KINDS:
             problems = self.mapper.currentProblems(kind, stallMinutes)

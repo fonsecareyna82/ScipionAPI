@@ -157,3 +157,19 @@ def test_ATomographyDataCountsTheTiltMoviesOfEachSeriesAndReadsItsMdoc(tmp_path)
     # An .mrc is EPU's integrated image in a single particle DATA, not a movie
     assert scanFolder(root, {}, now=1.0)["count"] == 0
     assert _tiltSeriesMdoc(frames / "TS_01_001_0.0.mrc", root) == frames / "TS_01.mdoc"
+
+
+def test_TheFacilitysToleranceDecidesWhetherACalibrationIsUsed():
+    # The Glacios movie (EPU: 1.568 A) with a table 5 % off: used with the default 10 %, not with 3 %
+    talos = dict(FALCON, pixelSizes=[{"magnification": 92000, "pixelSize": 1.49}])
+
+    assert readAcquisition(EPU / (IMAGE + ".xml"), [talos])["pixelCalibrated"]
+    assert not readAcquisition(EPU / (IMAGE + ".xml"), [talos], tolerance=0.03)["pixelCalibrated"]
+
+
+def test_TheFacilitysStallMinutesDecideWhenADataIsStalled():
+    session, dataset = {"status": "acquiring", "offloadPath": "/mnt"}, {"kind": "data", "movieCount": 5,
+                                                                        "minutesSinceLastMovie": 30}
+
+    assert watchState(session, dataset) == "stalled"
+    assert watchState(session, dataset, stallMinutes=60) == "receiving"

@@ -134,6 +134,10 @@ class SessionPayload(BaseModel):
     userNotes: Optional[str] = ""
     # One project for all its DATA (each its own branch) instead of one per DATA
     oneProject: bool = False
+    # Its CTF limits (A), written into its DATA's CTF consensus; None keeps the template's
+    ctfMinDefocus: Optional[float] = None
+    ctfMaxDefocus: Optional[float] = None
+    ctfMaxResolution: Optional[float] = None
     datasets: List[DatasetPayload] = []
 
 
@@ -445,6 +449,17 @@ class SettingsPayload(BaseModel):
     rawRetentionDays: Optional[int] = None
     processedRetentionDays: Optional[int] = None
     downloadInstructions: Optional[str] = None
+    # Policies (the CNB's by default): who owns a DATA's project and how its user and group see it, the
+    # calibration's tolerance (%), the minutes a DATA may go without movies, the watcher's seconds between looks
+    projectOwner: Optional[str] = None
+    projectShareLevel: Optional[str] = None
+    calibrationTolerancePercent: Optional[float] = None
+    stallMinutes: Optional[int] = None
+    watchSeconds: Optional[int] = None
+    # The CTF limits a new session starts with (A)
+    ctfMinDefocus: Optional[float] = None
+    ctfMaxDefocus: Optional[float] = None
+    ctfMaxResolution: Optional[float] = None
 
 
 class ConventionsPreviewPayload(BaseModel):

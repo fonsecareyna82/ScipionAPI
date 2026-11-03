@@ -8,9 +8,10 @@ When the watcher has read a DATA's first movie (``facility_session_watcher``) an
 2. its Import Movies (any template, whatever aliases it uses) reads the DATA folder in streaming, with the
    pattern of the movies EPU writes there, the detector's calibrated pixel, the voltage and magnification of the
    movie, the microscope's Cs, the dose per frame and the gain reference;
-3. the project belongs to who made the session (the facility's staff; else to its user), and its user and group
-   see it read only (view): the facility's processing is not changed by those it is for. It runs from its
-   Import Movies like "Restart all" in the web.
+3. by the facility's policy (projectOwner, projectShareLevel; the CNB's by default) the project belongs to who
+   made the session (the staff), and its user and group see it read only: the facility's processing is not
+   changed by those it is for; or it belongs to the session's user, and the staff who made it manage it. It
+   runs from its Import Movies like "Restart all" in the web.
 
 What happened is the dataset's ``processing`` (state queued, running, launched or error, and why); a DATA keeps
 its project once made, so a failure after it leaves the project for the staff to look at.
@@ -30,6 +31,8 @@ from app.backend.api.permissions import hasPermission, withPermissions
 logger = logging.getLogger(__name__)
 
 IMPORT_MOVIES_CLASSES = ("ProtImportMovies",)
+# Where a session's CTF limits go: the CTF consensus that drops micrographs out of them
+CTF_CONSENSUS_CLASSES = ("XmippProtCTFConsensus",)
 # Tomography in streaming: the tilt movies are imported as movies, and this composes the tilt series from the mdocs
 COMPOSE_TILT_SERIES_CLASSES = ("ProtComposeTS",)
 # The aliases of a template's ~Title|value|type|alias~ fields that take what the first movie says (whatever their
@@ -43,6 +46,8 @@ TEMPLATE_ALIASES = {
     "sphericalaberration": "sphericalAberration",
     "doseperframe": "dosePerFrame", "dose": "dosePerFrame",
     "gain": "gainFile", "gainfile": "gainFile", "mag": "magnification", "magnification": "magnification",
+    "mindefocus": "ctfMinDefocus", "maxdefocus": "ctfMaxDefocus", "resolution": "ctfMaxResolution",
+    "ctfresolution": "ctfMaxResolution",
 }
 
 
@@ -135,6 +140,27 @@ def fillComposeTiltSeries(workflow: List[Dict[str, Any]], folder: str, pattern: 
     return filled
 
 
+def fillCtfConsensus(workflow: List[Dict[str, Any]], minDefocus: Optional[float], maxDefocus: Optional[float],
+                     resolution: Optional[float]) -> int:
+    """Write a session's CTF limits into the workflow's CTF consensus; answers how many there were. A limit not
+    given keeps the template's; one given turns its criterion on."""
+    filled = 0
+    for protocol in workflow:
+        if protocol.get("object.className") not in CTF_CONSENSUS_CLASSES:
+            continue
+        if minDefocus is not None or maxDefocus is not None:
+            protocol["useDefocus"] = True
+            if minDefocus is not None:
+                protocol["minDefocus"] = float(minDefocus)
+            if maxDefocus is not None:
+                protocol["maxDefocus"] = float(maxDefocus)
+        if resolution is not None:
+            protocol["useResolution"] = True
+            protocol["resolution"] = float(resolution)
+        filled += 1
+    return filled
+
+
 def labelBranch(workflow: List[Dict[str, Any]], prefix: str) -> None:
     """Name a DATA's branch in a project shared by several: DATA_02 · <the protocol's label>."""
     for protocol in workflow:
@@ -174,8 +200,14 @@ class FacilitySessionProcessor:
 
         return ProjectService()
 
-    def _owner(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        for userId in (row.get("createdBy"), row.get("userId")):
+    def _policy(self) -> Dict[str, Any]:
+        from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+        return FacilitySettingsService(self.mapper.db).values()
+
+    def _owner(self, row: Dict[str, Any], ownedByUser: bool = False) -> Dict[str, Any]:
+        order = (row.get("userId"), row.get("createdBy")) if ownedByUser else (row.get("createdBy"), row.get("userId"))
+        for userId in order:
             record = self.mapper.getUserById(int(userId)) if userId is not None else None
             if record and record.get("isActive", True):
                 user = withPermissions(self.mapper, record)
@@ -221,15 +253,25 @@ class FacilitySessionProcessor:
             if "dosePerFrame" not in values:
                 processing["note"] = "The movies' metadata gives no dose per frame: the template's is used."
 
-            owner = self._owner(row)
+            policy = self._policy()
+            owner = self._owner(row, ownedByUser=policy["projectOwner"] == "user")
             service = self._projectService()
-            aliasValues = {alias: values.get(param) for alias, param in TEMPLATE_ALIASES.items()}
+            sessionValues = dict(values, ctfMinDefocus=row.get("ctfMinDefocus"), ctfMaxDefocus=row.get("ctfMaxDefocus"),
+                                 ctfMaxResolution=row.get("ctfMaxResolution"))
+            aliasValues = {alias: sessionValues.get(param) for alias, param in TEMPLATE_ALIASES.items()}
             workflow = service.materializeWorkflowTemplate(row["templateId"], aliasValues)
             workflow = workflow if isinstance(workflow, list) else [workflow]
             if not fillImportMovies(workflow, values):
                 raise RuntimeError("The template has no Import Movies to read the DATA")
             if fillComposeTiltSeries(workflow, folder, mdocPattern(acquisition.get("metadataPath"))):
                 processing["composesTiltSeries"] = True
+            limits = (row.get("ctfMinDefocus"), row.get("ctfMaxDefocus"), row.get("ctfMaxResolution"))
+            if any(limit is not None for limit in limits):
+                if fillCtfConsensus(workflow, *limits):
+                    processing["ctfLimits"] = {"minDefocus": limits[0], "maxDefocus": limits[1], "resolution": limits[2]}
+                else:
+                    processing["note"] = ((processing.get("note") or "") + " The template has no CTF consensus: the "
+                                          "session's CTF limits were not applied.").strip()
             if oneProject:
                 labelBranch(workflow, "DATA_%02d" % int(row["number"]))
 
@@ -248,10 +290,12 @@ class FacilitySessionProcessor:
                 self.sessions.saveProcessing(row["id"], processing, projectId=projectId)
                 recordAudit(self.mapper, owner, "projects.created", "project", projectId, projectName,
                             {"facilitySession": row["sessionName"], "template": row["templateId"]})
+                level = policy["projectShareLevel"]
                 if row.get("groupId") is not None:
-                    self.mapper.shareProjectWithGroup(projectId, int(row["groupId"]), "view")
-                if row.get("userId") is not None and int(row["userId"]) != int(owner["id"]):
-                    self.mapper.shareProjectWithUser(projectId, int(row["userId"]), "view")
+                    self.mapper.shareProjectWithGroup(projectId, int(row["groupId"]), level)
+                for other, permission in ((row.get("userId"), level), (row.get("createdBy"), "manage")):
+                    if other is not None and int(other) != int(owner["id"]):
+                        self.mapper.shareProjectWithUser(projectId, int(other), permission)
             processing["projectId"] = projectId
 
             if not service.loadPostgresqlRuntimeProjectForMutation(mapper=self.mapper, projectId=projectId,

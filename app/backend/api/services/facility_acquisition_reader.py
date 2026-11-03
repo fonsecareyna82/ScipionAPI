@@ -81,11 +81,13 @@ def _status(report: "reader.Report", key: str) -> Optional[str]:
 
 
 def readAcquisition(metadataPath: Path, detectors: Iterable[Dict[str, Any]],
-                    detectorId: Optional[int] = None) -> Dict[str, Any]:
+                    detectorId: Optional[int] = None,
+                    tolerance: float = MAX_CALIBRATION_DIFFERENCE) -> Dict[str, Any]:
     """What a movie's metadata says, with the microscope's detectors.
 
     detectorId is the detector the staff gave the dataset, if any: its calibration is used whatever the
-    metadata names. Raises ValueError for metadata that cannot be read.
+    metadata names. tolerance is the facility's (calibrationTolerancePercent / 100). Raises ValueError for
+    metadata that cannot be read.
     """
     metadataPath = Path(metadataPath)
     detectors = list(detectors or ())
@@ -110,7 +112,7 @@ def readAcquisition(metadataPath: Path, detectors: Iterable[Dict[str, Any]],
     nominal = _value(report, "pixel")
     calibrated = calibratedPixelSize(detector.get("pixelSizes") or [], magnification, nominal) if detector else None
     rejected = None
-    if calibrated is not None and nominal and abs(nominal - calibrated) / calibrated > MAX_CALIBRATION_DIFFERENCE:
+    if calibrated is not None and nominal and abs(nominal - calibrated) / calibrated > tolerance:
         rejected, calibrated = calibrated, None
     if calibrated is not None and nominal:
         exposure = _value(report, "exposure")

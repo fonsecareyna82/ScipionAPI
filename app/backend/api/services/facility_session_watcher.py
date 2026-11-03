@@ -152,13 +152,13 @@ def _tiltSeriesMdoc(movie: Path, root: Path) -> Optional[Path]:
 
 
 def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
-                 detectorId: Optional[int]) -> Optional[Dict[str, Any]]:
+                 detectorId: Optional[int], tolerance: float = 0.10) -> Optional[Dict[str, Any]]:
     """What the first movie's metadata says; None while EPU has not written it yet."""
     metadata = metadataFileOf(firstMovie) or _tiltSeriesMdoc(firstMovie, root)
     if metadata is None:
         return None
     try:
-        acquisition = readAcquisition(metadata, detectors, detectorId)
+        acquisition = readAcquisition(metadata, detectors, detectorId, tolerance)
     except (ValueError, OSError) as error:
         return {"metadataFile": metadata.name, "error": str(error)}
     # Relative to the DATA folder: its project's Import Movies reads the movies with a pattern made from it
@@ -176,6 +176,9 @@ def watchSessions(db, now: Optional[float] = None) -> int:
     if not sessions.tryWatchLock():
         return 0
     microscopes = FacilityMicroscopePostgresqlMapper(db)
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+    tolerance = float(FacilitySettingsService(db).values()["calibrationTolerancePercent"]) / 100
     detectorsOf: Dict[int, List[Dict[str, Any]]] = {}
     now = time.time() if now is None else now
     looked = 0
@@ -190,7 +193,8 @@ def watchSessions(db, now: Optional[float] = None) -> int:
                 microscopeId = int(dataset["microscopeId"])
                 if microscopeId not in detectorsOf:
                     detectorsOf[microscopeId] = (microscopes.getMicroscope(microscopeId) or {}).get("detectors") or []
-                acquisition = _acquisition(Path(scan["first"]), root, detectorsOf[microscopeId], dataset["detectorId"])
+                acquisition = _acquisition(Path(scan["first"]), root, detectorsOf[microscopeId], dataset["detectorId"],
+                                           tolerance)
             sessions.saveScan(dataset["id"], scan["count"], scan["bytes"], _when(scan["oldest"]), _when(scan["newest"]),
                               scan["state"], acquisition)
             looked += 1
@@ -236,6 +240,23 @@ def watchOnce(db) -> int:
         db.rollback()
 
 
+def _watchSeconds(db) -> float:
+    """How long until the next turn: the facility's setting, else WATCH_SECONDS."""
+    if db is None or not facilityModeEnabled():
+        return WATCH_SECONDS
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+    try:
+        return float(FacilitySettingsService(db).values()["watchSeconds"])
+    except Exception:
+        return WATCH_SECONDS
+    finally:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 def requestWatch() -> None:
     """Look now instead of at the next turn (a no-op where the watcher was not started)."""
     _wakeUp.set()
@@ -267,4 +288,4 @@ def _run(openDb: Callable[[], object]) -> None:
                 except Exception:
                     pass
                 db = None
-        _wakeUp.wait(WATCH_SECONDS)
+        _wakeUp.wait(_watchSeconds(db))

@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional
 from app.backend.mapper.facility_image_mapper import FacilityImagePostgresqlMapper, imagesJson
 
 SESSION_FIELDS = ("name", "microscopeId", "technique", "status", "groupId", "userId", "bookingRef", "scheduledOn",
-                  "startedAt", "finishedAt", "notes", "templateId", "autoProcess", "oneProject", "userNotes")
+                  "startedAt", "finishedAt", "notes", "templateId", "autoProcess", "oneProject", "userNotes",
+                  "ctfMinDefocus", "ctfMaxDefocus", "ctfMaxResolution")
 DATASET_FIELDS = ("kind", "number", "gridId", "detectorId", "notes", "folder")
 
 LIST_SESSIONS_SQL = """
@@ -14,7 +15,7 @@ LIST_SESSIONS_SQL = """
            TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) AS "userName",
            s."bookingRef", s."scheduledOn", s."startedAt", s."finishedAt", s.notes, s."createdBy",
            s."createdAt", s."updatedAt", m."offloadPath", s."templateId", s."autoProcess", s."oneProject",
-           s."userNotes",
+           s."userNotes", s."ctfMinDefocus", s."ctfMaxDefocus", s."ctfMaxResolution",
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
@@ -80,7 +81,7 @@ LIST_WATCHED_DATASETS_SQL = """
 LIST_DATASETS_TO_PROCESS_SQL = """
     SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d.folder, d."detectorId", d.acquisition, d.processing,
            s."templateId", s."userId", s."createdBy", s."groupId", s."microscopeId", m."offloadPath",
-           s."oneProject", s.technique,
+           s."oneProject", s.technique, s."ctfMinDefocus", s."ctfMaxDefocus", s."ctfMaxResolution",
            -- With one project for the session: the one an earlier DATA made
            (SELECT MIN(other."projectId") FROM facility_session_datasets other
              WHERE other."sessionId" = s.id) AS "sessionProjectId",
