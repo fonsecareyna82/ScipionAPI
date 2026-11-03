@@ -8,6 +8,8 @@ When the watcher has read a DATA's first movie (``facility_session_watcher``) an
 2. its Import Movies (any template, whatever aliases it uses) reads the DATA folder in streaming, with the
    pattern of the movies EPU writes there, the detector's calibrated pixel, the voltage and magnification of the
    movie, the microscope's Cs, the dose per frame and the gain reference;
+2b. its movie alignment turns that gain as the detector says (its gain flip and rotation): the detector's
+   orientation tells how its gain reference lies against its movies;
 3. by the facility's policy (projectOwner, projectShareLevel; the CNB's by default) the project belongs to who
    made the session (the staff), and its user and group see it read only: the facility's processing is not
    changed by those it is for; or it belongs to the session's user, and the staff who made it manage it. It
@@ -33,6 +35,14 @@ logger = logging.getLogger(__name__)
 IMPORT_MOVIES_CLASSES = ("ProtImportMovies",)
 # Where a session's CTF limits go: the CTF consensus that drops micrographs out of them
 CTF_CONSENSUS_CLASSES = ("XmippProtCTFConsensus",)
+# The movie alignments that rotate (in steps of 90 degrees, counter-clockwise as MotionCor2's -RotGain) and flip
+# (after rotating: 1 upside down, 2 left to right, as its -FlipGain) the gain reference
+MOVIE_ALIGNMENT_CLASSES = ("ProtMotionCorr", "ProtMotionCorrTasks", "ProtMotionCorrNewStreaming", "ProtTsMotionCorr",
+                           "ProtRelionMotioncor", "ProtRelionTomoMotionCorr", "XmippProtFlexAlign")
+# Warp's flip the gain, without rotating it: 1 flips X (left to right), 2 flips Y (upside down)
+WARP_ALIGNMENT_CLASSES = ("ProtWarpMotionCorr", "ProtWarpTSMotionCorr")
+GAIN_FLIP_VALUES = {"none": 0, "vertical": 1, "horizontal": 2}
+WARP_GAIN_FLIP_VALUES = {"none": 0, "horizontal": 1, "vertical": 2}
 # Tomography in streaming: the tilt movies are imported as movies, and this composes the tilt series from the mdocs
 COMPOSE_TILT_SERIES_CLASSES = ("ProtComposeTS",)
 # The aliases of a template's ~Title|value|type|alias~ fields that take what the first movie says (whatever their
@@ -125,6 +135,28 @@ def fillImportMovies(workflow: List[Dict[str, Any]], values: Dict[str, Any]) -> 
         protocol.update(values)
         filled += 1
     return filled
+
+
+def fillGainOrientation(workflow: List[Dict[str, Any]], gainFlip: Optional[str],
+                        gainRotation: Optional[int]) -> Dict[str, Any]:
+    """Turn the gain reference in the workflow's movie alignments as the detector says. Answers how many were
+    filled and those that could not take it (Warp's cannot rotate a gain: they are left as the template has them)."""
+    flip = str(gainFlip or "none")
+    rotation = int(gainRotation or 0)
+    filled, notTurned = 0, []
+    for protocol in workflow:
+        className = protocol.get("object.className")
+        if className in MOVIE_ALIGNMENT_CLASSES:
+            protocol["gainRot"] = rotation // 90
+            protocol["gainFlip"] = GAIN_FLIP_VALUES.get(flip, 0)
+            filled += 1
+        elif className in WARP_ALIGNMENT_CLASSES:
+            if rotation:
+                notTurned.append(str(protocol.get("object.label") or className))
+                continue
+            protocol["gainFlip"] = WARP_GAIN_FLIP_VALUES.get(flip, 0)
+            filled += 1
+    return {"filled": filled, "notTurned": notTurned}
 
 
 def fillComposeTiltSeries(workflow: List[Dict[str, Any]], folder: str, pattern: Optional[str]) -> int:
@@ -263,6 +295,14 @@ class FacilitySessionProcessor:
             workflow = workflow if isinstance(workflow, list) else [workflow]
             if not fillImportMovies(workflow, values):
                 raise RuntimeError("The template has no Import Movies to read the DATA")
+            if values.get("gainFile") and detector is not None:
+                turned = fillGainOrientation(workflow, detector.get("gainFlip"), detector.get("gainRotation"))
+                if turned["filled"]:
+                    processing["gainOrientation"] = {"flip": detector.get("gainFlip") or "none",
+                                                     "rotation": int(detector.get("gainRotation") or 0)}
+                if turned["notTurned"]:
+                    processing["note"] = ((processing.get("note") or "") + " %s cannot rotate the gain: it keeps the "
+                                          "template's orientation." % ", ".join(turned["notTurned"])).strip()
             if fillComposeTiltSeries(workflow, folder, mdocPattern(acquisition.get("metadataPath"))):
                 processing["composesTiltSeries"] = True
             limits = (row.get("ctfMinDefocus"), row.get("ctfMaxDefocus"), row.get("ctfMaxResolution"))

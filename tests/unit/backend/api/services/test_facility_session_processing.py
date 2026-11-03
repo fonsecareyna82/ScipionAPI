@@ -117,3 +117,31 @@ def test_TheSessionsCtfLimitsGoIntoTheCtfConsensus():
     fillCtfConsensus(kept, None, None, 6)
     assert kept[0]["useDefocus"] is False and kept[0]["minDefocus"] == 4000 and kept[0]["resolution"] == 6.0
     assert fillCtfConsensus([{"object.className": "ProtImportMovies"}], 5000, None, None) == 0
+
+
+def test_TheMovieAlignmentTurnsTheGainAsTheDetectorSays():
+    from app.backend.api.services.facility_session_processing import fillGainOrientation
+
+    workflow = [{"object.className": "ProtImportMovies"},
+                {"object.className": "ProtMotionCorr", "gainRot": 0, "gainFlip": 0},
+                {"object.className": "XmippProtFlexAlign"},
+                {"object.className": "ProtRelionMotioncor"}]
+    assert fillGainOrientation(workflow, "vertical", 270) == {"filled": 3, "notTurned": []}
+    # MotionCor2's convention: three steps of 90 degrees, 1 is upside down (2 left to right)
+    assert [(p.get("gainRot"), p.get("gainFlip")) for p in workflow[1:]] == [(3, 1)] * 3
+    assert "gainRot" not in workflow[0]
+
+    fillGainOrientation(workflow, "horizontal", 0)
+    assert (workflow[1]["gainRot"], workflow[1]["gainFlip"]) == (0, 2)
+
+
+def test_WarpFlipsTheGainButCannotRotateIt():
+    from app.backend.api.services.facility_session_processing import fillGainOrientation
+
+    warp = [{"object.className": "ProtWarpMotionCorr", "object.label": "warp motion", "gainFlip": 0}]
+    assert fillGainOrientation(warp, "horizontal", 0) == {"filled": 1, "notTurned": []}
+    # Warp's own numbers: 1 flips X (left to right)
+    assert warp[0]["gainFlip"] == 1
+    warp[0]["gainFlip"] = 0
+    assert fillGainOrientation(warp, "vertical", 90) == {"filled": 0, "notTurned": ["warp motion"]}
+    assert warp[0]["gainFlip"] == 0

@@ -795,6 +795,35 @@ def test_ASessionsCtfLimitsAreCheckedAndGoIntoItsDataProjects(facility, owner, t
     assert sessions.getSession(session["id"])["datasets"][1]["processing"]["ctfLimits"]["resolution"] == 7.5
 
 
+
+def test_TheMovieAlignmentTurnsTheGainAsItsDetectorSays(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    gain = tmp_path / "gains" / "falcon_gain.mrc"
+    gain.parent.mkdir()
+    gain.write_bytes(b"\0" * 10)
+    falcon = dict(microscope["detectors"][0], metadataName="BM-Falcon", gainPath=str(tmp_path / "gains" / "*gain*.mrc"),
+                  gainFlip="vertical", gainRotation=90)
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path), csMm=2.7,
+                                            detectors=[falcon, microscope["detectors"][1]]), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", templateId="scipion:demo"),
+                                   userId=userId)
+    calls = []
+    _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+    _epuMovie(tmp_path, session["name"])
+
+    watchSessions(db)
+
+    imported = [call[1] for call in calls if call[0] == "import"][0]
+    assert imported[0]["gainFile"] == str(gain)
+    alignment = next(protocol for protocol in imported if protocol["object.className"] == "ProtMotionCorr")
+    assert (alignment["gainRot"], alignment["gainFlip"]) == (1, 1)
+    processing = sessions.getSession(session["id"])["datasets"][1]["processing"]
+    assert processing["gainOrientation"] == {"flip": "vertical", "rotation": 90}
+
 def test_TheRoomScreenShowsEachMicroscopesStateToWhoHasItsLinkOnly(facility, owner, keptSettings):
     from app.backend.api.services.facility_room import FacilityRoom
 
