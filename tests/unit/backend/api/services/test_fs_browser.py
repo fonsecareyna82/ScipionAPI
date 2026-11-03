@@ -210,3 +210,49 @@ def test_TheDefaultDataRootLimitsNothing(tmp_path, monkeypatch):
 
     assert fs_browser.isAllowed(browser, Path("/etc/hosts"))
     assert fs_browser.pathsOutOfReach([PathProtocol({"filesPath": "/data/any"})], str(project), False) == []
+
+
+def _dataWithALinkOut(tmp_path):
+    """A data folder holding a movie, a folder and a link to another lab's data."""
+    project = tmp_path / "projects" / "demo"
+    project.mkdir(parents=True)
+    data = tmp_path / "data" / "lab"
+    (data / "movies").mkdir(parents=True)
+    (data / "movies" / "a.tif").write_text("ours")
+    other = tmp_path / "data" / "other-lab"
+    other.mkdir()
+    (other / "b.tif").write_text("theirs")
+    (data / "theirs").symlink_to(other, target_is_directory=True)
+    return project, data, other
+
+
+def test_APatternCannotClimbOutOfItsFolder(tmp_path, monkeypatch):
+    project, data, other = _dataWithALinkOut(tmp_path)
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(data))
+
+    # movies/../../other-lab/*.tif after the wildcard: the folder before it is ours, what it reads is not
+    problems = fs_browser.pathsOutOfReach([PathProtocol({"filesPath": str(data)}, pattern="*/../../other-lab/*.tif")],
+                                          str(project), False)
+
+    assert len(problems) == 1 and "'..'" in problems[0]
+
+
+def test_ALinkInAReachableFolderDoesNotLeadOutOfIt(tmp_path, monkeypatch):
+    project, data, other = _dataWithALinkOut(tmp_path)
+    monkeypatch.setenv("SCIPIONWEB_DATA_ROOTS", str(data))
+
+    def outOfReach(path, pattern):
+        return fs_browser.pathsOutOfReach([PathProtocol({"filesPath": path}, pattern=pattern)], str(project), False)
+
+    assert outOfReach(str(data), "movies/*.tif") == []
+    # The link as the folder (its parameter and the pattern under it), and the link found by a wildcard
+    assert len(outOfReach(str(data / "theirs"), "*.tif")) == 2
+    problems = outOfReach(str(data), "*/*.tif")
+    assert len(problems) == 1 and "b.tif" in problems[0]
+
+    browser = fs_browser.resolveBrowserRoot(Mapper({}), 1, None, str(project), "filesystem", canBrowseServer=False)
+    assert fs_browser.isAllowed(browser, data / "movies" / "a.tif")
+    assert not fs_browser.isAllowed(browser, data / "theirs" / "b.tif")
+    assert not fs_browser.leadsToAllowed(browser, data / "theirs")
+    with pytest.raises(HTTPException):
+        fs_browser.checkAllowed(browser, data / "theirs", folder=True)

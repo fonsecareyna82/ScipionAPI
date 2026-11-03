@@ -93,18 +93,35 @@ def _within(path: Path, folder: Path) -> bool:
     return path == folder or folder in path.parents
 
 
+def _real(path: Path) -> Path:
+    """Where a path really is: its symbolic links followed (a missing end is kept as written)."""
+    return Path(os.path.realpath(str(path)))
+
+
+def _reaches(path: Path, folders: Iterable[Path]) -> bool:
+    """Whether a path is inside one of the folders both as written and where it really is: a symbolic link in a
+    reachable folder that leads out of them (to another user's data) does not take the user there."""
+    folders = tuple(folders)
+    if not any(_within(path, folder) for folder in folders):
+        return False
+    real = _real(path)
+    return any(_within(real, _real(folder)) for folder in folders)
+
+
 def isAllowed(browser: BrowserRoot, absolutePath: Path) -> bool:
-    """Whether a path (lexical, absolute) is inside one of the browser's reachable folders."""
+    """Whether a path (absolute) is inside one of the browser's reachable folders, also where it really is."""
     if browser.allowed is None:
         return True
-    return any(_within(absolutePath, folder) for folder in browser.allowed)
+    return _reaches(absolutePath, browser.allowed)
 
 
 def leadsToAllowed(browser: BrowserRoot, absolutePath: Path) -> bool:
     """Whether a folder is reachable or on the way to a reachable one (to browse down to it)."""
     if browser.allowed is None:
         return True
-    return isAllowed(browser, absolutePath) or any(_within(folder, absolutePath) for folder in browser.allowed)
+    if any(_within(absolutePath, folder) for folder in browser.allowed):
+        return isAllowed(browser, absolutePath)
+    return any(_within(folder, absolutePath) for folder in browser.allowed)
 
 
 def checkAllowed(browser: BrowserRoot, absolutePath: Path, folder: bool = False) -> None:
@@ -251,18 +268,44 @@ def pathsOutOfReach(protocols: Iterable, projectPath: str, canBrowseServer: bool
     project = Path(projectPath).expanduser()
     allowed = tuple(dict.fromkeys((project.absolute(), project.resolve()))) + roots
     problems = []
+    folders = ", ".join(folder.as_posix() for folder in roots)
     for protocol in protocols:
         name = protocol.getObjLabel() if hasattr(protocol, "getObjLabel") else ""
         name = name or (protocol.getClassName() if hasattr(protocol, "getClassName") else "Protocol")
         for label, raw in protocolPaths(protocol):
-            checked = _beforeGlob(raw)
-            absolute = Path(os.path.normpath(os.path.join(str(project.absolute()), checked)))
-            if not any(_within(absolute, folder) for folder in allowed):
+            reason = _outOfReach(raw, project, allowed)
+            if reason:
                 problems.append(
-                    "%s: %s (%s) is out of the folders you may use (the project and %s). "
-                    "Ask for the files.browseServer permission to use it."
-                    % (name, label, raw, ", ".join(folder.as_posix() for folder in roots)))
+                    "%s: %s (%s) %s (the project and %s). Ask for the files.browseServer permission to use it."
+                    % (name, label, raw, reason, folders))
     return problems
+
+
+# How many files of a pattern a launch looks at, each where it really is
+PATTERN_MATCHES_CHECKED = 20000
+
+
+def _outOfReach(raw: str, project: Path, allowed: Tuple[Path, ...]) -> Optional[str]:
+    """Why a path (or a folder and pattern) of a form is out of reach, or None.
+
+    '..' is refused anywhere: after a pattern it climbs out of the folder the pattern starts in
+    (movies/*/../../other/*.tif). The folder before the pattern, and every file the pattern finds, must be in
+    reach where they really are, so a symbolic link does not lead out either.
+    """
+    if ".." in Path(raw).parts:
+        return "climbs folders with '..', which the folders you may use do not allow"
+    absolute = Path(os.path.normpath(os.path.join(str(project.absolute()), _beforeGlob(raw))))
+    if not _reaches(absolute, allowed):
+        return "is out of the folders you may use"
+    pattern = os.path.join(str(project.absolute()), raw)
+    if _GLOB_CHARACTERS & set(raw):
+        import glob as globModule
+        import itertools
+
+        for match in itertools.islice(globModule.iglob(pattern), PATTERN_MATCHES_CHECKED):
+            if not _reaches(Path(match), allowed):
+                return "finds %s, which is out of the folders you may use" % match
+    return None
 
 
 def checkLaunchPaths(mapper, userId, protocols, currentProject) -> None:
