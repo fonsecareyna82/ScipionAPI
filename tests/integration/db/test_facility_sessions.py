@@ -388,3 +388,93 @@ def test_ASessionThatDoesNotProcessByItselfWaitsForTheStaff(facility, owner, tmp
 
     watchSessions(db)
     assert calls == [] and sessions.getSession(session["id"])["datasets"][1]["processing"] is None
+
+
+def test_TheProjectIsTheStaffsAndItsUserSeesItReadOnly(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, staffId = owner
+    db = sessions.mapper.db
+    userId = flat.insertUser(email="facility-user-%s@example.com" % uuid4().hex, hashedPassword="test",
+                             firstName="Ana", lastName="User", institution=None, role="user", isActive=True,
+                             isVerified=True, verificationCode="")
+    try:
+        FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+        session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", userId=userId,
+                                                  templateId="scipion:demo"), userId=staffId)
+        calls = []
+        _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+        _epuMovie(tmp_path, session["name"])
+
+        watchSessions(db)
+
+        projectId = sessions.getSession(session["id"])["datasets"][1]["projectId"]
+        assert db.fetchOne('SELECT "ownerId" FROM projects WHERE id = %s', (projectId,))["ownerId"] == staffId
+        share = db.fetchOne('SELECT permission FROM project_shares WHERE "projectId" = %s AND "userId" = %s',
+                            (projectId, userId))
+        assert share["permission"] == "view"
+    finally:
+        db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
+        db.execute("DELETE FROM users WHERE id = %s", (userId,))
+
+
+def test_ASessionWithOneProjectPutsEachDataInItsOwnBranch(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", templateId="scipion:demo",
+                                              oneProject=True), userId=userId)
+    calls = []
+    _processWith(monkeypatch, flat, DEMO_WORKFLOW, calls)
+    _epuMovie(tmp_path, session["name"], 1)
+    _epuMovie(tmp_path, session["name"], 2)
+
+    watchSessions(db)
+
+    first, second = sessions.getSession(session["id"])["datasets"][1:]
+    assert [call[1] for call in calls if call[0] == "create"] == [session["name"]]
+    assert first["projectId"] == second["projectId"] is not None
+    assert (first["processing"]["state"], second["processing"]["state"]) == ("launched", "launched")
+    imports = [call[1] for call in calls if call[0] == "import"]
+    assert [workflow[0]["object.label"].split(" · ")[0] for workflow in imports] == ["DATA_01", "DATA_02"]
+    assert imports[1][0]["filesPath"].endswith("_DATA_02")
+    assert len([call for call in calls if call[0] == "launch"]) == 2
+
+
+def test_ATomographyDataComposesItsTiltSeriesFromItsMdocs(facility, owner, tmp_path, monkeypatch):
+    from app.backend.api.services.facility_session_watcher import watchSessions
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring", technique="tomo",
+                                              templateId="tomo:streaming"), userId=userId)
+    frames = tmp_path / ("%s_DATA_01" % session["name"]) / "TS_01" / "frames"
+    frames.mkdir(parents=True)
+    (frames / "TS_01.mdoc").write_text("PixelSpacing = 1.6\nVoltage = 300\nMagnification = 64000\nNumSubFrames = 8\n"
+                                       "ExposureTime = 0.5\nExposureDose = 3.2\n")
+    for tilt in ("001_0.0", "002_3.0"):
+        (frames / ("TS_01_%s.mrc" % tilt)).write_bytes(b"\0" * 8)
+    calls = []
+    workflow = [{"object.className": "ProtImportMovies", "object.id": "2", "filesPattern": "*.mrc"},
+                {"object.className": "ProtMotionCorr", "object.id": "3", "inputMovies": "2.outputMovies"},
+                {"object.className": "ProtComposeTS", "object.id": "4", "inputMicrographs": "3.outputMicrographs",
+                 "filesPath": "/somewhere", "mdocPattern": "*.mdoc"}]
+    _processWith(monkeypatch, flat, workflow, calls)
+
+    watchSessions(db)
+
+    first = sessions.getSession(session["id"])["datasets"][1]
+    assert first["movieCount"] == 2 and first["acquisition"]["format"] == "SerialEM MDOC"
+    assert first["acquisition"]["metadataPath"] == "TS_01/frames/TS_01.mdoc"
+    assert first["processing"]["state"] == "launched" and first["processing"]["composesTiltSeries"]
+    imported = [call[1] for call in calls if call[0] == "import"][0]
+    folder = str(tmp_path / ("%s_DATA_01" % session["name"]))
+    assert (imported[0]["filesPath"], imported[0]["filesPattern"]) == (folder, "*/frames/*.mrc")
+    assert (imported[0]["samplingRate"], imported[0]["dosePerFrame"]) == (1.6, 0.4)
+    assert (imported[2]["filesPath"], imported[2]["mdocPattern"]) == (folder, "*/frames/*.mdoc")

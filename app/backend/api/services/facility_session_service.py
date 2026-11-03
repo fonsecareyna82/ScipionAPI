@@ -240,6 +240,8 @@ class FacilitySessionService:
             # The workflow its DATA are processed with (an id of the web's workflow list), and whether by itself
             "templateId": _text(payload, "templateId", 300),
             "autoProcess": bool(payload.get("autoProcess", True)),
+            # Every DATA in the session's project (each its own branch), instead of a project per DATA
+            "oneProject": bool(payload.get("oneProject", False)),
         }
         assert set(values) == set(SESSION_FIELDS)
         detectorIds = {int(detector["id"]) for detector in microscope.get("detectors") or []}

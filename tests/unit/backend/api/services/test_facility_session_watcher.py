@@ -141,3 +141,19 @@ def test_MoviesInTheFolderItselfCountTooAndAMissingFolderIsSaid(tmp_path):
 def test_EachDataSaysWhereItsAcquisitionIs(session, dataset, state):
     assert watchState(session, dict(dataset, kind="data")) == state
     assert watchState(session, dict(dataset, kind="atlas")) is None
+
+
+def test_ATomographyDataCountsTheTiltMoviesOfEachSeriesAndReadsItsMdoc(tmp_path):
+    from app.backend.api.services.facility_session_watcher import _tiltSeriesMdoc
+
+    root = tmp_path / "S_DATA_01"
+    frames = root / "TS_01" / "frames"
+    frames.mkdir(parents=True)
+    for tilt in ("001_0.0", "002_3.0"):
+        (frames / ("TS_01_%s.mrc" % tilt)).write_bytes(b"\0" * 8)
+    (frames / "TS_01.mdoc").write_text("PixelSpacing = 1.6\nVoltage = 300\n")
+
+    assert scanFolder(root, {}, now=1.0, technique="tomo")["count"] == 2
+    # An .mrc is EPU's integrated image in a single particle DATA, not a movie
+    assert scanFolder(root, {}, now=1.0)["count"] == 0
+    assert _tiltSeriesMdoc(frames / "TS_01_001_0.0.mrc", root) == frames / "TS_01.mdoc"

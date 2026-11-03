@@ -8,8 +8,9 @@ When the watcher has read a DATA's first movie (``facility_session_watcher``) an
 2. its Import Movies (any template, whatever aliases it uses) reads the DATA folder in streaming, with the
    pattern of the movies EPU writes there, the detector's calibrated pixel, the voltage and magnification of the
    movie, the microscope's Cs, the dose per frame and the gain reference;
-3. the project belongs to the session's user (else to who made the session), is shared with the session's group
-   (work) and with who made it (manage), and runs from its Import Movies like "Restart all" in the web.
+3. the project belongs to who made the session (the facility's staff; else to its user), and its user and group
+   see it read only (view): the facility's processing is not changed by those it is for. It runs from its
+   Import Movies like "Restart all" in the web.
 
 What happened is the dataset's ``processing`` (state queued, running, launched or error, and why); a DATA keeps
 its project once made, so a failure after it leaves the project for the staff to look at.
@@ -29,6 +30,8 @@ from app.backend.api.permissions import hasPermission, withPermissions
 logger = logging.getLogger(__name__)
 
 IMPORT_MOVIES_CLASSES = ("ProtImportMovies",)
+# Tomography in streaming: the tilt movies are imported as movies, and this composes the tilt series from the mdocs
+COMPOSE_TILT_SERIES_CLASSES = ("ProtComposeTS",)
 # The aliases of a template's ~Title|value|type|alias~ fields that take what the first movie says
 TEMPLATE_ALIASES = {
     "moviespath": "filesPath", "filespath": "filesPath", "pattern": "filesPattern", "filespattern": "filesPattern",
@@ -42,17 +45,33 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+# Folder names that are the same for every grid square or tilt series: the pattern keeps them
+FIXED_FOLDERS = ("data", "frames")
+
+
+def _folderPattern(parts) -> List[str]:
+    return ["Images-Disc*" if part.startswith("Images-Disc") else "GridSquare_*" if part.startswith("GridSquare_")
+            else part if part.lower() in FIXED_FOLDERS else "*" for part in parts]
+
+
 def moviesPattern(firstMovie: str) -> str:
     """The pattern of a DATA's movies from its first one (relative to the folder): EPU's grid squares and the
-    movies' own ending, e.g. Images-Disc*/GridSquare_*/Data/*_Fractions.mrc."""
+    movies' own ending, e.g. Images-Disc*/GridSquare_*/Data/*_Fractions.mrc; a folder per tilt series is any
+    folder (*/frames/*.eer)."""
     parts = Path(firstMovie).parts
-    folders = ["Images-Disc*" if part.startswith("Images-Disc") else "GridSquare_*" if part.startswith("GridSquare_")
-               else part for part in parts[:-1]]
+    folders = _folderPattern(parts[:-1])
     name = parts[-1]
     for mark in ("_Fractions.", "_EER."):
         if mark in name:
             return "/".join(folders + ["*" + name[name.index(mark):]])
     return "/".join(folders + ["*" + Path(name).suffix])
+
+
+def mdocPattern(metadataPath: Optional[str]) -> Optional[str]:
+    """The pattern of a DATA's tilt-series mdocs from the one read (relative to the folder): *.mdoc, */frames/*.mdoc."""
+    if not metadataPath or not str(metadataPath).lower().endswith(".mdoc"):
+        return None
+    return "/".join(_folderPattern(Path(metadataPath).parts[:-1]) + ["*.mdoc"])
 
 
 def gainReference(acquisition: Dict[str, Any], detector: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -98,6 +117,26 @@ def fillImportMovies(workflow: List[Dict[str, Any]], values: Dict[str, Any]) -> 
     return filled
 
 
+def fillComposeTiltSeries(workflow: List[Dict[str, Any]], folder: str, pattern: Optional[str]) -> int:
+    """Make the workflow's tilt-series composition read the DATA's mdocs; answers how many there were."""
+    filled = 0
+    for protocol in workflow:
+        if protocol.get("object.className") not in COMPOSE_TILT_SERIES_CLASSES:
+            continue
+        protocol["filesPath"] = folder
+        if pattern:
+            protocol["mdocPattern"] = pattern
+        filled += 1
+    return filled
+
+
+def labelBranch(workflow: List[Dict[str, Any]], prefix: str) -> None:
+    """Name a DATA's branch in a project shared by several: DATA_02 · <the protocol's label>."""
+    for protocol in workflow:
+        label = str(protocol.get("object.label") or protocol.get("object.className") or "")
+        protocol["object.label"] = "%s · %s" % (prefix, label)
+
+
 def _description(row: Dict[str, Any]) -> str:
     grid = " · ".join(str(part) for part in (row.get("sampleCode"), row.get("boxLabel") and "box %s" % row["boxLabel"],
                                              row.get("gridNumber") is not None and "grid #%s" % row["gridNumber"])
@@ -131,7 +170,7 @@ class FacilitySessionProcessor:
         return ProjectService()
 
     def _owner(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        for userId in (row.get("userId"), row.get("createdBy")):
+        for userId in (row.get("createdBy"), row.get("userId")):
             record = self.mapper.getUserById(int(userId)) if userId is not None else None
             if record and record.get("isActive", True):
                 user = withPermissions(self.mapper, record)
@@ -143,24 +182,34 @@ class FacilitySessionProcessor:
     def processPending(self) -> int:
         """Process every DATA waiting for its project; answers how many were tried."""
         rows = self.sessions.listDatasetsToProcess()
+        # A session with one project: the DATA after the first of this turn go to the project it made
+        made: Dict[int, int] = {}
         for row in rows:
-            self.processDataset(row)
+            if row.get("oneProject") and row.get("sessionProjectId") is None and row["sessionId"] in made:
+                row = dict(row, sessionProjectId=made[row["sessionId"]])
+            processing = self.processDataset(row)
+            if row.get("oneProject") and processing.get("projectId"):
+                made.setdefault(row["sessionId"], processing["projectId"])
         return len(rows)
 
     def processDataset(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        """Make, fill and launch a DATA's project; keeps and answers how it went."""
-        projectName = "%s_DATA_%02d" % (row["sessionName"], int(row["number"]))
+        """Make, fill and launch a DATA's project (or its branch in the session's); keeps and answers how it went."""
+        dataName = "%s_DATA_%02d" % (row["sessionName"], int(row["number"]))
+        oneProject = bool(row.get("oneProject"))
+        projectName = row["sessionName"] if oneProject else dataName
         processing: Dict[str, Any] = {"state": "running", "at": _now(), "templateId": row["templateId"],
                                       "projectName": projectName}
         self.sessions.saveProcessing(row["id"], processing)
         projectId = None
+        # A branch in the session's project: the DATA keeps the project only once its branch runs, so it can be tried again
+        joined = False
         try:
             acquisition = row["acquisition"] or {}
             microscope = self.microscopes.getMicroscope(int(row["microscopeId"])) or {}
             detectorId = row.get("detectorId") or acquisition.get("detectorId")
             detector = next((item for item in microscope.get("detectors") or []
                              if detectorId is not None and int(item["id"]) == int(detectorId)), None)
-            folder = str(Path(row["offloadPath"]) / projectName)
+            folder = str(Path(row["offloadPath"]) / dataName)
             values = importValues(folder, acquisition, microscope.get("csMm"), detector)
             processing["importValues"] = values
             if "dosePerFrame" not in values:
@@ -173,24 +222,35 @@ class FacilitySessionProcessor:
             workflow = workflow if isinstance(workflow, list) else [workflow]
             if not fillImportMovies(workflow, values):
                 raise RuntimeError("The template has no Import Movies to read the DATA")
+            if fillComposeTiltSeries(workflow, folder, mdocPattern(acquisition.get("metadataPath"))):
+                processing["composesTiltSeries"] = True
+            if oneProject:
+                labelBranch(workflow, "DATA_%02d" % int(row["number"]))
 
             from app.backend.api.schemas.project_schema import ProjectCreate
             from app.backend.api.schemas.protocols_schema import WorkflowImportRequest
 
-            project = service.createProject(self.mapper, ProjectCreate(name=projectName, description=_description(row)),
-                                            owner)
-            projectId = int(project["id"])
-            self.sessions.saveProcessing(row["id"], processing, projectId=projectId)
-            recordAudit(self.mapper, owner, "projects.created", "project", projectId, projectName,
-                        {"facilitySession": row["sessionName"], "template": row["templateId"]})
-            if row.get("groupId") is not None:
-                self.mapper.shareProjectWithGroup(projectId, int(row["groupId"]), "work")
-            if row.get("createdBy") is not None and int(row["createdBy"]) != int(owner["id"]):
-                self.mapper.shareProjectWithUser(projectId, int(row["createdBy"]), "manage")
+            if oneProject and row.get("sessionProjectId") is not None:
+                # The session's project, made by an earlier DATA: this one is a new branch in it
+                projectId = int(row["sessionProjectId"])
+                joined = True
+            else:
+                description = ("Facility session %s" % row["sessionName"]) if oneProject else _description(row)
+                project = service.createProject(self.mapper, ProjectCreate(name=projectName, description=description),
+                                                owner)
+                projectId = int(project["id"])
+                self.sessions.saveProcessing(row["id"], processing, projectId=projectId)
+                recordAudit(self.mapper, owner, "projects.created", "project", projectId, projectName,
+                            {"facilitySession": row["sessionName"], "template": row["templateId"]})
+                if row.get("groupId") is not None:
+                    self.mapper.shareProjectWithGroup(projectId, int(row["groupId"]), "view")
+                if row.get("userId") is not None and int(row["userId"]) != int(owner["id"]):
+                    self.mapper.shareProjectWithUser(projectId, int(row["userId"]), "view")
+            processing["projectId"] = projectId
 
             if not service.loadPostgresqlRuntimeProjectForMutation(mapper=self.mapper, projectId=projectId,
                                                                    currentUser=owner):
-                raise RuntimeError("The new project could not be opened")
+                raise RuntimeError("The project could not be opened")
             imported = service.importWorkflowProtocolsService(mapper=self.mapper, projectId=projectId,
                                                               currentUser=owner,
                                                               payload=WorkflowImportRequest(workflow=workflow))
@@ -211,5 +271,6 @@ class FacilitySessionProcessor:
             detail = getattr(error, "detail", None) or str(error)
             logger.warning("Could not process %s", projectName, exc_info=True)
             processing.update(state="error", at=_now(), message=str(detail))
-        self.sessions.saveProcessing(row["id"], processing, projectId=projectId)
+        kept = projectId if not joined or processing["state"] == "launched" else None
+        self.sessions.saveProcessing(row["id"], processing, projectId=kept)
         return processing

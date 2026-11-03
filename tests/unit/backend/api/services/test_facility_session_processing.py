@@ -54,3 +54,20 @@ def test_WhatTheMovieDoesNotSayKeepsTheTemplatesValue():
 
     assert (workflow[0]["dosePerFrame"], workflow[0]["sphericalAberration"]) == (0.8, 2.0)
     assert fillImportMovies([{"object.className": "ProtCTFFind"}], {"filesPath": "/x"}) == 0
+
+
+def test_ATomographyDataIsReadFromItsTiltSeriesFolders():
+    from app.backend.api.services.facility_session_processing import fillComposeTiltSeries, labelBranch, mdocPattern
+
+    assert moviesPattern("TS_01/frames/TS_01_001_0.0_EER.eer") == "*/frames/*_EER.eer"
+    assert moviesPattern("TS_01_001_0.0.mrc") == "*.mrc"
+    assert mdocPattern("TS_01/frames/TS_01.mdoc") == "*/frames/*.mdoc"
+    assert mdocPattern("TS_01.mdoc") == "*.mdoc"
+    assert mdocPattern("FoilHole_1.xml") is None
+
+    workflow = [{"object.className": "ProtImportMovies", "object.label": "import movies"},
+                {"object.className": "ProtComposeTS", "object.label": "compose", "filesPath": "~x~", "mdocPattern": "*.mdoc"}]
+    assert fillComposeTiltSeries(workflow, "/offload/S_DATA_01", "*/frames/*.mdoc") == 1
+    assert (workflow[1]["filesPath"], workflow[1]["mdocPattern"]) == ("/offload/S_DATA_01", "*/frames/*.mdoc")
+    labelBranch(workflow, "DATA_02")
+    assert [protocol["object.label"] for protocol in workflow] == ["DATA_02 · import movies", "DATA_02 · compose"]

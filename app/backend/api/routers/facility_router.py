@@ -122,6 +122,8 @@ class SessionPayload(BaseModel):
     # An id of GET /projects/workflows: the template each DATA's project is made from
     templateId: Optional[str] = ""
     autoProcess: bool = True
+    # One project for all its DATA (each its own branch) instead of one per DATA
+    oneProject: bool = False
     datasets: List[DatasetPayload] = []
 
 

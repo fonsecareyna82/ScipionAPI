@@ -33,17 +33,21 @@ MOVIE_EXTENSIONS = (".eer", ".tif", ".tiff", ".mrcs")
 FRACTIONS_MARK = "_fractions."
 # Gain and dark references that share the movies' extensions
 NOT_MOVIES = ("countref", "gain", "dark")
+# A tomography DATA: SerialEM and Tomo5 may write the tilt movies as .mrc (EPU's .mrc are its integrated images)
+TOMO_MOVIE_EXTENSIONS = MOVIE_EXTENSIONS + (".mrc",)
+# How deep under a DATA folder movies are looked for (EPU: Images-Disc1/GridSquare_*/Data; tomography: <ts>/frames)
+MAX_DEPTH = 4
 
 _wakeUp = threading.Event()
 _startLock = threading.Lock()
 _thread: Optional[threading.Thread] = None
 
 
-def isMovie(name: str) -> bool:
+def isMovie(name: str, technique: str = "spa") -> bool:
     lower = name.lower()
     if lower.startswith(NOT_MOVIES) or lower.endswith((".xml", ".jpg", ".mdoc")):
         return False
-    return FRACTIONS_MARK in lower or lower.endswith(MOVIE_EXTENSIONS)
+    return FRACTIONS_MARK in lower or lower.endswith(TOMO_MOVIE_EXTENSIONS if technique == "tomo" else MOVIE_EXTENSIONS)
 
 
 def dataFolder(offloadPath: str, sessionName: str, number: int) -> Path:
@@ -51,18 +55,28 @@ def dataFolder(offloadPath: str, sessionName: str, number: int) -> Path:
 
 
 def _movieFolders(root: Path) -> List[Path]:
-    """Where movies are: the folder itself and EPU's Images-Disc*/GridSquare_*/Data."""
-    folders = [root]
-    for disc in sorted(root.glob("Images-Disc*")):
-        folders.extend(sorted(path for path in disc.glob("GridSquare_*/Data") if path.is_dir()))
+    """Where movies may be: the folder and its folders down to MAX_DEPTH (EPU's Images-Disc*/GridSquare_*/Data,
+    a folder per tilt series)."""
+    folders, level = [root], [root]
+    for _ in range(MAX_DEPTH):
+        below = []
+        for folder in level:
+            try:
+                with os.scandir(folder) as entries:
+                    below.extend(Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False))
+            except OSError:
+                continue
+        below.sort()
+        folders.extend(below)
+        level = below
     return folders
 
 
-def _readFolder(folder: Path) -> Dict[str, Any]:
+def _readFolder(folder: Path, technique: str = "spa") -> Dict[str, Any]:
     count, size, newest, oldest, first = 0, 0, None, None, None
     with os.scandir(folder) as entries:
         for entry in entries:
-            if not isMovie(entry.name) or not entry.is_file():
+            if not isMovie(entry.name, technique) or not entry.is_file():
                 continue
             stat = entry.stat()
             count += 1
@@ -73,7 +87,8 @@ def _readFolder(folder: Path) -> Dict[str, Any]:
     return {"count": count, "bytes": size, "newest": newest, "oldest": oldest, "first": first}
 
 
-def scanFolder(root: Path, state: Dict[str, Any], now: float, fullScanSeconds: float = FULL_SCAN_SECONDS) -> Dict[str, Any]:
+def scanFolder(root: Path, state: Dict[str, Any], now: float, fullScanSeconds: float = FULL_SCAN_SECONDS,
+               technique: str = "spa") -> Dict[str, Any]:
     """Look at a DATA folder; answers its totals and the state for the next look.
 
     state is what the last look answered (``scanState``): the folders of movies whose modification time is
@@ -96,7 +111,7 @@ def scanFolder(root: Path, state: Dict[str, Any], now: float, fullScanSeconds: f
             folders[relative] = previous
             continue
         try:
-            folders[relative] = dict(_readFolder(folder), mtime=mtime)
+            folders[relative] = dict(_readFolder(folder, technique), mtime=mtime)
         except OSError:
             logger.warning("Could not read %s", folder, exc_info=True)
     totals = {"exists": True, "count": 0, "bytes": 0, "newest": None, "oldest": None, "first": None}
@@ -123,10 +138,22 @@ def _gainFile(root: Path) -> Optional[str]:
     return str(gains[0]) if gains else None
 
 
+def _tiltSeriesMdoc(movie: Path, root: Path) -> Optional[Path]:
+    """A tilt series' mdoc describes its movies: the first one beside the movie, else up to the DATA folder."""
+    folder = movie.parent
+    while True:
+        mdocs = sorted(folder.glob("*.mdoc"))
+        if mdocs:
+            return mdocs[0]
+        if folder == root or root not in folder.parents:
+            return None
+        folder = folder.parent
+
+
 def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
                  detectorId: Optional[int]) -> Optional[Dict[str, Any]]:
     """What the first movie's metadata says; None while EPU has not written it yet."""
-    metadata = metadataFileOf(firstMovie)
+    metadata = metadataFileOf(firstMovie) or _tiltSeriesMdoc(firstMovie, root)
     if metadata is None:
         return None
     try:
@@ -135,6 +162,7 @@ def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
         return {"metadataFile": metadata.name, "error": str(error)}
     # Relative to the DATA folder: its project's Import Movies reads the movies with a pattern made from it
     acquisition["firstMovie"] = str(firstMovie.relative_to(root))
+    acquisition["metadataPath"] = str(metadata.relative_to(root)) if root in metadata.parents else metadata.name
     acquisition["gainFile"] = _gainFile(root)
     return acquisition
 
@@ -155,7 +183,7 @@ def watchSessions(db, now: Optional[float] = None) -> int:
             if not dataset["offloadPath"]:
                 continue
             root = dataFolder(dataset["offloadPath"], dataset["sessionName"], dataset["number"])
-            scan = scanFolder(root, dataset["scanState"] or {}, now)
+            scan = scanFolder(root, dataset["scanState"] or {}, now, technique=dataset.get("technique") or "spa")
             acquisition = None
             if scan["count"] and not dataset["acquisitionRead"]:
                 microscopeId = int(dataset["microscopeId"])
