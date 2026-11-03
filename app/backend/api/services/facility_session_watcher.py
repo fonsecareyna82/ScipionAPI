@@ -211,6 +211,18 @@ def _processPending(db) -> None:
         logger.warning("Could not process the sessions' new DATA", exc_info=True)
 
 
+def watchOnce(db) -> int:
+    """One turn of the watcher, leaving no transaction open.
+
+    Its writes are committed as they are made, but its reads open a transaction that a long-lived connection
+    would keep: idle in transaction for hours, it held the facility tables and a migration altering them waited.
+    """
+    try:
+        return watchSessions(db)
+    finally:
+        db.rollback()
+
+
 def requestWatch() -> None:
     """Look now instead of at the next turn (a no-op where the watcher was not started)."""
     _wakeUp.set()
@@ -234,7 +246,7 @@ def _run(openDb: Callable[[], object]) -> None:
             try:
                 if db is None:
                     db = openDb()
-                watchSessions(db)
+                watchOnce(db)
             except Exception:
                 logger.warning("Could not look at the sessions' folders; trying again later", exc_info=True)
                 try:

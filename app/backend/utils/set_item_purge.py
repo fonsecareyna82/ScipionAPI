@@ -56,6 +56,15 @@ def purgePendingSetItems(db, batchSize: int = BATCH_SIZE, pauseSeconds: float = 
         mapper.unlock()
 
 
+def purgeOnce(db) -> int:
+    """One turn of the background purge, leaving no transaction open (its reads would keep one, and with it
+    the purge tables, while the connection waits for the next turn)."""
+    try:
+        return purgePendingSetItems(db, BACKGROUND_BATCH_SIZE, BACKGROUND_PAUSE_SECONDS)
+    finally:
+        db.rollback()
+
+
 def requestSetItemPurge() -> None:
     """Purge now instead of at the next poll (a no-op where the purge thread was not started)."""
     _wakeUp.set()
@@ -79,7 +88,7 @@ def _run(openDb: Callable[[], object]) -> None:
         try:
             if db is None:
                 db = openDb()
-            removed = purgePendingSetItems(db, BACKGROUND_BATCH_SIZE, BACKGROUND_PAUSE_SECONDS)
+            removed = purgeOnce(db)
             if removed:
                 logger.info("Removed %s items of deleted Sets", removed)
         except Exception:

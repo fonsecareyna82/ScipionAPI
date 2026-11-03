@@ -129,3 +129,16 @@ def test_OnlyOneProcessPurgesAtATime(purgeProject, postgresqlMigratedEnv):
         otherMapper.unlock()
         other.close()
     assert purgePendingSetItems(db) == 2 * PARTICLES
+
+
+def test_ABackgroundTurnLeavesNoTransactionOpen(purgeProject):
+    """Its reads would keep a transaction open, and with it the purge tables, while it waits for the next turn."""
+    import psycopg2.extensions
+
+    from app.backend.utils.set_item_purge import purgeOnce
+
+    db, flat, projectId, userId = purgeProject
+
+    purgeOnce(db)
+
+    assert db.conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_IDLE

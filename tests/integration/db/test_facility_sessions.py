@@ -540,3 +540,17 @@ def test_ATomographyDataComposesItsTiltSeriesFromItsMdocs(facility, owner, tmp_p
     assert (imported[0]["filesPath"], imported[0]["filesPattern"]) == (folder, "*/frames/*.mrc")
     assert (imported[0]["samplingRate"], imported[0]["dosePerFrame"]) == (1.6, 0.4)
     assert (imported[2]["filesPath"], imported[2]["mdocPattern"]) == (folder, "*/frames/*.mdoc")
+
+
+def test_TheWatchersTurnLeavesNoTransactionOpen(facility):
+    """Idle in transaction, the watcher's connection held the facility tables and a migration waited for hours."""
+    import psycopg2.extensions
+
+    from app.backend.api.services.facility_session_watcher import watchOnce
+
+    sessions, microscope, sample = facility
+    db = sessions.mapper.db
+
+    watchOnce(db)
+
+    assert db.conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_IDLE
