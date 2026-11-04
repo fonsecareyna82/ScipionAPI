@@ -123,7 +123,11 @@ class FakeManager:
 
 class FakeMapper:
     # fakeMapper
+    db = None
+
     def __init__(self):
+        # The background measurer's last measures, by project id
+        self.diskMeasures = {}
         self.projectsById = {}
         self.projectsListResult = []
         self.projectProtocolCounts = {}
@@ -280,11 +284,22 @@ def projectServiceModule(authTestEnv):
     return importlib.import_module("app.backend.api.services.project_service")
 
 
+USER_FOLDER = "user"
+
+
 @pytest.fixture
-def service(projectServiceModule, tmp_path):
+def service(projectServiceModule, tmp_path, monkeypatch):
     # service
     projectsRoot = tmp_path / "projects"
     projectsRoot.mkdir(parents=True, exist_ok=True)
+
+    # New projects go into their owner's folder (chosen in the database, here always the same one)
+    def userProjectsFolder(db, user, root):
+        folder = Path(root) / USER_FOLDER
+        folder.mkdir(exist_ok=True)
+        return folder
+
+    monkeypatch.setattr("app.backend.api.services.project_storage.userProjectsFolder", userProjectsFolder)
 
     instance = object.__new__(projectServiceModule.ProjectService)
     instance.manager = FakeManager(projectsRoot)
@@ -294,9 +309,13 @@ def service(projectServiceModule, tmp_path):
 
 
 @pytest.fixture
-def mapper():
+def mapper(monkeypatch):
     # mapper
-    return FakeMapper()
+    fake = FakeMapper()
+    monkeypatch.setattr("app.backend.mapper.storage_mapper.StoragePostgresqlMapper.usageOfProjects",
+                        lambda self, projectIds: {projectId: fake.diskMeasures[projectId]
+                                                  for projectId in projectIds if projectId in fake.diskMeasures})
+    return fake
 
 
 @pytest.fixture
@@ -323,7 +342,7 @@ def test_CreateProjectSanitizesNameAndInsertsProject(service, mapper, currentUse
     assert service.manager.createdProjects == ["my_project_v1"]
     assert mapper.lastInsertProjectCall == {
         "ownerId": 1,
-        "name": os.path.join(service.manager.PROJECTS, "my_project_v1"),
+        "name": os.path.join(service.manager.PROJECTS, USER_FOLDER, "my_project_v1"),
         "description": "demo project",
         "status": "active",
     }
@@ -340,8 +359,11 @@ def test_CreateProjectSanitizesNameAndInsertsProject(service, mapper, currentUse
             Path(
                 service.manager.PROJECTS
             )
+            / USER_FOLDER
             / "my_project_v1"
     )
+
+    assert createdProjectPath.is_dir()
 
     assert not (
             createdProjectPath
@@ -366,7 +388,7 @@ def test_CreateProjectRejectsDuplicateSanitizedName(service, mapper, currentUser
 
 
 def test_CreateProjectRejectsFilesystemCollision(service, mapper, currentUser):
-    existingPath = Path(service.manager.getProjectPath("demo"))
+    existingPath = Path(service.manager.PROJECTS) / USER_FOLDER / "demo"
     existingPath.mkdir(parents=True, exist_ok=True)
 
     payload = ProjectCreatePayload(name="demo")
@@ -441,14 +463,9 @@ def test_UpdateProjectRenamesManagedProjectAndFallsBackDescription(service, mapp
 
     result = service.updateProject(mapper, 1, currentUser, payload)
 
+    # A project made before the users' folders is renamed where it is
     expectedNewPath = os.path.join(service.manager.PROJECTS, "renamed_project")
-    assert service.manager.renamedProjects == [
-        {
-            "currentPath": str(currentPath),
-            "newName": "renamed_project",
-            "newPath": expectedNewPath,
-        }
-    ]
+    assert os.path.isdir(expectedNewPath) and not currentPath.exists()
     assert mapper.lastUpdateProjectCall == {
         "projectId": 1,
         "userId": 1,
@@ -456,6 +473,18 @@ def test_UpdateProjectRenamesManagedProjectAndFallsBackDescription(service, mapp
         "description": "old description",
     }
     assert result == mapper.updateProjectResult
+
+
+def test_UpdateProjectRenamesAProjectInsideItsOwnersFolder(service, mapper, currentUser):
+    currentPath = Path(service.manager.PROJECTS) / USER_FOLDER / "demo"
+    currentPath.mkdir(parents=True)
+    mapper.projectsById[(1, 1)] = {"id": 1, "ownerId": 1, "name": str(currentPath), "description": ""}
+
+    service.updateProject(mapper, 1, currentUser, ProjectUpdatePayload(name="renamed"))
+
+    expectedNewPath = Path(service.manager.PROJECTS) / USER_FOLDER / "renamed"
+    assert expectedNewPath.is_dir() and not currentPath.exists()
+    assert mapper.lastUpdateProjectCall["newPath"] == str(expectedNewPath)
 
 
 def test_UpdateProjectRenamesLinkedProjectUsingOsRename(service, mapper, currentUser, tmp_path):
@@ -603,7 +632,7 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
         }
     ]
 
-    monkeypatch.setattr(service, "getProjectSize", lambda path: 3 * 1024 ** 3)
+    mapper.diskMeasures[1] = {"projectId": 1, "totalBytes": 3 * 1024 ** 3, "measuredAt": "2026-04-15T12:00:00"}
     mapper.projectProtocolCounts[1] = 7
     monkeypatch.setattr(service, "countProtocols", lambda path: 999)
     monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
@@ -619,6 +648,8 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "status": "active",
             "protocolsCount": 7,
             "diskUsage": "3.00 GB",
+            "diskUsageBytes": 3 * 1024 ** 3,
+            "diskUsageMeasuredAt": "2026-04-15T12:00:00",
             "isOwner": True,
             "isShared": False,
             "permission": "owner",
@@ -888,7 +919,9 @@ def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
             "protocolsCount": 7,
-            "diskUsage": "0.00 GB",
+            "diskUsage": None,
+            "diskUsageBytes": None,
+            "diskUsageMeasuredAt": None,
             "isOwner": True,
             "isShared": False,
             "permission": "owner",
@@ -905,7 +938,7 @@ def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
     assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
 
 
-def test_ListProjectsReturnsZeroDiskUsageWhenFilesystemSizeFails(
+def test_ListProjectsReadsTheStoredMeasuresWithoutWalkingTheFolders(
     service,
     mapper,
     currentUser,
@@ -926,13 +959,14 @@ def test_ListProjectsReturnsZeroDiskUsageWhenFilesystemSizeFails(
     mapper.projectProtocolCounts[1] = 7
 
     def failGetProjectSize(path):
-        raise RuntimeError("du failed")
+        raise AssertionError("listProjects should not walk the project folders")
 
     monkeypatch.setattr(service, "getProjectSize", failGetProjectSize)
+    mapper.diskMeasures[1] = {"projectId": 1, "totalBytes": 512 * 1024 ** 2, "measuredAt": "2026-04-15T12:00:00"}
 
     result = service.listProjects(mapper, currentUser)
 
-    assert result[0]["diskUsage"] == "0.00 GB"
+    assert result[0]["diskUsage"] == "0.50 GB" and result[0]["diskUsageBytes"] == 512 * 1024 ** 2
     assert result[0]["protocolsCount"] == 7
 
 

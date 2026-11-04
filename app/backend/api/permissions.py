@@ -17,6 +17,7 @@ PERMISSIONS: Dict[str, str] = {
     "roles.manage": "Create roles and choose their permissions",
     "groups.manage": "Create groups and manage their members",
     "audit.view": "See the audit log",
+    "storage.view": "See the disk each user, group and project uses, and measure it again",
     # Projects
     "projects.create": "Create and import projects",
     "projects.share": "Share own projects with users and groups",
@@ -44,7 +45,7 @@ SYSTEM_ROLE_NAME = "Administrator"
 DEFAULT_ROLES = (
     (SYSTEM_ROLE_NAME, "Everything, now and in the future", True, False, tuple(PERMISSIONS)),
     ("Facility manager", "Runs the facility: users, groups, microscopes and templates", False, False,
-     ("users.manage", "groups.manage", "projects.create", "projects.share", "projects.viewAll",
+     ("users.manage", "groups.manage", "storage.view", "projects.create", "projects.share", "projects.viewAll",
       "files.browseServer", "files.download", "files.upload", "facility.monitor", "facility.thresholds",
       "facility.sessions", "facility.manage")),
     ("Technician", "Facility staff: sessions, the monitor and the projects of the facility", False, False,

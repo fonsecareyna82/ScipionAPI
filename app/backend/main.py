@@ -52,6 +52,7 @@ from app.backend.api.routers.workspace_router import router as workspaceRouter
 from app.backend.api.routers.access_router import router as accessRouter
 from app.backend.api.routers.project_upload_router import router as projectUploadRouter
 from app.backend.api.routers.facility_router import router as facilityRouter
+from app.backend.api.routers.storage_router import router as storageRouter
 from app.backend.api.audit import ClientAddressMiddleware
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
@@ -153,6 +154,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(accessRouter)
     apiApp.include_router(projectUploadRouter)
     apiApp.include_router(facilityRouter)
+    apiApp.include_router(storageRouter)
 
     @apiApp.get("/health")
     def health_check():
@@ -234,11 +236,20 @@ def startFacilitySessionWatcher():
     startSessionWatcher(lambda: getMapper().db)
 
 
+def startDiskUsageMeasurer():
+    """Measure, in the background and paced, the disk each project uses."""
+    from app.backend.api.services.project_storage import projectsRoot, startDiskUsageMeasurer as start
+    from app.backend.database import getMapper
+
+    start(lambda: getMapper().db, projectsRoot)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     resumeBackgroundDeletes()
     startSetItemPurge()
     startFacilitySessionWatcher()
+    startDiskUsageMeasurer()
     yield
 
 

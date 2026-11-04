@@ -60,7 +60,10 @@ class ProjectOut(BaseModel):
     createdAt: datetime
     updatedAt: Optional[datetime]
     protocolsCount: int = 0
-    diskUsage: str = f"{0.0} GB"
+    # The last measure (the list's, from the background measurer: none until a project is measured)
+    diskUsage: Optional[str] = f"{0.0} GB"
+    diskUsageBytes: Optional[int] = None
+    diskUsageMeasuredAt: Optional[datetime] = None
     isOwner: bool
     isShared: bool
     permission: str

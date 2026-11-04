@@ -702,8 +702,10 @@ class ProjectService:
         description = projectData.description or ""
         statusValue = projectData.status or "active"
 
+        # In the owner's own folder of the projects folder
+        userManager = self._userProjectsManager(mapper, currentUser)
         projectPath = self._normalizeProjectPath(
-            self.manager.getProjectPath(sanitizedName)
+            userManager.getProjectPath(sanitizedName)
         )
 
         existingProjects = mapper.listProjects(
@@ -750,7 +752,7 @@ class ProjectService:
         try:
             createAttempted = True
 
-            project = self.manager.createProject(
+            project = userManager.createProject(
                 sanitizedName
             )
 
@@ -800,6 +802,10 @@ class ProjectService:
                     "Project was inserted but could not "
                     "be read from PostgreSQL"
                 )
+
+            from app.backend.api.services.project_storage import wakeMeasurer
+
+            wakeMeasurer()
 
             return self._buildProjectOutFromPostgresqlRow(
                 mapper=mapper,
@@ -872,6 +878,14 @@ class ProjectService:
                 ),
                 detail=detail,
             )
+
+    def _userProjectsManager(self, mapper: PostgresqlFlatMapper, currentUser: dict) -> Manager:
+        """A Scipion projects manager of the user's own folder, where their new projects go."""
+        from app.backend.api.services.project_storage import userProjectsFolder
+
+        userManager = copy.copy(self.manager)
+        userManager.PROJECTS = str(userProjectsFolder(mapper.db, currentUser, Path(self.manager.PROJECTS)))
+        return userManager
 
     def _normalizeProjectPath(self, projectPath: str) -> str:
         """
@@ -2782,7 +2796,8 @@ class ProjectService:
                 detail="This Scipion project is already imported for the current user",
             )
 
-        targetPath = Path(self.manager.getProjectPath(sanitizedName)).expanduser()
+        userFolder = Path(self._userProjectsManager(mapper, currentUser).PROJECTS)
+        targetPath = (userFolder / sanitizedName).expanduser()
 
         if targetPath.exists() or targetPath.is_symlink():
             raise HTTPException(
@@ -2811,7 +2826,7 @@ class ProjectService:
                     ownerId=currentUser["id"],
                     sourcePath=sourcePath,
                     targetPath=targetPath,
-                    projectsPath=self.projectsPath,
+                    projectsPath=userFolder,
                     description=description,
                     statusValue=statusValue,
                     migrateProjectCallback=(
@@ -2841,6 +2856,10 @@ class ProjectService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(error),
             )
+
+        from app.backend.api.services.project_storage import wakeMeasurer
+
+        wakeMeasurer()
 
         project = self._buildProjectOutFromPostgresqlRow(
             mapper=mapper,
@@ -2877,7 +2896,8 @@ class ProjectService:
             )
 
         newName = self.sanitizeProjectName(projectData.name)
-        newPath = self._normalizeProjectPath(self.manager.getProjectPath(newName))
+        # Renamed where it is: in its owner's folder, or in the projects folder itself when it was made before
+        newPath = os.path.join(os.path.dirname(currentPath), newName)
 
         if currentPath != newPath and os.path.lexists(newPath):
             raise HTTPException(
@@ -2886,10 +2906,8 @@ class ProjectService:
             )
 
         try:
-            if self._isLinkedProjectPath(currentPath):
+            if currentPath != newPath:
                 os.rename(currentPath, newPath)
-            else:
-                self.manager.renameProject(currentPath, newName)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2951,7 +2969,8 @@ class ProjectService:
         elif not isManagedEntry:
             message = "Project unregistered successfully"
         else:
-            deleteInBackground(projectPath)
+            # Into the projects folder's trash, also from a user's folder
+            deleteInBackground(projectPath, trashIn=self.manager.PROJECTS)
             message = "Project deleted successfully"
 
         scheduleProjectRowsDeletion(projectId)
@@ -3102,21 +3121,27 @@ class ProjectService:
         It is used by the project list screen, so it must stay cheap even when
         projects contain many runs or large files.
         """
-        dbProjects = mapper.listProjects(ownerId=currentUser["id"]) or []
+        from app.backend.api.services.project_storage import formatSize
+        from app.backend.mapper.storage_mapper import StoragePostgresqlMapper
+
+        dbProjects = [dbProj for dbProj in mapper.listProjects(ownerId=currentUser["id"]) or []
+                      if dbProj.get("name")]
+        # The background measurer's last measures: no folder is walked here
+        measures = StoragePostgresqlMapper(mapper.db).usageOfProjects([int(dbProj["id"]) for dbProj in dbProjects])
 
         result = []
         for dbProj in dbProjects:
-            if not dbProj.get("name"):
-                continue
-
-            result.append(
-                self._buildProjectOutFromPostgresqlRow(
-                    mapper=mapper,
-                    dbProj=dbProj,
-                    currentUser=currentUser,
-                    includeDiskUsage=True,
-                )
+            project = self._buildProjectOutFromPostgresqlRow(
+                mapper=mapper,
+                dbProj=dbProj,
+                currentUser=currentUser,
+                includeDiskUsage=False,
             )
+            measure = measures.get(int(dbProj["id"]))
+            project["diskUsage"] = formatSize(measure["totalBytes"]) if measure else None
+            project["diskUsageBytes"] = measure["totalBytes"] if measure else None
+            project["diskUsageMeasuredAt"] = measure["measuredAt"] if measure else None
+            result.append(project)
 
         return result
 
