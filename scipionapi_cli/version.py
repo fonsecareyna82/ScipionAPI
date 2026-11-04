@@ -24,4 +24,8 @@
 # *
 # ******************************************************************************
 __version__ = "4.0.0"
+# The Python of a new installation's conda environment (an existing one keeps its own)
+DEFAULT_PYTHON_VERSION = "3.11"
+SUPPORTED_PYTHON = ((3, 8), (3, 12))
+
 SCIPIONAPI_RELEASE_TAG = f"v{__version__}"

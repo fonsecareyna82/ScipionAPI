@@ -180,13 +180,17 @@ def _checkPythonVersion() -> StatusRow:
     # Check Python version used by the CLI.
     versionText = ".".join(str(part) for part in sys.version_info[:3])
 
-    if sys.version_info[:2] == (3, 8):
-        return _ok("Python", f"Python {versionText}")
+    from scipionapi_cli.version import DEFAULT_PYTHON_VERSION, SUPPORTED_PYTHON
 
-    if sys.version_info[:2] > (3, 8):
-        return _warn("Python", f"Python {versionText}; project target is Python 3.8")
-
-    return _fail("Python", f"Python {versionText}; Python 3.8 is required")
+    lowest, highest = SUPPORTED_PYTHON
+    current = sys.version_info[:2]
+    if current < lowest:
+        return _fail("Python", f"Python {versionText}; Python {lowest[0]}.{lowest[1]} or newer is required")
+    if current > highest:
+        return _warn("Python", f"Python {versionText}; tested up to Python {highest[0]}.{highest[1]}")
+    if ".".join(map(str, current)) != DEFAULT_PYTHON_VERSION:
+        return _ok("Python", f"Python {versionText} (supported; new installations use {DEFAULT_PYTHON_VERSION})")
+    return _ok("Python", f"Python {versionText}")
 
 
 def _checkScipionCoreVersions() -> StatusRow:

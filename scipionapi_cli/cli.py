@@ -45,7 +45,7 @@ from scipionapi_cli.release import (
 )
 from scipionapi_cli.uninstall import uninstallWebCommand
 from scipionapi_cli.update import updateCommand
-from scipionapi_cli.version import SCIPIONAPI_RELEASE_TAG
+from scipionapi_cli.version import DEFAULT_PYTHON_VERSION, SCIPIONAPI_RELEASE_TAG
 from scipionapi_cli.runtime import (
     VALID_ROLES,
     logsCommand,
@@ -179,7 +179,7 @@ def bootstrap(
         show_default=True,
     ),
     pythonVersion: str = typer.Option(
-        "3.8",
+        DEFAULT_PYTHON_VERSION,
         "--python",
         envvar="SCIPIONAPI_PYTHON_VERSION",
         help="Python version for the conda environment.",
@@ -337,7 +337,7 @@ def provision(
         show_default=True,
     ),
     pythonVersion: str = typer.Option(
-        "3.8",
+        DEFAULT_PYTHON_VERSION,
         "--python",
         envvar="SCIPIONAPI_PYTHON_VERSION",
         help="Python version for the conda environment.",

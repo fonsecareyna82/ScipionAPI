@@ -18,7 +18,8 @@ fi
 
 # configDefaults
 effectiveEnvName="${SCIPIONAPI_CONDA_ENV:-${SCIPIONAPI_ENV_NAME:-scipion4Web}}"
-pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.8}"
+# New installations' Python (scipionapi_cli/version.py DEFAULT_PYTHON_VERSION); an existing env keeps its own
+pythonVersion="${SCIPIONAPI_PYTHON_VERSION:-3.11}"
 
 javaPackage="${SCIPIONAPI_JAVA_PACKAGE:-openjdk=21}"
 minJavaVersion=21

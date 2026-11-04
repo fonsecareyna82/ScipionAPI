@@ -35,6 +35,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Optional, List, Any, Tuple
 
+from scipionapi_cli.version import DEFAULT_PYTHON_VERSION
 from scipionapi_cli.envfile import exportEnvToOs, readEnvFile, writeEnvFile
 from scipionapi_cli.install import _resolveScipionHome
 from scipionapi_cli.shell import resolveRepoRoot
@@ -285,7 +286,7 @@ def provisionCommand(
     apiPort: Optional[int] = None,
     runBootstrap: bool = True,
     envName: str = "scipion4Web",
-    pythonVersion: str = "3.8",
+    pythonVersion: str = DEFAULT_PYTHON_VERSION,
     installScipionCore: bool = True,
     scipionCorePackages: str = "scipion-pyworkflow scipion-em scipion-app",
 ) -> None:
