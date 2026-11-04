@@ -461,3 +461,79 @@ def test_TheRoomScreenNeedsItsTokenNotAUser(modules, monkeypatch):
     assert client.get("/facility/room").status_code == 404
     assert _client(modules, monkeypatch, ["facility.sessions"]).get("/facility/settings/room-screen").status_code == 403
     assert _client(modules, monkeypatch, ["facility.manage"]).get("/facility/settings/room-screen").json()["token"] == "good"
+
+
+class _BookingService:
+    calls = []
+    notified = []
+    BOOKING = {"id": 5, "resourceName": "Krios", "kind": "booking", "status": "requested",
+               "startsAt": "2026-12-01T08:00:00+00:00", "endsAt": "2026-12-02T08:00:00+00:00", "ownerId": 7,
+               "ownerEmail": "gaoxin@example.com", "sessionName": None}
+
+    def __init__(self, db):
+        pass
+
+    def listResources(self, user):
+        return [{"id": 1, "name": "Krios"}]
+
+    def saveResource(self, payload, resourceId=None):
+        self.calls.append(("resource", payload["name"]))
+        return dict(payload, id=resourceId or 1)
+
+    def getResource(self, resourceId):
+        return {"id": resourceId, "name": "Krios", "unit": "session", "minHours": None, "maxHours": None,
+                "dayStart": "09:00", "active": True, "microscopeId": None, "requiresAuthorization": False}
+
+    def listBookings(self, user, start, end, resourceIds, statuses):
+        self.calls.append(("list", start, end, resourceIds, statuses))
+        return []
+
+    def create(self, payload, user):
+        self.calls.append(("create", payload))
+        return dict(self.BOOKING, ownerId=payload.get("ownerId", user["id"]))
+
+    def decide(self, bookingId, payload, user):
+        self.calls.append(("decide", payload))
+        return dict(self.BOOKING, status="confirmed")
+
+    def notify(self, booking, what):
+        self.notified.append(what)
+
+
+@pytest.fixture
+def bookingClient(modules, monkeypatch):
+    router, _ = modules
+    _BookingService.calls, _BookingService.notified = [], []
+    monkeypatch.setattr(router, "FacilityBookingService", _BookingService)
+    return lambda permissions, mode="1": _client(modules, monkeypatch, permissions, mode=mode)
+
+
+def test_EveryUserAsksForTimeAndOnlyTheFacilityDecides(bookingClient):
+    user = bookingClient([])
+
+    assert user.get("/facility/resources").json() == [{"id": 1, "name": "Krios"}]
+    asked = user.post("/facility/bookings", json={"resourceId": 1, "startsAt": "2026-12-01T09:00:00+01:00",
+                                                  "endsAt": "2026-12-02T09:00:00+01:00"})
+    assert asked.status_code == 201
+    # Only what was sent goes to the service: whom a booking is for is not said, so it is the user's
+    assert _BookingService.calls[-1] == ("create", {"resourceId": 1, "startsAt": "2026-12-01T09:00:00+01:00",
+                                                    "endsAt": "2026-12-02T09:00:00+01:00"})
+    user.get("/facility/bookings?start=2026-12-01T00:00:00Z&resourceId=1&resourceId=2&status=confirmed")
+    assert _BookingService.calls[-1] == ("list", "2026-12-01T00:00:00Z", None, [1, 2], ["confirmed"])
+    assert user.post("/facility/bookings/5/decision", json={"action": "confirm"}).status_code == 403
+    assert user.post("/facility/resources", json={"name": "GP2"}).status_code == 403
+    assert user.events == ["facility.bookingRequested"]
+    assert _BookingService.notified == []
+
+    technician = bookingClient(["facility.sessions"])
+    assert technician.post("/facility/bookings", json={"resourceId": 1, "ownerId": 7, "startsAt": "a",
+                                                       "endsAt": "b"}).status_code == 201
+    assert technician.post("/facility/bookings/5/decision", json={"action": "confirm", "reason": "Fits"}).json()[
+        "status"] == "confirmed"
+    assert technician.events == ["facility.bookingCreated", "facility.bookingConfirmed"]
+    assert _BookingService.notified == ["was booked for you by the facility", "is confirmed"]
+
+    manager = bookingClient(["facility.manage"])
+    assert manager.post("/facility/resources", json={"name": "GP2", "unit": "hour"}).status_code == 201
+    assert manager.events == ["facility.resourceCreated"]
+    assert bookingClient(["facility.manage"], mode="0").get("/facility/bookings").status_code == 404

@@ -21,6 +21,7 @@ from app.backend.api.services.facility_settings_service import FacilitySettingsS
 from app.backend.api.services.facility_alerts import FacilityAlerts
 from app.backend.api.services.facility_mail import FacilityMail
 from app.backend.api.services.facility_room import FacilityRoom
+from app.backend.api.services.facility_booking_service import FacilityBookingService, isBookingStaff
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -593,3 +594,190 @@ def turnOffRoomScreen(mapper: PostgresqlFlatMapper = Depends(getMapper),
     link = FacilityRoom(mapper.db).turnOff(currentUser.get("id"))
     recordAudit(mapper, currentUser, "facility.settingsUpdated", "facility", None, "room screen", {"link": "off"})
     return link
+
+
+# Bookings ------------------------------------------------------------------------------------------
+class ResourcePayload(BaseModel):
+    name: str
+    microscopeId: Optional[int] = None
+    color: Optional[str] = ""
+    unit: str = "session"
+    minHours: Optional[float] = None
+    maxHours: Optional[float] = None
+    dayStart: str = "09:00"
+    requiresAuthorization: bool = False
+    active: bool = True
+    notes: Optional[str] = ""
+
+
+class BookingPayload(BaseModel):
+    resourceId: Optional[int] = None
+    kind: Optional[str] = None
+    # With their time zone: 2026-11-05T09:00:00+01:00
+    startsAt: Optional[str] = None
+    endsAt: Optional[str] = None
+    title: Optional[str] = None
+    ownerId: Optional[int] = None
+    groupId: Optional[int] = None
+    operatorId: Optional[int] = None
+    technique: Optional[str] = None
+    priority: Optional[int] = None
+    justification: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class BookingDecisionPayload(BaseModel):
+    # confirm, propose (another time: proposedStartsAt/proposedEndsAt) or reject
+    action: str
+    reason: Optional[str] = ""
+    proposedStartsAt: Optional[str] = None
+    proposedEndsAt: Optional[str] = None
+    priority: Optional[int] = None
+
+
+class BookingAnswerPayload(BaseModel):
+    accept: bool
+
+
+class BookingCancelPayload(BaseModel):
+    reason: Optional[str] = ""
+
+
+def _bookings(mapper: PostgresqlFlatMapper) -> FacilityBookingService:
+    return FacilityBookingService(mapper.db)
+
+
+def _bookingSummary(booking: Dict[str, Any]) -> Dict[str, Any]:
+    """What the audit log keeps of a booking."""
+    return {"resource": booking["resourceName"], "kind": booking["kind"], "status": booking["status"],
+            "startsAt": str(booking["startsAt"]), "endsAt": str(booking["endsAt"]),
+            "owner": booking.get("ownerEmail"), "reason": booking.get("decisionReason") or None,
+            "session": booking.get("sessionName")}
+
+
+def _bookingName(booking: Dict[str, Any]) -> str:
+    return "%s, %s" % (booking["resourceName"], str(booking["startsAt"])[:16])
+
+
+@router.get("/resources", dependencies=[Depends(requireFacilityMode)])
+def listResources(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> List[Dict[str, Any]]:
+    """What can be booked: every resource for the facility, the ones in use for a user."""
+    return _bookings(mapper).listResources(currentUser)
+
+
+@router.post("/resources", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+def createResource(payload: ResourcePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    resource = _bookings(mapper).saveResource(payload.dict())
+    recordAudit(mapper, currentUser, "facility.resourceCreated", "resource", resource["id"], resource["name"],
+                {"unit": resource["unit"], "minHours": resource["minHours"], "maxHours": resource["maxHours"]})
+    return resource
+
+
+@router.put("/resources/{resourceId}", dependencies=[Depends(requireFacilityMode)])
+def updateResource(resourceId: int, payload: ResourcePayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
+    service = _bookings(mapper)
+    before = service.getResource(resourceId)
+    resource = service.saveResource(payload.dict(), resourceId)
+    changes = {key: resource[key] for key in ("name", "unit", "minHours", "maxHours", "dayStart", "active",
+                                              "microscopeId", "requiresAuthorization") if before[key] != resource[key]}
+    recordAudit(mapper, currentUser, "facility.resourceUpdated", "resource", resourceId, resource["name"], changes)
+    return resource
+
+
+@router.delete("/resources/{resourceId}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(requireFacilityMode)])
+def deleteResource(resourceId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(requirePermission("facility.manage"))) -> Response:
+    resource = _bookings(mapper).deleteResource(resourceId)
+    recordAudit(mapper, currentUser, "facility.resourceDeleted", "resource", resourceId, resource["name"])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/bookings", dependencies=[Depends(requireFacilityMode)])
+def listBookings(start: Optional[str] = None, end: Optional[str] = None,
+                 resourceId: Optional[List[int]] = Query(None), status_: Optional[List[str]] = Query(None, alias="status"),
+                 mapper: PostgresqlFlatMapper = Depends(getMapper),
+                 currentUser: dict = Depends(getCurrentUser)) -> List[Dict[str, Any]]:
+    """The bookings in a time (the calendar): the facility sees them all; a user, theirs and when the others are."""
+    return _bookings(mapper).listBookings(currentUser, start, end, resourceId, status_)
+
+
+@router.get("/my-bookings", dependencies=[Depends(requireFacilityMode)])
+def myBookings(mapper: PostgresqlFlatMapper = Depends(getMapper),
+               currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    return _bookings(mapper).myBookings(currentUser)
+
+
+@router.get("/bookings/{bookingId}", dependencies=[Depends(requireFacilityMode)])
+def getBooking(bookingId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+               currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    return _bookings(mapper).bookingFor(bookingId, currentUser)
+
+
+@router.post("/bookings", status_code=status.HTTP_201_CREATED, dependencies=[Depends(requireFacilityMode)])
+def createBooking(payload: BookingPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    """A user asks for time; the facility books (or blocks) at once."""
+    service = _bookings(mapper)
+    booking = service.create(payload.dict(exclude_unset=True), currentUser)
+    action = "facility.bookingCreated" if isBookingStaff(currentUser) else "facility.bookingRequested"
+    recordAudit(mapper, currentUser, action, "booking", booking["id"], _bookingName(booking), _bookingSummary(booking))
+    if booking.get("ownerId") is not None and int(booking["ownerId"]) != int(currentUser["id"]):
+        service.notify(booking, "was booked for you by the facility")
+    return booking
+
+
+@router.put("/bookings/{bookingId}", dependencies=[Depends(requireFacilityMode)])
+def updateBooking(bookingId: int, payload: BookingPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    service = _bookings(mapper)
+    before = service.getBooking(bookingId)
+    booking = service.update(bookingId, payload.dict(exclude_unset=True), currentUser)
+    changes = {key: str(booking[key]) for key in ("resourceName", "startsAt", "endsAt", "kind", "ownerEmail",
+                                                  "groupName", "priority") if booking.get(key) != before.get(key)}
+    recordAudit(mapper, currentUser, "facility.bookingUpdated", "booking", bookingId, _bookingName(booking), changes)
+    moved = any(key in changes for key in ("resourceName", "startsAt", "endsAt"))
+    if moved and booking["status"] == "confirmed" and booking.get("ownerId") is not None \
+            and int(booking["ownerId"]) != int(currentUser["id"]):
+        service.notify(booking, "was moved by the facility")
+    return booking
+
+
+@router.post("/bookings/{bookingId}/decision", dependencies=[Depends(requireFacilityMode)])
+def decideBooking(bookingId: int, payload: BookingDecisionPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """The facility confirms a request, offers another time, or rejects it."""
+    service = _bookings(mapper)
+    booking = service.decide(bookingId, payload.dict(exclude_unset=True), currentUser)
+    recordAudit(mapper, currentUser, "facility.booking" + {"confirm": "Confirmed", "propose": "Alternative",
+                                                           "reject": "Rejected"}[payload.action],
+                "booking", bookingId, _bookingName(booking), _bookingSummary(booking))
+    service.notify(booking, {"confirm": "is confirmed", "propose": "cannot be at that time",
+                             "reject": "was not accepted"}[payload.action])
+    return booking
+
+
+@router.post("/bookings/{bookingId}/answer", dependencies=[Depends(requireFacilityMode)])
+def answerBooking(bookingId: int, payload: BookingAnswerPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    """The user takes, or not, the other time the facility offered."""
+    booking = _bookings(mapper).answer(bookingId, payload.accept, currentUser)
+    recordAudit(mapper, currentUser, "facility.booking" + ("AlternativeAccepted" if payload.accept
+                                                           else "AlternativeDeclined"),
+                "booking", bookingId, _bookingName(booking), _bookingSummary(booking))
+    return booking
+
+
+@router.post("/bookings/{bookingId}/cancel", dependencies=[Depends(requireFacilityMode)])
+def cancelBooking(bookingId: int, payload: BookingCancelPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    service = _bookings(mapper)
+    booking = service.cancel(bookingId, payload.reason or "", currentUser)
+    recordAudit(mapper, currentUser, "facility.bookingCancelled", "booking", bookingId, _bookingName(booking),
+                _bookingSummary(booking))
+    if booking.get("ownerId") is not None and int(booking["ownerId"]) != int(currentUser["id"]):
+        service.notify(booking, "was cancelled by the facility")
+    return booking

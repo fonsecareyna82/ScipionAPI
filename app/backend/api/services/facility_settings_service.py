@@ -33,6 +33,8 @@ DEFAULTS = {
     "ctfMinDefocus": 5000.0,
     "ctfMaxDefocus": 40000.0,
     "ctfMaxResolution": 8.0,
+    # Where the facility is: the day a booking starts on (its session's day) is the day there
+    "timezone": "Europe/Madrid",
 }
 TEXT_LIMIT = 5000
 MAX_RETENTION_DAYS = 36500
@@ -50,6 +52,7 @@ RULES = {
     "ctfMinDefocus": ("number", 0, 1e6),
     "ctfMaxDefocus": ("number", 1, 1e6),
     "ctfMaxResolution": ("number", 0.5, 100),
+    "timezone": ("text", 64),
 }
 
 
@@ -109,6 +112,11 @@ class FacilitySettingsService:
             if not values["sessionNamePattern"]:
                 raise _badRequest("The session name pattern is empty")
             self.preview({"sessionNamePattern": values["sessionNamePattern"]})
+        if "timezone" in values:
+            from app.backend.mapper.facility_booking_mapper import FacilityBookingPostgresqlMapper
+
+            if not FacilityBookingPostgresqlMapper(self.mapper.db).timezoneExists(values["timezone"]):
+                raise _badRequest("Unknown time zone: %s (written as Europe/Madrid)" % values["timezone"])
         self.mapper.saveSettings(values, userId)
         return self.getSettings()
 
