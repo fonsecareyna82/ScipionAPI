@@ -22,6 +22,7 @@ from app.backend.api.services.facility_alerts import FacilityAlerts
 from app.backend.api.services.facility_mail import FacilityMail
 from app.backend.api.services.facility_room import FacilityRoom
 from app.backend.api.services.facility_booking_service import FacilityBookingService, isBookingStaff
+from app.backend.api.services import facility_navigation as navigation
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
@@ -388,6 +389,9 @@ def updateSession(sessionId: int, payload: SessionPayload, mapper: PostgresqlFla
     if before["name"] != session["name"]:
         changes["name"] = {"from": before["name"], "to": session["name"]}
     recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"], changes)
+    if before["status"] != "finished" and session["status"] == "finished":
+        # A tomography session that finishes gets the navigation report of each DATA (when tomo5-mapper is there)
+        navigation.reportsWhenFinished(session)
     return session
 
 
@@ -781,3 +785,50 @@ def cancelBooking(bookingId: int, payload: BookingCancelPayload, mapper: Postgre
     if booking.get("ownerId") is not None and int(booking["ownerId"]) != int(currentUser["id"]):
         service.notify(booking, "was cancelled by the facility")
     return booking
+
+
+# Navigation reports (tomo5-mapper) ------------------------------------------------------------------
+def _datasetOfSession(mapper: PostgresqlFlatMapper, datasetId: int, currentUser: dict):
+    """A DATA and its session, for the facility's staff and for the session's user and its group's PI."""
+    service = FacilitySessionService(mapper.db)
+    sessionId = service.mapper.sessionIdOf("dataset", datasetId)
+    if sessionId is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such DATA")
+    session = service.getSession(sessionId)
+    if not isFacilityStaff(currentUser):
+        own = session.get("userId") is not None and int(session["userId"]) == int(currentUser["id"])
+        led = session.get("groupId") is not None and int(session["groupId"]) in service.mapper.piGroupIds(
+            int(currentUser["id"]))
+        if not (own or led):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such DATA")
+    dataset = next(item for item in session["datasets"] if int(item["id"]) == int(datasetId))
+    return session, dataset
+
+
+@router.get("/datasets/{datasetId}/navigation", dependencies=[Depends(requireFacilityMode)])
+def getNavigation(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                  currentUser: dict = Depends(getCurrentUser)) -> Dict[str, Any]:
+    session, dataset = _datasetOfSession(mapper, datasetId, currentUser)
+    return navigation.navigationOf(session, dataset)
+
+
+@router.post("/datasets/{datasetId}/navigation", dependencies=[Depends(requireFacilityMode)])
+def makeNavigation(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                   currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Make (again) a tomography DATA's navigation report, in the background."""
+    session, dataset = _datasetOfSession(mapper, datasetId, currentUser)
+    made = navigation.startReport(session, dataset)
+    recordAudit(mapper, currentUser, "facility.navigationReportRequested", "session", session["id"], session["name"],
+                {"folder": dataset["folder"]})
+    return made
+
+
+@router.get("/datasets/{datasetId}/navigation/report", dependencies=[Depends(requireFacilityMode)])
+def getNavigationReport(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                        currentUser: dict = Depends(getCurrentUser)) -> Response:
+    session, dataset = _datasetOfSession(mapper, datasetId, currentUser)
+    report = navigation.reportPath(session, dataset)
+    return Response(content=report.read_bytes(), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "private, no-store",
+                             "Content-Disposition": 'inline; filename="%s"' % report.name})
+

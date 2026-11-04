@@ -97,6 +97,11 @@ SCIPIONWEB_VARIABLES = (
     ("SCIPIONWEB_FACILITY_MODE", "0",
      "1 when this installation runs a facility: microscopes, acquisition sessions and their processing, "
      "and the facility menu. 0 leaves ScipionWeb as it always was."),
+    ("SCIPIONWEB_TOMO5_MAPPER", "",
+     "The command of tomo5-mapper (e.g. /opt/tomo5-mapper/.venv/bin/tomo5-mapper; Python 3.9 or newer), which makes "
+     "the navigation report of each DATA of a tomography session. Empty: no reports."),
+    ("SCIPIONWEB_FACILITY_REPORTS_DIR", "",
+     "Where the facility's navigation reports are kept. Empty: SCIPION_HOME/facility/navigation."),
     ("SCIPIONWEB_UPLOAD_MAX_GB", "10",
      "Largest file, in GB, a user may upload from their computer into a project's Uploads folder. "
      "0 limits nothing."),

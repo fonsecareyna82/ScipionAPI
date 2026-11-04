@@ -30,7 +30,7 @@ SESSION_IMAGE_OWNERS = ("session", "dataset")
 USER_SESSION_FIELDS = ("id", "name", "microscopeName", "technique", "status", "groupName", "userName", "userEmail",
                        "bookingRef", "scheduledOn", "startedAt", "finishedAt", "userNotes", "images")
 USER_DATASET_FIELDS = ("id", "kind", "number", "folder", "grid", "detectorName", "watch", "movieCount", "movieBytes",
-                       "firstMovieAt", "lastMovieAt", "acquisition", "projectId", "images")
+                       "firstMovieAt", "lastMovieAt", "acquisition", "projectId", "images", "navigation")
 USER_SAMPLE_FIELDS = ("id", "code", "description", "groupName", "ownerName", "ownerEmail", "boxes", "images",
                       "createdAt")
 # A folder name EPU and every file system take
@@ -119,6 +119,11 @@ class FacilitySessionService:
         stall = self._stallMinutes()
         for dataset in session.get("datasets") or []:
             dataset["watch"] = watchState(session, dataset, stall)
+            if session.get("technique") == "tomo" and dataset["kind"] == "data":
+                # Where its navigation report is (tomo5-mapper), read from the facility's reports folder
+                from app.backend.api.services.facility_navigation import navigationOf
+
+                dataset["navigation"] = navigationOf(session, dataset)
         return session
 
     def listSessions(self, statuses: Optional[List[str]] = None, text: str = "") -> List[Dict[str, Any]]:
@@ -323,6 +328,9 @@ class FacilitySessionService:
         for dataset in session.get("datasets") or []:
             shown = {key: dataset[key] for key in USER_DATASET_FIELDS if key in dataset}
             shown["processing"] = {"state": dataset["processing"]["state"]} if dataset.get("processing") else None
+            if shown.get("navigation"):
+                # Whether its report is there, without the reason of a failure (it names the server's folders)
+                shown["navigation"] = {key: shown["navigation"][key] for key in ("state", "finishedAt", "sizeBytes")}
             seen["datasets"].append(shown)
         finished = session.get("finishedAt")
         for key, days in (("rawKeptUntil", settings["rawRetentionDays"]),

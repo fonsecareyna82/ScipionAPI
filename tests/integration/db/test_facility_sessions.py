@@ -878,3 +878,35 @@ def test_TheRoomScreenShowsEachMicroscopesStateToWhoHasItsLinkOnly(facility, own
         db.execute('DELETE FROM facility_sessions WHERE "microscopeId" = %s', (microscope["id"],))
         db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
         db.execute("DELETE FROM users WHERE id = %s", (pi,))
+
+
+def test_ADatasNavigationReportIsForTheStaffAndTheSessionsUserOnly(facility, owner, tmp_path, monkeypatch):
+    import sys
+
+    from app.backend.api.routers import facility_router as routes
+    from app.backend.api.services import facility_navigation as navigation
+
+    sessions, microscope, sample = facility
+    flat, userId = owner
+    db = sessions.mapper.db
+    program = tmp_path / "stand_in.py"
+    program.write_text("import os, sys\nopen(os.path.join(sys.argv[3], 'S_report.html'), 'w').write('<html/>')\n")
+    monkeypatch.setenv(navigation.COMMAND_VARIABLE, "%s %s" % (sys.executable, program))
+    monkeypatch.setenv(navigation.REPORTS_VARIABLE, str(tmp_path / "reports"))
+    monkeypatch.setattr(routes, "recordAudit", lambda *args, **kwargs: None)
+    FacilityService(db).saveMicroscope(dict(microscope, offloadPath=str(tmp_path)), microscopeId=microscope["id"])
+    session = sessions.saveSession(_multigrid(microscope, sample, technique="tomo", userId=userId), userId=userId)
+    data = session["datasets"][1]
+    (tmp_path / data["folder"]).mkdir()
+    user, stranger = {"id": userId, "permissions": []}, {"id": userId + 100000, "permissions": []}
+    staff = {"id": userId, "permissions": ["facility.sessions"]}
+    monkeypatch.setattr(navigation, "startReport",
+                        lambda session, dataset: navigation._make(session, dataset, navigation.command())
+                        or navigation.navigationOf(session, dataset))
+
+    assert routes.getNavigation(data["id"], flat, user)["state"] == "none"
+    with pytest.raises(HTTPException) as error:
+        routes.getNavigation(data["id"], flat, stranger)
+    assert error.value.status_code == 404
+    assert routes.makeNavigation(data["id"], flat, staff)["state"] == "done"
+    assert routes.getNavigationReport(data["id"], flat, user).body == b"<html/>"
