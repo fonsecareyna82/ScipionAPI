@@ -33,6 +33,10 @@ CREATE_CLI_ALIAS="${SCIPIONWEB_CREATE_ALIAS:-}"
 CLI_ALIAS_CREATED=0
 CHECK_ONLY=0
 NON_INTERACTIVE=0
+JOIN_DIR=""
+JOIN_QUEUE=""
+JOIN_CONCURRENCY=""
+JOIN_HOST=""
 INSTALL_DIR_EXPLICIT=0
 
 DOWNLOAD_TOOL=""
@@ -77,6 +81,14 @@ Options:
   --create-alias       Add a managed 'scipionapi' alias to ~/.bashrc.
   --no-create-alias    Do not create the shell alias.
   --check-only         Only validate system prerequisites and exit.
+  --join PATH          Make this machine a compute node of the installation at PATH (the main
+                       node's, on a shared disk at the same path): nothing is installed, the node
+                       is checked and its protocol worker started ('scipionapi node join').
+                       Run 'scipionapi multinode enable --network <CIDR>' on the main node first.
+  --queue NAME         With --join: the queue the node takes protocols from. Default: protocols
+  --concurrency N      With --join: protocols at a time. Default: its GPUs, or 4
+  --host NAME          With --join and --queue: the Scipion host (picked in a protocol's form)
+                       whose protocols go to this node's queue, e.g. gpu-nodes
   --non-interactive    Do not prompt for missing values. Password must be supplied
                        through SCIPIONWEB_ADMIN_PASSWORD.
   -h, --help           Show this help and exit.
@@ -99,6 +111,8 @@ Examples:
   ./install.sh --check-only
   ./install.sh --install-dir /data/scipionweb --version v4.0.0
   ./install.sh --local-dir /media/usb/scipionweb-v4.0.0   # archives copied there, no download
+  ./install.sh --join /shared/scipionweb                                         # a compute node
+  ./install.sh --join /shared/scipionweb --queue protocols-gpu --host gpu-nodes  # a GPU node
 
 For unattended installation:
   SCIPIONWEB_ADMIN_PASSWORD='secret' ./install.sh \\
@@ -151,6 +165,10 @@ while [[ $# -gt 0 ]]; do
     --create-alias) CREATE_CLI_ALIAS="1"; shift ;;
     --no-create-alias) CREATE_CLI_ALIAS="0"; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
+    --join) need_arg "$1" "${2:-}"; JOIN_DIR="$2"; shift 2 ;;
+    --queue) need_arg "$1" "${2:-}"; JOIN_QUEUE="$2"; shift 2 ;;
+    --concurrency) need_arg "$1" "${2:-}"; JOIN_CONCURRENCY="$2"; shift 2 ;;
+    --host) need_arg "$1" "${2:-}"; JOIN_HOST="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) print_error "Unknown option: $1"; usage >&2; exit 2 ;;
@@ -857,7 +875,41 @@ SUMMARY
 fi
 }
 
+# A compute node installs nothing: it uses the main node's installation, on the shared disk
+join_node() {
+  local cli="${JOIN_DIR%/}/scripts/scipionapi"
+  local join_args=(node join)
+
+  print_step "Joining the installation at ${JOIN_DIR} as a compute node"
+  if [[ ${EUID} -eq 0 ]]; then
+    print_error "Run it as the installation's user (the same one, with the same uid, as on the main node)."
+    exit 1
+  fi
+  if [[ ! -x "${cli}" || ! -f "${JOIN_DIR%/}/pyproject.toml" ]]; then
+    print_error "No ScipionWeb installation at ${JOIN_DIR}."
+    print_error "Mount the main node's installation folder here, at the same path, and run it again."
+    exit 1
+  fi
+  if ! resolve_conda; then
+    print_error "conda was not found: the node uses the main node's conda environment, on the shared disk."
+    print_error "Set SCIPIONAPI_CONDA_EXE=/path/to/that/conda and run it again."
+    exit 1
+  fi
+  print_ok "conda (${CONDA_EXE})"
+  if [[ -n "${JOIN_QUEUE}" ]]; then join_args+=(--queue "${JOIN_QUEUE}"); fi
+  if [[ -n "${JOIN_CONCURRENCY}" ]]; then join_args+=(--concurrency "${JOIN_CONCURRENCY}"); fi
+  if [[ -n "${JOIN_HOST}" ]]; then join_args+=(--host "${JOIN_HOST}"); fi
+
+  export SCIPIONAPI_CONDA_EXE="${CONDA_EXE}"
+  (cd "${JOIN_DIR}" && "${cli}" "${join_args[@]}")
+}
+
 main() {
+  if [[ -n "${JOIN_DIR}" ]]; then
+    print_header
+    join_node
+    exit 0
+  fi
   if [[ -n "${SCIPIONWEB_INSTALL_DIR:-}" ]]; then INSTALL_DIR_EXPLICIT=1; fi
   normalize_base_url
   print_header

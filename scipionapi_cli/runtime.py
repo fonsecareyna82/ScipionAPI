@@ -41,6 +41,7 @@ from rich.text import Text
 
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, exportEnvToOs
+from scipionapi_cli import nodes
 
 
 console = Console()
@@ -63,16 +64,19 @@ def normalizeRole(role: Optional[str]) -> str:
     return value
 
 
+def _nodeRole(role: str) -> str:
+    """On a compute node, the default role is the node's own (its protocol worker, never the API)."""
+    return nodes.roleOf(role, _resolveScipionHome(resolveRepoRoot()))
+
+
 def _roleIncludes(role: str, component: str) -> bool:
     # roleIncludesComponent
     return role in ("all", component)
 
 
 def _pidDir(repoRoot: Path) -> Path:
-    # ensurePidDir
-    runDir = repoRoot / ".run"
-    runDir.mkdir(exist_ok=True)
-    return runDir
+    # ensurePidDir: .run on the main node, .run/nodes/<node> on a compute node (the folder may be shared)
+    return nodes.runDirOf(repoRoot, _resolveScipionHome(repoRoot))
 
 
 def _isProcessAlive(pid: int) -> bool:
@@ -260,7 +264,8 @@ def _loadEnv(repoRoot: Path) -> Dict[str, str]:
     # loadEnvFromScipionHome
     envPath = _resolveEnvPath(repoRoot)
     exportEnvToOs(envPath)
-    return readEnvFile(envPath)
+    # On a compute node, its own profile over the shared .env
+    return nodes.applyProfile(readEnvFile(envPath), _resolveScipionHome(repoRoot))
 
 
 def _normalizeDisplayHost(host: str) -> str:
@@ -899,7 +904,7 @@ def restartWorkerProcess(
 
 def startCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # startApiAndWorkers
-    role = normalizeRole(role)
+    role = _nodeRole(normalizeRole(role))
 
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
@@ -1130,7 +1135,7 @@ def _stopResultDetail(status: str, pid: Optional[int]) -> str:
 
 def stopCommand(role: str = DEFAULT_ROLE) -> None:
     # stopApiAndWorkers
-    role = normalizeRole(role)
+    role = _nodeRole(normalizeRole(role))
 
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
@@ -1169,7 +1174,7 @@ def stopCommand(role: str = DEFAULT_ROLE) -> None:
 
 def restartCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # restartApiAndWorker
-    role = normalizeRole(role)
+    role = _nodeRole(normalizeRole(role))
 
     _printPanel("Restarting Scipion API services")
     _printInfo("Stopping running processes")
@@ -1182,7 +1187,7 @@ def restartCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> Non
 
 def statusCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     # statusApiAndWorkers
-    role = normalizeRole(role)
+    role = _nodeRole(normalizeRole(role))
 
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)
@@ -1311,7 +1316,7 @@ def statusCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None
 
 def logsCommand(role: str = DEFAULT_ROLE) -> None:
     # tailLogs
-    role = normalizeRole(role)
+    role = _nodeRole(normalizeRole(role))
 
     repoRoot = resolveRepoRoot()
     env = _loadEnv(repoRoot)

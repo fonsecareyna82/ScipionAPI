@@ -39,6 +39,43 @@ dependencies (`pytest`, `pytest-asyncio`, `httpx`) live in `[project.optional-de
 the editable project with test dependencies. New install/bootstrap/update
 code must install from `pyproject.toml`, not maintain a second dependency list.
 
+## Several machines (multi-node)
+
+**Layout.**
+- The main node runs the API, PostgreSQL, Valkey, the plugin worker and, optionally, a protocol worker. A compute node runs only a protocol worker on its queue.
+- Every node sees the same installation at the same paths, on a shared disk: the ScipionAPI folder, `scipion_home` (`.env`, `software`, projects, logs) and the conda environment. Stored paths are absolute.
+- Plugins installed from the web reach every node through the shared `software/` and environment.
+- Viewers, wizards, summaries, the facility watcher and the disk measurer run in the API, on the main node.
+
+**Main node: `scipionapi multinode enable --network <CIDR> [--host NAME] [--dry-run] [--yes]`** (`scipionapi_cli/multinode.py`).
+- When PostgreSQL and Valkey run on this machine:
+  - PostgreSQL gets `listen_addresses='*'` (`ALTER SYSTEM`) and one marked `pg_hba.conf` line for the installation's user and database from that network, using the server's `password_encryption`;
+  - Valkey's `valkey.conf` gets `bind 0.0.0.0 -::1` and a `requirepass` (kept if it had one; the old lines are commented out);
+  - both are restarted with systemctl.
+- `ufw`, when active, lets the network reach ports 5432 and 6379.
+- The `.env` names the machine instead of localhost in `POSTGRES_HOST`, `DATABASE_URL`, `BROKER_URL` and `RESULT_BACKEND_URL` (the latter two with Valkey's password). It also gets `SCIPIONAPI_DEPLOYMENT_MODE=multi-node`, `SCIPIONAPI_MAIN_NODE` and `SCIPIONAPI_MULTINODE_NETWORK`.
+- Then the services restart. Every file is copied first to `scipion_home/multinode/backup-<time>/`.
+- All system commands go through `multinode.Runner` (faked in `tests/unit/cli/test_multinode.py`). Never run `enable` on a developer machine to try it: use `--dry-run`.
+
+**Compute node: `scipionapi node join [--queue Q] [--concurrency N]`** (or `install.sh --join <installation> --queue Q`; `scipionapi_cli/nodes.py`, `nodes_cli.py`).
+- It checks, from this machine:
+  - the installation is multi-node and this is not its main node;
+  - the installation folder, `SCIPION_HOME` and `PROJECTS_PATH` exist and are writable;
+  - the same uid owns `SCIPION_HOME`;
+  - the database and Valkey are reachable;
+  - how many GPUs there are (information only).
+- Then it writes the node's profile `scipion_home/nodes/<short hostname>.env` (`SCIPIONAPI_NODE_ROLE=protocols`, `PROTOCOLS_CELERY_QUEUE`, `PROTOCOL_WORKER_CONCURRENCY` (its GPUs or 4), `LOGS_PATH=logs/nodes/<node>`), starts the protocol worker and waits for it to answer Celery.
+- `--host H` (with `--queue`) also routes the Scipion host H to that queue (`celery_queue_routing.json`), copying `[localhost]` of `hosts.conf` as `[H]` when it does not exist: users then pick H in a protocol's form to run it on those nodes.
+- `node leave` stops the worker and removes the profile. `node list` shows the profiles and the workers answering (`celeryApp.control.inspect().active_queues()`).
+
+**How the commands use the profile.**
+- `runtime._loadEnv` and doctor read the profile over the shared `.env` and export it, so the workers inherit it (`bootstrapEnv` loads the `.env` without overriding).
+- PID files go to `.run/nodes/<node>/` (`nodes.runDirOf`). With one shared `.run`, the main node's API and its web worker control would take a node's PID for one of theirs.
+- On a node the default role `all` means the node's role (`nodes.roleOf`), so `scipionapi start` there never starts the API.
+- Database connections are made with `PostgresqlDb.fromEnvironment()`, which honors `POSTGRES_HOST`/`POSTGRES_PORT`. Before, `database._createMapper` and `protocol_steps_sync` always connected to localhost.
+- Which protocols go to which queue: `scipion_home/config/celery_queue_routing.json` (Scipion host → queue).
+- After `scipionapi update` on the shared installation, restart each node's worker (`scipionapi restart` on the node).
+
 ## Testing
 
 - CI already exists: `.github/workflows/tests.yml`, matrix Python 3.8–3.12 (3.8 and 3.9 on ubuntu-24.04: setup-python has no builds of them for later Ubuntu), `pytest.ini` with `testpaths = tests`, using `actions/checkout@v7` and `actions/setup-python@v7`.

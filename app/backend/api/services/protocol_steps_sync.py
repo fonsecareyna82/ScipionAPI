@@ -141,12 +141,7 @@ def _serializeStep(
 
 
 def _buildMapper() -> PostgresqlFlatMapper:
-    db = PostgresqlDb(
-        dbName=os.environ["DATABASE_NAME"],
-        user=os.environ["DATABASE_USER"],
-        password=os.environ["DATABASE_PASS"],
-    )
-    return PostgresqlFlatMapper(db)
+    return PostgresqlFlatMapper(PostgresqlDb.fromEnvironment())
 
 
 def syncProtocolStepsEvent(protocol, event: str, steps: List[Any], step: Any = None) -> None:

@@ -23,6 +23,7 @@
 # postgresql.py
 import io
 import json
+import os
 import threading
 import time
 from datetime import date, datetime
@@ -203,6 +204,21 @@ class PostgresqlDb:
         # Preserve the previous fail-fast behavior: creating the
         # mapper validates the main-thread connection immediately.
         _ = self.cursor
+
+    @classmethod
+    def fromEnvironment(cls) -> "PostgresqlDb":
+        """The installation's database, as its .env (exported to the process) names it.
+
+        The server is POSTGRES_HOST:POSTGRES_PORT (this machine by default): on a node of a multi-node
+        installation it is the main node's, not the node's own.
+        """
+        return cls(
+            dbName=os.environ["DATABASE_NAME"],
+            user=os.environ["DATABASE_USER"],
+            password=os.environ["DATABASE_PASS"],
+            host=(os.environ.get("POSTGRES_HOST") or "").strip() or "localhost",
+            port=int((os.environ.get("POSTGRES_PORT") or "").strip() or 5432),
+        )
 
     @property
     def conn(self):

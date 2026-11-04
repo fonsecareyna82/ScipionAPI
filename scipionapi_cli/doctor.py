@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from scipionapi_cli.envfile import exportEnvToOs, readEnvFile
+from scipionapi_cli import nodes
 from scipionapi_cli.shell import resolveRepoRoot, runCmd
 from configparser import RawConfigParser
 from scipionapi_cli.bootstrap import _parseJavaMajorVersion
@@ -167,7 +168,8 @@ def _loadDoctorEnv(repoRoot: Path) -> Tuple[Path, Path, Dict[str, str]]:
 
     if envPath.exists():
         exportEnvToOs(envPath)
-        env = readEnvFile(envPath)
+        # On a compute node, its own profile over the shared .env
+        env = nodes.applyProfile(readEnvFile(envPath), scipionHome)
     else:
         env = {}
 
@@ -1353,9 +1355,14 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     else:
         rows.append(_warn("API health", "Skipped because .env file is missing"))
 
-    runDir = repoRoot / ".run"
-    rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
-    rows.append(_checkPidFile(runDir / "worker.pid", "Plugin worker PID"))
+    runDir = nodes.runDirOf(repoRoot, scipionHome)
+    if nodes.readProfile(scipionHome):
+        # A compute node runs only its protocol worker
+        rows.append(_ok("Node", "compute node %s · queue %s" % (
+            nodes.nodeName(), env.get("PROTOCOLS_CELERY_QUEUE") or nodes.DEFAULT_QUEUE)))
+    else:
+        rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
+        rows.append(_checkPidFile(runDir / "worker.pid", "Plugin worker PID"))
     rows.append(_checkPidFile(runDir / "protocol-worker.pid", "Protocol worker PID"))
 
     if envExists:

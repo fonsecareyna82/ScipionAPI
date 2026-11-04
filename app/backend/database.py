@@ -70,12 +70,11 @@ def _createMapper():
     # createPostgresqlMapper
     from app.backend.mapper.postgresql import PostgresqlFlatMapper, PostgresqlDb
 
-    dbName = _requireEnv("DATABASE_NAME")
-    dbUser = _requireEnv("DATABASE_USER")
-    dbPass = _requireEnv("DATABASE_PASS")
+    for name in ("DATABASE_NAME", "DATABASE_USER", "DATABASE_PASS"):
+        _requireEnv(name)
 
-    db = PostgresqlDb(dbName=dbName, user=dbUser, password=dbPass)
-    return PostgresqlFlatMapper(db)
+    # On its server (POSTGRES_HOST), which is the main node's in a multi-node installation
+    return PostgresqlFlatMapper(PostgresqlDb.fromEnvironment())
 
 
 def getMapper():

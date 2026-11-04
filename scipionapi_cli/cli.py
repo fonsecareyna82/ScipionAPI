@@ -33,6 +33,7 @@ from importlib import metadata as importlibMetadata
 
 from scipionapi_cli.bootstrap import bootstrapCommand
 from scipionapi_cli.plugins import app as pluginsApp
+from scipionapi_cli.nodes_cli import multinodeApp, nodeApp
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.doctor import doctorCommand
@@ -155,12 +156,15 @@ app = typer.Typer(
         "  [cyan]Release[/cyan]: release\n"
         "  [cyan]Runtime[/cyan]: start, stop, restart, status, logs\n"
         "  [cyan]Diagnostics[/cyan]: doctor\n"
+        "  [cyan]Several machines[/cyan]: multinode enable (main node), node join|leave|list (compute nodes)\n"
         "  [cyan]Info[/cyan]: version\n"
     ),
 )
 
 
 app.add_typer(pluginsApp, name="plugins")
+app.add_typer(multinodeApp, name="multinode")
+app.add_typer(nodeApp, name="node")
 
 @app.command(
     "bootstrap",
