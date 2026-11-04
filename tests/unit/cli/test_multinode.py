@@ -214,3 +214,29 @@ def test_AGpuNodeGetsItsScipionHostAndItsQueueRoute(tmp_path):
     assert resolveCeleryQueueForHost(str(scipionHome), "gpu-nodes") == "protocols-gpu"
     assert resolveCeleryQueueForHost(str(scipionHome), "cpu-nodes") == "protocols-cpu"
     assert resolveCeleryQueueForHost(str(scipionHome), "localhost") is None
+
+
+def test_AMainNodeToldNotToComputeStartsNoProtocolWorker(tmp_path, monkeypatch):
+    from scipionapi_cli import runtime
+
+    monkeypatch.setattr(nodes.socket, "gethostname", lambda: "main")
+    scipionHome = tmp_path / "scipion_home"
+    scipionHome.mkdir()
+    monkeypatch.setenv("SCIPION_HOME", str(scipionHome))
+    monkeypatch.setattr(runtime, "resolveRepoRoot", lambda: tmp_path)
+
+    monkeypatch.delenv(nodes.MAIN_COMPUTE_KEY, raising=False)
+    assert nodes.mainRunsProtocols(scipionHome) and runtime._roleIncludes("all", "protocols")
+
+    monkeypatch.setenv(nodes.MAIN_COMPUTE_KEY, "0")
+    assert not nodes.mainRunsProtocols(scipionHome)
+    assert not runtime._roleIncludes("all", "protocols")
+    assert runtime._roleIncludes("all", "api") and runtime._roleIncludes("all", "plugins")
+    with pytest.raises(RuntimeError, match="multinode compute on"):
+        runtime._refuseProtocolsOnMain()
+
+    # A compute node always computes, whatever the shared .env says
+    path = nodes.profilePath(scipionHome)
+    path.parent.mkdir()
+    path.write_text("SCIPIONAPI_NODE_ROLE=protocols\n")
+    assert nodes.mainRunsProtocols(scipionHome)

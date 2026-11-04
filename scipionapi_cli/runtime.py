@@ -70,8 +70,19 @@ def _nodeRole(role: str) -> str:
 
 
 def _roleIncludes(role: str, component: str) -> bool:
-    # roleIncludesComponent
+    # roleIncludesComponent; a main node told not to compute starts no protocol worker with "all"
+    if role == "all" and component == "protocols" and not nodes.mainRunsProtocols(
+            _resolveScipionHome(resolveRepoRoot())):
+        return False
     return role in ("all", component)
+
+
+def _refuseProtocolsOnMain() -> None:
+    if not nodes.mainRunsProtocols(_resolveScipionHome(resolveRepoRoot())):
+        raise RuntimeError(
+            "This main node leaves the protocols to its compute nodes. "
+            "To run them here again: scipionapi multinode compute on"
+        )
 
 
 def _pidDir(repoRoot: Path) -> Path:
@@ -824,6 +835,10 @@ def startWorkerProcess(
     if state["state"] == "running":
         return state
 
+    if spec["kind"] == "protocols":
+        # Also from the web's worker buttons
+        _refuseProtocolsOnMain()
+
     if state["state"] in {
         "stale",
         "invalid",
@@ -912,6 +927,9 @@ def startCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
 
     if queue:
         env["PROTOCOLS_CELERY_QUEUE"] = queue.strip()
+
+    if role == "protocols":
+        _refuseProtocolsOnMain()
 
     runDir = _pidDir(repoRoot)
     apiPidPath = runDir / "api.pid"

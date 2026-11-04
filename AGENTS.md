@@ -66,6 +66,7 @@ code must install from `pyproject.toml`, not maintain a second dependency list.
   - how many GPUs there are (information only).
 - Then it writes the node's profile `scipion_home/nodes/<short hostname>.env` (`SCIPIONAPI_NODE_ROLE=protocols`, `PROTOCOLS_CELERY_QUEUE`, `PROTOCOL_WORKER_CONCURRENCY` (its GPUs or 4), `LOGS_PATH=logs/nodes/<node>`), starts the protocol worker and waits for it to answer Celery.
 - `--host H` (with `--queue`) also routes the Scipion host H to that queue (`celery_queue_routing.json`), copying `[localhost]` of `hosts.conf` as `[H]` when it does not exist: users then pick H in a protocol's form to run it on those nodes.
+- `multinode compute off` (main node) writes `SCIPIONAPI_MAIN_RUNS_PROTOCOLS=0` and stops its protocol worker (refused while it runs protocols, unless `--force`; `celeryApp.control.inspect().active()`). After that, role `all` leaves out the protocol worker (`runtime._roleIncludes`), and `start --role protocols` and `startWorkerProcess("protocols")` (the web's worker buttons) refuse. `compute on` writes 1 and starts it. A compute node always computes (`nodes.mainRunsProtocols`).
 - `node leave` stops the worker and removes the profile. `node list` shows the profiles and the workers answering (`celeryApp.control.inspect().active_queues()`).
 
 **How the commands use the profile.**

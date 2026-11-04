@@ -49,6 +49,8 @@ NODE_ROLE_KEY = "SCIPIONAPI_NODE_ROLE"
 MAIN_NODE_KEY = "SCIPIONAPI_MAIN_NODE"
 DEPLOYMENT_MODE_KEY = "SCIPIONAPI_DEPLOYMENT_MODE"
 DEFAULT_NODE_ROLE = "protocols"
+# 0 on a main node that leaves the protocols to its compute nodes (`scipionapi multinode compute off`)
+MAIN_COMPUTE_KEY = "SCIPIONAPI_MAIN_RUNS_PROTOCOLS"
 DEFAULT_QUEUE = "protocols"
 
 _NAME = re.compile(r"[^a-z0-9_-]+")
@@ -93,6 +95,27 @@ def roleOf(role: str, scipionHome: Path) -> str:
     if profile and role == "all":
         return (profile.get(NODE_ROLE_KEY) or DEFAULT_NODE_ROLE).strip().lower()
     return role
+
+
+def mainRunsProtocols(scipionHome: Path, env: Optional[Dict[str, str]] = None) -> bool:
+    """Whether this machine runs a protocol worker: a compute node always; the main node unless it was told not to."""
+    if readProfile(scipionHome):
+        return True
+    value = ((env if env is not None else os.environ).get(MAIN_COMPUTE_KEY) or "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def activeProtocols(workerName: str, timeoutSec: float = 3.0) -> Optional[int]:
+    """How many protocols the worker runs now (None when it cannot be asked)."""
+    try:
+        from app.workers.task_queue import celeryApp
+
+        active = celeryApp.control.inspect(destination=[workerName], timeout=timeoutSec).active()
+    except Exception:
+        return None
+    if active is None:
+        return 0
+    return len(active.get(workerName) or [])
 
 
 def listProfiles(scipionHome: Path) -> List[Tuple[str, Dict[str, str]]]:

@@ -24,11 +24,13 @@
 # *
 # ******************************************************************************
 """`scipionapi multinode enable` (on the main node) and `scipionapi node join|leave|list` (on a compute node)."""
+import socket
 from typing import Optional
 
 import typer
 
 from scipionapi_cli import multinode, nodes, runtime
+from scipionapi_cli.envfile import writeEnvFile
 from scipionapi_cli.shell import resolveRepoRoot
 
 multinodeApp = typer.Typer(help="Open the main node to compute nodes.", no_args_is_help=True)
@@ -96,6 +98,45 @@ def enable(
     console.print("\n[bold]Next, on each compute node[/bold] (same user, this installation mounted at the same path):")
     console.print("  %s/scripts/scipionapi node join --queue protocols" % repoRoot)
     console.print("  (GPU nodes with their own queue: node join --queue protocols-gpu --host gpu-nodes)")
+    console.print("Once the nodes have joined, to keep this main node from computing:")
+    console.print("  %s/scripts/scipionapi multinode compute off" % repoRoot)
+
+
+@multinodeApp.command("compute", help=(
+        "Whether this main node runs protocols too: 'off' leaves them all to the compute nodes (its protocol "
+        "worker stops and does not start again with start, restart or update), 'on' runs them here again."))
+def compute(
+        state: str = typer.Argument(..., help="on or off"),
+        force: bool = typer.Option(False, "--force",
+                                   help="Stop the worker even if protocols are running on it (they are killed)."),
+) -> None:
+    repoRoot, scipionHome, envPath, env = _context()
+    state = state.strip().lower()
+    if state not in ("on", "off"):
+        raise typer.BadParameter("on or off", param_hint="STATE")
+    if nodes.readProfile(scipionHome):
+        raise typer.BadParameter("This machine is a compute node: it always runs protocols (node leave to stop)")
+    if state == "on":
+        writeEnvFile(envPath, {nodes.MAIN_COMPUTE_KEY: "1"})
+        runtime.startCommand("protocols")
+        console.print("This main node runs protocols again.")
+        return
+
+    workers = nodes.liveWorkers()
+    others = [worker for worker, queues in workers.items()
+              if not worker.startswith("plugins@") and nodes.nodeName(worker.split("@", 1)[-1]) != nodes.nodeName()]
+    if not others:
+        console.print("[yellow]No compute node answers now: protocols will wait in the queue until one joins "
+                      "(node join on a compute node).[/yellow]")
+    running = nodes.activeProtocols("protocols@%s" % socket.gethostname())
+    if running and not force:
+        console.print("[red]%d protocol(s) are running on this main node: stopping its worker would kill them. "
+                      "Wait until they finish, or add --force.[/red]" % running)
+        raise typer.Exit(1)
+    writeEnvFile(envPath, {nodes.MAIN_COMPUTE_KEY: "0"})
+    runtime.stopCommand("protocols")
+    console.print("This main node no longer runs protocols: the compute nodes do (%s)."
+                  % (", ".join(sorted(others)) or "none answering yet"))
 
 
 @nodeApp.command("join", help=(
@@ -144,7 +185,10 @@ def leave() -> None:
 def listNodes() -> None:
     repoRoot, scipionHome, envPath, env = _context()
     workers = nodes.liveWorkers()
-    console.print("Main node: %s" % (env.get(nodes.MAIN_NODE_KEY) or "(single-node installation)"))
+    main = env.get(nodes.MAIN_NODE_KEY)
+    console.print("Main node: %s" % ("%s (%s)" % (main, "runs protocols too" if (env.get(nodes.MAIN_COMPUTE_KEY) or "1")
+                                                 not in ("0", "false", "no", "off") else "does not run protocols")
+                                     if main else "(single-node installation)"))
     profiles = nodes.listProfiles(scipionHome)
     if not profiles:
         console.print("No compute nodes yet.")
