@@ -3989,3 +3989,100 @@ def test_FailedQueuedProtocolVerifiesOwnershipBeforeClosingDatabase(
         <
         cancelIndex
     )
+
+
+def _slotWorker(monkeypatch, limit, slotUsages, worksInStreaming=False, parentStatuses=(), dataStreaming=None):
+    """A worker whose user has `limit` run slots, and what it records while it waits."""
+    recorded = []
+    sleepCalls = []
+
+    class MapperStub:
+        def getProjectProtocolByProtocolId(self, projectId, protocolId):
+            return {"status": "launched",
+                    "params": {"_scipionWebRuntime": {"launchedByUserId": 7, "executionId": "execution-9"}}}
+
+        @contextmanager
+        def protocolExecutionUserLock(self, userId):
+            yield
+
+        def getRunningExecutionSlotUsageForUser(self, userId, executionId):
+            return next(slotUsages)
+
+        def setProtocolRuntimeValue(self, projectId, protocolId, key, value):
+            recorded.append((key, value))
+
+    class BooleanStub:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class ProtocolStub:
+        status = "launched"
+
+        def getStatus(self):
+            return self.status
+
+        def setStatus(self, status):
+            self.status = status
+
+        def worksInStreaming(self):
+            return worksInStreaming
+
+    class SettingsServiceStub:
+        def getRuntimeInstanceSettings(self, mapper, currentUser):
+            return {"maxConcurrentRunsPerUser": limit}
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=31)
+    worker.mapper = MapperStub()
+    worker.protocol = ProtocolStub()
+    if dataStreaming is not None:
+        worker.protocol.dataStreaming = BooleanStub(dataStreaming)
+    worker.storeProtocol = lambda: None
+    worker.loadParentStatuses = lambda: [{"status": status} for status in parentStatuses]
+    monkeypatch.setattr(postgresqlProtocolWorkerModule, "SettingsService", SettingsServiceStub)
+    monkeypatch.setenv("SCIPION_POSTGRESQL_EXECUTION_SLOT_POLL_SECONDS", "0.1")
+    monkeypatch.setattr(postgresqlProtocolWorkerModule.time, "sleep", sleepCalls.append)
+    return worker, recorded, sleepCalls
+
+
+def test_WithNoLimitAProtocolRunsAtOnceWithoutCountingTheOthers(monkeypatch):
+    def noCount():
+        raise AssertionError("the running protocols are not counted when there is no limit")
+        yield
+
+    worker, recorded, sleepCalls = _slotWorker(monkeypatch, 0, noCount())
+
+    assert worker.waitForUserExecutionSlot() is True
+    assert worker.protocol.getStatus() == "running" and sleepCalls == []
+    assert recorded == [("slotExempt", True)]
+
+
+def test_AStreamingRunFedByARunningParentNeverWaitsForASlot(monkeypatch):
+    worker, recorded, sleepCalls = _slotWorker(
+        monkeypatch, 4, iter([{"count": 4, "executionRunning": False}]),
+        worksInStreaming=True, parentStatuses=("finished", "running"))
+
+    assert worker.runsInStreaming()
+    assert worker.waitForUserExecutionSlot() is True
+    assert sleepCalls == [] and recorded == [("slotExempt", True)]
+
+
+def test_AnImportWatchingItsFolderIsAStreamingRun(monkeypatch):
+    worker, recorded, sleepCalls = _slotWorker(monkeypatch, 4, iter([]), worksInStreaming=True, dataStreaming=True)
+
+    assert worker.runsInStreaming()
+
+
+def test_AStreamingProtocolOnFinishedInputsTakesASlotAndSaysWhyItWaits(monkeypatch):
+    # MotionCor on an import that already ended runs like any other protocol
+    worker, recorded, sleepCalls = _slotWorker(
+        monkeypatch, 4, iter([{"count": 4, "executionRunning": False}, {"count": 3, "executionRunning": False}]),
+        worksInStreaming=True, parentStatuses=("finished",))
+
+    assert not worker.runsInStreaming()
+    assert worker.waitForUserExecutionSlot() is True
+    assert sleepCalls == [0.1]
+    assert recorded == [("slotExempt", False), ("waitingForSlot", {"inUse": 4, "limit": 4}),
+                        ("waitingForSlot", None)]

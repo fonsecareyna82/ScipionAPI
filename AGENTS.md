@@ -332,6 +332,14 @@ Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-
 - `GET /projects/{p}/disk-usage`: walks `Runs/<id>_<class>` without following symbolic links. The count runs in a background thread and is cached in memory for 15 min, per process. While it runs, the answer has `computing: true`. `?refresh=true` counts again.
 - `protocol_launches` table (migration `4e8b1d2c7a55`): `ProjectService.launchProtocol` stores the protocol's persisted `params` after every successful launch, restart, continue or schedule (keys starting with `_` are dropped), with the user and the mode. Recording never fails a launch: a database that is not migrated only loses the history. Read it with `GET /projects/{p}/protocols/{id}/launches`.
 
+## Runs per user (Settings → Instance → Max concurrent runs per user)
+
+- `maxConcurrentRunsPerUser`: **0 = no limit, the default** (migration `b9e4c1d7a258` turned a stored 4, the old default, into 0; another value was chosen and stays).
+- With a limit, a protocol waits in `launched` until fewer of its launcher's protocols run (`RuntimePostgresqlProtocolWorker.waitForUserExecutionSlot`, polling every `SCIPION_POSTGRESQL_EXECUTION_SLOT_POLL_SECONDS`).
+- The count (`getRunningExecutionSlotUsageForUser`) is of distinct `executionId`s: protocols launched together (Run all, Continue all, a facility DATA) take one slot.
+- **Streaming runs take no slot** (`runsInStreaming`): a protocol that `worksInStreaming()` whose parent is still running/launched/scheduled, or an import with `dataStreaming`. They mostly wait for data; counting them held any chain of more than "limit" streaming protocols launched one by one in `launched` for the whole session. A streaming-capable protocol on finished inputs counts like any other.
+- Decided once per run and stored in the runtime metadata (`mapper.setProtocolRuntimeValue`, an atomic jsonb update): `slotExempt` (excluded from the count), and `waitingForSlot` `{inUse, limit}` while it waits, cleared when it starts. The graph and the active-protocols poll send `waitingForSlot` for launched protocols; the node's status badge reads "launched · waiting for a run slot" with the reason in its tooltip.
+
 ## Protocol tags
 
 Tags belong to a project. Every collaborator of a shared project may edit them. Titles are unique per project, in any case (`ux_protocol_tags_project_lower_title`). Tag ids are global, and the client may choose them.

@@ -4163,6 +4163,9 @@ class ProjectService:
                 "cpuTime": cpuTime,
                 "elapsedTime": elapsedTime,
                 "elapsedSessionId": elapsedSessionId,
+                # A launched protocol waiting for one of its user's run slots: {"inUse", "limit"}
+                "waitingForSlot": (runtimeMetadata.get("waitingForSlot") or None)
+                if str(status or "").strip().lower() == "launched" else None,
                 "isInteractive": isinteractive,
                 "numberOfSteps": numberOfSteps,
                 "stepsDone": stepsDone,
@@ -6963,6 +6966,8 @@ class ProjectService:
                 "elapsedSessionId": (
                     elapsedSessionId
                 ),
+                "waitingForSlot": (runtimeMetadata.get("waitingForSlot") or None)
+                if statusValue == "launched" else None,
                 "stepsDone": int(
                     stepSummary.get(
                         "stepsDone"

@@ -3521,27 +3521,58 @@ class RuntimePostgresqlProtocolWorker:
             )
         )
 
+        # 0 (the default) is no limit
         try:
             maxConcurrentRuns = int(
                 instanceSettings.get(
                     "maxConcurrentRunsPerUser"
                 )
-                or 4
+                or 0
             )
 
         except (
                 TypeError,
                 ValueError,
         ):
-            maxConcurrentRuns = 4
+            maxConcurrentRuns = 0
 
         return max(
-            1,
+            0,
             min(
                 64,
                 maxConcurrentRuns,
             ),
         )
+
+    STREAMING_PARENT_STATUSES = {"running", "launched", "scheduled"}
+
+    def runsInStreaming(self) -> bool:
+        """Whether this run is fed while it runs: a protocol that works in streaming whose input still grows
+        (a parent still running) or an import watching its folder. It spends most of its time waiting for
+        data, so it takes no run slot: counting it would hold a chain of streaming protocols forever."""
+        try:
+            if not self.protocol.worksInStreaming():
+                return False
+        except Exception:
+            return False
+        dataStreaming = getattr(self.protocol, "dataStreaming", None)
+        try:
+            if dataStreaming is not None and bool(dataStreaming.get()):
+                return True
+        except Exception:
+            pass
+        try:
+            parents = self.loadParentStatuses()
+        except Exception:
+            return False
+        return any(str(parent.get("status") or "").strip().lower() in self.STREAMING_PARENT_STATUSES
+                   for parent in parents)
+
+    def _setSlotRuntimeValue(self, key: str, value: Any) -> None:
+        try:
+            self.mapper.setProtocolRuntimeValue(self.projectId, self.protocolId, key, value)
+        except Exception:
+            logger.warning("Could not record %s of protocol %s", key, self.protocolId, exc_info=True)
 
     def waitForUserExecutionSlot(
             self,
@@ -3584,6 +3615,9 @@ class RuntimePostgresqlProtocolWorker:
         )
 
         lastWaitLogAt = None
+        # Decided once per run: whether it takes a slot at all
+        slotExempt = None
+        waitingRecorded = None
 
         while True:
             with self.mapper.protocolExecutionUserLock(
@@ -3637,6 +3671,27 @@ class RuntimePostgresqlProtocolWorker:
                     self.getMaxConcurrentRunsPerUser()
                 )
 
+                if slotExempt is None:
+                    slotExempt = maxConcurrentRuns == 0 or self.runsInStreaming()
+                    self._setSlotRuntimeValue("slotExempt", slotExempt)
+
+                if slotExempt:
+                    if waitingRecorded:
+                        self._setSlotRuntimeValue("waitingForSlot", None)
+                    self.protocol.setStatus(
+                        STATUS_RUNNING
+                    )
+                    self.storeProtocol()
+                    logger.info(
+                        "Protocol runs without taking a run slot (%s). "
+                        "userId=%s projectId=%s protocolId=%s",
+                        "no limit" if maxConcurrentRuns == 0 else "streaming",
+                        userId,
+                        self.projectId,
+                        self.protocolId,
+                    )
+                    return True
+
                 slotUsage = (
                     self.mapper
                     .getRunningExecutionSlotUsageForUser(
@@ -3663,6 +3718,8 @@ class RuntimePostgresqlProtocolWorker:
                         or runningExecutions
                         < maxConcurrentRuns
                 ):
+                    if waitingRecorded:
+                        self._setSlotRuntimeValue("waitingForSlot", None)
                     self.protocol.setStatus(
                         STATUS_RUNNING
                     )
@@ -3691,6 +3748,12 @@ class RuntimePostgresqlProtocolWorker:
                     )
 
                     return True
+
+            # What the web shows on a launched protocol: it waits for a free run slot
+            waiting = {"inUse": runningExecutions, "limit": maxConcurrentRuns}
+            if waiting != waitingRecorded:
+                self._setSlotRuntimeValue("waitingForSlot", waiting)
+                waitingRecorded = waiting
 
             now = time.monotonic()
 

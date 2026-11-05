@@ -81,8 +81,8 @@ class InstanceSettings(BaseModel):
     defaultQueueName: str = "default"
 
     maxConcurrentRunsPerUser: int = Field(
-        default=4,
-        ge=1,
+        default=0,
+        ge=0,
         le=64,
     )
 
@@ -93,6 +93,6 @@ class InstanceSettingsPatch(BaseModel):
 
     maxConcurrentRunsPerUser: Optional[int] = Field(
         default=None,
-        ge=1,
+        ge=0,
         le=64,
     )

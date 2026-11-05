@@ -2988,6 +2988,8 @@ class PostgresqlFlatMapper(Mapper):
                        -> '_scipionWebRuntime'
                        ->> 'launchedByUserId'
                ) = %s
+               -- Streaming runs (fed while they run) and runs started with no limit take no slot
+               AND COALESCE(params::jsonb -> '_scipionWebRuntime' ->> 'slotExempt', 'false') <> 'true'
             """,
             (
                 executionId,
@@ -3156,6 +3158,30 @@ class PostgresqlFlatMapper(Mapper):
 
         value = row.get("count") if isinstance(row, dict) else row[0]
         return int(value or 0)
+
+    def setProtocolRuntimeValue(self, projectId: int, protocolId, key: str, value: Any) -> None:
+        """Set one value of a protocol's runtime metadata, leaving the rest as it is (None removes it)."""
+        if value is None:
+            self.db.execute(
+                """
+                UPDATE protocols
+                   SET params = jsonb_set(COALESCE(params::jsonb, '{}'::jsonb), '{_scipionWebRuntime}',
+                                          COALESCE(params::jsonb -> '_scipionWebRuntime', '{}'::jsonb) - %s)
+                 WHERE "projectId" = %s AND "protocolId" = %s
+                """,
+                (key, int(projectId), str(protocolId)),
+            )
+            return
+        self.db.execute(
+            """
+            UPDATE protocols
+               SET params = jsonb_set(COALESCE(params::jsonb, '{}'::jsonb), '{_scipionWebRuntime}',
+                                      COALESCE(params::jsonb -> '_scipionWebRuntime', '{}'::jsonb)
+                                      || jsonb_build_object(%s::text, %s::jsonb))
+             WHERE "projectId" = %s AND "protocolId" = %s
+            """,
+            (key, json.dumps(value), int(projectId), str(protocolId)),
+        )
 
     def updateProtocolParamsIfCoordinatorRunId(
             self, protocolDbId: int, expectedRunId: str, params: str,
