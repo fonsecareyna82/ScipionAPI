@@ -4086,3 +4086,29 @@ def test_AStreamingProtocolOnFinishedInputsTakesASlotAndSaysWhyItWaits(monkeypat
     assert sleepCalls == [0.1]
     assert recorded == [("slotExempt", False), ("waitingForSlot", {"inUse": 4, "limit": 4}),
                         ("waitingForSlot", None)]
+
+
+def _snapshotWorker(parentStatus, outputExists=True):
+    """A subset made from a viewer's selection (ProtUserSubSet) whose input's protocol is in parentStatus."""
+    worker = buildWorker(streaming=False, parentStatus=parentStatus, outputExists=outputExists, validationErrors=[])
+    stub = worker.protocol
+    worker.protocol = type("ProtUserSubSet", (type(stub),), {})(streaming=False, inputConditions={"inputSet": True})
+    return worker
+
+
+def test_ASubsetRunsAtOnceWhileItsInputsProtocolStillRuns():
+    readiness = _snapshotWorker("running").getReadinessState()
+
+    assert readiness["pendingParents"] == [] and readiness["missingInputs"] == []
+
+
+def test_ASubsetStillWaitsForItsInputToExistAndItsProtocolToStart():
+    assert [item["reason"] for item in _snapshotWorker("scheduled").getReadinessState()["pendingParents"]] \
+        == ["streaming_input_parent_not_started"]
+    assert _snapshotWorker("running", outputExists=False).getReadinessState()["missingInputs"]
+
+
+def test_OtherNonStreamingProtocolsStillWaitForTheirInputsProtocolToFinish():
+    readiness = buildWorker(streaming=False, parentStatus="running", validationErrors=[]).getReadinessState()
+
+    assert [item["reason"] for item in readiness["pendingParents"]] == ["input_parent_not_finished"]

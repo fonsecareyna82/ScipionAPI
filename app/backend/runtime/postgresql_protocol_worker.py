@@ -170,6 +170,14 @@ TERMINAL_PREREQUISITE_STATUSES = {
     "aborted",
 }
 
+# Protocols that work on their input as it is when they start, as in Scipion's desktop: a subset made from
+# the rows selected in a viewer runs at once, also while the protocol that makes its input still runs (that
+# output may be a stream that never ends). They still wait for the input's protocol to start and for the
+# input to exist.
+INPUT_SNAPSHOT_PROTOCOLS = {
+    "ProtUserSubSet",
+}
+
 STREAMING_PARENT_NOT_STARTED_STATUSES = {
     str(STATUS_SAVED).strip().lower(),
     str(STATUS_SCHEDULED).strip().lower(),
@@ -1706,6 +1714,12 @@ class RuntimePostgresqlProtocolWorker:
             .worksInStreaming()
         )
 
+        # Runs on what its input holds now: it does not wait for the input's protocol to finish
+        inputSnapshot = (
+            not streaming
+            and type(self.protocol).__name__ in INPUT_SNAPSHOT_PROTOCOLS
+        )
+
         prerequisiteIds = (
             self
             .getPrerequisiteProtocolIds()
@@ -1912,7 +1926,7 @@ class RuntimePostgresqlProtocolWorker:
             # Once the parent reaches launched/running, normal
             # streaming concurrency is allowed again.
             if (
-                    streaming
+                    (streaming or inputSnapshot)
                     and parentStatus
                     in STREAMING_PARENT_NOT_STARTED_STATUSES
             ):
@@ -1929,6 +1943,7 @@ class RuntimePostgresqlProtocolWorker:
             # it may still be consumed and validated.
             if (
                     not streaming
+                    and not inputSnapshot
                     and not parentFailed
                     and parentStatus
                     not in FINISHED_INPUT_PARENT_STATUSES
