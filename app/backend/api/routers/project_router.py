@@ -4425,6 +4425,55 @@ class MetadataTableActionResponse(BaseModel):
     message: Optional[str] = None
     errors: Optional[List[str]] = None
 
+class MetadataSelectionRange(BaseModel):
+    start: int
+    end: int
+
+
+class MetadataSelectionIdsRequest(BaseModel):
+    # "none": the ranges are the selected rows; "all": every row but the ranges
+    baseMode: str = "none"
+    ranges: List[MetadataSelectionRange] = Field(default_factory=list)
+    sortBy: Optional[str] = None
+    asc: bool = True
+
+
+@router.post(
+    "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/selection-ids",
+    response_model=Any,
+    status_code=status.HTTP_200_OK,
+)
+def resolveMetadataSelectionIds(
+    projectId: int,
+    protocolId: int,
+    outputName: str,
+    tableName: str,
+    payload: MetadataSelectionIdsRequest = Body(...),
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """The row ids of a selection by index (Select all, shift ranges), in the order the viewer shows: one
+    request instead of reading the whole table in the browser."""
+    if payload.baseMode not in ("none", "all"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="baseMode is none or all")
+    project = service.getProjectDbRow(mapper, projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return service.resolveMetadataSelectionIdsService(
+        projectId=projectId,
+        protocolId=protocolId,
+        outputName=outputName,
+        tableName=tableName,
+        baseMode=payload.baseMode,
+        ranges=[{"start": item.start, "end": item.end} for item in payload.ranges],
+        sortBy=(payload.sortBy or "").strip() or None,
+        asc=payload.asc,
+        mapper=mapper,
+        protocolIdIsScipionId=True,
+    )
+
+
 @router.get(
     "/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables",
     response_model=Any,

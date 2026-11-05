@@ -31,6 +31,7 @@ VIEW_ROUTES = {
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/tiltseries/{tiltSeriesId}/tilt/batch"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/coords3d/tomograms/{tomogramId}/gallery"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image/batch"),
+    ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/selection-ids"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers/{viewerId}/launch"),
     ("POST", "/projects/{projectId}/thumbnail/rebuild"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/thumbnail/rebuild"),

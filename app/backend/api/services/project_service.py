@@ -19535,6 +19535,77 @@ class ProjectService:
             "errors": errors,
         }
 
+    @staticmethod
+    def selectedRowIndexes(baseMode: str, ranges: List[Dict[str, int]], totalRows: int) -> List[Tuple[int, int]]:
+        """The selected row indexes as [start, end) spans: the ranges themselves, or (baseMode "all") every index
+        but them. Ranges are inclusive, as the viewer keeps them."""
+        spans = []
+        for item in ranges or []:
+            start, end = max(0, int(item["start"])), min(totalRows - 1, int(item["end"]))
+            if start <= end:
+                spans.append((start, end + 1))
+        spans.sort()
+        merged: List[Tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        if str(baseMode) != "all":
+            return merged
+        complement, cursor = [], 0
+        for start, end in merged:
+            if cursor < start:
+                complement.append((cursor, start))
+            cursor = max(cursor, end)
+        if cursor < totalRows:
+            complement.append((cursor, totalRows))
+        return complement
+
+    def resolveMetadataSelectionIdsService(
+            self,
+            projectId: int,
+            protocolId: int,
+            outputName: str,
+            tableName: str,
+            baseMode: str,
+            ranges: List[Dict[str, int]],
+            sortBy: Optional[str],
+            asc: bool,
+            mapper=None,
+            protocolIdIsScipionId=False,
+    ) -> Dict[str, Any]:
+        """The row ids of a selection by index (Select all, ranges) in the viewer's order, in one go: the viewer
+        used to read every row of the table, page by page, only to take their ids."""
+        with _metadataLock:
+            objMgr, table = self._openMetadataTable(
+                projectId,
+                protocolId,
+                outputName,
+                tableName,
+                mapper=mapper,
+                **({"protocolIdIsScipionId": True} if protocolIdIsScipionId else {}),
+            )
+            table.setSortingColumn(sortBy)
+            table.setSortingAsc(asc)
+            dao = objMgr.getDAO()
+            orderedIds = None
+            getOrderedRowIds = getattr(dao, "getOrderedRowIds", None)
+            if callable(getOrderedRowIds):
+                orderedIds = getOrderedRowIds(tableName, sortBy, asc)
+            if orderedIds is None:
+                # A table its reader cannot sort by id alone: its rows, read here instead of in the browser
+                total = objMgr.getTableRowCount(tableName) or 0
+                orderedIds = []
+                for offset in range(0, total, 5000):
+                    for row in objMgr.getRows(tableName, offset, 5000) or []:
+                        orderedIds.append(int(row.getId()))
+
+        ids: List[int] = []
+        for start, end in self.selectedRowIndexes(baseMode, ranges, len(orderedIds)):
+            ids.extend(orderedIds[start:end])
+        return {"ids": ids, "count": len(ids), "totalRows": len(orderedIds)}
+
     def getMetadataTableWindowService(
             self,
             projectId: int,

@@ -646,3 +646,28 @@ def test_RowPositionReturnsNoneWhenItemDoesNotExist(
     assert result is None
 
 
+
+
+def test_TheOrderedRowIdsOfATableAreTheSortedOrderTheWindowsUse(postgresqlDaoModule, monkeypatch):
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()
+    mapper = FakeSetMapper(_makeStoredSet())
+    dao = _buildDao(postgresqlDaoModule, monkeypatch, mapper)
+    dao.getTables()
+    order = list(range(500, 0, -1))
+    sorts = []
+
+    def fetchAll(sql, params):
+        if "ORDER BY" in sql:
+            sorts.append(sql)
+            return [{"scipionItemId": itemId} for itemId in order]
+        return [{"scipionItemId": itemId, "enabled": True, "values": {"score": str(itemId)}} for itemId in params[-1]]
+    monkeypatch.setattr(dao.db, "fetchAll", fetchAll, raising=False)
+
+    # A selection's ids and a window of rows share one sort
+    assert dao.getOrderedRowIds("objects", "score", False) == order
+    assert [row["id"] for row in dao._getRows("objects", 10, 5, "score", False)] == order[10:15]
+    assert len(sorts) == 1
+    # By id (no column) as well; the properties table has no item ids
+    assert dao.getOrderedRowIds("objects", None, True) == order
+    assert dao.getOrderedRowIds(postgresqlDaoModule.PROPERTIES_TABLE, None, True) is None
+    postgresqlDaoModule._SORTED_ORDER_CACHE.clear()

@@ -907,8 +907,9 @@ class PostgresqlDAO(IDAO):
 
         return int(row["row_index"])
 
-    def _getSortedRowsPage(self, tableName: str, start: int, limit: Optional[int], orderBy: str, orderAsc: bool):
-        """Sort scalar columns in PostgreSQL and transfer only the requested window."""
+    def _getSortedOrder(self, tableName: str, orderBy: str, orderAsc: bool) -> Optional[List[int]]:
+        """The item ids of a table in this order, sorted once in PostgreSQL and kept while the Set is unchanged
+        (None for a column that cannot be sorted there)."""
         source = self._getItemsSource(tableName)
         if source is None:
             return None
@@ -950,6 +951,28 @@ class PostgresqlDAO(IDAO):
                 _SORTED_ORDER_CACHE[key] = order
                 while len(_SORTED_ORDER_CACHE) > _SORTED_ORDER_CACHE_SIZE:
                     _SORTED_ORDER_CACHE.popitem(last=False)
+        return order
+
+    def getOrderedRowIds(self, tableName: str, orderBy: Optional[str], orderAsc: bool = True) -> Optional[List[int]]:
+        """Every row id of a table, in the order the viewer shows it (the order of its row indexes): what a
+        selection by index (Select all, ranges) is made of. None when it cannot be told without the rows."""
+        if tableName == PROPERTIES_TABLE:
+            return None
+        orderBy = str(orderBy or "id")
+        order = self._getSortedOrder(tableName, orderBy, bool(orderAsc))
+        if order is not None:
+            return order
+        # A column PostgreSQL cannot sort (matrices, lists…): every row read once and sorted here
+        return [int(row["id"]) for row in self._getRows(tableName, 0, None, orderBy, bool(orderAsc))
+                if row.get("id") is not None]
+
+    def _getSortedRowsPage(self, tableName: str, start: int, limit: Optional[int], orderBy: str, orderAsc: bool):
+        """Sort scalar columns in PostgreSQL and transfer only the requested window."""
+        order = self._getSortedOrder(tableName, orderBy, orderAsc)
+        if order is None:
+            return None
+        sqlTable, scopeColumn, scopeId = self._getItemsSource(tableName)
+        columns = self._getColumnsForTable(tableName)
         start = max(0, int(start))
         window = order[start:] if limit is None else order[start:start + int(limit)]
         if not window:

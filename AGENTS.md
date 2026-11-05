@@ -167,6 +167,10 @@ Read [`.ai/postgresql-runtime-compatibility.md`](.ai/postgresql-runtime-compatib
 
 - A table sorted by a column other than the id (`postgresql_dao._getSortedRowsPage`) is sorted once in PostgreSQL, ids only, and kept per process (`_SORTED_ORDER_CACHE`, keyed by table, column, direction and the Set's and its logical table's last write, `_sortVersion`); each window then reads only its rows by id. Sorting again at every window scrolled to cost the whole Set each time.
 - `renderMetadataImageCellsBatchService` shares one `batchContext` among its cells: the table is opened once, the rows asked for by index are read in one window (`_batchRowValues`, when they are closer than `_METADATA_BATCH_ROW_SPAN`) and one `OutputsPreview` renders the MRC images. Each cell opened the table, read a page of rows for one and built its own renderer.
+- A selection by index (Select all, shift ranges; the viewer keeps `{baseMode: none|all, ranges}`) is turned into row ids by `POST …/metadata/tables/{table}/selection-ids` (`resolveMetadataSelectionIdsService`, view access).
+  - It takes the DAO's `getOrderedRowIds`, which is the same cached sorted order the windows use (`_getSortedOrder`); a column PostgreSQL cannot sort is sorted once in Python. Another DAO is read row by row, in the server.
+  - `selectedRowIndexes` merges the ranges, or takes their complement for `all`.
+  - The viewer used to read the whole table, 500 full rows per request, only to take their ids: 438 requests for 219k particles before Create subset or Freeze selection.
 - `_metadataLock` still serialises the table requests (tables, schema, pages, windows, row position, export) of every user. Each request builds its own ObjectManager, and image cells already run without it, but it may cover module-level registrations of `metadataviewer`; it was left in place until that is shown safe.
 
 ## CTF viewer (SetOfCTF)
