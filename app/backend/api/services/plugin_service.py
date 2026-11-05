@@ -773,7 +773,7 @@ class PluginService:
             refreshDomain: bool = True,
     ) -> Dict[str, Any]:
         plugin: Optional[Any] = None
-        pipWasInstalledBefore = False
+        journal = None
         startedAt = monotonic()
 
         try:
@@ -801,12 +801,9 @@ class PluginService:
             )
 
             plugin = rawPlugins[resolvedKey]
-            pipWasInstalledBefore = (
-                    self._getFreshPipPackageVersion(
-                        pluginName
-                    )
-                    is not None
-            )
+
+            # What the environment is now: a failed installation (or update) goes back to it
+            journal = self._beginJournal(taskId, pluginName)
 
             if taskId:
                 writePluginTaskMessage(
@@ -908,6 +905,9 @@ class PluginService:
                     - startedAt
             )
 
+            if journal is not None:
+                journal.finish()
+
             if taskId:
                 writePluginTaskStep(
                     taskId,
@@ -957,45 +957,9 @@ class PluginService:
                     "Rolling back installation...",
                 )
 
-            if (
-                    plugin is not None
-                    and not pipWasInstalledBefore
-            ):
-                try:
-                    if taskId:
-                        writePluginTaskMessage(
-                            taskId,
-                            "Rolling back failed plugin installation.",
-                        )
-
-                    self.uninstallPlugin(
-                        pluginName=pluginName,
-                        taskId=taskId,
-                        refreshDomain=refreshDomain,
-                    )
-
-                    if taskId:
-                        writePluginTaskMessage(
-                            taskId,
-                            "Plugin rollback completed successfully.",
-                        )
-
-                except Exception:
-                    logger.exception(
-                        "Error rolling back failed plugin installation."
-                    )
-
-                    if taskId:
-                        writePluginTaskMessage(
-                            taskId,
-                            "Plugin rollback failed.",
-                        )
-
-                        appendPluginTaskLog(
-                            taskId,
-                            traceback.format_exc(),
-                        )
-
+            summary = self._rollBack(journal, taskId, refreshDomain)
+            if summary:
+                raise RuntimeError("%s. %s" % (error, summary)) from error
             raise
 
     def installPluginBinary(
@@ -1057,21 +1021,31 @@ class PluginService:
                 f"Installing binary {cleanTarget}...",
             )
 
-        plugin.installBin({
-            "args": [
-                cleanTarget,
-                "-j",
-                "3",
-            ]
-        })
+        journal = self._beginJournal(taskId, "%s-%s" % (pluginName, cleanTarget))
+        try:
+            plugin.installBin({
+                "args": [
+                    cleanTarget,
+                    "-j",
+                    "3",
+                ]
+            })
 
-        if not environment._isInstalled(
-                binaryName,
-                version,
-        ):
-            raise RuntimeError(
-                f"Binary is still not installed after installation: {cleanTarget}"
-            )
+            if not environment._isInstalled(
+                    binaryName,
+                    version,
+            ):
+                raise RuntimeError(
+                    f"Binary is still not installed after installation: {cleanTarget}"
+                )
+        except Exception as error:
+            summary = self._rollBack(journal, taskId, refreshDomain=False)
+            if summary:
+                raise RuntimeError("%s. %s" % (error, summary)) from error
+            raise
+
+        if journal is not None:
+            journal.finish()
 
         self.clearCache(
             reloadRepository=False
@@ -1089,6 +1063,45 @@ class PluginService:
             "binaryTarget": cleanTarget,
             "alreadyInstalled": False,
         }
+
+    def _beginJournal(self, taskId: Optional[str], subject: str):
+        """The snapshot a failed installation goes back to (None, with a warning, if it cannot be taken)."""
+        from app.backend.api.services.plugin_install_journal import InstallJournal
+
+        try:
+            return InstallJournal.begin(taskId, subject)
+        except Exception as error:
+            logger.warning("Could not take the snapshot of the environment before installing %s", subject,
+                           exc_info=True)
+            if taskId:
+                writePluginTaskMessage(taskId, "The environment could not be recorded before installing (%s): "
+                                               "a failure would not be rolled back." % error)
+            return None
+
+    def _rollBack(self, journal, taskId: Optional[str], refreshDomain: bool = True) -> Optional[str]:
+        """Put the environment back as the journal found it; answers what was done (None without a journal)."""
+        if journal is None:
+            return None
+        from app.backend.api.services.plugin_install_journal import describeRollback
+
+        def log(message: str) -> None:
+            if taskId:
+                writePluginTaskMessage(taskId, message)
+
+        try:
+            report = journal.rollBack(log=log)
+            summary = describeRollback(report)
+        except Exception as error:
+            logger.exception("Error rolling back a failed plugin installation.")
+            summary = "ROLLBACK INCOMPLETE: %s" % error
+        finally:
+            journal.finish()
+        log(summary)
+        try:
+            self.clearCache(refreshDomain=refreshDomain)
+        except Exception:
+            logger.warning("Could not refresh the plugin catalog after a rollback", exc_info=True)
+        return summary
 
     def uninstallPluginBinary(
             self,

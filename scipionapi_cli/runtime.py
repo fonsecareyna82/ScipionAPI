@@ -815,10 +815,27 @@ def _recoverInterruptedPluginTasks() -> int:
 
             recovered += 1
 
+        _rollBackUnfinishedInstalls()
         return recovered
 
     except Exception:
         return 0
+
+
+def _rollBackUnfinishedInstalls() -> None:
+    """Put back the environment an installation left half done when the plugin worker stopped (its journal)."""
+    try:
+        from app.backend.api.services.plugin_install_journal import rollBackUnfinished
+        from app.backend.api.services.plugin_task_log import appendPluginTaskLog
+
+        for item in rollBackUnfinished():
+            if item.get("taskId"):
+                try:
+                    appendPluginTaskLog(str(item["taskId"]), "[recovery] %s" % item["summary"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def startWorkerProcess(

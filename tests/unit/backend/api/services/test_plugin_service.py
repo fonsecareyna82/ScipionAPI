@@ -32,6 +32,12 @@ import app.backend.api.services.plugin_service as pluginServiceModule
 from app.backend.api.services.plugin_service import PluginService
 
 
+@pytest.fixture(autouse=True)
+def noRealEnvironmentSnapshot(monkeypatch):
+    """No test here records or rolls back the real environment: the journal is a fake where a test needs it."""
+    monkeypatch.setattr(PluginService, "_beginJournal", lambda self, taskId, subject: None)
+
+
 class DummyDevelService:
     def __init__(self, scipionHome: Path, plugins=None):
         self._scipionHome = scipionHome
@@ -1046,180 +1052,78 @@ def test_install_plugin_reports_detailed_task_progress(
     )
 
 
-def test_install_plugin_rolls_back_new_plugin_when_binary_install_fails(
-        tmp_path,
-        monkeypatch,
-):
+class FakeJournal:
+    """Stands for the environment's snapshot: records the rollback instead of touching the real environment."""
+
+    def __init__(self, report=None):
+        self.report = report or {"removedPackages": ["scipion-em-test"], "restoredPackages": [], "notRestored": [],
+                                 "removedBinaries": ["test-1.0"], "removedEnvironments": [], "errors": []}
+        self.rolledBack = 0
+        self.finished = 0
+
+    def rollBack(self, log=lambda message: None):
+        self.rolledBack += 1
+        return self.report
+
+    def finish(self):
+        self.finished += 1
+
+
+def _failingBinaryService(tmp_path, monkeypatch, journal):
     service = makeService(tmp_path)
 
-    installedState = {
-        "installed": False,
-    }
-
-    class FailingBinaryPlugin(
-            DummyInstallPlugin
-    ):
-        def installPipModule(self):
-            self.installPipCalls += 1
-
-            installedState[
-                "installed"
-            ] = True
-
-            return True
-
-        def installBin(
-                self,
-                args,
-        ):
-            self.installBinCalls.append(
-                args
-            )
-
-            raise RuntimeError(
-                "binary installation failed"
-            )
-
-        def uninstallPip(self):
-            self.uninstallPipCalls += 1
-
-            installedState[
-                "installed"
-            ] = False
+    class FailingBinaryPlugin(DummyInstallPlugin):
+        def installBin(self, args):
+            self.installBinCalls.append(args)
+            raise RuntimeError("binary installation failed")
 
     plugin = FailingBinaryPlugin()
-
-    monkeypatch.setattr(
-        service,
-        "_loadRawPlugins",
-        lambda forceRefresh=False: {
-            "scipion-em-test": plugin,
-        },
-    )
-
-    monkeypatch.setattr(
-        service,
-        "_getFreshPipPackageVersion",
-        lambda pipName: (
-            "1.0.0"
-            if installedState["installed"]
-            else None
-        ),
-    )
-
-    monkeypatch.setattr(
-        service,
-        "clearCache",
-        lambda *args, **kwargs: None,
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="binary installation failed",
-    ):
-        service.installPlugin(
-            "scipion-em-test",
-            skipBinaries=False,
-            refreshDomain=False,
-        )
-
-    assert plugin.installPipCalls == 1
-
-    assert plugin.installBinCalls == [
-        {
-            "args": [
-                "-j",
-                "3",
-            ]
-        }
-    ]
-
-    assert plugin.uninstallBinsCalls == 1
-    assert plugin.uninstallPipCalls == 1
-
-    assert installedState[
-        "installed"
-    ] is False
+    monkeypatch.setattr(service, "_loadRawPlugins", lambda forceRefresh=False: {"scipion-em-test": plugin})
+    monkeypatch.setattr(service, "_getFreshPipPackageVersion", lambda pipName: "1.0.0")
+    monkeypatch.setattr(service, "clearCache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_beginJournal", lambda taskId, subject: journal)
+    return service, plugin
 
 
-def test_install_plugin_does_not_rollback_preexisting_plugin_when_binary_install_fails(
-        tmp_path,
-        monkeypatch,
-):
+def test_a_failed_installation_goes_back_to_the_environment_it_found(tmp_path, monkeypatch):
+    journal = FakeJournal()
+    service, plugin = _failingBinaryService(tmp_path, monkeypatch, journal)
+
+    with pytest.raises(RuntimeError) as error:
+        service.installPlugin("scipion-em-test", skipBinaries=False, refreshDomain=False)
+
+    assert "binary installation failed" in str(error.value)
+    assert "Rolled back: removed scipion-em-test; removed the binaries test-1.0" in str(error.value)
+    assert journal.rolledBack == 1 and journal.finished == 1
+    # The rollback is the journal's: nothing else is uninstalled (it would also remove what was there before)
+    assert plugin.uninstallBinsCalls == 0 and plugin.uninstallPipCalls == 0
+
+
+def test_a_failed_update_is_rolled_back_too_and_says_what_it_could_not_put_back(tmp_path, monkeypatch):
+    journal = FakeJournal({"removedPackages": [], "restoredPackages": ["scipion-em-test==1.0.0"],
+                           "notRestored": [{"package": "numpy", "version": "1.24.4", "error": "No network"}],
+                           "removedBinaries": [], "removedEnvironments": [], "errors": []})
+    service, plugin = _failingBinaryService(tmp_path, monkeypatch, journal)
+
+    with pytest.raises(RuntimeError) as error:
+        service.installPlugin("scipion-em-test", skipBinaries=False, refreshDomain=False)
+
+    assert "put back scipion-em-test==1.0.0" in str(error.value)
+    assert "ROLLBACK INCOMPLETE: numpy could not be put back to 1.24.4 (No network)" in str(error.value)
+
+
+def test_a_successful_installation_drops_its_journal(tmp_path, monkeypatch):
+    journal = FakeJournal()
     service = makeService(tmp_path)
+    plugin = DummyInstallPlugin()
+    monkeypatch.setattr(service, "_loadRawPlugins", lambda forceRefresh=False: {"scipion-em-test": plugin})
+    monkeypatch.setattr(service, "_getFreshPipPackageVersion", lambda pipName: "1.0.0")
+    monkeypatch.setattr(service, "clearCache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_beginJournal", lambda taskId, subject: journal)
 
-    installedState = {
-        "installed": True,
-    }
+    service.installPlugin("scipion-em-test", skipBinaries=True, refreshDomain=False)
 
-    class FailingBinaryPlugin(
-            DummyInstallPlugin
-    ):
-        def installBin(
-                self,
-                args,
-        ):
-            self.installBinCalls.append(
-                args
-            )
-
-            raise RuntimeError(
-                "binary installation failed"
-            )
-
-    plugin = FailingBinaryPlugin()
-
-    monkeypatch.setattr(
-        service,
-        "_loadRawPlugins",
-        lambda forceRefresh=False: {
-            "scipion-em-test": plugin,
-        },
-    )
-
-    monkeypatch.setattr(
-        service,
-        "_getFreshPipPackageVersion",
-        lambda pipName: (
-            "1.0.0"
-            if installedState["installed"]
-            else None
-        ),
-    )
-
-    monkeypatch.setattr(
-        service,
-        "clearCache",
-        lambda *args, **kwargs: None,
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="binary installation failed",
-    ):
-        service.installPlugin(
-            "scipion-em-test",
-            skipBinaries=False,
-            refreshDomain=False,
-        )
-
-    assert plugin.installPipCalls == 1
-
-    assert plugin.installBinCalls == [
-        {
-            "args": [
-                "-j",
-                "3",
-            ]
-        }
-    ]
-
-    assert plugin.uninstallBinsCalls == 0
-    assert plugin.uninstallPipCalls == 0
-
-    assert installedState[
-        "installed"
-    ] is True
+    assert journal.rolledBack == 0 and journal.finished == 1
 
 
 def test_clear_cache_can_skip_domain_refresh(

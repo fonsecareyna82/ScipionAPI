@@ -26,12 +26,37 @@
 
 from pathlib import Path
 
+import pytest
+
 from app.backend.api.services import (
     plugin_devel_service as develModule,
 )
+from app.backend.api.services import plugin_install_journal as journalModule
 from app.backend.api.services.plugin_devel_service import (
     PluginDevelService,
 )
+
+
+class FakeJournal:
+    def __init__(self):
+        self.rolledBack = 0
+        self.finished = 0
+
+    def rollBack(self, log=lambda message: None):
+        self.rolledBack += 1
+        return {"removedPackages": ["scipion-em-test"], "restoredPackages": [], "notRestored": [],
+                "removedBinaries": ["test-bin-1.0"], "removedEnvironments": ["/conda/envs/test-env"], "errors": []}
+
+    def finish(self):
+        self.finished += 1
+
+
+@pytest.fixture(autouse=True)
+def fakeJournal(monkeypatch):
+    """The environment is never recorded nor rolled back for real here."""
+    journal = FakeJournal()
+    monkeypatch.setattr(journalModule.InstallJournal, "begin", classmethod(lambda cls, taskId, subject: journal))
+    return journal
 
 
 def test_RunCommandWritesDirectlyToLogWithoutStdoutPipe(
@@ -269,3 +294,25 @@ def test_DevelInstallerPrefersScipionFromCurrentPythonEnvironment(monkeypatch, t
     monkeypatch.setattr(develModule.shutil, "which", lambda name: "/other-conda-env/bin/" + name)
 
     assert PluginDevelService()._resolveScipionCommand() == [str(current_scipion)]
+
+
+def test_AFailedDevelInstallationGoesBackToTheEnvironmentItFound(tmp_path, monkeypatch, fakeJournal):
+    pluginPath = tmp_path / "scipion-em-test"
+    pluginPath.mkdir()
+    (pluginPath / "pyproject.toml").write_text('[project]\nname = "scipion-em-test"\nversion = "1.0.0"\n',
+                                               encoding="utf-8")
+    service = PluginDevelService(manifestPath=tmp_path / "devel_plugins.json")
+
+    def failingInstaller(command, cwd=None, taskId=None):
+        raise RuntimeError("the binaries could not be built")
+
+    monkeypatch.setattr(service, "_runCommand", failingInstaller)
+    monkeypatch.setattr(service, "_registerDevelPlugin",
+                        lambda *args, **kwargs: pytest.fail("a failed plugin is not registered"))
+
+    with pytest.raises(RuntimeError) as error:
+        service.installDevelPlugin(str(pluginPath))
+
+    assert "the binaries could not be built" in str(error.value)
+    assert "removed the conda environments test-env" in str(error.value)
+    assert fakeJournal.rolledBack == 1 and fakeJournal.finished == 1

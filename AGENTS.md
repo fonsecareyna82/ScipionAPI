@@ -340,6 +340,30 @@ Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-
 - **Streaming runs take no slot** (`runsInStreaming`): a protocol that `worksInStreaming()` whose parent is still running/launched/scheduled, or an import with `dataStreaming`. They mostly wait for data; counting them held any chain of more than "limit" streaming protocols launched one by one in `launched` for the whole session. A streaming-capable protocol on finished inputs counts like any other.
 - Decided once per run and stored in the runtime metadata (`mapper.setProtocolRuntimeValue`, an atomic jsonb update): `slotExempt` (excluded from the count), and `waitingForSlot` `{inUse, limit}` while it waits, cleared when it starts. The graph and the active-protocols poll send `waitingForSlot` for launched protocols; the node's status badge reads "launched · waiting for a run slot" with the reason in its tooltip.
 
+## Installing plugins: a failure leaves the environment as it was
+
+The journal is `services/plugin_install_journal.py`.
+
+**The snapshot.**
+- `PluginService.installPlugin` (a new plugin or an update), `installPluginBinary` and `PluginDevelService.installDevelPlugin` first write `InstallJournal.begin`, next to the task's log (`logs/plugin-tasks/*.install-journal.json`).
+- It records the pip packages and their versions (`pip list`), the entries of `pwem.Config.EM_ROOT` and the conda environments (`conda env list --json`).
+- If it cannot be taken, the installation goes on with a warning in the task, and a failure is then not rolled back.
+
+**On failure, `rollBack` puts the environment back:**
+- pip: it uninstalls the packages that were not there, and reinstalls with `--no-deps` the version of each one that changed (an updated plugin goes back to its previous release). pip, setuptools and wheel are never touched;
+- binaries: it removes only the new entries of the EM folder, a link as a link (never its target);
+- conda: it removes only the new environments.
+- The task's error ends with `describeRollback`'s line. "ROLLBACK INCOMPLETE: …" names what could not be put back (a package without network, say), and that is not retried.
+- The old rollback, `uninstallPlugin` (all the plugin's binaries, following links, only for new plugins), is no longer used for this.
+
+**After the installation.** The journal is deleted when the installation ends, well or rolled back. One left behind belongs to a plugin worker that was stopped mid-install: `runtime._recoverInterruptedPluginTasks` (when the plugin worker starts) calls `rollBackUnfinished`, skipping journals whose pid is still alive, and logs the summary to the task.
+
+**Tasks.**
+- A batch (`installPluginsBatchTask`) goes on after a failure (that plugin rolled back).
+- It bumps the plugins revision and triggers the reload as usual, then fails listing each failed plugin and why ("Installed N of M… Failed: a: … | b: …"). The installed ones stay.
+- A single install bumps the revision on failure too.
+- Tests never touch the real environment: `test_plugin_install_journal.py` refuses any real `pip`/`conda` call, and the plugin service and devel tests replace the journal.
+
 ## Protocol tags
 
 Tags belong to a project. Every collaborator of a shared project may edit them. Titles are unique per project, in any case (`ux_protocol_tags_project_lower_title`). Tag ids are global, and the client may choose them.

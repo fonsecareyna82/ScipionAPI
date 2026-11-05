@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from app.backend.api.services.plugin_task_log import (
     appendPluginTaskLog,
     getPluginTaskLogPath,
+    writePluginTaskMessage,
     writePluginTaskStep,
 )
 
@@ -447,7 +448,31 @@ class PluginDevelService:
         if taskId:
             writePluginTaskStep(taskId, "Running Scipion devel plugin installer...")
 
-        self._runCommand(command, cwd=resolvedPath, taskId=taskId)
+        # A failed installation (its binaries, often) goes back to the environment as it was
+        from app.backend.api.services.plugin_install_journal import InstallJournal, describeRollback
+
+        try:
+            journal = InstallJournal.begin(taskId, "devel-%s" % pipName)
+        except Exception:
+            logger.warning("Could not record the environment before installing devel %s", pipName, exc_info=True)
+            journal = None
+        try:
+            self._runCommand(command, cwd=resolvedPath, taskId=taskId)
+        except Exception as error:
+            if journal is None:
+                raise
+            try:
+                summary = describeRollback(journal.rollBack(
+                    log=lambda message: writePluginTaskMessage(taskId, message) if taskId else None))
+            except Exception as rollbackError:
+                summary = "ROLLBACK INCOMPLETE: %s" % rollbackError
+            finally:
+                journal.finish()
+            if taskId:
+                writePluginTaskMessage(taskId, summary)
+            raise RuntimeError("%s. %s" % (error, summary)) from error
+        if journal is not None:
+            journal.finish()
 
         manifestItem = self._registerDevelPlugin(resolvedPath, pipName, taskId)
 

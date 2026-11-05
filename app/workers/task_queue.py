@@ -196,12 +196,17 @@ def installPluginTask(self, pip_name: str, skip_binaries: bool = False) -> str:
         installStep = "Installing plugin without binaries..." if skip_binaries else "Installing plugin..."
         self.update_state(state="PROGRESS", meta={"step": installStep})
         writePluginTaskStep(taskId, installStep)
-        service.installPlugin(
-            pip_name,
-            taskId=taskId,
-            skipBinaries=skip_binaries,
-            refreshDomain=False,
-        )
+        try:
+            service.installPlugin(
+                pip_name,
+                taskId=taskId,
+                skipBinaries=skip_binaries,
+                refreshDomain=False,
+            )
+        except Exception:
+            # The rollback may have left something changed: the API and the workers look again
+            bumpPluginsRevision()
+            raise
 
         self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
         writePluginTaskStep(taskId, "Refreshing plugin metadata...")
@@ -271,9 +276,9 @@ def installPluginsBatchTask(self, pip_names: List[str], skip_binaries: bool = Fa
                 installed.append(pipName)
                 writePluginTaskStep(taskId, f"Completed {index}/{total}: {pipName}")
             except Exception as exc:
+                # Rolled back by installPlugin; the others are installed all the same
                 failed.append({"pipName": pipName, "error": str(exc)})
                 writePluginTaskStep(taskId, f"Failed {index}/{total}: {pipName}: {exc}")
-                raise
 
         self.update_state(state="PROGRESS", meta={"step": "Refreshing plugin metadata..."})
         writePluginTaskStep(taskId, "Refreshing plugin metadata...")
@@ -298,6 +303,12 @@ def installPluginsBatchTask(self, pip_names: List[str], skip_binaries: bool = Fa
                 "failed": failed,
             },
         )
+        if failed:
+            # The task ends failed, naming each plugin that failed and why (the installed ones stay)
+            raise RuntimeError(
+                "Installed %d of %d plugin(s)%s. Failed: %s" % (
+                    len(installed), total, " without binaries" if skip_binaries else "",
+                    " | ".join("%s: %s" % (item["pipName"], item["error"]) for item in failed)))
         writePluginTaskStep(taskId, "Completed")
         suffix = " without binaries" if skip_binaries else ""
         return f"Installed {len(installed)} plugin(s){suffix}."
