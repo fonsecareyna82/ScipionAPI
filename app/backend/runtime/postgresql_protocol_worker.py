@@ -89,6 +89,7 @@ from app.backend.runtime.protocol_identity import (
     ProtocolIdentityResolver,
 )
 from app.backend.runtime.web_interactive_picker import webInteractivePickers
+from app.backend.runtime.protocol_run_record import ProtocolRunRecord, endStatus
 from app.backend.runtime.protocol_status_sync_service import (
     RuntimeProtocolStatusSyncService,
     StaleCoordinatorRunError,
@@ -808,6 +809,8 @@ class RuntimePostgresqlProtocolWorker:
         self.coordinatorRunId = str(coordinatorRunId or "").strip() or None
         self._heartbeatStopEvent = None
         self._heartbeatThread = None
+        # This run in the protocol runs record (who used what computing), while it runs
+        self._runRecord = None
         self.project = None
         self.protocol = None
         self.runtimeMapper = None
@@ -3525,6 +3528,32 @@ class RuntimePostgresqlProtocolWorker:
             ),
         }
 
+    def _startRunRecord(self) -> None:
+        """Open this run in the protocol runs record (never stops the run when it cannot)."""
+        db = getattr(self.mapper, "db", None)
+        if db is None:
+            return
+        try:
+            context = self.getProtocolExecutionContext()
+            streaming = self.runsInStreaming()
+        except Exception:
+            logger.warning("Could not read who launched protocol %s", self.protocolId, exc_info=True)
+            context, streaming = {}, False
+        self._runRecord = ProtocolRunRecord.start(
+            db, projectId=self.projectId, projectPath=getattr(self.project, "path", None),
+            protocolId=self.protocolId, protocol=self.protocol, userId=context.get("userId"),
+            executionId=context.get("executionId"), coordinatorRunId=self.coordinatorRunId, streaming=streaming)
+
+    def _endRunRecord(self, raised: bool) -> None:
+        record, self._runRecord = self._runRecord, None
+        if record is None:
+            return
+        try:
+            status = self.protocol.getStatus()
+        except Exception:
+            status = None
+        record.end(endStatus(status, raised))
+
     def getMaxConcurrentRunsPerUser(
             self,
     ) -> int:
@@ -3887,7 +3916,7 @@ class RuntimePostgresqlProtocolWorker:
         (see RuntimeProtocolStopService), which is unreachable when the
         coordinator is the local host. This is purely additive metadata.
         """
-        if not self.coordinatorRunId or self.mapper is None:
+        if self.mapper is None or (not self.coordinatorRunId and self._runRecord is None):
             return
 
         intervalSeconds = max(
@@ -3906,7 +3935,9 @@ class RuntimePostgresqlProtocolWorker:
 
         def heartbeatLoop() -> None:
             while not stopEvent.wait(intervalSeconds):
-                if not self._coordinatorHeartbeatTick():
+                if self._runRecord is not None:
+                    self._runRecord.touch()
+                if self.coordinatorRunId and not self._coordinatorHeartbeatTick():
                     return
 
         thread = threading.Thread(
@@ -4291,15 +4322,19 @@ class RuntimePostgresqlProtocolWorker:
 
         outputSetAdapter.install()
 
+        self._startRunRecord()
         self._startCoordinatorHeartbeat()
 
+        raised = True
         try:
             # Interactive pickers open in the web instead of a desktop window.
             with webInteractivePickers():
                 self.protocol.run()
+            raised = False
 
         finally:
             self._stopCoordinatorHeartbeat()
+            self._endRunRecord(raised)
             try:
                 elapsedSnapshot = (
                     elapsedStatusService

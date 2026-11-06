@@ -4112,3 +4112,48 @@ def test_OtherNonStreamingProtocolsStillWaitForTheirInputsProtocolToFinish():
     readiness = buildWorker(streaming=False, parentStatus="running", validationErrors=[]).getReadinessState()
 
     assert [item["reason"] for item in readiness["pendingParents"]] == ["input_parent_not_finished"]
+
+
+def test_ARunRecordKeepsTheHeartbeatGoingWithoutACoordinator():
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+    worker.coordinatorRunId = None
+    worker._runRecord = object()
+
+    worker._startCoordinatorHeartbeat()
+    thread = worker._heartbeatThread
+    assert thread is not None
+
+    worker._stopCoordinatorHeartbeat()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+def test_TheRunRecordIsClosedWithTheProtocolsStatus():
+    ended = []
+
+    class Record:
+        def end(self, status):
+            ended.append(status)
+
+    class ProtocolStub:
+        def getStatus(self):
+            return "finished"
+
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.protocol = ProtocolStub()
+    worker._runRecord = Record()
+
+    worker._endRunRecord(raised=False)
+    worker._endRunRecord(raised=False)
+
+    assert ended == ["finished"] and worker._runRecord is None
+
+
+def test_WithoutADatabaseNoRunIsRecorded():
+    worker = RuntimePostgresqlProtocolWorker(projectId=1, protocolId=30)
+    worker.mapper = object()
+
+    worker._startRunRecord()
+
+    assert worker._runRecord is None

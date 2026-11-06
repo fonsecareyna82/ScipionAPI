@@ -17,7 +17,7 @@ PERMISSIONS: Dict[str, str] = {
     "roles.manage": "Create roles and choose their permissions",
     "groups.manage": "Create groups and manage their members",
     "audit.view": "See the audit log",
-    "storage.view": "See the disk each user, group and project uses, and measure it again",
+    "storage.view": "See the disk and the computing each user, group and project uses, and measure the disk again",
     # Projects
     "projects.create": "Create and import projects",
     "projects.share": "Share own projects with users and groups",
