@@ -1,4 +1,5 @@
-"""A facility's samples (their NZ code), the grid boxes they were vitrified into and the grids in each box.
+"""A facility's samples (by the facility's own code, in any format), the grid boxes they were vitrified into and the
+grids in each box.
 
 A sample is saved with its whole tree at once. A box or grid that exists keeps its id (a session's DATA
 will point to its grid), so the tree a client sends names them by id; one without an id is new, and the
@@ -69,7 +70,7 @@ class FacilitySampleService:
     def _sampleValues(self, payload: Dict[str, Any], sampleId: Optional[int]) -> Dict[str, Any]:
         code = _text(payload, "code", 40)
         if not code:
-            raise _badRequest("A sample needs a code (e.g. NZ251)")
+            raise _badRequest("A sample needs a code")
         sameCode = self.mapper.findSampleIdByCode(code)
         if sameCode is not None and sameCode != sampleId:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A sample coded %s exists" % code)
