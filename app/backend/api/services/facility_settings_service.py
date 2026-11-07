@@ -5,7 +5,7 @@ and how its user and group see it, how far a detector's calibration may be from 
 taken for stalled, and how often the watcher looks at the folders.
 """
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
@@ -17,6 +17,8 @@ DEFAULTS = {
     # How long the facility keeps a session's data once it finished (0: not said), told to its users
     "rawRetentionDays": 0,
     "processedRetentionDays": 0,
+    # The days before a session's data go when its user (and the group's PI) are mailed a notice
+    "retentionNoticeDays": [30, 7, 1],
     # How the users take their data home (iRODS, rsync, a disk...), shown in their sessions
     "downloadInstructions": "",
     # Policies. Who owns a DATA's project: the staff who made the session (the user and group see it at
@@ -38,11 +40,13 @@ DEFAULTS = {
 }
 TEXT_LIMIT = 5000
 MAX_RETENTION_DAYS = 36500
+MAX_NOTICES = 5
 # How each setting is checked: ("int" | "number", lowest, highest), ("choice", options) or ("text", length)
 RULES = {
     "sessionNamePattern": ("text", conventions.PATTERN_LIMIT),
     "rawRetentionDays": ("int", 0, MAX_RETENTION_DAYS),
     "processedRetentionDays": ("int", 0, MAX_RETENTION_DAYS),
+    "retentionNoticeDays": ("days", 1, 365),
     "downloadInstructions": ("text", TEXT_LIMIT),
     "projectOwner": ("choice", ("staff", "user")),
     "projectShareLevel": ("choice", ("view", "work")),
@@ -58,6 +62,25 @@ RULES = {
 
 def _badRequest(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def noticeDays(value: Any, lowest: int = 1, highest: int = 365) -> List[int]:
+    """Days before a date, from a list or a text like "30, 7, 1": each once, the furthest first."""
+    parts = value if isinstance(value, (list, tuple)) else str(value or "").replace(";", ",").split(",")
+    days = set()
+    for part in parts:
+        if str(part).strip() == "":
+            continue
+        try:
+            day = int(str(part).strip())
+        except ValueError:
+            raise _badRequest("The notice days are whole numbers separated by commas")
+        if not lowest <= day <= highest:
+            raise _badRequest("A notice goes %d to %d days before" % (lowest, highest))
+        days.add(day)
+    if len(days) > MAX_NOTICES:
+        raise _badRequest("Up to %d notices" % MAX_NOTICES)
+    return sorted(days, reverse=True)
 
 
 class FacilitySettingsService:
@@ -100,6 +123,8 @@ class FacilitySettingsService:
                     raise _badRequest("%s is a number" % key)
                 if not rule[1] <= values[key] <= rule[2]:
                     raise _badRequest("%s is %s to %s" % (key, rule[1], rule[2]))
+            elif kind == "days":
+                values[key] = noticeDays(payload[key], rule[1], rule[2])
             elif kind == "choice":
                 values[key] = str(payload[key])
                 if values[key] not in rule[1]:

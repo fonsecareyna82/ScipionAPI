@@ -29,9 +29,9 @@ CTF_LIMIT_FIELDS = ("ctfMinDefocus", "ctfMaxDefocus", "ctfMaxResolution")
 SESSION_IMAGE_OWNERS = ("session", "dataset")
 # What a session's user (and the group's PI) see of it: none of what is the staff's
 USER_SESSION_FIELDS = ("id", "name", "microscopeName", "technique", "status", "groupName", "userName", "userEmail",
-                       "bookingRef", "scheduledOn", "startedAt", "finishedAt", "userNotes", "images")
+                       "bookingRef", "scheduledOn", "startedAt", "finishedAt", "userNotes", "images", "retention")
 USER_DATASET_FIELDS = ("id", "kind", "number", "folder", "grid", "detectorName", "watch", "movieCount", "movieBytes",
-                       "firstMovieAt", "lastMovieAt", "acquisition", "projectId", "images", "navigation")
+                       "firstMovieAt", "lastMovieAt", "acquisition", "projectId", "images", "navigation", "atlas")
 USER_SAMPLE_FIELDS = ("id", "code", "description", "groupName", "ownerName", "ownerEmail", "boxes", "images",
                       "createdAt")
 # A folder name EPU and every file system take
@@ -78,10 +78,22 @@ def watchState(session: Dict[str, Any], dataset: Dict[str, Any], stallMinutes: f
     receiving / stalled (no movie for stallMinutes, the facility's) once movies arrived, and acquired once the session no
     longer acquires; while none did: idle (the session does not acquire), noOffload (its microscope has no
     offload folder), pending (not looked at yet), noFolder (the microscope has not made it) or waiting.
+    The ATLAS: atlasFound once it has files, else as a DATA without movies (None once not acquiring).
     """
+    acquiring = session["status"] == "acquiring"
+    if dataset["kind"] == "atlas":
+        # Its files, not movies: whether the microscope made it and wrote in it
+        if (dataset.get("atlas") or {}).get("files"):
+            return "atlasFound"
+        if not acquiring:
+            return None
+        if not session.get("offloadPath"):
+            return "noOffload"
+        if dataset.get("scannedAt") is None:
+            return "pending"
+        return "noFolder" if dataset.get("folderFound") is False else "waiting"
     if dataset["kind"] != "data":
         return None
-    acquiring = session["status"] == "acquiring"
     if dataset.get("movieCount"):
         if not acquiring:
             return "acquired"
@@ -299,6 +311,9 @@ class FacilitySessionService:
         datasets = self._datasets(payload.get("datasets") or [], existing, microscope, values["name"])
         saved = self.getSession(self.mapper.saveSession(sessionId, isNew, values, datasets, createdBy=userId))
         if saved["status"] == "acquiring":
+            # Its grids are in the microscope now
+            if self.mapper.markGrids(sessionId):
+                saved = self.getSession(sessionId)
             # Its folders are looked at now, not at the watcher's next turn
             from app.backend.api.services.facility_session_watcher import requestWatch
 
@@ -334,10 +349,16 @@ class FacilitySessionService:
                 # Whether its report is there, without the reason of a failure (it names the server's folders)
                 shown["navigation"] = {key: shown["navigation"][key] for key in ("state", "finishedAt", "sizeBytes")}
             seen["datasets"].append(shown)
-        finished = session.get("finishedAt")
-        for key, days in (("rawKeptUntil", settings["rawRetentionDays"]),
-                          ("processedKeptUntil", settings["processedRetentionDays"])):
-            seen[key] = (finished + datetime.timedelta(days=int(days))).isoformat() if finished and days else None
+        # Until when its data are kept (its own dates or the facility's days), and whether they were deleted
+        from app.backend.api.services import facility_retention as retention
+
+        on = retention.today(settings["timezone"])
+        seen["retention"] = {}
+        for kind in retention.KINDS:
+            state = retention.retentionState(session, kind, settings, on)
+            seen["retention"][kind] = {key: state[key] for key in ("state", "until", "daysLeft", "deletedAt")}
+        seen["rawKeptUntil"] = seen["retention"]["raw"]["until"]
+        seen["processedKeptUntil"] = seen["retention"]["processed"]["until"]
         return seen
 
     @staticmethod
@@ -378,6 +399,34 @@ class FacilitySessionService:
         from app.backend.api.services.facility_session_watcher import requestWatch
 
         requestWatch()
+        return self.getSession(int(dataset["sessionId"]))
+
+    def rereadAcquisition(self, datasetId: int) -> Dict[str, Any]:
+        """Read again what a DATA's first movie says (after fixing a detector's metadata name or calibration);
+        answers the session. Its project, if made, keeps what it was made with."""
+        from pathlib import Path
+
+        from app.backend.api.services import facility_session_watcher as watcher
+        from app.backend.mapper.facility_microscope_mapper import FacilityMicroscopePostgresqlMapper
+
+        dataset = self.mapper.getDatasetToRead(datasetId)
+        if dataset is None or dataset["kind"] != "data":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DATA not found")
+        if not dataset["offloadPath"]:
+            raise _badRequest("Its microscope has no offload folder")
+        root = watcher.dataFolder(dataset["offloadPath"], dataset["folder"])
+        scan = watcher.scanFolder(root, {}, 0.0, fullScanSeconds=0.0, technique=dataset.get("technique") or "spa")
+        if not scan["exists"]:
+            raise _badRequest("Its folder is not there: %s" % root)
+        if not scan["count"]:
+            raise _badRequest("Its folder has no movie yet")
+        tolerance = float(FacilitySettingsService(self.mapper.db).values()["calibrationTolerancePercent"]) / 100
+        microscope = FacilityMicroscopePostgresqlMapper(self.mapper.db).getMicroscope(int(dataset["microscopeId"]))
+        acquisition = watcher.readFirstMovie(Path(scan["first"]), root, (microscope or {}).get("detectors") or [],
+                                             dataset["detectorId"], tolerance)
+        if acquisition is None:
+            raise _badRequest("The metadata of its first movie is not there yet")
+        self.mapper.saveAcquisition(datasetId, acquisition)
         return self.getSession(int(dataset["sessionId"]))
 
     def deleteSession(self, sessionId: int) -> Dict[str, Any]:

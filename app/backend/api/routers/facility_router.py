@@ -21,6 +21,7 @@ from app.backend.api.services.facility_settings_service import FacilitySettingsS
 from app.backend.api.services.facility_alerts import FacilityAlerts
 from app.backend.api.services.facility_mail import FacilityMail
 from app.backend.api.services.facility_room import FacilityRoom
+from app.backend.api.services.facility_retention import FacilityRetention
 from app.backend.api.services.facility_booking_service import FacilityBookingService, isBookingStaff
 from app.backend.api.services import facility_navigation as navigation
 from app.backend.database import getMapper
@@ -447,6 +448,76 @@ def processDataset(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMap
     return session
 
 
+@router.post("/datasets/{datasetId}/read-acquisition", dependencies=[Depends(requireFacilityMode)])
+def rereadDatasetAcquisition(datasetId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                             currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Read again what a DATA's first movie says (e.g. after fixing a detector); answers the session."""
+    session = FacilitySessionService(mapper.db).rereadAcquisition(datasetId)
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", session["id"], session["name"],
+                {"acquisition": "read again", "datasetId": datasetId})
+    return session
+
+
+# Retention: how long the finished sessions' data are kept, and what was deleted -------------------------
+class RetentionDatesPayload(BaseModel):
+    # The session's own dates (None: the facility's days); a key left out keeps what there is
+    rawKeepUntil: Optional[date] = None
+    processedKeepUntil: Optional[date] = None
+
+
+@router.get("/retention", dependencies=[Depends(requireFacilityMode)])
+def listFacilityRetention(mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requireFacilityStaff)) -> Dict[str, Any]:
+    """The finished sessions, with until when their raw data and projects are kept; the soonest first."""
+    return FacilityRetention(mapper.db).listRetention()
+
+
+@router.put("/sessions/{sessionId}/retention", dependencies=[Depends(requireFacilityMode)])
+def saveSessionRetention(sessionId: int, payload: RetentionDatesPayload,
+                         mapper: PostgresqlFlatMapper = Depends(getMapper),
+                         currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    values = payload.dict(exclude_unset=True)
+    session = FacilityRetention(mapper.db).setKeepUntil(sessionId, values)
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"],
+                {"keepUntil": {key: str(value) if value else None for key, value in values.items()}})
+    return session
+
+
+@router.post("/sessions/{sessionId}/retention/raw-deleted", dependencies=[Depends(requireFacilityMode)])
+def markSessionRawDeleted(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Record that the session's raw data were deleted where the facility keeps them (ScipionWeb deletes none)."""
+    session = FacilityRetention(mapper.db).markRawDeleted(sessionId, currentUser.get("id"))
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"],
+                {"rawData": "recorded as deleted"})
+    return session
+
+
+@router.delete("/sessions/{sessionId}/retention/raw-deleted", dependencies=[Depends(requireFacilityMode)])
+def unmarkSessionRawDeleted(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                            currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Undo a record of deleted raw data made by mistake."""
+    session = FacilityRetention(mapper.db).unmarkRawDeleted(sessionId)
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"],
+                {"rawData": "no longer recorded as deleted"})
+    return session
+
+
+@router.post("/sessions/{sessionId}/retention/delete-projects", dependencies=[Depends(requireFacilityMode)])
+def deleteSessionProjects(sessionId: int, mapper: PostgresqlFlatMapper = Depends(getMapper),
+                          currentUser: dict = Depends(requireSampleKeeper)) -> Dict[str, Any]:
+    """Delete the projects of the session's DATA (each one the user can manage); answers what could not go."""
+    result = FacilityRetention(mapper.db).deleteProjects(sessionId, currentUser)
+    for project in result["deleted"]:
+        recordAudit(mapper, currentUser, "projects.deleted", "project", project["id"], project["name"],
+                    {"facilitySession": result["session"]["name"]})
+    recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, result["session"]["name"],
+                {"projects": "deleted" if not result["failed"] else "some could not be deleted",
+                 "deleted": [project["id"] for project in result["deleted"]],
+                 "failed": [project["id"] for project in result["failed"]]})
+    return result
+
+
 # Settings: the facility's own conventions ---------------------------------------------------------------
 class SettingsPayload(BaseModel):
     # The pattern of a session's name, e.g. {date:%Y_%m_%d}_{user}_{id:06d}
@@ -454,6 +525,8 @@ class SettingsPayload(BaseModel):
     # Days the data are kept once the session finished (0: not said), and how to take them home
     rawRetentionDays: Optional[int] = None
     processedRetentionDays: Optional[int] = None
+    # The days before those dates when the session's user (and the group's PI) are mailed a notice
+    retentionNoticeDays: Optional[List[int]] = None
     downloadInstructions: Optional[str] = None
     # Policies (the CNB's by default): who owns a DATA's project and how its user and group see it, the
     # calibration's tolerance (%), the minutes a DATA may go without movies, the watcher's seconds between looks

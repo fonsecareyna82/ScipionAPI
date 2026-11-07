@@ -8,7 +8,9 @@ import pytest
 
 from app.backend.api.services.facility_acquisition_reader import metadataFileOf, readAcquisition
 from app.backend.api.services.facility_session_service import watchState
-from app.backend.api.services.facility_session_watcher import isMovie, lastMovieAt, scanFolder
+from app.backend.api.services.facility_session_watcher import (
+    ATLAS_SCAN_SECONDS, isMovie, lastMovieAt, scanAtlas, scanFolder,
+)
 
 EPU = Path(__file__).resolve().parents[4] / "resources" / "epu"
 # EPU 2.6 on a Glacios with a Falcon 3 (EMPIAR-11502)
@@ -141,7 +143,41 @@ def test_MoviesInTheFolderItselfCountTooAndAMissingFolderIsSaid(tmp_path):
 ])
 def test_EachDataSaysWhereItsAcquisitionIs(session, dataset, state):
     assert watchState(session, dict(dataset, kind="data")) == state
-    assert watchState(session, dict(dataset, kind="atlas")) is None
+
+
+@pytest.mark.parametrize("session, dataset, state", [
+    ({"status": "acquiring", "offloadPath": "/mnt"}, {"atlas": {"files": 12}}, "atlasFound"),
+    ({"status": "finished", "offloadPath": "/mnt"}, {"atlas": {"files": 12}}, "atlasFound"),
+    ({"status": "finished", "offloadPath": "/mnt"}, {"scannedAt": "t", "folderFound": False}, None),
+    ({"status": "acquiring", "offloadPath": ""}, {}, "noOffload"),
+    ({"status": "acquiring", "offloadPath": "/mnt"}, {"scannedAt": None}, "pending"),
+    ({"status": "acquiring", "offloadPath": "/mnt"}, {"scannedAt": "t", "folderFound": False}, "noFolder"),
+    ({"status": "acquiring", "offloadPath": "/mnt"}, {"scannedAt": "t", "folderFound": True,
+                                                      "atlas": {"files": 0}}, "waiting"),
+])
+def test_TheAtlasSaysWhetherTheMicroscopeMadeIt(session, dataset, state):
+    assert watchState(session, dict(dataset, kind="atlas")) == state
+
+
+def test_AnAtlasFolderIsCountedAndLookedAtAgainOnlyNowAndThen(tmp_path):
+    root = tmp_path / "S_ATLAS"
+    atlas = root / "Sample1" / "Atlas"
+    atlas.mkdir(parents=True)
+    (atlas / "Atlas_1.mrc").write_bytes(b"\0" * 100)
+    (atlas / "Atlas_1.jpg").write_bytes(b"\0" * 20)
+    (root / "ScreeningSession.dm").write_bytes(b"\0" * 5)
+
+    found = scanAtlas(root, {}, now=1000.0)
+
+    assert (found["exists"], found["files"], found["bytes"]) == (True, 3, 125)
+    assert found["newestAt"] is not None
+    # Found: not read again within ATLAS_SCAN_SECONDS, then read again
+    assert scanAtlas(root, found, now=1000.0 + ATLAS_SCAN_SECONDS - 1) is None
+    assert scanAtlas(root, found, now=1000.0 + ATLAS_SCAN_SECONDS)["files"] == 3
+    # Not made yet: looked at every turn
+    missing = scanAtlas(tmp_path / "T_ATLAS", {}, now=1000.0)
+    assert missing == {"exists": False, "scannedAt": 1000.0}
+    assert scanAtlas(tmp_path / "T_ATLAS", missing, now=1001.0) is not None
 
 
 def test_ATomographyDataCountsTheTiltMoviesOfEachSeriesAndReadsItsMdoc(tmp_path):

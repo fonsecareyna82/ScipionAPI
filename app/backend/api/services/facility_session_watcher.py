@@ -37,6 +37,10 @@ NOT_MOVIES = ("countref", "gain", "dark")
 TOMO_MOVIE_EXTENSIONS = MOVIE_EXTENSIONS + (".mrc",)
 # How deep under a DATA folder movies are looked for (EPU: Images-Disc1/GridSquare_*/Data; tomography: <ts>/frames)
 MAX_DEPTH = 4
+# An ATLAS folder found is looked at again this often (EPU adds to it while it builds the atlas)
+ATLAS_SCAN_SECONDS = 300.0
+# Files counted at most in an ATLAS folder (one is a few hundred)
+ATLAS_FILE_LIMIT = 100000
 
 _wakeUp = threading.Event()
 _startLock = threading.Lock()
@@ -151,8 +155,8 @@ def _tiltSeriesMdoc(movie: Path, root: Path) -> Optional[Path]:
         folder = folder.parent
 
 
-def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
-                 detectorId: Optional[int], tolerance: float = 0.10) -> Optional[Dict[str, Any]]:
+def readFirstMovie(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
+                   detectorId: Optional[int], tolerance: float = 0.10) -> Optional[Dict[str, Any]]:
     """What the first movie's metadata says; None while EPU has not written it yet."""
     metadata = metadataFileOf(firstMovie) or _tiltSeriesMdoc(firstMovie, root)
     if metadata is None:
@@ -204,16 +208,72 @@ def watchSessions(db, now: Optional[float] = None) -> int:
                 microscopeId = int(dataset["microscopeId"])
                 if microscopeId not in detectorsOf:
                     detectorsOf[microscopeId] = (microscopes.getMicroscope(microscopeId) or {}).get("detectors") or []
-                acquisition = _acquisition(Path(scan["first"]), root, detectorsOf[microscopeId], dataset["detectorId"],
-                                           tolerance)
+                acquisition = readFirstMovie(Path(scan["first"]), root, detectorsOf[microscopeId],
+                                             dataset["detectorId"], tolerance)
             sessions.saveScan(dataset["id"], scan["count"], scan["bytes"], _when(scan["oldest"]),
                               lastMovieAt(scan, dataset, now), scan["state"], acquisition)
             looked += 1
+        _watchAtlases(sessions, now)
+        _markGrids(sessions)
         _processPending(db)
         _refreshAlerts(db)
+        _sendRetentionNotices(db)
     finally:
         sessions.unlockWatch()
     return looked
+
+
+def scanAtlas(root: Path, state: Dict[str, Any], now: float, everySeconds: float = ATLAS_SCAN_SECONDS) -> Optional[Dict[str, Any]]:
+    """What an ATLAS folder holds: its files, their size and the newest's time, down to MAX_DEPTH (EPU writes
+    Sample*/Atlas/ in it). None when it is not time to look again (found already, looked at recently)."""
+    if state.get("files") and now - float(state.get("scannedAt") or 0) < everySeconds:
+        return None
+    if not root.is_dir():
+        return {"exists": False, "scannedAt": now}
+    files, size, newest = 0, 0, None
+    for folder in _movieFolders(root):
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_file(follow_symlinks=False):
+                        stat = entry.stat(follow_symlinks=False)
+                        files += 1
+                        size += stat.st_size
+                        newest = stat.st_mtime if newest is None else max(newest, stat.st_mtime)
+        except OSError:
+            continue
+        if files >= ATLAS_FILE_LIMIT:
+            break
+    return {"exists": True, "scannedAt": now, "files": files, "bytes": size,
+            "newestAt": _when(newest).isoformat() if newest else None}
+
+
+def _watchAtlases(sessions, now: float) -> None:
+    """Look at the ATLAS folders of the sessions acquiring (a failure here stops nothing else)."""
+    try:
+        for atlas in sessions.listWatchedAtlases():
+            if not atlas["offloadPath"] or not atlas["folder"]:
+                continue
+            found = scanAtlas(dataFolder(atlas["offloadPath"], atlas["folder"]), atlas["scanState"] or {}, now)
+            if found is not None:
+                sessions.saveAtlasScan(atlas["id"], found)
+    except Exception:
+        logger.warning("Could not look at the sessions' ATLAS folders", exc_info=True)
+
+
+def _markGrids(sessions) -> None:
+    """The grids of the sessions acquiring: loaded, and used once a movie of theirs came."""
+    try:
+        sessions.markGrids()
+    except Exception:
+        logger.warning("Could not update the grids' status", exc_info=True)
+
+
+def _sendRetentionNotices(db) -> None:
+    """Tell the users of finished sessions before their data go (at most hourly; a failure stops nothing)."""
+    from app.backend.api.services.facility_retention import sendNoticesNow
+
+    sendNoticesNow(db)
 
 
 def _processPending(db) -> None:

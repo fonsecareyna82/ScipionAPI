@@ -705,7 +705,13 @@ def test_AUserSeesTheirSessionsAndThePiThoseOfTheGroupWithoutWhatIsTheStaffs(fac
         assert "notes" not in seen["datasets"][1] and "Internal" not in str(seen)
         finished = datetime.datetime.fromisoformat(session["finishedAt"]) if isinstance(session["finishedAt"], str) \
             else session["finishedAt"]
-        assert seen["rawKeptUntil"] == (finished + datetime.timedelta(days=30)).isoformat()
+        # The day, in the facility's time zone, the finished day plus the facility's days
+        from app.backend.api.services.facility_retention import localDate
+        from app.backend.api.services.facility_settings_service import FacilitySettingsService
+
+        timezone = FacilitySettingsService(db).values()["timezone"]
+        assert seen["rawKeptUntil"] == (localDate(finished, timezone) + datetime.timedelta(days=30)).isoformat()
+        assert seen["retention"]["raw"]["state"] in ("kept", "due")
         assert mine["downloadInstructions"] == "Take your data with the iRODS ticket." and not mine["isPi"]
 
         asPi = sessions.sessionsOf({"id": pi})

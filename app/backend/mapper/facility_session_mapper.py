@@ -16,6 +16,7 @@ LIST_SESSIONS_SQL = """
            s."bookingRef", s."scheduledOn", s."startedAt", s."finishedAt", s.notes, s."createdBy",
            s."createdAt", s."updatedAt", m."offloadPath", s."templateId", s."autoProcess", s."oneProject",
            s."userNotes", s."ctfMinDefocus", s."ctfMaxDefocus", s."ctfMaxResolution",
+           s."rawKeepUntil", s."processedKeepUntil", s."rawDeletedAt", s."processedDeletedAt",
            """ + imagesJson("sessionId", "s.id") + """ AS images,
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT(
                          'id', d.id, 'kind', d.kind, 'number', d.number, 'gridId', d."gridId",
@@ -26,6 +27,11 @@ LIST_SESSIONS_SQL = """
                          'firstMovieAt', d."firstMovieAt", 'lastMovieAt', d."lastMovieAt", 'scannedAt', d."scannedAt",
                          'acquisition', d.acquisition, 'folderFound', (d."scanState"->>'exists')::BOOLEAN,
                          'projectId', d."projectId", 'processing', d.processing,
+                         -- What the watcher found in the ATLAS folder (its files, not movies)
+                         'atlas', CASE WHEN d.kind = 'atlas' AND d."scanState"->>'files' IS NOT NULL
+                                       THEN JSON_BUILD_OBJECT('files', (d."scanState"->>'files')::BIGINT,
+                                                              'bytes', (d."scanState"->>'bytes')::BIGINT,
+                                                              'newestAt', d."scanState"->>'newestAt') END,
                          'minutesSinceLastMovie', EXTRACT(EPOCH FROM NOW() - d."lastMovieAt") / 60,
                          'grid', CASE WHEN gr.id IS NULL THEN NULL ELSE JSON_BUILD_OBJECT(
                                      'gridNumber', gr."gridNumber", 'position', gr.position, 'gridType', gr."gridType",
@@ -74,6 +80,30 @@ LIST_WATCHED_DATASETS_SQL = """
       JOIN facility_microscopes m ON m.id = s."microscopeId"
      WHERE s.status = 'acquiring' AND d.kind = 'data'
      ORDER BY s.id, d.number
+"""
+
+# The ATLAS of the sessions acquiring: the watcher says whether the microscope made it, and what it holds
+LIST_WATCHED_ATLASES_SQL = """
+    SELECT d.id, d.folder, d."scanState", m."offloadPath"
+      FROM facility_session_datasets d
+      JOIN facility_sessions s ON s.id = d."sessionId"
+      JOIN facility_microscopes m ON m.id = s."microscopeId"
+     WHERE s.status = 'acquiring' AND d.kind = 'atlas'
+     ORDER BY s.id
+"""
+
+# A grid goes from the box to the microscope: loaded once its session acquires, used once a movie of it came
+# (a grid set by hand as discarded, or already used, stays)
+MARK_GRIDS_SQL = """
+    UPDATE facility_grids gr
+       SET status = target.status
+      FROM (SELECT d."gridId" AS id,
+                   CASE WHEN BOOL_OR(d."movieCount" > 0) THEN 'used' ELSE 'loaded' END AS status
+              FROM facility_session_datasets d
+              JOIN facility_sessions s ON s.id = d."sessionId"
+             WHERE d."gridId" IS NOT NULL AND s.status = 'acquiring' AND %(sessionId)s IN (0, s.id)
+             GROUP BY d."gridId") target
+     WHERE gr.id = target.id AND gr.status IN ('stored', 'loaded') AND gr.status <> target.status
 """
 
 # The DATA whose first movie was read and whose project is to be made: by itself when their session processes
@@ -216,6 +246,33 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
             "id": int(datasetId), "movieCount": int(movieCount), "movieBytes": int(movieBytes),
             "firstMovieAt": firstMovieAt, "lastMovieAt": lastMovieAt, "scanState": json.dumps(scanState),
             "acquisition": json.dumps(acquisition) if acquisition is not None else None})
+
+    def listWatchedAtlases(self) -> List[Dict[str, Any]]:
+        return [dict(row) for row in self.db.fetchAll(LIST_WATCHED_ATLASES_SQL) or []]
+
+    def saveAtlasScan(self, datasetId: int, scanState: Dict[str, Any]) -> None:
+        self.db.execute('UPDATE facility_session_datasets SET "scannedAt" = NOW(), "scanState" = %s::JSONB '
+                        'WHERE id = %s', (json.dumps(scanState), int(datasetId)))
+
+    def markGrids(self, sessionId: Optional[int] = None) -> int:
+        """Move the grids of the sessions acquiring (or of one) to loaded, and to used once a movie of theirs
+        came; answers how many changed."""
+        cursor = self.db.execute(MARK_GRIDS_SQL, {"sessionId": int(sessionId or 0)})
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
+    def getDatasetToRead(self, datasetId: int) -> Optional[Dict[str, Any]]:
+        """A DATA with what reading its first movie again needs."""
+        row = self.db.fetchOne('SELECT d.id, d."sessionId", d.kind, d.folder, d."detectorId", d."movieCount", '
+                               's.technique, s."microscopeId", m."offloadPath" FROM facility_session_datasets d '
+                               'JOIN facility_sessions s ON s.id = d."sessionId" '
+                               'JOIN facility_microscopes m ON m.id = s."microscopeId" WHERE d.id = %s',
+                               (int(datasetId),))
+        return dict(row) if row else None
+
+    def saveAcquisition(self, datasetId: int, acquisition: Optional[Dict[str, Any]]) -> None:
+        """Replace what a DATA's first movie said (None: not read; the watcher reads it at its next look)."""
+        self.db.execute("UPDATE facility_session_datasets SET acquisition = %s::JSONB WHERE id = %s",
+                        (json.dumps(acquisition) if acquisition is not None else None, int(datasetId)))
 
     # Processing ------------------------------------------------------------------------------
     def listDatasetsToProcess(self) -> List[Dict[str, Any]]:
