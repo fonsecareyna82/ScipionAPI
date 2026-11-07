@@ -92,18 +92,21 @@ LIST_WATCHED_ATLASES_SQL = """
      ORDER BY s.id
 """
 
-# A grid goes from the box to the microscope: loaded once its session acquires, used once a movie of it came
-# (a grid set by hand as discarded, or already used, stays)
+# A grid goes from the box to the microscope: loaded while its session acquires, used once a movie of it came (also
+# when its session finished before anything looked: a grid set by hand as discarded, or already used, stays)
 MARK_GRIDS_SQL = """
     UPDATE facility_grids gr
        SET status = target.status
       FROM (SELECT d."gridId" AS id,
-                   CASE WHEN BOOL_OR(d."movieCount" > 0) THEN 'used' ELSE 'loaded' END AS status
+                   CASE WHEN BOOL_OR(d."movieCount" > 0) THEN 'used'
+                        WHEN BOOL_OR(s.status = 'acquiring') THEN 'loaded' END AS status
               FROM facility_session_datasets d
               JOIN facility_sessions s ON s.id = d."sessionId"
-             WHERE d."gridId" IS NOT NULL AND s.status = 'acquiring' AND %(sessionId)s IN (0, s.id)
+             WHERE d."gridId" IS NOT NULL AND s.status IN ('acquiring', 'finished', 'archived')
+               AND %(sessionId)s IN (0, s.id)
              GROUP BY d."gridId") target
-     WHERE gr.id = target.id AND gr.status IN ('stored', 'loaded') AND gr.status <> target.status
+     WHERE gr.id = target.id AND target.status IS NOT NULL AND gr.status IN ('stored', 'loaded')
+       AND gr.status <> target.status
 """
 
 # The DATA whose first movie was read and whose project is to be made: by itself when their session processes
@@ -255,8 +258,8 @@ class FacilitySessionPostgresqlMapper(FacilityImagePostgresqlMapper):
                         'WHERE id = %s', (json.dumps(scanState), int(datasetId)))
 
     def markGrids(self, sessionId: Optional[int] = None) -> int:
-        """Move the grids of the sessions acquiring (or of one) to loaded, and to used once a movie of theirs
-        came; answers how many changed."""
+        """Move the grids of the sessions acquiring (or of one) to loaded, and those of any session that got a movie
+        of theirs to used; answers how many changed."""
         cursor = self.db.execute(MARK_GRIDS_SQL, {"sessionId": int(sessionId or 0)})
         return int(getattr(cursor, "rowcount", 0) or 0)
 

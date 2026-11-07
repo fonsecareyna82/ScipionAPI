@@ -184,6 +184,13 @@ def test_GridsAreLoadedWhenTheSessionAcquiresAndUsedOnceAMovieCame(facility):
     FacilitySessionService(db).mapper.markGrids()
     assert statuses() == {grids[0]["id"]: "used", grids[1]["id"]: "loaded"}
 
+    # A session that finished before the watcher looked: its grid with movies is used, the other not loaded again
+    db.execute("UPDATE facility_grids SET status = 'stored' WHERE id = ANY(%s)", ([grid["id"] for grid in grids],))
+    db.execute("UPDATE facility_sessions SET status = 'finished' WHERE id = %s", (session["id"],))
+    FacilitySessionService(db).mapper.markGrids()
+    assert statuses() == {grids[0]["id"]: "used", grids[1]["id"]: "stored"}
+    db.execute("UPDATE facility_sessions SET status = 'acquiring' WHERE id = %s", (session["id"],))
+
     # A grid set as discarded by hand stays so
     db.execute("UPDATE facility_grids SET status = 'discarded' WHERE id = %s", (grids[1]["id"],))
     FacilitySessionService(db).mapper.markGrids()
