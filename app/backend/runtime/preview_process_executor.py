@@ -441,9 +441,10 @@ def _runRenderThumbnailsJob(service, mapper, job: Dict[str, Any]):
         except Exception as error:
             logger.exception("Thumbnail render failed. projectId=%s item=%s", projectId, item)
             data, reason = None, str(error)
-        if data:
-            store.writeImage(imagePath, data)
+        if data and store.writeImage(imagePath, data):
             results.append({"path": str(imagePath), "ready": True})
+        elif data:
+            results.append({"path": str(imagePath), "ready": False, "reason": "The project was deleted"})
         else:
             store.writeMissing(imagePath, reason or "Thumbnail not available")
             results.append({"path": str(imagePath), "ready": False, "reason": reason})

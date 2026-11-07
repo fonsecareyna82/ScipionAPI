@@ -780,6 +780,10 @@ def test_ASessionsCtfLimitsAreCheckedAndGoIntoItsDataProjects(facility, owner, t
                                               ctfMinDefocus=6000, ctfMaxDefocus=35000, ctfMaxResolution=7.5),
                                    userId=userId)
     assert (session["ctfMinDefocus"], session["ctfMaxDefocus"], session["ctfMaxResolution"]) == (6000, 35000, 7.5)
+    # Tomography has no CTF consensus: its sessions keep no limits
+    tomo = sessions.saveSession(_multigrid(microscope, sample, technique="tomo", ctfMinDefocus=6000), userId=userId)
+    assert (tomo["ctfMinDefocus"], tomo["ctfMaxDefocus"], tomo["ctfMaxResolution"]) == (None, None, None)
+    sessions.deleteSession(tomo["id"])
     calls = []
     workflow = DEMO_WORKFLOW + [{"object.className": "XmippProtCTFConsensus", "object.id": "5", "useDefocus": False,
                                  "minDefocus": 4000, "maxDefocus": 50000, "resolution": 17}]

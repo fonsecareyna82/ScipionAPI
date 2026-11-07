@@ -390,6 +390,7 @@ def test_CreateProjectRejectsDuplicateSanitizedName(service, mapper, currentUser
 def test_CreateProjectRejectsFilesystemCollision(service, mapper, currentUser):
     existingPath = Path(service.manager.PROJECTS) / USER_FOLDER / "demo"
     existingPath.mkdir(parents=True, exist_ok=True)
+    (existingPath / "notes.txt").write_text("someone's")
 
     payload = ProjectCreatePayload(name="demo")
 
@@ -398,6 +399,22 @@ def test_CreateProjectRejectsFilesystemCollision(service, mapper, currentUser):
 
     assert exc.value.status_code == 400
     assert "already exists in the file system" in exc.value.detail
+    assert (existingPath / "notes.txt").exists()
+
+
+def test_CreateProjectMovesAsideTheLeftoverOfADeletedProject(service, mapper, currentUser):
+    """A deleted project's folder made again by its late work (empty runs, thumbnails) does not keep the name."""
+    leftover = Path(service.manager.PROJECTS) / USER_FOLDER / "demo"
+    (leftover / "Runs" / "000002_ProtImportMovies").mkdir(parents=True)
+    (leftover / ".thumbnail_cache" / "v3" / "p2").mkdir(parents=True)
+    (leftover / ".thumbnail_cache" / "v3" / "p2" / "movies.webp").write_bytes(b"x")
+
+    try:
+        service.createProject(mapper, ProjectCreatePayload(name="demo"), currentUser)
+    except HTTPException as error:
+        assert "already exists" not in str(error.detail)
+
+    assert not (leftover / ".thumbnail_cache").exists()
 
 
 def test_UpdateProjectReturns404WhenProjectMissing(service, mapper, currentUser):

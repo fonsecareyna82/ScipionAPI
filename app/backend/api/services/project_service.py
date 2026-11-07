@@ -282,7 +282,7 @@ def resumePendingProjectDeletions(mapper) -> int:
         scheduleProjectRowsDeletion(projectId)
     return len(projectIds)
 
-from app.backend.utils.background_delete import deleteInBackground
+from app.backend.utils.background_delete import deleteInBackground, isLeftoverFolder
 from app.backend.utils.set_item_purge import requestSetItemPurge
 
 
@@ -734,6 +734,11 @@ class ProjectService:
                         "(sanitized name: '%s')" % sanitizedName
                 ),
             )
+
+        if isLeftoverFolder(projectPath):
+            # A deleted project's folder made again by its late work, without anything of its own: it goes
+            logger.warning("Removing the leftover folder %s of a deleted project", projectPath)
+            deleteInBackground(projectPath, trashIn=self.manager.PROJECTS)
 
         if os.path.lexists(projectPath):
             raise HTTPException(

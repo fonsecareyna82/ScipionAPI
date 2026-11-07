@@ -59,21 +59,34 @@ def isMissing(imagePath: Path) -> bool:
     return missingPath(imagePath).exists()
 
 
-def writeImage(imagePath: Path, data: bytes) -> None:
-    """Store the image atomically and drop the older signatures of the same output and size."""
+def _projectExists(imagePath: Path) -> bool:
+    """A thumbnail drawn after its project was deleted must not make the project's folder again."""
+    return imagePath.parents[3].is_dir()
+
+
+def writeImage(imagePath: Path, data: bytes) -> bool:
+    """Store the image atomically and drop the older signatures of the same output and size.
+
+    False when its project is gone: nothing is written."""
+    if not _projectExists(imagePath):
+        return False
     imagePath.parent.mkdir(parents=True, exist_ok=True)
     temporary = imagePath.with_name(f".{imagePath.name}.{os.getpid()}.tmp")
     temporary.write_bytes(data)
     os.replace(temporary, imagePath)
     missingPath(imagePath).unlink(missing_ok=True)
     _dropOtherSignatures(imagePath)
+    return True
 
 
-def writeMissing(imagePath: Path, reason: str) -> None:
+def writeMissing(imagePath: Path, reason: str) -> bool:
+    if not _projectExists(imagePath):
+        return False
     imagePath.parent.mkdir(parents=True, exist_ok=True)
     missingPath(imagePath).write_text(str(reason or "Thumbnail not available"), encoding="utf-8")
     imagePath.unlink(missing_ok=True)
     _dropOtherSignatures(imagePath)
+    return True
 
 
 def _dropOtherSignatures(imagePath: Path) -> None:

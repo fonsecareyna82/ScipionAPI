@@ -58,6 +58,26 @@ def _remove(path: Path) -> None:
         logger.exception("Could not remove %s", path)
 
 
+# What a deleted project's folder may get again from work that ends after it (a thumbnail drawn late, a run
+# finishing): caches and trash, nothing of the project
+_LEFTOVER_FOLDERS = {TRASH_FOLDER, ".thumbnail_cache"}
+
+
+def isLeftoverFolder(path: Union[str, Path], limit: int = 5000) -> bool:
+    """A folder with no file of its own: only empty folders, caches and trash (what a deleted project's late
+    work leaves). False for a link, a file, or a tree too big to be one."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_dir():
+        return False
+    seen = 0
+    for folder, folders, files in os.walk(path):
+        folders[:] = [name for name in folders if name not in _LEFTOVER_FOLDERS]
+        seen += len(folders) + len(files)
+        if files or seen > limit:
+            return False
+    return True
+
+
 def _trashOf(path: Path) -> Path:
     return path.parent / TRASH_FOLDER
 

@@ -49,3 +49,19 @@ def test_the_current_folder_its_parents_home_and_root_are_never_deleted(tmp_path
     background_delete.deleteInBackground("Runs/000002_ProtA")
     background_delete.waitForBackgroundDeletes(timeout=10)
     assert not (project / "Runs" / "000002_ProtA").exists()
+
+
+def test_ADeletedProjectsFolderMadeAgainByLateWorkIsALeftover(tmp_path):
+    project = tmp_path / "Krios_DATA_01"
+    for folder in ("Runs/000002_ProtImportMovies", "Logs", ".thumbnail_cache/v3/p13", bg.TRASH_FOLDER):
+        (project / folder).mkdir(parents=True)
+    (project / ".thumbnail_cache" / "v3" / "p13" / "movies.webp").write_bytes(b"x")
+    assert bg.isLeftoverFolder(project)
+
+    # A file of its own: a project (or anything else), never a leftover
+    (project / "Logs" / "project.log").write_text("x")
+    assert not bg.isLeftoverFolder(project)
+    assert not bg.isLeftoverFolder(tmp_path / "missing")
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "missing")
+    assert not bg.isLeftoverFolder(link)

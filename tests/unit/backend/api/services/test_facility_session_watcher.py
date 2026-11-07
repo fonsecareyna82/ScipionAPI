@@ -1,4 +1,5 @@
 """Reading a session's first movie and watching its DATA folders, on files laid out as the microscope writes them."""
+import datetime
 import os
 import shutil
 from pathlib import Path
@@ -7,7 +8,7 @@ import pytest
 
 from app.backend.api.services.facility_acquisition_reader import metadataFileOf, readAcquisition
 from app.backend.api.services.facility_session_service import watchState
-from app.backend.api.services.facility_session_watcher import isMovie, scanFolder
+from app.backend.api.services.facility_session_watcher import isMovie, lastMovieAt, scanFolder
 
 EPU = Path(__file__).resolve().parents[4] / "resources" / "epu"
 # EPU 2.6 on a Glacios with a Falcon 3 (EMPIAR-11502)
@@ -173,3 +174,18 @@ def test_TheFacilitysStallMinutesDecideWhenADataIsStalled():
 
     assert watchState(session, dataset) == "stalled"
     assert watchState(session, dataset, stallMinutes=60) == "receiving"
+
+
+def test_AMovieCopiedKeepingAnOldTimeIsNotTakenAsOld():
+    utc = datetime.timezone.utc
+    now = datetime.datetime(2026, 11, 7, 10, 0, tzinfo=utc).timestamp()
+    old = datetime.datetime(2022, 5, 14, 21, 14, tzinfo=utc).timestamp()
+    seen = datetime.datetime(2026, 11, 7, 9, 50, tzinfo=utc)
+
+    # More movies than the last look: one came now, whatever the files' time says
+    assert lastMovieAt({"count": 6, "newest": old}, {"movieCount": 5, "lastMovieAt": seen}, now).timestamp() == now
+    # None new: when the last one was seen
+    assert lastMovieAt({"count": 5, "newest": old}, {"movieCount": 5, "lastMovieAt": seen}, now) == seen
+    # A newer file time than now (another clock) is kept
+    later = now + 30
+    assert lastMovieAt({"count": 1, "newest": later}, {"movieCount": 0}, now).timestamp() == later

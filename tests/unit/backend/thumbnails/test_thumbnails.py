@@ -185,3 +185,11 @@ def test_TheWorkerDrawsEachOutputOrMarksIt(monkeypatch, tmp_path):
     assert [result["ready"] for result in results] == [True, False]
     assert good.read_bytes() == b"webp"
     assert store.isMissing(bad)
+
+
+def test_AThumbnailDrawnAfterItsProjectWasDeletedDoesNotMakeItsFolderAgain(tmp_path):
+    imagePath = store.thumbnailPath(str(tmp_path / "deleted"), "13", "outputMovies", 384, "aaa")
+
+    assert store.writeImage(imagePath, b"late") is False
+    assert store.writeMissing(imagePath, "late") is False
+    assert not (tmp_path / "deleted").exists()

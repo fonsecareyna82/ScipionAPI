@@ -306,7 +306,7 @@ class FacilitySessionProcessor:
             if fillComposeTiltSeries(workflow, folder, mdocPattern(acquisition.get("metadataPath"))):
                 processing["composesTiltSeries"] = True
             limits = (row.get("ctfMinDefocus"), row.get("ctfMaxDefocus"), row.get("ctfMaxResolution"))
-            if any(limit is not None for limit in limits):
+            if (row.get("technique") or "spa") == "spa" and any(limit is not None for limit in limits):
                 if fillCtfConsensus(workflow, *limits):
                     processing["ctfLimits"] = {"minDefocus": limits[0], "maxDefocus": limits[1], "resolution": limits[2]}
                 else:

@@ -168,6 +168,17 @@ def _acquisition(firstMovie: Path, root: Path, detectors: List[Dict[str, Any]],
     return acquisition
 
 
+def lastMovieAt(scan: Dict[str, Any], dataset: Dict[str, Any], now: float) -> Optional[datetime.datetime]:
+    """When the last movie came: now when there are more than the last look saw, else what was known.
+
+    Not the files' modification time alone: a movie copied keeping its time (or linked) would look old and
+    its DATA stalled."""
+    newest = _when(scan["newest"])
+    if scan["count"] > int(dataset.get("movieCount") or 0):
+        return max(filter(None, [newest, _when(now)]))
+    return dataset.get("lastMovieAt") or newest
+
+
 def watchSessions(db, now: Optional[float] = None) -> int:
     """Look once at the DATA folders of the sessions acquiring; answers how many were looked at.
 
@@ -195,8 +206,8 @@ def watchSessions(db, now: Optional[float] = None) -> int:
                     detectorsOf[microscopeId] = (microscopes.getMicroscope(microscopeId) or {}).get("detectors") or []
                 acquisition = _acquisition(Path(scan["first"]), root, detectorsOf[microscopeId], dataset["detectorId"],
                                            tolerance)
-            sessions.saveScan(dataset["id"], scan["count"], scan["bytes"], _when(scan["oldest"]), _when(scan["newest"]),
-                              scan["state"], acquisition)
+            sessions.saveScan(dataset["id"], scan["count"], scan["bytes"], _when(scan["oldest"]),
+                              lastMovieAt(scan, dataset, now), scan["state"], acquisition)
             looked += 1
         _processPending(db)
         _refreshAlerts(db)

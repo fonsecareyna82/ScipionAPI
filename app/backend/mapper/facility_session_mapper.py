@@ -67,7 +67,7 @@ WATCH_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('facility_session_watch')
 
 LIST_WATCHED_DATASETS_SQL = """
     SELECT d.id, d."sessionId", s.name AS "sessionName", d.number, d.folder, d."detectorId", d."movieCount",
-           d."firstMovieAt", d.acquisition IS NOT NULL AS "acquisitionRead", d."scanState", s.technique,
+           d."firstMovieAt", d."lastMovieAt", d.acquisition IS NOT NULL AS "acquisitionRead", d."scanState", s.technique,
            s."microscopeId", m."offloadPath"
       FROM facility_session_datasets d
       JOIN facility_sessions s ON s.id = d."sessionId"

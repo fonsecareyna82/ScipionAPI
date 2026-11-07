@@ -25,6 +25,7 @@ SESSION_STATUSES = ("planned", "acquiring", "finished", "archived")
 # What the sessions list shows unless asked otherwise: the ones still to come or under way
 ACTIVE_STATUSES = ("planned", "acquiring")
 TECHNIQUES = ("spa", "tomo")
+CTF_LIMIT_FIELDS = ("ctfMinDefocus", "ctfMaxDefocus", "ctfMaxResolution")
 SESSION_IMAGE_OWNERS = ("session", "dataset")
 # What a session's user (and the group's PI) see of it: none of what is the staff's
 USER_SESSION_FIELDS = ("id", "name", "microscopeName", "technique", "status", "groupName", "userName", "userEmail",
@@ -291,7 +292,8 @@ class FacilitySessionService:
             "oneProject": bool(payload.get("oneProject", False)),
             # What the technician tells the session's user (and the group's PI); notes stay the staff's
             "userNotes": _text(payload, "userNotes"),
-            **self._ctfLimits(payload),
+            # The CTF consensus is SPA's: a tomography session has no limits to give
+            **(self._ctfLimits(payload) if technique == "spa" else dict.fromkeys(CTF_LIMIT_FIELDS)),
         }
         assert set(values) == set(SESSION_FIELDS)
         datasets = self._datasets(payload.get("datasets") or [], existing, microscope, values["name"])
