@@ -37,6 +37,8 @@ DEFAULTS = {
     "ctfMaxResolution": 8.0,
     # Where the facility is: the day a booking starts on (its session's day) is the day there
     "timezone": "Europe/Madrid",
+    # Who is mailed the alerts: these addresses, else every user who runs sessions (as each chose)
+    "alertRecipients": "",
 }
 TEXT_LIMIT = 5000
 MAX_RETENTION_DAYS = 36500
@@ -57,6 +59,7 @@ RULES = {
     "ctfMaxDefocus": ("number", 1, 1e6),
     "ctfMaxResolution": ("number", 0.5, 100),
     "timezone": ("text", 64),
+    "alertRecipients": ("text", TEXT_LIMIT),
 }
 
 
@@ -137,6 +140,13 @@ class FacilitySettingsService:
             if not values["sessionNamePattern"]:
                 raise _badRequest("The session name pattern is empty")
             self.preview({"sessionNamePattern": values["sessionNamePattern"]})
+        if "alertRecipients" in values:
+            from app.backend.api.services.mail_service import addresses
+
+            listed = addresses(values["alertRecipients"])
+            if any("@" not in address for address in listed):
+                raise _badRequest("The alert recipients are mail addresses, separated by commas")
+            values["alertRecipients"] = ", ".join(listed)
         if "timezone" in values:
             from app.backend.mapper.facility_booking_mapper import FacilityBookingPostgresqlMapper
 

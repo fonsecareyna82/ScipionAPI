@@ -294,7 +294,7 @@ def _refreshAlerts(db) -> None:
     try:
         alerts = FacilityAlerts(db)
         alerts.refresh()
-        alerts.mailNew()
+        alerts.notifyNew()
     except Exception:
         logger.warning("Could not refresh the facility's alerts", exc_info=True)
 

@@ -500,23 +500,21 @@ class FacilityBookingService:
 
     # Telling the user ----------------------------------------------------------------------------
     def notify(self, booking: Dict[str, Any], what: str) -> None:
-        """Mail the booking's user what the facility did, when the facility's mail is on; never fails."""
-        if not booking.get("ownerEmail"):
+        """Tell the booking's user what the facility did (the bell, and their mail as they chose); never fails."""
+        if not booking.get("ownerId"):
             return
-        from app.backend.api.services.facility_mail import FacilityMail
+        from app.backend.api.services.notifications import Notifications
 
-        mail = FacilityMail(self.db)
-        if not mail.getSettings().get("enabled"):
-            return
         lines = ["Your booking of %s, %s to %s, %s." % (booking["resourceName"], _format(booking["startsAt"]),
                                                        _format(booking["endsAt"]), what)]
         if booking.get("proposedStartsAt"):
-            lines.append("The facility offers %s to %s instead: accept or decline it in ScipionWeb, Facility, "
-                         "Calendar." % (_format(booking["proposedStartsAt"]), _format(booking["proposedEndsAt"])))
+            lines.append("The facility offers %s to %s instead: accept or decline it in the Facility's calendar."
+                         % (_format(booking["proposedStartsAt"]), _format(booking["proposedEndsAt"])))
         if booking.get("decisionReason"):
             lines.append("Reason: %s" % booking["decisionReason"])
         try:
-            mail.send("Booking of %s: %s" % (booking["resourceName"], what), "\n\n".join(lines),
-                      to=[booking["ownerEmail"]])
+            Notifications(self.db).notify([int(booking["ownerId"])], "facility.booking",
+                                          "Booking of %s: %s" % (booking["resourceName"], what), "\n\n".join(lines),
+                                          "/facility/calendar")
         except Exception:
-            logger.warning("Could not mail booking %s to its user", booking["id"], exc_info=True)
+            logger.warning("Could not notify booking %s to its user", booking["id"], exc_info=True)

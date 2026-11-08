@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.backend.api.services import workspace_service as workspace
+
+_realNotices = workspace._notices
 from app.backend.mapper import protocol_activity_mapper as activityQueries
 
 
@@ -26,6 +28,12 @@ class Mapper:
 
     def listProjects(self, userId):
         return self.projects
+
+
+@pytest.fixture(autouse=True)
+def noNotices(monkeypatch):
+    """The user's notifications are another source (tested on their own below)."""
+    monkeypatch.setattr(workspace, "_notices", lambda mapper, userId, since: [])
 
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
@@ -163,3 +171,30 @@ def test_other_users_and_a_first_call_hear_of_no_account():
     assert workspace.protocolActivity(Mapper([], db), 3, NOW - timedelta(seconds=30), now=NOW)["events"] == []
     assert workspace.protocolActivity(Mapper([], db), 3, None, now=NOW, canManageUsers=True)["events"] == []
     assert db.calls == []
+
+
+def test_every_user_hears_of_their_unread_notifications_even_on_a_first_call(monkeypatch):
+    from app.backend.mapper import notifications_mapper
+
+    asked = []
+    made = NOW - timedelta(days=3)
+
+    def unread(self, userId, since, limit):
+        asked.append((userId, since))
+        return [{"id": 41, "kind": "facility.booking", "title": "Booking of Krios: is confirmed",
+                 "body": "Your booking of Krios, 10 Nov 09:00 to 11 Nov 08:59, is confirmed.\n\nReason: ok",
+                 "link": "/facility/calendar", "createdAt": made}]
+
+    monkeypatch.setattr(notifications_mapper.NotificationsPostgresqlMapper, "listUnreadSince", unread)
+    monkeypatch.setattr(workspace, "_notices", _realNotices)
+
+    payload = workspace.protocolActivity(Mapper([], Db(rows=[])), 3, None, now=NOW)
+
+    assert payload["events"] == [{
+        "projectId": 0, "projectName": "Your booking of Krios, 10 Nov 09:00 to 11 Nov 08:59, is confirmed.",
+        "protocolId": "notice-41", "protocolClassName": "", "label": "Booking of Krios: is confirmed",
+        "status": "notice", "kind": "facility.booking", "link": "/facility/calendar", "notificationId": 41,
+        "endedAt": made.isoformat()}]
+    # A notification waits until read: an old "since" is not capped for them
+    workspace.protocolActivity(Mapper([], Db(rows=[])), 3, NOW - timedelta(days=30), now=NOW)
+    assert asked == [(3, None), (3, NOW - timedelta(days=30))]

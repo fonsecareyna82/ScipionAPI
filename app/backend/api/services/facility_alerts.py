@@ -7,22 +7,22 @@ is over:
 * processingFailed: its project could not be made or launched;
 * protocolFailed: a protocol of its project failed.
 
-An alert is never opened twice while open. The new ones are mailed to the operators together (``mailNew``)
-when the facility has a mail server; the web shows the open ones to the staff until resolved.
+An alert is never opened twice while open. The new ones are told together (``notifyNew``): mailed to the facility's
+alert addresses, else noticed to the users who run sessions (the bell, and their mail as each chose); the web
+shows the open ones to the staff until resolved.
 """
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
-from app.backend.api.services.facility_mail import FacilityMail
 from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.mapper.facility_alerts_mapper import FacilityAlertsPostgresqlMapper
 
 logger = logging.getLogger(__name__)
 
 KINDS = ("stalled", "processingFailed", "protocolFailed")
-# An alert older than this when the mail server is set is not mailed: it was seen in the web already
+# An alert older than this is not told any more: it was seen in the web already
 MAIL_WITHIN_MINUTES = 60
 
 
@@ -39,7 +39,6 @@ def alertMessage(kind: str, problem: Dict[str, Any]) -> str:
 class FacilityAlerts:
     def __init__(self, db):
         self.mapper = FacilityAlertsPostgresqlMapper(db)
-        self.mail = FacilityMail(db)
 
     def refresh(self, stallMinutes: Optional[float] = None) -> List[int]:
         """Open the alerts of what is wrong now and resolve the others; answers the ids opened."""
@@ -55,26 +54,31 @@ class FacilityAlerts:
             self.mapper.resolveGone(kind, [(problem["datasetId"], problem["protocolId"]) for problem in problems])
         return opened
 
-    def mailNew(self) -> Optional[List[str]]:
-        """Mail the alerts not mailed yet, in one mail; answers to whom (None: nothing was sent)."""
-        if not self.mail.getSettings()["enabled"]:
-            return None
+    def notifyNew(self) -> Optional[Dict[str, Any]]:
+        """Tell of the alerts not told yet, in one notice: mailed to the facility's alert addresses, else to the
+        users who run sessions (in the web and by mail, as each chose); answers to whom (None: nothing new)."""
+        from app.backend.api.services.mail_service import addresses
+        from app.backend.api.services.notifications import Notifications
+
         alerts = self.mapper.alertsToMail(MAIL_WITHIN_MINUTES)
         if not alerts:
             return None
         ids = [int(alert["id"]) for alert in alerts]
         lines = ["- %s" % alert["message"] for alert in alerts]
-        subject = "ScipionWeb facility: %d new alert%s" % (len(alerts), "" if len(alerts) == 1 else "s")
-        body = ("What went wrong in the facility's sessions:\n\n%s\n\nOpen the Facility page of ScipionWeb to see "
-                "them and say who is on it.\n" % "\n".join(lines))
-        try:
-            sent = self.mail.send(subject, body)
-        except RuntimeError as error:
-            logger.warning("Could not mail the facility's alerts: %s", error)
-            self.mapper.markMailed(ids, str(error))
-            return None
+        title = "Facility: %d new alert%s" % (len(alerts), "" if len(alerts) == 1 else "s")
+        body = ("What went wrong in the facility's sessions:\n\n%s\n\nSay who is on it in the Facility pages."
+                % "\n".join(lines))
+        notifications = Notifications(self.mapper.db)
+        listed = addresses(FacilitySettingsService(self.mapper.db).values().get("alertRecipients"))
+        if listed:
+            notifications.notifyAddresses(listed, "facility.alert", title, body, "/facility/sessions")
+            told = {"addresses": listed}
+        else:
+            userIds = [int(user["id"]) for user in self.mapper.usersWithPermission("facility.sessions")]
+            notifications.notify(userIds, "facility.alert", title, body, "/facility/sessions")
+            told = {"users": userIds}
         self.mapper.markMailed(ids)
-        return sent
+        return told
 
     def listAlerts(self, openOnly: bool = True) -> List[Dict[str, Any]]:
         return self.mapper.listAlerts(openOnly)

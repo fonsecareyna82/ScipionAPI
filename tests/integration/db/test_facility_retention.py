@@ -128,43 +128,38 @@ def test_ASessionNotFinishedHasNoDatesToKeep(facility):
     assert error.value.status_code == 404
 
 
-def test_TheUserAndThePiAreToldOnceBeforeTheDataGo(facility, monkeypatch):
-    from app.backend.api.services import facility_mail
-
-    sent = []
-    monkeypatch.setattr(facility_mail.FacilityMail, "getSettings", lambda self: {"enabled": True})
-    monkeypatch.setattr(facility_mail.FacilityMail, "send",
-                        lambda self, subject, body, to=None: sent.append((subject, body, to)) or to)
+def test_TheUserAndThePiAreToldOnceBeforeTheDataGo(facility):
+    db = facility["db"]
     session = _session(facility)
     _finishedOn(facility, session, datetime.datetime(2026, 8, 1, 12, tzinfo=datetime.timezone.utc))
-    retention = FacilityRetention(facility["db"])
-    emails = {row["email"] for row in facility["db"].fetchAll(
-        "SELECT email FROM users WHERE id = ANY(%s)", ([facility["userId"], facility["piId"]],))}
+    retention = FacilityRetention(db)
+    first = db.fetchOne("SELECT COALESCE(MAX(id), 0) AS id FROM notifications")["id"]
 
-    # 5 days before the raw data's date: one mail for its 30 and 7 day notices
-    done = retention.sendNotices(on=datetime.date(2026, 10, 25))
+    def told():
+        return db.fetchAll('SELECT "userId", kind, title, body, link, "emailState" FROM notifications '
+                           'WHERE id > %s AND "userId" = ANY(%s) ORDER BY id',
+                           (first, [facility["userId"], facility["piId"]]))
 
-    mine = [item for item in done if item["sessionId"] == session["id"]]
-    assert len(mine) == 1 and set(mine[0]["to"]) == emails and mine[0]["kinds"] == ["raw"]
-    assert any(session["name"] in subject and "in 5 days" in body for subject, body, _ in sent)
-    assert not [item for item in retention.sendNotices(on=datetime.date(2026, 10, 26))
-                if item["sessionId"] == session["id"]]
-    assert [item["sessionId"] for item in retention.sendNotices(on=datetime.date(2026, 10, 29))].count(
-        session["id"]) == 1
-    listed = retention.getRetention(session["id"])
-    assert listed["raw"]["noticesSent"] == [30, 7, 1]
+    try:
+        # 5 days before the raw data's date: one notice for its 30 and 7 day notices, to the user and the PI
+        done = retention.sendNotices(on=datetime.date(2026, 10, 25))
 
-
-def test_NoNoticeGoesWithoutTheFacilitysMail(facility, monkeypatch):
-    from app.backend.api.services import facility_mail
-
-    monkeypatch.setattr(facility_mail.FacilityMail, "getSettings", lambda self: {"enabled": False})
-    session = _session(facility)
-    _finishedOn(facility, session, datetime.datetime(2026, 8, 1, 12, tzinfo=datetime.timezone.utc))
-    retention = FacilityRetention(facility["db"])
-
-    assert retention.sendNotices(on=datetime.date(2026, 10, 25)) == []
-    assert retention.getRetention(session["id"])["raw"]["noticesSent"] == []
+        mine = [item for item in done if item["sessionId"] == session["id"]]
+        assert len(mine) == 1 and set(mine[0]["userIds"]) == {facility["userId"], facility["piId"]}
+        rows = told()
+        assert {row["userId"] for row in rows} == {facility["userId"], facility["piId"]} and len(rows) == 2
+        assert all(row["kind"] == "facility.retention" and session["name"] in row["title"] and "in 5 days" in row["body"]
+                   and row["link"] == "/facility/mine" for row in rows)
+        # Mandatory: mailed whatever the user chose (instant by default)
+        assert {row["emailState"] for row in rows} == {"pending"}
+        assert not [item for item in retention.sendNotices(on=datetime.date(2026, 10, 26))
+                    if item["sessionId"] == session["id"]]
+        assert [item["sessionId"] for item in retention.sendNotices(on=datetime.date(2026, 10, 29))].count(
+            session["id"]) == 1
+        assert retention.getRetention(session["id"])["raw"]["noticesSent"] == [30, 7, 1]
+        assert len(told()) == 4
+    finally:
+        db.execute("DELETE FROM notifications WHERE id > %s", (first,))
 
 
 def test_GridsAreLoadedWhenTheSessionAcquiresAndUsedOnceAMovieCame(facility):

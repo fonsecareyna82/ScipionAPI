@@ -10,7 +10,9 @@ Streaming projects (those with a protocol running) also tell when a run of
 micrographs starts going past one of their monitor thresholds (status
 "alert"); see streaming_monitor.alertsSince. Whoever may manage users also
 hears of the accounts created since, which wait for an administrator to
-activate them (status "account").
+activate them (status "account"). Every user hears of their unread notifications (status "notice", with the
+page they are about in "link"): on a first call all of them, then those made since, however long ago the previous
+call was (they wait until read).
 """
 from __future__ import annotations
 
@@ -85,6 +87,33 @@ def _pendingAccounts(mapper, since: datetime) -> List[Dict[str, Any]]:
     return events
 
 
+def _notices(mapper, userId: int, since: Optional[datetime]) -> List[Dict[str, Any]]:
+    """The user's unread notifications, told as the bell tells runs."""
+    from app.backend.mapper.notifications_mapper import NotificationsPostgresqlMapper
+
+    events = []
+    try:
+        rows = NotificationsPostgresqlMapper(mapper.db).listUnreadSince(userId, since, MAX_EVENTS)
+    except Exception:
+        logger.warning("The notifications of user %s could not be read", userId, exc_info=True)
+        return []
+    for row in rows:
+        createdAt = row.get("createdAt")
+        events.append({
+            "projectId": 0,
+            "projectName": str(row.get("body") or "").strip().split("\n")[0][:160],
+            "protocolId": "notice-%s" % row["id"],
+            "protocolClassName": "",
+            "label": str(row["title"]),
+            "status": "notice",
+            "kind": row["kind"],
+            "link": row.get("link") or "",
+            "notificationId": int(row["id"]),
+            "endedAt": createdAt.isoformat() if hasattr(createdAt, "isoformat") else str(createdAt or ""),
+        })
+    return events
+
+
 def _accessibleProjects(mapper, userId: int) -> Dict[int, Dict[str, Any]]:
     return {int(row["id"]): row for row in (mapper.listProjects(int(userId)) or [])}
 
@@ -130,5 +159,9 @@ def protocolActivity(mapper, userId: int, since: Optional[datetime], now: Option
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
         events.extend(_pendingAccounts(mapper, max(since, now - MAX_LOOKBACK)))
+    noticeSince = since
+    if noticeSince is not None and noticeSince.tzinfo is None:
+        noticeSince = noticeSince.replace(tzinfo=timezone.utc)
+    events.extend(_notices(mapper, int(userId), noticeSince))
     events = sorted(events, key=lambda event: event["endedAt"], reverse=True)[:MAX_EVENTS]
     return {"now": now.isoformat(), "live": live, "events": events}

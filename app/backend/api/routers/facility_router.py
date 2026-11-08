@@ -19,7 +19,6 @@ from app.backend.api.services.facility_sample_service import FacilitySampleServi
 from app.backend.api.services.facility_session_service import ACTIVE_STATUSES, FacilitySessionService
 from app.backend.api.services.facility_settings_service import FacilitySettingsService
 from app.backend.api.services.facility_alerts import FacilityAlerts
-from app.backend.api.services.facility_mail import FacilityMail
 from app.backend.api.services.facility_room import FacilityRoom
 from app.backend.api.services.facility_retention import FacilityRetention
 from app.backend.api.services.facility_booking_service import FacilityBookingService, isBookingStaff
@@ -539,6 +538,10 @@ class SettingsPayload(BaseModel):
     ctfMinDefocus: Optional[float] = None
     ctfMaxDefocus: Optional[float] = None
     ctfMaxResolution: Optional[float] = None
+    # Where the facility is (Europe/Madrid)
+    timezone: Optional[str] = None
+    # Who is mailed the alerts (addresses separated by commas); empty: the users who run sessions
+    alertRecipients: Optional[str] = None
 
 
 class ConventionsPreviewPayload(BaseModel):
@@ -572,22 +575,6 @@ def previewFacilityConventions(payload: ConventionsPreviewPayload, mapper: Postg
 
 
 # Alerts: what went wrong in the sessions, and the mail that tells the operators -----------------------------
-class MailSettingsPayload(BaseModel):
-    host: Optional[str] = ""
-    port: Optional[int] = 587
-    security: str = "starttls"
-    user: Optional[str] = ""
-    # None keeps the password there is; "" removes it
-    password: Optional[str] = None
-    sender: Optional[str] = ""
-    # Mail addresses separated by commas; empty: every user who runs sessions
-    recipients: Optional[str] = ""
-
-
-class TestMailPayload(BaseModel):
-    to: Optional[str] = ""
-
-
 @router.get("/alerts", dependencies=[Depends(requireFacilityMode)])
 def listFacilityAlerts(all_: bool = Query(False, alias="all", description="Also the resolved ones (the newest 200)"),
                        mapper: PostgresqlFlatMapper = Depends(getMapper),
@@ -606,30 +593,6 @@ def acknowledgeFacilityAlert(alertId: int, mapper: PostgresqlFlatMapper = Depend
     return alert
 
 
-@router.get("/settings/mail", dependencies=[Depends(requireFacilityMode)])
-def getFacilityMailSettings(mapper: PostgresqlFlatMapper = Depends(getMapper),
-                            currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
-    """The mail server of the alerts (its password only as whether there is one)."""
-    return FacilityMail(mapper.db).getSettings()
-
-
-@router.put("/settings/mail", dependencies=[Depends(requireFacilityMode)])
-def saveFacilityMailSettings(payload: MailSettingsPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
-                             currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
-    settings = FacilityMail(mapper.db).saveSettings(payload.dict(), userId=currentUser.get("id"))
-    recordAudit(mapper, currentUser, "facility.settingsUpdated", "facility", None, "mail",
-                {key: value for key, value in payload.dict().items() if key != "password"})
-    return settings
-
-
-@router.post("/settings/mail/test", dependencies=[Depends(requireFacilityMode)])
-def sendFacilityTestMail(payload: TestMailPayload, mapper: PostgresqlFlatMapper = Depends(getMapper),
-                         currentUser: dict = Depends(requirePermission("facility.manage"))) -> Dict[str, Any]:
-    """Send a test mail (to the given address, else to the alerts' recipients); 400 says why it did not go."""
-    return FacilityMail(mapper.db).sendTest(payload.to)
-
-
-# The room's screen: opened with its link's token, no signed-in user -----------------------------------------
 @router.get("/room", dependencies=[Depends(requireFacilityMode)])
 def getRoomScreen(token: str = Query("", max_length=200), mapper: PostgresqlFlatMapper = Depends(getMapper)
                   ) -> Dict[str, Any]:

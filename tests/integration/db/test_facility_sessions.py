@@ -623,56 +623,31 @@ def test_AFailedProcessingOrProtocolIsAnAlertThatSomeoneTakes(facility, owner):
     assert {alert["kind"] for alert in alerts.listAlerts() if alert["sessionId"] == session["id"]} == {"processingFailed"}
 
 
-def test_TheNewAlertsAreMailedOnceAndThePasswordIsNeverAnswered(facility, keptSettings, postgresqlIntegrationDb,
-                                                              monkeypatch):
-    import smtplib
-
+def test_TheNewAlertsAreToldOnceToTheFacilitysAddresses(facility, keptSettings, postgresqlIntegrationDb):
     from app.backend.api.services.facility_alerts import FacilityAlerts
-    from app.backend.api.services.facility_mail import FacilityMail
+    from app.backend.api.services.facility_settings_service import FacilitySettingsService
 
-    sent = []
-
-    class FakeSmtp:
-        def __init__(self, host, port, timeout=None):
-            sent.append({"server": (host, port)})
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def starttls(self, context=None):
-            sent[-1]["tls"] = True
-
-        def login(self, user, password):
-            sent[-1]["login"] = (user, password)
-
-        def send_message(self, message):
-            sent[-1]["message"] = message
-
-    monkeypatch.setattr(smtplib, "SMTP", FakeSmtp)
     sessions, microscope, sample = facility
     db = sessions.mapper.db
-    mail = FacilityMail(db)
-    settings = mail.saveSettings({"host": "smtp.cnb.csic.es", "port": 587, "security": "starttls", "user": "facility",
-                                  "password": "s3cret", "sender": "facility@cnb.csic.es",
-                                  "recipients": "ops1@cnb.csic.es; ops2@cnb.csic.es"})
-    assert settings["passwordSet"] and "password" not in settings and "passwordEncrypted" not in settings
-    stored = db.fetchOne("SELECT value FROM facility_settings WHERE key = 'mail'")["value"]
-    assert "s3cret" not in str(stored)
-    # Left out, the password stays
-    assert mail.saveSettings({"host": "smtp.cnb.csic.es", "sender": "facility@cnb.csic.es"})["passwordSet"]
-
+    with pytest.raises(HTTPException):
+        FacilitySettingsService(db).saveSettings({"alertRecipients": "ops1@cnb.csic.es, not an address"})
+    FacilitySettingsService(db).saveSettings({"alertRecipients": "ops1@cnb.csic.es; ops2@cnb.csic.es"})
     session = sessions.saveSession(_multigrid(microscope, sample, status="acquiring"))
     sessions.mapper.saveProcessing(session["datasets"][1]["id"], {"state": "error", "message": "boom"})
     alerts = FacilityAlerts(db)
     alerts.refresh()
+    first = db.fetchOne("SELECT COALESCE(MAX(id), 0) AS id FROM notifications")["id"]
 
-    assert alerts.mailNew() == ["ops1@cnb.csic.es", "ops2@cnb.csic.es"]
-    assert sent[0]["tls"] and sent[0]["login"] == ("facility", "s3cret")
-    assert "boom" in sent[0]["message"].get_content() and sent[0]["message"]["To"] == "ops1@cnb.csic.es, ops2@cnb.csic.es"
-    assert alerts.mailNew() is None and len(sent) == 1
+    try:
+        assert alerts.notifyNew()["addresses"] == ["ops1@cnb.csic.es", "ops2@cnb.csic.es"]
+        rows = db.fetchAll('SELECT email, kind, body, "inWeb", "emailState" FROM notifications WHERE id > %s '
+                           "ORDER BY id", (first,))
+        assert [row["email"] for row in rows] == ["ops1@cnb.csic.es", "ops2@cnb.csic.es"]
+        assert all(row["kind"] == "facility.alert" and "boom" in row["body"] and not row["inWeb"]
+                   and row["emailState"] == "pending" for row in rows)
+        assert alerts.notifyNew() is None
+    finally:
+        db.execute("DELETE FROM notifications WHERE id > %s", (first,))
 
 
 def test_AUserSeesTheirSessionsAndThePiThoseOfTheGroupWithoutWhatIsTheStaffs(facility, owner, keptSettings):

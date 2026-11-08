@@ -40,11 +40,11 @@ LIST_FINISHED_SQL = """
 
 # Who a session's notices go to: its user and the PIs of its group, each once
 NOTICE_RECIPIENTS_SQL = """
-    SELECT DISTINCT u.email FROM users u
-     WHERE u.email IS NOT NULL AND u.email <> '' AND u."isActive"
+    SELECT DISTINCT u.id FROM users u
+     WHERE u."isActive"
        AND (u.id = %(userId)s OR u.id IN (SELECT m."userId" FROM user_group_members m
                                            WHERE m."groupId" = %(groupId)s AND m."groupRole" = 'pi'))
-     ORDER BY u.email
+     ORDER BY u.id
 """
 
 
@@ -83,6 +83,7 @@ class FacilityRetentionPostgresqlMapper:
         self.db.execute('UPDATE facility_sessions SET "retentionNotices" = %s::JSONB WHERE id = %s',
                         (json.dumps(notices, default=str), int(sessionId)))
 
-    def noticeRecipients(self, userId: Optional[int], groupId: Optional[int]) -> List[str]:
+    def noticeRecipients(self, userId: Optional[int], groupId: Optional[int]) -> List[int]:
+        """The ids of a session's user and of its group's PIs (active ones)."""
         rows = self.db.fetchAll(NOTICE_RECIPIENTS_SQL, {"userId": userId, "groupId": groupId})
-        return [row["email"] for row in rows or []]
+        return [int(row["id"]) for row in rows or []]

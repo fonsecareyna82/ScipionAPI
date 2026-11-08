@@ -52,6 +52,7 @@ from app.backend.api.routers.workspace_router import router as workspaceRouter
 from app.backend.api.routers.access_router import router as accessRouter
 from app.backend.api.routers.project_upload_router import router as projectUploadRouter
 from app.backend.api.routers.facility_router import router as facilityRouter
+from app.backend.api.routers.notifications_router import router as notificationsRouter
 from app.backend.api.routers.storage_router import router as storageRouter
 from app.backend.api.routers.usage_router import router as usageRouter
 from app.backend.api.audit import ClientAddressMiddleware
@@ -155,6 +156,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(accessRouter)
     apiApp.include_router(projectUploadRouter)
     apiApp.include_router(facilityRouter)
+    apiApp.include_router(notificationsRouter)
     apiApp.include_router(storageRouter)
     apiApp.include_router(usageRouter)
 
@@ -238,6 +240,14 @@ def startFacilitySessionWatcher():
     startSessionWatcher(lambda: getMapper().db)
 
 
+def startNotificationSender():
+    """Mail the users' notices in the background (nothing while no mail server is set)."""
+    from app.backend.api.services.notification_sender import startNotificationSender as start
+    from app.backend.database import getMapper
+
+    start(lambda: getMapper().db)
+
+
 def startDiskUsageMeasurer():
     """Measure, in the background and paced, the disk each project uses."""
     from app.backend.api.services.project_storage import projectsRoot, startDiskUsageMeasurer as start
@@ -251,6 +261,7 @@ async def lifespan(_app):
     resumeBackgroundDeletes()
     startSetItemPurge()
     startFacilitySessionWatcher()
+    startNotificationSender()
     startDiskUsageMeasurer()
     yield
 

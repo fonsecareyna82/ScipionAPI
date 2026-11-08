@@ -4,9 +4,9 @@ A session's data are of two kinds: the raw movies (in the facility's storage, wh
 its projects (the processing ScipionWeb made). Each is kept until a date: the session's own when the staff gave
 one, else the day it finished plus the facility's days (rawRetentionDays, processedRetentionDays; 0 says none).
 
-Before each date its user and the PIs of its group are mailed a notice, retentionNoticeDays before it (e.g. 30, 7
-and 1 day). A notice goes once per date: one the staff move starts the notices again. When the facility's mail is
-off nothing is sent, and the dates are still shown in "My sessions".
+Before each date its user and the PIs of its group are told, retentionNoticeDays before it (e.g. 30, 7 and 1 day),
+through their notifications (the bell, and their mail: this kind is always mailed). A notice goes once per date:
+one the staff move starts the notices again. The dates are also shown in "My sessions".
 
 Nothing is deleted by itself. Past its date a session is listed for the staff, who delete its projects here (a
 button) and record that the raw data were deleted (by hand, where they are). A session with both gone is archived.
@@ -276,40 +276,34 @@ class FacilityRetention:
 
     # Notices -------------------------------------------------------------------------------------------
     def sendNotices(self, on: Optional[datetime.date] = None) -> List[Dict[str, Any]]:
-        """Mail each session's user (and its group's PIs) the notices they are owed; answers what was sent.
+        """Tell each session's user (and its group's PIs) the notices they are owed; answers what was told.
 
-        Nothing when the facility's mail is off: the notices stay owed. One that cannot go is tried again at
-        the next look."""
-        from app.backend.api.services.facility_mail import FacilityMail
+        A notice goes through the users' notifications: in the web, and mailed (it is mandatory: instantly or in
+        the digest; it waits there while there is no mail server)."""
+        from app.backend.api.services.notifications import Notifications
 
-        mail = FacilityMail(self.db)
-        if not mail.getSettings().get("enabled"):
-            return []
         settings = self._settings()
         on = on or today(settings["timezone"])
-        sent = []
+        notifications = Notifications(self.db)
+        told = []
         for session in self.mapper.listFinished(settings["timezone"]):
             owed = noticesDue(session, settings, on)
             if not owed:
                 continue
-            recipients = self.mapper.noticeRecipients(session.get("userId"), session.get("groupId"))
-            notices = dict(session.get("retentionNotices") or {})
-            if recipients:
+            userIds = self.mapper.noticeRecipients(session.get("userId"), session.get("groupId"))
+            if userIds:
                 text = noticeText(session, owed, settings.get("downloadInstructions") or "")
-                try:
-                    mail.send(text["subject"], text["body"], to=recipients)
-                except RuntimeError as error:
-                    logger.warning("Could not mail the retention notice of session %s: %s", session["id"], error)
-                    continue
-                sent.append({"sessionId": session["id"], "to": recipients, "kinds": sorted(owed)})
+                notifications.notify(userIds, "facility.retention", text["subject"], text["body"], "/facility/mine")
+                told.append({"sessionId": session["id"], "userIds": userIds, "kinds": sorted(owed)})
             # With nobody to tell (no user, no PI) the notice is taken as given: it would be owed for ever
+            notices = dict(session.get("retentionNotices") or {})
             for kind, (until, _, days) in owed.items():
                 previous = notices.get(kind) or {}
                 already = (previous.get("sent") or []) if previous.get("until") == until else []
                 notices[kind] = {"until": until, "sent": sorted(set(already) | set(days), reverse=True),
                                  "at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
             self.mapper.saveNotices(session["id"], notices)
-        return sent
+        return told
 
 
 def sendNoticesNow(db, now: Optional[float] = None) -> List[Dict[str, Any]]:
