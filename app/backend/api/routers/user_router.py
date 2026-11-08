@@ -35,6 +35,8 @@ from app.backend.api.permissions import requirePermission
 from app.backend.api.services.access_service import AccessService
 from app.backend.api.audit import recordAudit, userLabel
 from app.backend.api.schemas.user_schema import AdminUserOut, AdminUserUpdate
+from app.backend.api.services import user_deletion
+from fastapi import Query
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -101,3 +103,32 @@ def updateAdminUser(
 
     updatedUser = AccessService(mapper.db).withAccess([updatedUser])[0]
     return updatedUser
+
+
+@router.get("/admin/{userId}/deletion")
+def previewUserDeletion(
+    userId: int,
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    adminUser: dict = Depends(requirePermission("users.manage")),
+) -> Dict[str, Any]:
+    """What deleting the account takes with it (its projects) and what stops it."""
+    return user_deletion.deletionPreview(mapper, adminUser, userId)
+
+
+@router.delete("/admin/{userId}")
+def deleteAdminUser(
+    userId: int,
+    confirmEmail: str = Query(..., description="The account's address, typed to confirm"),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    adminUser: dict = Depends(requirePermission("users.manage")),
+) -> Dict[str, Any]:
+    """Delete the account and every project it owns (in the background); answers what went and what could not."""
+    result = user_deletion.deleteUser(mapper, adminUser, userId, confirmEmail)
+    for project in result["deleted"]:
+        recordAudit(mapper, adminUser, "projects.deleted", "project", project["id"], project["name"],
+                    {"withAccount": result["user"]["email"]})
+    recordAudit(mapper, adminUser, "users.deleted", "user", userId, result["user"]["email"],
+                {"projects": [project["name"] for project in result["deleted"]],
+                 "failed": [project["name"] for project in result["failed"]]})
+    return result
+

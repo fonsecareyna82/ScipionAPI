@@ -77,7 +77,7 @@ ACTIVE_SYSTEM_USERS_SQL = """
 PENDING_ACCOUNTS_SQL = """
     SELECT id, email, "firstName", "lastName", "createdAt"
       FROM users
-     WHERE NOT "isActive"
+     WHERE NOT "isActive" AND "deletingAt" IS NULL
        AND "createdAt" > %s
      ORDER BY "createdAt" DESC
      LIMIT %s

@@ -1638,6 +1638,7 @@ class PostgresqlFlatMapper(Mapper):
                   institution,
                   role
                 FROM users
+                WHERE "deletingAt" IS NULL
                 ORDER BY "firstName", "lastName", email
                 """
             )
@@ -1652,7 +1653,7 @@ class PostgresqlFlatMapper(Mapper):
               institution,
               role
             FROM users
-            WHERE id <> %s
+            WHERE id <> %s AND "deletingAt" IS NULL
             ORDER BY "firstName", "lastName", email
             """,
             (excludeUserId,),
@@ -1672,6 +1673,7 @@ class PostgresqlFlatMapper(Mapper):
               "isActive",
               "isVerified"
             FROM users
+            WHERE "deletingAt" IS NULL
             ORDER BY "firstName", "lastName", email
             """
         )

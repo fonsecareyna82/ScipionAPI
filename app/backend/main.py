@@ -217,6 +217,16 @@ def resumeBackgroundDeletes():
                 mapper.db.close()
             if resumed:
                 log.info("Resuming the deletion of %s project(s)", resumed)
+            # After the projects' (the same queue, in order): their owners being deleted go once they are gone
+            from app.backend.api.services.user_deletion import resumePendingUserDeletions
+
+            mapper = getMapper()
+            try:
+                users = resumePendingUserDeletions(mapper)
+            finally:
+                mapper.db.close()
+            if users:
+                log.info("Resuming the deletion of %s account(s)", users)
             purgeTrash(_Path(ProjectService().manager.PROJECTS) / TRASH_FOLDER)
         except Exception:
             log.warning("Could not resume the background deletions", exc_info=True)
