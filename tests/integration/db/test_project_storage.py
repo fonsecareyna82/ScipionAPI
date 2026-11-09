@@ -1,4 +1,5 @@
 """The projects' disk usage and the users' projects folders, against the migrated database."""
+import time
 from uuid import uuid4
 
 import pytest
@@ -52,7 +53,8 @@ def _measureAll(db, root, projectIds):
         if not pending:
             return
         if storage.measureNext(db, root, sleep=lambda seconds: None) is None:
-            break
+            # Another measurer of this process (started by an earlier test) may hold the turn for a moment
+            time.sleep(0.05)
     raise AssertionError("The projects were not measured")
 
 

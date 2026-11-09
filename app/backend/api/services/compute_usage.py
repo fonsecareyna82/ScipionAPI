@@ -3,6 +3,11 @@
 Hours are a run's wall time inside the period; GPU hours are those hours times the GPUs the run was given (what
 it took from the others, whether it kept them busy or not). A run still going counts up to now; one whose worker
 was killed counts up to its last heartbeat.
+
+How much the GPUs were really used comes from looking at them while the run went on (not possible for runs sent
+to a queue, very short ones, or machines that cannot tell): gpuBusy is a run's mean busy percentage, and
+gpuUsedHours its GPU hours times that. Totals keep apart the GPU hours that were looked at (gpuMeasuredHours), so
+gpuUsedHours / gpuMeasuredHours is how busy the GPUs given were.
 """
 import os
 from datetime import datetime, timezone
@@ -54,6 +59,8 @@ def period(since: Optional[datetime], until: Optional[datetime],
 def runOut(row: Dict[str, Any]) -> Dict[str, Any]:
     hours = float(row.get("seconds") or 0) / 3600.0
     gpus = int(row.get("gpus") or 0)
+    samples = int(row.get("gpuSamples") or 0)
+    gpuBusy = float(row.get("gpuBusySum") or 0) / samples if gpus and samples else None
     path = str(row.get("projectPath") or "")
     return {
         "id": int(row["id"]),
@@ -79,17 +86,24 @@ def runOut(row: Dict[str, Any]) -> Dict[str, Any]:
         "status": row.get("status"),
         "hours": hours,
         "gpuHours": hours * gpus,
+        "gpuBusy": gpuBusy,
+        "gpuUsedHours": hours * gpus * gpuBusy / 100.0 if gpuBusy is not None else None,
+        "gpuMemoryPeakBytes": row.get("gpuMemoryPeakBytes") if gpuBusy is not None else None,
     }
 
 
 def _emptyTotals() -> Dict[str, Any]:
-    return {"runs": 0, "hours": 0.0, "gpuHours": 0.0, "failed": 0, "running": 0}
+    return {"runs": 0, "hours": 0.0, "gpuHours": 0.0, "gpuMeasuredHours": 0.0, "gpuUsedHours": 0.0, "failed": 0,
+            "running": 0}
 
 
 def _add(totals: Dict[str, Any], run: Dict[str, Any]) -> None:
     totals["runs"] += 1
     totals["hours"] += run["hours"]
     totals["gpuHours"] += run["gpuHours"]
+    if run.get("gpuUsedHours") is not None:
+        totals["gpuMeasuredHours"] += run["gpuHours"]
+        totals["gpuUsedHours"] += run["gpuUsedHours"]
     totals["failed"] += 1 if run["status"] == "failed" else 0
     totals["running"] += 1 if run["running"] else 0
 

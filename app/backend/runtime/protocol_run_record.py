@@ -1,8 +1,10 @@
-"""The record of one protocol run, for the computing each user uses: who launched it, where it ran, for how long
-and with which GPUs.
+"""The record of one protocol run, for the computing each user uses: who launched it, where it ran, for how long,
+with which GPUs and how much it really used them.
 
 The worker opens it when the protocol starts running (after waiting for its inputs and for a run slot), keeps it
-alive from its heartbeat thread, and closes it with the status the protocol ended with. Keeping the record must
+alive from its heartbeat thread, and closes it with the status the protocol ended with. A run with GPUs started
+on this machine (not sent to a queue) has them looked at while it goes on (gpu_sampler); what was found is saved
+with each heartbeat and at the end. Keeping the record must
 never stop a run: every failure here is logged and ignored.
 """
 import logging
@@ -11,6 +13,7 @@ import socket
 from typing import Any, Dict, Optional
 
 from app.backend.mapper.compute_usage_mapper import ComputeUsagePostgresqlMapper
+from app.backend.runtime.gpu_sampler import GpuSampler
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +67,11 @@ def describeRun(protocol) -> Dict[str, Any]:
 class ProtocolRunRecord:
     """One run of a protocol in protocol_runs."""
 
-    def __init__(self, db, runId: int):
+    def __init__(self, db, runId: int, sampler: Optional[GpuSampler] = None):
         self.db = db
         self.runId = runId
+        self.sampler = sampler
+        self._savedSamples = 0
 
     @classmethod
     def start(cls, db, projectId: int, projectPath: Optional[str], protocolId, protocol, userId: Optional[int],
@@ -78,19 +83,47 @@ class ProtocolRunRecord:
                           coordinatorRunId=coordinatorRunId or None, host=socket.gethostname(),
                           streaming=bool(streaming))
             runId = ComputeUsagePostgresqlMapper(db).startRun(values)
-            return cls(db, runId) if runId is not None else None
+            if runId is None:
+                return None
+            return cls(db, runId, sampler=cls._startSampler(values))
         except Exception:
             logger.warning("Could not record the start of the run. projectId=%s protocolId=%s",
                            projectId, protocolId, exc_info=True)
             return None
+
+    @staticmethod
+    def _startSampler(values: Dict[str, Any]) -> Optional[GpuSampler]:
+        """Looks at the run's GPUs, when it has some and runs here (a queue runs it on another machine)."""
+        if not values.get("gpuIds") or values.get("queueName"):
+            return None
+        try:
+            return GpuSampler.startFor(str(values["gpuIds"]).split(","))
+        except Exception:
+            logger.warning("Could not start looking at the GPUs of the run", exc_info=True)
+            return None
+
+    def _saveGpuUse(self, final: bool = False) -> None:
+        if self.sampler is None:
+            return
+        try:
+            use = self.sampler.stop() if final else self.sampler.snapshot()
+            if use.samples == self._savedSamples:
+                return
+            ComputeUsagePostgresqlMapper(self.db).saveGpuUse(self.runId, use.samples, use.busySum,
+                                                            use.memoryPeakBytes)
+            self._savedSamples = use.samples
+        except Exception:
+            logger.warning("Could not record the GPU use of run %s", self.runId, exc_info=True)
 
     def touch(self) -> None:
         try:
             ComputeUsagePostgresqlMapper(self.db).touchRun(self.runId)
         except Exception:
             logger.warning("Could not record that run %s is alive", self.runId, exc_info=True)
+        self._saveGpuUse()
 
     def end(self, status: str) -> None:
+        self._saveGpuUse(final=True)
         try:
             ComputeUsagePostgresqlMapper(self.db).endRun(self.runId, status)
         except Exception:

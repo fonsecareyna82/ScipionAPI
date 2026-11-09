@@ -20,6 +20,13 @@ CLOSE_LEFT_OPEN_SQL = """
 
 TOUCH_RUN_SQL = 'UPDATE protocol_runs SET "lastSeenAt" = NOW() WHERE id = %(runId)s AND "endedAt" IS NULL'
 
+# What the looks at the run's GPUs found so far (they add up from the start of the run)
+SAVE_GPU_USE_SQL = """
+    UPDATE protocol_runs SET "gpuSamples" = %(samples)s, "gpuBusySum" = %(busySum)s,
+                             "gpuMemoryPeakBytes" = %(memoryPeakBytes)s
+     WHERE id = %(runId)s
+"""
+
 END_RUN_SQL = """
     UPDATE protocol_runs SET "endedAt" = NOW(), "lastSeenAt" = NOW(), status = %(status)s
      WHERE id = %(runId)s AND "endedAt" IS NULL
@@ -47,7 +54,7 @@ RUNS_IN_PERIOD_SQL = """
     SELECT b.id, b."projectId", COALESCE(pj.name, b."projectPath") AS "projectPath", b."protocolId",
            b."protocolClassName", b."protocolLabel", b."userId", u.email AS "userEmail",
            u."firstName" AS "userFirstName", u."lastName" AS "userLastName", b.host, b."queueName",
-           b."queueJobId", b.gpus, b."gpuIds", b.threads, b.mpi, b.streaming, b."startedAt", b."endedAt",
+           b."queueJobId", b.gpus, b."gpuIds", b."gpuSamples", b."gpuBusySum", b."gpuMemoryPeakBytes", b.threads, b.mpi, b.streaming, b."startedAt", b."endedAt",
            b."effectiveEnd", b.running,
            CASE WHEN b."endedAt" IS NOT NULL THEN b.status
                 WHEN b.running THEN 'running'
@@ -80,6 +87,10 @@ class ComputeUsagePostgresqlMapper:
 
     def endRun(self, runId: int, status: str) -> None:
         self.db.execute(END_RUN_SQL, {"runId": runId, "status": status})
+
+    def saveGpuUse(self, runId: int, samples: int, busySum: float, memoryPeakBytes: Optional[int]) -> None:
+        self.db.execute(SAVE_GPU_USE_SQL, {"runId": runId, "samples": int(samples), "busySum": float(busySum),
+                                           "memoryPeakBytes": memoryPeakBytes})
 
     # What was run -------------------------------------------------------------------------------------------------
 

@@ -55,6 +55,8 @@ def accountActivated(db, userId: int) -> List[int]:
 def projectShared(db, sharer: Dict[str, Any], projectId: int, projectPath: Any, userIds: Iterable[int],
                   groupIds: Iterable[int], level: Optional[str]) -> List[int]:
     """Tell the users a project was shared with (and the members of the groups), but the one who shared it."""
+    if db is None:
+        return []
     try:
         members = NotificationsPostgresqlMapper(db).groupMemberIds(list(groupIds or []))
     except Exception:

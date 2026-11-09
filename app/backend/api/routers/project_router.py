@@ -486,7 +486,7 @@ def shareProject(
                   dict(_shareTargets(mapper, payload.userIds, payload.groupIds), level=share.get("permission")))
     from app.backend.api.services import notify_events
 
-    notify_events.projectShared(mapper.db, currentUser, projectId, _projectName(mapper, projectId, currentUser),
+    notify_events.projectShared(getattr(mapper, "db", None), currentUser, projectId, _projectName(mapper, projectId, currentUser),
                                 payload.userIds, payload.groupIds, share.get("permission") or payload.permission)
     return share
 

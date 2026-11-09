@@ -197,6 +197,8 @@ def test_TheDigestMailsADaysNoticesOnceAtItsHour(outbox):
     db = outbox["db"]
     ana, _ = outbox["users"]
     notifications = Notifications(db)
+    # A digest mailed earlier on that day (another run of the tests) is not this test's
+    db.execute("DELETE FROM notification_settings WHERE key = %s", (sender.LAST_DIGEST_KEY,))
     _mail(db, digest={"hour": 8, "timezone": "Europe/Madrid"})
     notifications.savePreferences({"id": ana, "permissions": []}, {"facility.booking": "digest"}, True)
     notifications.notify([ana], "facility.booking", "Booking of Krios: is confirmed", link="/facility/calendar")

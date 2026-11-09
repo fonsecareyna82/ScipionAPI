@@ -39,7 +39,8 @@ def test_ThePeriodIsSummedByUserGroupProtocolAndMachine():
 
     report = compute_usage.summarize(runs, members, SINCE, UNTIL)
 
-    assert report["total"] == {"runs": 5, "hours": 23.0, "gpuHours": 30.0, "failed": 1, "running": 1, "users": 3}
+    assert report["total"] == {"runs": 5, "hours": 23.0, "gpuHours": 30.0, "gpuMeasuredHours": 0.0,
+                               "gpuUsedHours": 0.0, "failed": 1, "running": 1, "users": 3}
     assert report["periodHours"] == 120.0
     ana, marta, unknown = report["users"]
     assert (ana["name"], ana["gpuHours"], ana["hours"], ana["failed"]) == ("Ana Test", 20.0, 14.0, 1)
@@ -61,6 +62,70 @@ def test_ThePeriodIsSummedByUserGroupProtocolAndMachine():
     assert machines["gpu1"]["gpuHoursById"] == {"0": 10.0, "1": 10.0}
     assert machines["node7"]["gpuHoursById"] == {} and machines["node7"]["gpuHours"] == 4.0
     assert [run["id"] for run in report["running"]] == [3]
+
+
+def test_HowMuchTheGpusWereReallyUsedCountsOnlyTheRunsLookedAt():
+    looked = dict(_row(1, 1, "ProtRelionClassify3D", 10, gpus=2, gpuIds="0,1"),
+                  gpuSamples=4, gpuBusySum=160.0, gpuMemoryPeakBytes=8 * 1024 ** 3)
+    notLooked = _row(2, 1, "ProtMotionCorr", 5, gpus=1, gpuIds="1")
+    withoutGpus = dict(_row(3, 1, "ProtCTFFind", 2), gpuSamples=3, gpuBusySum=90.0)
+    runs = [compute_usage.runOut(row) for row in (looked, notLooked, withoutGpus)]
+
+    assert (runs[0]["gpuBusy"], runs[0]["gpuUsedHours"], runs[0]["gpuMemoryPeakBytes"]) == (40.0, 8.0, 8 * 1024 ** 3)
+    assert (runs[1]["gpuBusy"], runs[1]["gpuUsedHours"]) == (None, None)
+    assert runs[2]["gpuBusy"] is None
+    total = compute_usage.summarize(runs, [], SINCE, UNTIL)["total"]
+    assert (total["gpuHours"], total["gpuMeasuredHours"], total["gpuUsedHours"]) == (25.0, 20.0, 8.0)
+
+
+def test_ARunsGpusAreLookedAtOnlyWhenItRunsHereWithGpus(monkeypatch):
+    started = []
+    monkeypatch.setattr(protocol_run_record.GpuSampler, "startFor",
+                        classmethod(lambda cls, gpuIds: started.append(list(gpuIds)) or "sampler"))
+    start = protocol_run_record.ProtocolRunRecord._startSampler
+    assert start({"gpuIds": "0,2", "queueName": None}) == "sampler"
+    assert start({"gpuIds": None, "queueName": None}) is None
+    assert start({"gpuIds": "0", "queueName": "gpu-long"}) is None
+    assert started == [["0", "2"]]
+
+
+def test_TheGpuUseIsSavedWithEachHeartbeatAndAtTheEnd(monkeypatch):
+    from app.backend.runtime.gpu_sampler import GpuUse
+
+    saved, ended = [], []
+
+    class Mapper:
+        def __init__(self, db):
+            pass
+
+        def touchRun(self, runId):
+            pass
+
+        def endRun(self, runId, status):
+            ended.append(status)
+
+        def saveGpuUse(self, runId, samples, busySum, memoryPeakBytes):
+            saved.append((samples, busySum, memoryPeakBytes))
+
+    class Sampler:
+        use = GpuUse(2, 120.0, 1024)
+
+        def snapshot(self):
+            return self.use
+
+        def stop(self):
+            self.stopped = True
+            return GpuUse(3, 150.0, 2048)
+
+    monkeypatch.setattr(protocol_run_record, "ComputeUsagePostgresqlMapper", Mapper)
+    monkeypatch.setattr("app.backend.api.services.notify_events.runEnded", lambda *args: None)
+    sampler = Sampler()
+    record = protocol_run_record.ProtocolRunRecord(object(), 7, sampler=sampler)
+    record.touch()
+    record.touch()  # nothing new: not saved again
+    record.end("finished")
+    assert saved == [(2, 120.0, 1024), (3, 150.0, 2048)]
+    assert sampler.stopped and ended == ["finished"]
 
 
 def test_ThePeriodIsThisMonthByDefaultAndMustStartBeforeItEnds():

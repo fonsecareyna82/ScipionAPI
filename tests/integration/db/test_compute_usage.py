@@ -102,3 +102,20 @@ def test_EachUserSeesTheirOwnTotals(lab):
     assert (own["runs"], own["failed"]) == (1, 1)
     runs = compute_usage.userRuns(db, userId)["runs"]
     assert [(run["id"], run["status"], run["projectName"]) for run in runs] == [(runId, "failed", "Apoferritin")]
+
+
+def test_TheGpuUseOfARunIsSavedAndReadBack(lab):
+    db, userId, projectId, protocol, run, move = lab
+    now = datetime.now(timezone.utc)
+    mapper = ComputeUsagePostgresqlMapper(db)
+    protocol(7, "finished")
+    runId = run(7)
+    mapper.saveGpuUse(runId, 3, 120.0, 4 * 1024 ** 3)
+    mapper.saveGpuUse(runId, 4, 180.0, 6 * 1024 ** 3)
+    mapper.endRun(runId, "finished")
+    move(runId, startedAt=now - timedelta(hours=5), endedAt=now - timedelta(hours=1), lastSeenAt=now - timedelta(hours=1))
+
+    rows = [row for row in mapper.runsInPeriod(now - timedelta(hours=6), now, 300.0, userId=userId) if row["id"] == runId]
+    assert (rows[0]["gpuSamples"], rows[0]["gpuBusySum"], rows[0]["gpuMemoryPeakBytes"]) == (4, 180.0, 6 * 1024 ** 3)
+    usage = compute_usage.ownUsage(db, userId, since=now - timedelta(hours=6), until=now)
+    assert usage["gpuMeasuredHours"] == pytest.approx(8.0) and usage["gpuUsedHours"] == pytest.approx(3.6)
