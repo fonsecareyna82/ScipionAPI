@@ -24,7 +24,7 @@
 # *
 # ******************************************************************************
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -102,6 +102,8 @@ class NodeScratchOut(BaseModel):
     totalBytes: Optional[int] = None
     freeBytes: Optional[int] = None
     error: Optional[str] = None
+    # What its last cleaning did: {at, removed: [{name, reason, bytes}], freedBytes, kept, errors}
+    lastCleanup: Optional[Dict[str, Any]] = None
 
 
 class NodeCapabilitiesOut(BaseModel):

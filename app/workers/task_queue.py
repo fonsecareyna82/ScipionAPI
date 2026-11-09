@@ -13,6 +13,7 @@ load_dotenv(dotEnvPath, override=False)
 
 from celery import Celery, Task
 from celery.exceptions import Ignore
+from celery.signals import worker_ready
 from celery.worker.control import control_command
 
 from app.backend.api.services.environment import prepareEnvironment
@@ -890,8 +891,9 @@ def report_node_capabilities(state):
             "gpuCount": len(gpus),
             "gpus": gpus,
             "plugins": installedPlugins,
-            # Its fast local disk for the protocols' temporary files (only this machine sees it)
-            "scratch": scratch,
+            # Its fast local disk for the protocols' temporary files (only this machine sees it), and what its
+            # last cleaning did
+            "scratch": dict(scratch, lastCleanup=_lastScratchCleanup()),
         }
 
     except Exception as error:
@@ -900,3 +902,38 @@ def report_node_capabilities(state):
             hostname,
         )
         return {"hostname": hostname, "error": str(error)}
+
+
+def _lastScratchCleanup():
+    try:
+        from app.backend.runtime.scratch_cleanup import lastReport
+
+        return lastReport() or None
+    except Exception:
+        return None
+
+
+@worker_ready.connect
+def _startScratchCleaner(**_kwargs):
+    """Each worker cleans what protocols leave on its machine's scratch (it idles without one)."""
+    try:
+        from app.backend.database import getMapper
+        from app.backend.runtime.scratch_cleanup import startScratchCleaner
+
+        startScratchCleaner(lambda: getMapper().db)
+    except Exception:
+        logger.warning("Could not start the scratch cleaner", exc_info=True)
+
+
+@control_command(args=[("hostname", str)], signature="<hostname>")
+def clean_scratch(state, hostname=""):
+    """Clean this machine's scratch now (only the workers of that machine do it); answers the last cleaning."""
+    import socket
+
+    if hostname and hostname != socket.gethostname():
+        return {"skipped": True}
+    from app.backend.runtime.scratch_cleanup import lastReport, requestClean
+
+    requestClean()
+    return {"hostname": socket.gethostname(), "requested": True, "lastCleanup": lastReport() or None}
+

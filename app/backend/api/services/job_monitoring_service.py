@@ -1054,6 +1054,20 @@ class JobMonitoringService:
             ),
         }
 
+    def requestScratchCleaning(self, hostname: str, timeout: float = 3.0) -> Dict[str, Any]:
+        """Ask a machine's workers to clean its scratch now; answers whether one heard it."""
+        if self.celeryApp is None:
+            return {"requested": False, "error": self.celeryImportError or "Celery is not available."}
+        try:
+            replies = self.celeryApp.control.broadcast("clean_scratch", arguments={"hostname": hostname},
+                                                       reply=True, timeout=max(0.5, float(timeout)))
+        except Exception as error:
+            return {"requested": False, "error": str(error)}
+        heard = [payload for reply in replies or [] if isinstance(reply, dict)
+                 for payload in reply.values() if isinstance(payload, dict) and payload.get("requested")]
+        return {"requested": bool(heard),
+                "error": None if heard else "No worker of %s answered: is its protocol worker running?" % hostname}
+
     def getNodeCapabilities(
             self,
             timeout: float = 5.0,

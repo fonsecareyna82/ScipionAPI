@@ -297,6 +297,23 @@ def setJobNodeScratch(
     return result
 
 
+@router.post(
+    "/jobs/nodes/{hostname}/scratch/clean",
+    status_code=status.HTTP_200_OK,
+)
+def cleanJobNodeScratch(
+    hostname: str,
+    currentUser=Depends(requirePermission("jobs.manage")),
+    service: JobMonitoringService = Depends(getJobMonitoringService),
+) -> Dict[str, Any]:
+    """Ask a machine to clean its scratch now (what crashed or deleted protocols left); its report shows the
+    result once done."""
+    result = service.requestScratchCleaning(hostname)
+    if not result["requested"]:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result["error"])
+    return result
+
+
 @router.get(
     "/jobs/nodes",
     response_model=NodeCapabilitiesListOut,
