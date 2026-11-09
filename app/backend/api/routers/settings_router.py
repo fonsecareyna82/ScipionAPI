@@ -28,7 +28,9 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
 from app.backend.api.audit import recordAudit, recordAuditOwnConnection
@@ -268,6 +270,31 @@ def getJobsOverview(
                 % error
             ),
         )
+
+
+class ScratchPayload(BaseModel):
+    # Empty: no scratch on that machine
+    path: Optional[str] = None
+
+
+@router.put(
+    "/jobs/nodes/{hostname}/scratch",
+    status_code=status.HTTP_200_OK,
+)
+def setJobNodeScratch(
+    hostname: str,
+    payload: ScratchPayload,
+    currentUser=Depends(requirePermission("settings.manage")),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+) -> Dict[str, Any]:
+    """Set a machine's scratch (its fast local disk for the protocols' temporary files); its protocol worker must
+    be restarted to use it."""
+    from app.backend.api.audit import recordAudit
+    from app.backend.api.services.scratch_settings import setScratch
+
+    result = setScratch(hostname, payload.path)
+    recordAudit(mapper, currentUser, "settings.scratchUpdated", "node", None, hostname, {"path": result["path"]})
+    return result
 
 
 @router.get(

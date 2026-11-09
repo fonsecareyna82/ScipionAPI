@@ -94,12 +94,23 @@ class NodePluginOut(BaseModel):
     pipVersion: Optional[str] = None
 
 
+class NodeScratchOut(BaseModel):
+    # None: no scratch (the protocols' temporary files stay in the project)
+    path: Optional[str] = None
+    exists: Optional[bool] = None
+    writable: Optional[bool] = None
+    totalBytes: Optional[int] = None
+    freeBytes: Optional[int] = None
+    error: Optional[str] = None
+
+
 class NodeCapabilitiesOut(BaseModel):
     hostname: str
     error: Optional[str] = None
     gpuCount: int = 0
     gpus: List[NodeGpuOut] = Field(default_factory=list)
     plugins: List[NodePluginOut] = Field(default_factory=list)
+    scratch: NodeScratchOut = Field(default_factory=NodeScratchOut)
 
 
 class NodeCapabilitiesListOut(BaseModel):

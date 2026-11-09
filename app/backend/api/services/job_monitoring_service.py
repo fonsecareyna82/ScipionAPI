@@ -1120,6 +1120,7 @@ class JobMonitoringService:
                     "gpuCount": self._optionalInt(payload.get("gpuCount")) or 0,
                     "gpus": payload.get("gpus") or [],
                     "plugins": payload.get("plugins") or [],
+                    "scratch": payload.get("scratch") or {"path": None},
                 }
 
         nodes = sorted(

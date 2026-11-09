@@ -188,6 +188,23 @@ def writeEnvFile(envPath: Path, updates: Dict[str, str]) -> None:
         pass
 
 
+def removeEnvKeys(envPath: Path, keys) -> bool:
+    """Remove these keys' lines from a dotenv file (comments and the other keys kept); True when one was there."""
+    if not envPath.exists():
+        return False
+    wanted = set(keys)
+    kept, removed = [], False
+    for line in _iterExistingLines(envPath):
+        parsed = _parseEnvLine(line)
+        if parsed is not None and parsed[0] in wanted:
+            removed = True
+            continue
+        kept.append(line)
+    if removed:
+        envPath.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
+    return removed
+
+
 def exportEnvToOs(envPath: Path, overrideExisting: bool = True) -> None:
     # Export dotenv values to the current process environment.
     current = readEnvFile(envPath)

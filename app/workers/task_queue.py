@@ -850,7 +850,7 @@ def _listInstalledPluginsFromLocalDomainRegistry():
 
 @control_command()
 def report_node_capabilities(state):
-    """Report this node's hostname, GPU inventory, and installed plugins.
+    """Report this node's hostname, GPU inventory, installed plugins and scratch disk.
 
     Used by the monitoring dashboard to show, per multi-node deployment
     host, what compute/plugin capabilities are actually available there.
@@ -878,11 +878,20 @@ def report_node_capabilities(state):
             )
             installedPlugins = []
 
+        try:
+            from app.backend.api.services.scratch_settings import scratchStatus
+
+            scratch = scratchStatus()
+        except Exception as error:
+            scratch = {"path": None, "error": str(error)}
+
         return {
             "hostname": hostname,
             "gpuCount": len(gpus),
             "gpus": gpus,
             "plugins": installedPlugins,
+            # Its fast local disk for the protocols' temporary files (only this machine sees it)
+            "scratch": scratch,
         }
 
     except Exception as error:
