@@ -4405,7 +4405,12 @@ class ProjectService:
                 try:
                     parsed = json.loads(text)
                 except Exception as e:
-                    return [], "Invalid workflow content JSON: %s" % e
+                    # A template's fields outside quotes (~Voltage|300|4|volt~) are filled before it loads: with
+                    # their default values in, it may well be valid JSON
+                    try:
+                        parsed = json.loads(self._withTemplateFieldDefaults(text))
+                    except Exception:
+                        return [], "Invalid workflow content JSON: %s" % e
 
                 if isinstance(parsed, list):
                     return [item for item in parsed if isinstance(item, dict)], None
@@ -4572,6 +4577,7 @@ class ProjectService:
 
         workflows: List[Dict[str, Any]] = []
         pluginAvailabilityCache: Dict[str, bool] = {}
+        knownClasses = self._knownProtocolClassNames()
 
         for index, template in enumerate(templates or []):
             try:
@@ -4589,6 +4595,7 @@ class ProjectService:
 
                 requiredPluginNames = []
                 templateText = None
+                declaresPlugins = isinstance(rawContent, str) and self._hasRequiredPluginsHeader(rawContent)
 
                 if isinstance(rawContent, str):
                     requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
@@ -4601,8 +4608,15 @@ class ProjectService:
                             templateText = description
                         if templateText is not None:
                             requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
+                            declaresPlugins = declaresPlugins or self._hasRequiredPluginsHeader(templateText)
                     except Exception:
                         requiredPluginNames = []
+
+                design = self._workflowDesign(protocols, parseError, declaresPlugins, knownClasses)
+                if design["problem"]:
+                    # A broken workflow is not offered: it could not be loaded anyway
+                    logger.info("workflowTemplateHidden name=%s source=%s reason=%s", name, source, design["problem"])
+                    continue
 
                 missingPluginNames = self._getMissingWorkflowPluginNames(
                     requiredPluginNames,
@@ -4628,12 +4642,13 @@ class ProjectService:
                         "previewGraph": previewGraph,
                         "requiredPluginNames": requiredPluginNames,
                         "missingPluginNames": missingPluginNames,
-                        "canLoad": len(missingPluginNames) == 0,
-                        "disabledReason": (
-                            "Missing required plugins: %s" % ", ".join(missingPluginNames)
-                            if missingPluginNames
-                            else ""
-                        ),
+                        "missingPlugins": self._missingPluginsWithPip(missingPluginNames),
+                        "declaresPlugins": declaresPlugins,
+                        "designWarning": design["designWarning"],
+                        "unknownProtocolClasses": design["unknownProtocolClasses"],
+                        "canLoad": not missingPluginNames and not design["unknownProtocolClasses"],
+                        "disabledReason": self._workflowDisabledReason(missingPluginNames,
+                                                                       design["unknownProtocolClasses"]),
                     }
                 )
             except Exception:
@@ -8360,6 +8375,7 @@ class ProjectService:
             )
 
         requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawText)
+        declaresPlugins = self._hasRequiredPluginsHeader(rawText)
 
         try:
             jsonText = self._extractWorkflowJsonText(rawText)
@@ -8382,6 +8398,7 @@ class ProjectService:
             )
 
             workflow = payload.get("content")
+            declaresPlugins = True
         else:
             workflow = payload
 
@@ -8411,6 +8428,18 @@ class ProjectService:
         missingPluginNames = self._getMissingWorkflowPluginNames(
             requiredPluginNames
         )
+        if isinstance(workflow, list):
+            design = self._workflowDesign(workflow, None, declaresPlugins, self._knownProtocolClassNames())
+        else:
+            # A workflow object (not a list of protocols) is checked when it loads
+            design = {"problem": None, "unknownProtocolClasses": [],
+                      "designWarning": "" if declaresPlugins else self._workflowDesign(
+                          [{"object.className": "x"}], None, False, None)["designWarning"]}
+        if design["problem"]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This workflow cannot be imported: %s." % design["problem"],
+            )
 
         result = {
             "path": rawPath,
@@ -8419,13 +8448,12 @@ class ProjectService:
             "protocolsCount": protocolsCount,
             "requiredPluginNames": requiredPluginNames,
             "missingPluginNames": missingPluginNames,
-            "canLoad": len(missingPluginNames) == 0,
-            "disabledReason": (
-                "Missing required plugins: %s"
-                % ", ".join(missingPluginNames)
-                if missingPluginNames
-                else ""
-            ),
+            "missingPlugins": self._missingPluginsWithPip(missingPluginNames),
+            "declaresPlugins": declaresPlugins,
+            "designWarning": design["designWarning"],
+            "unknownProtocolClasses": design["unknownProtocolClasses"],
+            "canLoad": not missingPluginNames and not design["unknownProtocolClasses"],
+            "disabledReason": self._workflowDisabledReason(missingPluginNames, design["unknownProtocolClasses"]),
         }
 
         if includeWorkflow:
@@ -8482,6 +8510,75 @@ class ProjectService:
         ]
 
         return "\n".join(lines).rstrip() + "\n\n"
+
+    # A plugin's pip package when it is not scipion-em-<its module> (a missing plugin is known by its module)
+    _PLUGIN_PIP_NAMES = {"xmipp3": "scipion-em-xmipp", "emfacilities": "scipion-em-facilities",
+                         "pwchem": "scipion-chem"}
+
+    @staticmethod
+    def _withTemplateFieldDefaults(text: str) -> str:
+        """A template's ~Title|value|type|alias~ fields outside quotes replaced by their value (only to see
+        whether the rest is valid JSON); an empty value becomes null."""
+        def value(match):
+            parts = match.group(1).split("|")
+            default = parts[1].strip() if len(parts) > 1 else ""
+            return default if default else "null"
+
+        return re.sub(r'(?<!")~([^~"\n]*)~(?!")', value, str(text or ""))
+
+    def _hasRequiredPluginsHeader(self, text: Any) -> bool:
+        """Whether a workflow's text says which plugins it needs (its "Scipion required plugins:" line, even empty:
+        a workflow of Scipion's own protocols needs none)."""
+        for line in str(text or "").splitlines():
+            cleanLine = line.strip()
+            if cleanLine.startswith("[") or cleanLine.startswith("{"):
+                return False
+            if re.match(r"^Scipion required plugins:", cleanLine, flags=re.IGNORECASE):
+                return True
+        return False
+
+    def _knownProtocolClassNames(self) -> Optional[TypingSet[str]]:
+        """The protocol classes this installation knows (None when they cannot be read: nothing is judged then)."""
+        try:
+            from pwem import Domain
+
+            return set((Domain.getProtocols() or {}).keys())
+        except Exception:
+            logger.warning("Could not read the protocol classes this installation knows", exc_info=True)
+            return None
+
+    def _workflowDesign(self, protocols: List[Dict[str, Any]], parseError: Optional[str], declaresPlugins: bool,
+                        knownClasses: Optional[TypingSet[str]]) -> Dict[str, Any]:
+        """Whether a workflow is well made: a JSON list of protocols, each with its class. A broken one is not
+        listed nor imported (``problem``); one that does not say which plugins it needs is, with a warning to
+        migrate it, as long as this installation knows all its protocols (else ``unknownProtocolClasses``)."""
+        if parseError:
+            return {"problem": "Its JSON is not valid: %s" % parseError}
+        if not protocols:
+            return {"problem": "It has no protocols"}
+        classNames = [str(protocol.get("object.className") or "").strip() for protocol in protocols]
+        if not all(classNames):
+            return {"problem": "A protocol in it has no class"}
+        if declaresPlugins:
+            return {"problem": None, "designWarning": "", "unknownProtocolClasses": []}
+        unknown = sorted({name for name in classNames if knownClasses is not None and name not in knownClasses})
+        return {"problem": None, "unknownProtocolClasses": unknown,
+                "designWarning": "It does not say which plugins it needs: export it again from Scipion or "
+                                 "ScipionWeb to migrate it."}
+
+    @staticmethod
+    def _workflowDisabledReason(missingPluginNames: List[str], unknownClasses: List[str]) -> str:
+        if missingPluginNames:
+            return "Missing required plugins: %s" % ", ".join(missingPluginNames)
+        if unknownClasses:
+            return ("It uses protocols this installation does not know (%s): a plugin is missing, and the workflow "
+                    "does not say which" % ", ".join(unknownClasses))
+        return ""
+
+    def _missingPluginsWithPip(self, moduleNames: List[str]) -> List[Dict[str, str]]:
+        """The missing plugins with the pip package to install each (by Scipion's naming)."""
+        return [{"name": name, "pipName": self._PLUGIN_PIP_NAMES.get(name, "scipion-em-%s" % name)}
+                for name in moduleNames]
 
     def _extractRequiredPluginNamesFromWorkflowText(self, text: str) -> List[str]:
         # extractRequiredPluginNamesFromWorkflowText

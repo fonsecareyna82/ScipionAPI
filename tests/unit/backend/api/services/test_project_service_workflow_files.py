@@ -333,3 +333,85 @@ def test_InspectWorkflowFileAcceptsTemplateWorkflow(
 
 
 
+
+
+def _legacy(browserRoot, workflow, name="legacy.json", header=""):
+    (browserRoot / name).write_text(header + json.dumps(workflow), encoding="utf-8")
+    return name
+
+
+def test_AWorkflowThatDoesNotSayItsPluginsIsAcceptedWithAWarningToMigrateIt(workflowFileService, monkeypatch):
+    service, browserRoot = workflowFileService
+    monkeypatch.setattr(service, "_knownProtocolClassNames", lambda: {"ProtImportMovies", "ProtUnionSet"})
+    name = _legacy(browserRoot, [{"object.id": "1", "object.className": "ProtImportMovies"}])
+
+    result = service.inspectWorkflowFile(workflowPath=name)
+
+    assert result["canLoad"] is True and result["declaresPlugins"] is False
+    assert "export it again" in result["designWarning"]
+
+
+def test_AWorkflowThatSaysItsPluginsHasNoWarningEvenWithNone(workflowFileService, monkeypatch):
+    service, browserRoot = workflowFileService
+    monkeypatch.setattr(service, "_knownProtocolClassNames", lambda: set())
+    name = _legacy(browserRoot, [{"object.id": "1", "object.className": "ProtImportMovies"}],
+                   header="Scipion required plugins: \n\n")
+
+    result = service.inspectWorkflowFile(workflowPath=name)
+
+    assert result["declaresPlugins"] is True and result["designWarning"] == "" and result["canLoad"] is True
+
+
+def test_AWorkflowWithProtocolsThisInstallationDoesNotKnowCannotLoad(workflowFileService, monkeypatch):
+    service, browserRoot = workflowFileService
+    monkeypatch.setattr(service, "_knownProtocolClassNames", lambda: {"ProtImportMovies"})
+    name = _legacy(browserRoot, [{"object.id": "1", "object.className": "ProtImportMovies"},
+                                 {"object.id": "2", "object.className": "ProtRelionClassify2D"}])
+
+    result = service.inspectWorkflowFile(workflowPath=name)
+
+    assert result["canLoad"] is False and result["unknownProtocolClasses"] == ["ProtRelionClassify2D"]
+    assert "does not say which" in result["disabledReason"]
+
+
+def test_AWorkflowWithAProtocolWithoutClassIsRefused(workflowFileService):
+    service, browserRoot = workflowFileService
+    name = _legacy(browserRoot, [{"object.id": "1"}])
+
+    with pytest.raises(HTTPException) as error:
+        service.inspectWorkflowFile(workflowPath=name)
+
+    assert error.value.status_code == 422 and "has no class" in error.value.detail
+
+
+def test_TheMissingPluginsComeWithThePackageToInstall(workflowFileService, monkeypatch):
+    service, browserRoot = workflowFileService
+    monkeypatch.setattr(service, "_getMissingWorkflowPluginNames", lambda names: ["relion", "xmipp3"])
+    name = _legacy(browserRoot, [{"object.id": "1", "object.className": "ProtImportMovies"}],
+                   header="Scipion required plugins: relion, xmipp3\n\n")
+
+    result = service.inspectWorkflowFile(workflowPath=name)
+
+    assert result["missingPlugins"] == [{"name": "relion", "pipName": "scipion-em-relion"},
+                                        {"name": "xmipp3", "pipName": "scipion-em-xmipp"}]
+    assert result["canLoad"] is False
+
+
+def test_TheDesignOfAListedWorkflow():
+    service = object.__new__(ProjectService)
+
+    assert service._workflowDesign([], "Expecting value", True, set())["problem"].startswith("Its JSON is not valid")
+    assert service._workflowDesign([], None, True, set())["problem"] == "It has no protocols"
+    fine = service._workflowDesign([{"object.className": "ProtX"}], None, False, None)
+    assert fine["problem"] is None and fine["unknownProtocolClasses"] == [] and fine["designWarning"]
+    assert service._hasRequiredPluginsHeader("Scipion required plugins: tomo, imod\n[{}]")
+    assert not service._hasRequiredPluginsHeader('[{"comment": "Scipion required plugins: tomo"}]')
+
+
+def test_ATemplatesFieldsOutsideQuotesAreNotAJsonError():
+    service = object.__new__(ProjectService)
+    text = '[{"object.className": "ProtImportParticles", "voltage": ~Voltage|300|4|volt~, "label": "~Run|demo|0|run~", "x": ~Empty||4|e~}]'
+
+    filled = json.loads(service._withTemplateFieldDefaults(text))
+
+    assert filled[0]["voltage"] == 300 and filled[0]["label"] == "~Run|demo|0|run~" and filled[0]["x"] is None
