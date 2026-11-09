@@ -116,7 +116,10 @@ def test_EachUserGetsANoticeAsTheyChose(outbox):
     assert booking["channel"] == "web" and booking["chosen"] and booking["default"] == "instant"
     # The staff's kinds are not offered to who does not run sessions, nor the facility's without a facility
     assert "facility.alert" not in [kind["kind"] for kind in preferences["kinds"]]
-    assert notifications.preferencesOf(user, False)["kinds"] == []
+    withoutFacility = [kind["kind"] for kind in notifications.preferencesOf(user, False)["kinds"]]
+    assert withoutFacility and not [kind for kind in withoutFacility if kind.startswith("facility.")]
+    # The password reset is never offered: it always goes at once
+    assert "account.passwordReset" not in withoutFacility
     # Back to the default
     notifications.savePreferences(user, {"facility.booking": None}, True)
     assert not next(kind for kind in notifications.preferencesOf(user, True)["kinds"]

@@ -89,6 +89,21 @@ class NotificationsPostgresqlMapper:
                                     'VALUES (%s, %s, %s) ON CONFLICT ("userId", kind) DO UPDATE '
                                     'SET channel = EXCLUDED.channel', (int(userId), kind, channel), commit=False)
 
+    def groupMemberIds(self, groupIds: List[int]) -> List[int]:
+        ids = sorted({int(groupId) for groupId in groupIds or []})
+        if not ids:
+            return []
+        rows = self.db.fetchAll('SELECT DISTINCT "userId" FROM user_group_members WHERE "groupId" = ANY(%s)', (ids,))
+        return [int(row["userId"]) for row in rows or []]
+
+    def runOf(self, runId: int) -> Optional[Dict[str, Any]]:
+        """A protocol run with its project's owner (to tell of its end)."""
+        row = self.db.fetchOne('SELECT r.id, r."projectId", r."projectPath", r."protocolId", r."protocolClassName", '
+                               'r."protocolLabel", r."userId", r."startedAt", r."endedAt", r.status, p."ownerId" '
+                               'FROM protocol_runs r LEFT JOIN projects p ON p.id = r."projectId" WHERE r.id = %s',
+                               (int(runId),))
+        return dict(row) if row else None
+
     def activeUserIds(self, userIds: Iterable[int]) -> List[int]:
         ids = sorted({int(userId) for userId in userIds if userId is not None})
         if not ids:
@@ -139,6 +154,9 @@ class NotificationsPostgresqlMapper:
         if ids:
             self.db.execute('UPDATE notifications SET "emailState" = \'sent\', "emailedAt" = NOW(), "emailError" = NULL '
                             'WHERE id = ANY(%s)', ([int(value) for value in ids],))
+
+    def forgetBody(self, notificationId: int) -> None:
+        self.db.execute("UPDATE notifications SET body = '' WHERE id = %s", (int(notificationId),))
 
     def markSkipped(self, ids: List[int], reason: str) -> None:
         if ids:

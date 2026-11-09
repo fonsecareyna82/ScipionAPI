@@ -28,7 +28,8 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
-                                                 UserUpdate, ChangePasswordRequest)
+                                                 UserUpdate, ChangePasswordRequest, ForgotPasswordRequest,
+                                                 ResetPasswordRequest)
 from app.backend.database import getMapper
 from app.backend.mapper.postgresql import PostgresqlFlatMapper
 from app.backend.utils.security import hashPassword, verifyPassword
@@ -276,3 +277,24 @@ def refreshToken(
 
     new_access_token = createAccessToken(data={"sub": user_email})
     return {"accessToken": new_access_token}
+
+
+@router.post("/forgot-password", status_code=status.HTTP_200_OK)
+def forgotPassword(payload: ForgotPasswordRequest, mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Mail a one-time link to choose a new password; answers the same whether the address has an account."""
+    from app.backend.api.services import password_reset
+
+    return password_reset.askReset(mapper, payload.email)
+
+
+@router.post("/reset-password", status_code=status.HTTP_200_OK)
+def resetPassword(payload: ResetPasswordRequest, mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Set a new password with the link's token."""
+    from app.backend.api.services import password_reset
+
+    result = password_reset.reset(mapper, payload.token, payload.password)
+    user = mapper.getUserById(result["userId"]) or {}
+    recordAudit(mapper, {"id": result["userId"], "email": user.get("email")}, "auth.passwordReset", "user",
+                result["userId"], user.get("email"))
+    return {"message": result["message"]}
+

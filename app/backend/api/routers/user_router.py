@@ -91,6 +91,10 @@ def updateAdminUser(
     changes = AccessService(mapper.db).updateUserAccess(adminUser, userId, updateFields, mapper.updateUserFields)
     if updateFields.get("isActive") is not None and bool(updateFields["isActive"]) != bool(user.get("isActive")):
         changes["isActive"] = bool(updateFields["isActive"])
+        if changes["isActive"]:
+            from app.backend.api.services import notify_events
+
+            notify_events.accountActivated(mapper.db, int(userId))
     if changes:
         recordAudit(mapper, adminUser, "users.updated", "user", userId, userLabel(user), changes)
 

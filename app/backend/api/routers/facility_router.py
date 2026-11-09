@@ -389,6 +389,9 @@ def updateSession(sessionId: int, payload: SessionPayload, mapper: PostgresqlFla
     if before["name"] != session["name"]:
         changes["name"] = {"from": before["name"], "to": session["name"]}
     recordAudit(mapper, currentUser, "facility.sessionUpdated", "session", sessionId, session["name"], changes)
+    from app.backend.api.services import notify_events
+
+    notify_events.sessionChanged(mapper.db, before, session)
     if before["status"] != "finished" and session["status"] == "finished":
         # A tomography session that finishes gets the navigation report of each DATA (when tomo5-mapper is there)
         navigation.reportsWhenFinished(session)
@@ -767,6 +770,12 @@ def createBooking(payload: BookingPayload, mapper: PostgresqlFlatMapper = Depend
     recordAudit(mapper, currentUser, action, "booking", booking["id"], _bookingName(booking), _bookingSummary(booking))
     if booking.get("ownerId") is not None and int(booking["ownerId"]) != int(currentUser["id"]):
         service.notify(booking, "was booked for you by the facility")
+    if booking.get("status") == "requested":
+        from app.backend.api.services import notify_events
+        from app.backend.api.services.facility_booking_service import _format
+
+        notify_events.bookingRequested(mapper.db, booking, "%s to %s" % (_format(booking.get("startsAt")),
+                                                                       _format(booking.get("endsAt"))))
     return booking
 
 

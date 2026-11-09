@@ -15,6 +15,7 @@ import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from app.backend.api.services.mail_service import MailService
+from app.backend.api.services.notifications import KINDS
 from app.backend.mapper.notifications_mapper import NotificationsPostgresqlMapper
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,9 @@ def sendDue(db, mail: Optional[MailService] = None) -> List[int]:
             logger.warning("Could not mail notice %s (attempt %d): %s", notice["id"], attempts, error)
             continue
         mapper.markSent([notice["id"]])
+        if KINDS.get(notice["kind"], {}).get("secret"):
+            # Its text held a one-time link: not kept once mailed
+            mapper.forgetBody(notice["id"])
         sent.append(int(notice["id"]))
     return sent
 

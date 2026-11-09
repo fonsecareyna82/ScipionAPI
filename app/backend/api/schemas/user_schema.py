@@ -132,3 +132,20 @@ class UserUpdate(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     postalCode: Optional[str] = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str = Field(..., min_length=8)
+
+    @validator("password")
+    @classmethod
+    def validatePassword(cls, passwordValue: str) -> str:
+        if not any(char.isalpha() for char in passwordValue) or not any(char.isdigit() for char in passwordValue):
+            raise ValueError("Password must contain at least one letter and one number")
+        return passwordValue
+

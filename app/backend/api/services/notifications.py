@@ -34,6 +34,47 @@ BODY_LIMIT = 5000
 # Every kind of notice: who it is for (a group of the preferences), what it says, its channel unless the user or
 # the administrator chose, whether it can be turned off, and the permission it needs to be offered
 KINDS: Dict[str, Dict[str, Any]] = {
+    "account.activated": {
+        "group": "Account", "label": "My account is active",
+        "description": "When an administrator activates your account, so you can sign in.",
+        "default": "instant", "mandatory": True,
+    },
+    # Mailed at once, never shown in the web, and its text (the link) forgotten once sent
+    "account.passwordReset": {
+        "group": "Account", "label": "Resetting my password",
+        "description": "The link to choose a new password, when you ask for it.",
+        "default": "instant", "mandatory": True, "instantOnly": True, "secret": True, "hidden": True,
+    },
+    "project.shared": {
+        "group": "Projects", "label": "A project shared with me",
+        "description": "Someone shares a project with you or with a group of yours.",
+        "default": "instant", "mandatory": False,
+    },
+    "protocol.failed": {
+        "group": "Projects", "label": "A protocol failed",
+        "description": "A protocol you launched, or one of a project of yours, failed.",
+        "default": "instant", "mandatory": False,
+    },
+    "protocol.finished": {
+        "group": "Projects", "label": "A long run of mine finished",
+        "description": "A protocol you launched finished after running more than %d minutes." % 30,
+        "default": "off", "mandatory": False,
+    },
+    "facility.session": {
+        "group": "Facility", "label": "My session started or finished",
+        "description": "Your acquisition session (or one of your group, as its PI) started or finished.",
+        "default": "instant", "mandatory": False, "facility": True,
+    },
+    "facility.processing": {
+        "group": "Facility", "label": "My data are being processed",
+        "description": "The project of a DATA of your session was made and launched: its monitor shows it live.",
+        "default": "instant", "mandatory": False, "facility": True,
+    },
+    "facility.bookingRequest": {
+        "group": "Facility staff", "label": "A booking was requested",
+        "description": "A user asks for time on a resource: it waits for the staff.",
+        "default": "instant", "mandatory": False, "facility": True, "permission": "facility.sessions",
+    },
     "facility.booking": {
         "group": "Facility", "label": "My bookings",
         "description": "A booking of yours confirmed, moved, offered another time, rejected or cancelled.",
@@ -74,6 +115,8 @@ class Notifications:
 
     @staticmethod
     def channelsOf(kind: str) -> tuple:
+        if KINDS[kind].get("instantOnly"):
+            return ("instant",)
         return MANDATORY_CHANNELS if KINDS[kind]["mandatory"] else CHANNELS
 
     def channelFor(self, kind: str, preferences: Dict[str, str], defaults: Dict[str, str]) -> str:
@@ -98,8 +141,8 @@ class Notifications:
             channel = self.channelFor(kind, preferences.get(userId, {}), defaults)
             if channel == "off":
                 continue
-            ids.append(self.mapper.insert(userId, None, kind, title, body, str(link or ""), True,
-                                          emailStateOf(channel)))
+            ids.append(self.mapper.insert(userId, None, kind, title, body, str(link or ""),
+                                          not KINDS[kind].get("secret"), emailStateOf(channel)))
         self._wakeSender()
         return ids
 
@@ -137,7 +180,7 @@ class Notifications:
         mine = self.mapper.preferencesOf([int(user["id"])]).get(int(user["id"]), {})
         kinds = []
         for kind, spec in KINDS.items():
-            if spec.get("facility") and not facilityOn:
+            if spec.get("hidden") or (spec.get("facility") and not facilityOn):
                 continue
             if spec.get("permission") and not (hasPermission(user, spec["permission"])
                                                or hasPermission(user, "facility.manage")):
@@ -165,7 +208,7 @@ class Notifications:
         return {"kinds": [{"kind": kind, "group": spec["group"], "label": spec["label"],
                            "description": spec["description"], "mandatory": spec["mandatory"],
                            "channels": list(self.channelsOf(kind)), "default": spec["default"],
-                           "channel": defaults[kind]} for kind, spec in KINDS.items()]}
+                           "channel": defaults[kind]} for kind, spec in KINDS.items() if not spec.get("hidden")]}
 
     def saveDefaults(self, channels: Dict[str, str], userId: Optional[int] = None) -> Dict[str, Any]:
         saved = dict(self.mapper.getSettings().get(DEFAULTS_KEY) or {})

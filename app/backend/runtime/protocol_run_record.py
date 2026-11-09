@@ -95,6 +95,14 @@ class ProtocolRunRecord:
             ComputeUsagePostgresqlMapper(self.db).endRun(self.runId, status)
         except Exception:
             logger.warning("Could not record the end of run %s", self.runId, exc_info=True)
+            return
+        # A failure (or a long run that finished) is told to whom it concerns; never stops the worker
+        try:
+            from app.backend.api.services import notify_events
+
+            notify_events.runEnded(self.db, self.runId, status)
+        except Exception:
+            logger.warning("Could not tell of the end of run %s", self.runId, exc_info=True)
 
 
 def endStatus(protocolStatus: Any, raised: bool) -> str:

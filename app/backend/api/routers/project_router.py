@@ -484,6 +484,10 @@ def shareProject(
     )
     _auditProject(mapper, currentUser, "projects.shared", projectId, _projectName(mapper, projectId, currentUser),
                   dict(_shareTargets(mapper, payload.userIds, payload.groupIds), level=share.get("permission")))
+    from app.backend.api.services import notify_events
+
+    notify_events.projectShared(mapper.db, currentUser, projectId, _projectName(mapper, projectId, currentUser),
+                                payload.userIds, payload.groupIds, share.get("permission") or payload.permission)
     return share
 
 @router.delete(

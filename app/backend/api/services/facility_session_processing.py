@@ -363,4 +363,8 @@ class FacilitySessionProcessor:
             processing.update(state="error", at=_now(), message=str(detail))
         kept = projectId if not joined or processing["state"] == "launched" else None
         self.sessions.saveProcessing(row["id"], processing, projectId=kept)
+        if processing["state"] == "launched":
+            from app.backend.api.services import notify_events
+
+            notify_events.processingLaunched(self.mapper.db, row, kept)
         return processing
