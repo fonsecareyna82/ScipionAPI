@@ -415,3 +415,29 @@ def test_ATemplatesFieldsOutsideQuotesAreNotAJsonError():
     filled = json.loads(service._withTemplateFieldDefaults(text))
 
     assert filled[0]["voltage"] == 300 and filled[0]["label"] == "~Run|demo|0|run~" and filled[0]["x"] is None
+
+
+def test_AnExportSaysEachPluginsPackageAndAnImportUsesIt(workflowFileService, monkeypatch):
+    from app.backend.api.services import plugin_packages
+
+    service, browserRoot = workflowFileService
+    monkeypatch.setattr(plugin_packages, "installedModulePackages",
+                        lambda refresh=False: {"xmipp3": "scipion-em-xmipp", "relion": "scipion-em-relion"})
+    monkeypatch.setattr(service, "_buildWorkflowPluginMetadata",
+                        lambda protocols: {"requiredPluginNames": ["relion", "xmipp3"], "exportedAt": "now"})
+
+    header = service._buildWorkflowTemplateHeader([])
+
+    assert "Scipion required packages: relion=scipion-em-relion, xmipp3=scipion-em-xmipp" in header
+    assert service._extractRequiredPackagesFromWorkflowText(header + "[]") == {
+        "relion": "scipion-em-relion", "xmipp3": "scipion-em-xmipp"}
+
+    # Imported where they are missing: the packages come from the file, not guessed
+    monkeypatch.setattr(plugin_packages, "installedModulePackages", lambda refresh=False: {})
+    monkeypatch.setattr(plugin_packages, "catalog", lambda fetch=None: None)
+    monkeypatch.setattr(service, "_getMissingWorkflowPluginNames", lambda names: ["xmipp3"])
+    name = _legacy(browserRoot, [{"object.id": "1", "object.className": "ProtImportMovies"}],
+                   header="Scipion required plugins: xmipp3\nScipion required packages: xmipp3=scipion-em-xmipp-new\n\n")
+
+    assert service.inspectWorkflowFile(workflowPath=name)["missingPlugins"] == [
+        {"name": "xmipp3", "pipName": "scipion-em-xmipp-new"}]

@@ -4596,6 +4596,8 @@ class ProjectService:
                 requiredPluginNames = []
                 templateText = None
                 declaresPlugins = isinstance(rawContent, str) and self._hasRequiredPluginsHeader(rawContent)
+                declaredPackages = self._extractRequiredPackagesFromWorkflowText(rawContent) \
+                    if isinstance(rawContent, str) else {}
 
                 if isinstance(rawContent, str):
                     requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawContent)
@@ -4609,6 +4611,8 @@ class ProjectService:
                         if templateText is not None:
                             requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(templateText)
                             declaresPlugins = declaresPlugins or self._hasRequiredPluginsHeader(templateText)
+                            declaredPackages = declaredPackages or self._extractRequiredPackagesFromWorkflowText(
+                                templateText)
                     except Exception:
                         requiredPluginNames = []
 
@@ -4642,7 +4646,7 @@ class ProjectService:
                         "previewGraph": previewGraph,
                         "requiredPluginNames": requiredPluginNames,
                         "missingPluginNames": missingPluginNames,
-                        "missingPlugins": self._missingPluginsWithPip(missingPluginNames),
+                        "missingPlugins": self._missingPluginsWithPip(missingPluginNames, declaredPackages),
                         "declaresPlugins": declaresPlugins,
                         "designWarning": design["designWarning"],
                         "unknownProtocolClasses": design["unknownProtocolClasses"],
@@ -8376,6 +8380,7 @@ class ProjectService:
 
         requiredPluginNames = self._extractRequiredPluginNamesFromWorkflowText(rawText)
         declaresPlugins = self._hasRequiredPluginsHeader(rawText)
+        declaredPackages = self._extractRequiredPackagesFromWorkflowText(rawText)
 
         try:
             jsonText = self._extractWorkflowJsonText(rawText)
@@ -8399,6 +8404,9 @@ class ProjectService:
 
             workflow = payload.get("content")
             declaresPlugins = True
+            declaredPackages = dict(declaredPackages, **{
+                str(module): str(package) for module, package in
+                ((payload.get("scipionWeb") or {}).get("requiredPackages") or {}).items() if module and package})
         else:
             workflow = payload
 
@@ -8448,7 +8456,7 @@ class ProjectService:
             "protocolsCount": protocolsCount,
             "requiredPluginNames": requiredPluginNames,
             "missingPluginNames": missingPluginNames,
-            "missingPlugins": self._missingPluginsWithPip(missingPluginNames),
+            "missingPlugins": self._missingPluginsWithPip(missingPluginNames, declaredPackages),
             "declaresPlugins": declaresPlugins,
             "designWarning": design["designWarning"],
             "unknownProtocolClasses": design["unknownProtocolClasses"],
@@ -8508,12 +8516,13 @@ class ProjectService:
             ),
             "Scipion required plugins: %s" % ", ".join(requiredPluginNames),
         ]
+        packages = self._installedPackagesOf(requiredPluginNames)
+        if packages:
+            # The package of each plugin, known now (installed): who imports it needs not guess it
+            lines.append("Scipion required packages: %s" % ", ".join(
+                "%s=%s" % (name, package) for name, package in packages.items()))
 
         return "\n".join(lines).rstrip() + "\n\n"
-
-    # A plugin's pip package when it is not scipion-em-<its module> (a missing plugin is known by its module)
-    _PLUGIN_PIP_NAMES = {"xmipp3": "scipion-em-xmipp", "emfacilities": "scipion-em-facilities",
-                         "pwchem": "scipion-chem"}
 
     @staticmethod
     def _withTemplateFieldDefaults(text: str) -> str:
@@ -8575,10 +8584,32 @@ class ProjectService:
                     "does not say which" % ", ".join(unknownClasses))
         return ""
 
-    def _missingPluginsWithPip(self, moduleNames: List[str]) -> List[Dict[str, str]]:
-        """The missing plugins with the pip package to install each (by Scipion's naming)."""
-        return [{"name": name, "pipName": self._PLUGIN_PIP_NAMES.get(name, "scipion-em-%s" % name)}
-                for name in moduleNames]
+    @staticmethod
+    def _installedPackagesOf(moduleNames: List[str]) -> Dict[str, str]:
+        """{module: package} of the plugins installed here among these modules."""
+        from app.backend.api.services.plugin_packages import installedModulePackages
+
+        installed = installedModulePackages()
+        return {name: installed[name] for name in moduleNames or [] if name in installed}
+
+    def _extractRequiredPackagesFromWorkflowText(self, text: Any) -> Dict[str, str]:
+        """The "Scipion required packages: module=package, …" line of a workflow ScipionWeb exported."""
+        for line in str(text or "").splitlines():
+            cleanLine = line.strip()
+            if cleanLine.startswith("[") or cleanLine.startswith("{"):
+                break
+            match = re.match(r"^Scipion required packages:\s*(.*)$", cleanLine, flags=re.IGNORECASE)
+            if match:
+                pairs = [part.split("=", 1) for part in match.group(1).split(",") if "=" in part]
+                return {module.strip(): package.strip() for module, package in pairs if module.strip() and package.strip()}
+        return {}
+
+    def _missingPluginsWithPip(self, moduleNames: List[str],
+                               declared: Optional[Dict[str, str]] = None) -> List[Dict[str, Optional[str]]]:
+        """The missing plugins with the pip package that installs each (None: nothing says which)."""
+        from app.backend.api.services.plugin_packages import packageForModule
+
+        return [{"name": name, "pipName": packageForModule(name, declared)} for name in moduleNames]
 
     def _extractRequiredPluginNamesFromWorkflowText(self, text: str) -> List[str]:
         # extractRequiredPluginNamesFromWorkflowText
@@ -8725,6 +8756,7 @@ class ProjectService:
             "format": "scipionweb.workflow.export",
             "version": 1,
             "requiredPluginNames": requiredPluginNames,
+            "requiredPackages": self._installedPackagesOf(requiredPluginNames),
             "protocolPlugins": protocolPlugins,
             "exportedAt": datetime.utcnow().isoformat() + "Z",
         }
