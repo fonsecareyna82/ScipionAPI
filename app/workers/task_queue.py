@@ -904,6 +904,20 @@ def report_node_capabilities(state):
         return {"hostname": hostname, "error": str(error)}
 
 
+@control_command()
+def report_node_resources(state):
+    """What this machine has in use right now: processors, memory, disks and GPUs with their processes."""
+    import socket
+
+    try:
+        from app.backend.runtime.node_resources import machineSnapshot
+
+        return machineSnapshot()
+    except Exception as error:
+        logger.exception("Failed to report the node resources")
+        return {"hostname": socket.gethostname(), "error": str(error)}
+
+
 def _lastScratchCleanup():
     try:
         from app.backend.runtime.scratch_cleanup import lastReport

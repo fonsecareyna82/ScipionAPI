@@ -55,6 +55,7 @@ from app.backend.api.routers.facility_router import router as facilityRouter
 from app.backend.api.routers.notifications_router import router as notificationsRouter
 from app.backend.api.routers.storage_router import router as storageRouter
 from app.backend.api.routers.usage_router import router as usageRouter
+from app.backend.api.routers.resources_router import router as resourcesRouter
 from app.backend.api.audit import ClientAddressMiddleware
 from app.backend.utils.error_handlers import registerAllErrorHandlers
 from starlette.staticfiles import StaticFiles
@@ -159,6 +160,7 @@ def _buildApiApp() -> FastAPI:
     apiApp.include_router(notificationsRouter)
     apiApp.include_router(storageRouter)
     apiApp.include_router(usageRouter)
+    apiApp.include_router(resourcesRouter)
 
     @apiApp.get("/health")
     def health_check():

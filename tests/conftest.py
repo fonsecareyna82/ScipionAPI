@@ -2444,3 +2444,13 @@ def noWarmViewerWorker(monkeypatch):
     # Viewer workers run as one-shot processes in tests unless a test enables
     # the warm worker itself (test_protocol_viewer_warm_pool).
     monkeypatch.setenv("SCIPION_PROTOCOL_VIEWER_WARM_WORKER", "0")
+
+
+@pytest.fixture(autouse=True)
+def noBackgroundDiskMeasurer(monkeypatch):
+    # An app started by a test would start the real disk measurer on the test database, which then measures the
+    # projects other tests make (with the wrong projects folder) while they measure them themselves. The tests of
+    # the measurer call it directly.
+    from app.backend.api.services import project_storage
+
+    monkeypatch.setattr(project_storage, "startDiskUsageMeasurer", lambda *args, **kwargs: None)

@@ -1068,6 +1068,20 @@ class JobMonitoringService:
         return {"requested": bool(heard),
                 "error": None if heard else "No worker of %s answered: is its protocol worker running?" % hostname}
 
+    def getNodeResources(self, timeout: float = 2.0):
+        """Each machine's resources now, one report per machine, and why there is none (no workers answered)."""
+        from app.backend.api.services.resources import collectReports
+
+        if self.celeryApp is None:
+            return [], self.celeryImportError or "Celery is not available."
+        try:
+            replies = self.celeryApp.control.broadcast("report_node_resources", reply=True,
+                                                       timeout=max(0.5, float(timeout)))
+        except Exception as error:
+            return [], str(error)
+        reports = collectReports(replies)
+        return reports, None if reports else "No machine answered."
+
     def getNodeCapabilities(
             self,
             timeout: float = 5.0,

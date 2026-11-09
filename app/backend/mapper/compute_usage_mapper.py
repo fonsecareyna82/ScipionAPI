@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Optional
 START_RUN_SQL = """
     INSERT INTO protocol_runs ("projectId", "projectPath", "protocolId", "protocolClassName", "protocolLabel",
                                "userId", "executionId", "coordinatorRunId", host, "queueName", "queueJobId",
-                               gpus, "gpuIds", threads, mpi, streaming)
+                               gpus, "gpuIds", threads, mpi, streaming, pid)
     VALUES (%(projectId)s, %(projectPath)s, %(protocolId)s, %(protocolClassName)s, %(protocolLabel)s,
             %(userId)s, %(executionId)s, %(coordinatorRunId)s, %(host)s, %(queueName)s, %(queueJobId)s,
-            %(gpus)s, %(gpuIds)s, %(threads)s, %(mpi)s, %(streaming)s)
+            %(gpus)s, %(gpuIds)s, %(threads)s, %(mpi)s, %(streaming)s, %(pid)s)
     RETURNING id
 """
 
@@ -79,7 +79,7 @@ class ComputeUsagePostgresqlMapper:
     def startRun(self, values: Dict[str, Any]) -> Optional[int]:
         """Close what a killed worker left open for this protocol, and open this run; answers its id."""
         self.db.execute(CLOSE_LEFT_OPEN_SQL, {"projectId": values["projectId"], "protocolId": values["protocolId"]})
-        row = self.db.executeReturningOne(START_RUN_SQL, values)
+        row = self.db.executeReturningOne(START_RUN_SQL, dict({"pid": None}, **values))
         return int(row["id"]) if row else None
 
     def touchRun(self, runId: int) -> None:

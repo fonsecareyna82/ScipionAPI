@@ -81,7 +81,7 @@ class ProtocolRunRecord:
             values = dict(describeRun(protocol), projectId=int(projectId), projectPath=projectPath,
                           protocolId=str(protocolId), userId=userId, executionId=executionId,
                           coordinatorRunId=coordinatorRunId or None, host=socket.gethostname(),
-                          streaming=bool(streaming))
+                          streaming=bool(streaming), pid=os.getpid())
             runId = ComputeUsagePostgresqlMapper(db).startRun(values)
             if runId is None:
                 return None
