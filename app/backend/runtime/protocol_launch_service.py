@@ -231,6 +231,10 @@ class RuntimeProtocolLaunchService:
             from app.backend.api.services import fs_browser
 
             fs_browser.checkLaunchPaths(mapper, currentUserId, [protocol], currentProject)
+            # Nor where the disk quota of the project's owner (or of their groups) is full
+            from app.backend.api.services import storage_quotas
+
+            storage_quotas.checkLaunch(getattr(mapper, "db", None), projectId)
 
             if not isSchedule:
                 self._validateProtocol(

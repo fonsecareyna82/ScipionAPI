@@ -694,6 +694,10 @@ class RuntimePostgresqlContinueLauncherService:
             [entry["protocol"] for entry in entries
              if entry.get("action") != CONTINUE_ACTION_SKIP and entry.get("protocol") is not None],
             currentProject)
+        # Nor where the disk quota of the project's owner (or of their groups) is full
+        from app.backend.api.services import storage_quotas
+
+        storage_quotas.checkLaunch(getattr(mapper, "db", None), projectId)
 
         preparedItems = []
         skippedItems = []

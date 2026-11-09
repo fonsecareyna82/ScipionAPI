@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import requirePermission
 from app.backend.api.services import project_storage
 from app.backend.database import getMapperDependency
@@ -30,3 +31,43 @@ def measureStorage(payload: MeasurePayload, currentUser: dict = Depends(requireP
     """Measure these projects again (all of them, without ids), as soon as the measurer can."""
     project_storage.requestMeasure(mapper.db, payload.projectIds)
     return {"requested": True}
+
+
+class QuotaPayload(BaseModel):
+    kind: str
+    targetId: int
+    # None removes the quota
+    limitBytes: Optional[int] = None
+
+
+@router.get("/quotas")
+def listStorageQuotas(currentUser: dict = Depends(requirePermission("storage.view")),
+                      mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> List[Dict[str, Any]]:
+    """The disk quotas, with how much of each is used."""
+    from app.backend.api.services import storage_quotas
+
+    return storage_quotas.listQuotas(mapper.db)
+
+
+@router.put("/quotas")
+def saveStorageQuota(payload: QuotaPayload, currentUser: dict = Depends(requirePermission("settings.manage")),
+                     mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> List[Dict[str, Any]]:
+    """Set (or remove, with no limit) the disk quota of a user or a group."""
+    from app.backend.api.audit import recordAudit
+    from app.backend.api.services import storage_quotas
+
+    quotas = storage_quotas.saveQuota(mapper.db, payload.kind, payload.targetId, payload.limitBytes,
+                                      currentUser.get("id"))
+    recordAudit(mapper, currentUser, "storage.quotaUpdated", payload.kind, payload.targetId, None,
+                {"limitBytes": payload.limitBytes})
+    return quotas
+
+
+@router.get("/quotas/me")
+def myStorageQuotas(currentUser: dict = Depends(getCurrentUser),
+                    mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> List[Dict[str, Any]]:
+    """The quotas the user's projects count against, with their usage."""
+    from app.backend.api.services import storage_quotas
+
+    return storage_quotas.quotasOf(mapper.db, int(currentUser["id"]))
+

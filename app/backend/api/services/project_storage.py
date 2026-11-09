@@ -185,6 +185,10 @@ def _run(openDb: Callable[[], object], root: Callable[[], Path]) -> None:
             if db is None:
                 db = openDb()
             measured = measureNext(db, root())
+            # With the new measures, the quotas reaching 80 % or full are told
+            from app.backend.api.services.storage_quotas import refreshNoticesNow
+
+            refreshNoticesNow(db)
         except Exception:
             logger.warning("Could not measure the projects' disk usage; trying again later", exc_info=True)
             try:
