@@ -47,6 +47,8 @@ from scipionapi_cli import nodes
 console = Console()
 
 
+DEFAULT_PROTOCOL_WORKER_CONCURRENCY = nodes.DEFAULT_PROTOCOL_WORKER_CONCURRENCY
+
 VALID_ROLES = ("all", "api", "plugins", "protocols")
 DEFAULT_ROLE = "all"
 
@@ -715,7 +717,7 @@ def _getWorkerRuntimeSpec(
             _envInt(
                 env,
                 "PROTOCOL_WORKER_CONCURRENCY",
-                4,
+                DEFAULT_PROTOCOL_WORKER_CONCURRENCY,
             ),
         )
         logPath = (
@@ -963,7 +965,7 @@ def startCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None:
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
-    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
+    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", DEFAULT_PROTOCOL_WORKER_CONCURRENCY))
     protocolsQueueName = (env.get("PROTOCOLS_CELERY_QUEUE") or "protocols").strip() or "protocols"
 
     apiStartupTimeout = _envFloat(env, "API_STARTUP_TIMEOUT", 20.0)
@@ -1245,7 +1247,7 @@ def statusCommand(role: str = DEFAULT_ROLE, queue: Optional[str] = None) -> None
     apiPort = env.get("API_PORT", "8080")
     celeryApp = env.get("CELERY_APP", "app.workers.task_queue")
     celeryLogLevel = env.get("CELERY_LOGLEVEL", "info")
-    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", 4))
+    protocolWorkerConcurrency = max(1, _envInt(env, "PROTOCOL_WORKER_CONCURRENCY", DEFAULT_PROTOCOL_WORKER_CONCURRENCY))
     protocolsQueueName = (env.get("PROTOCOLS_CELERY_QUEUE") or "protocols").strip() or "protocols"
 
     docsUrl = _docsUrl(env)

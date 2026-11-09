@@ -35,6 +35,7 @@ from urllib.parse import quote_plus
 from app.utils.scipion_helper import getFreePort
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.envfile import readEnvFile, writeEnvFile, exportEnvToOs
+from scipionapi_cli.nodes import DEFAULT_PROTOCOL_WORKER_CONCURRENCY
 from scipionapi_cli.db import ensureDatabaseAndRole, runAlembicUpgrade
 from scipionapi_cli.admin import ensureAdminUser
 
@@ -668,7 +669,7 @@ def installCommand(
         "API_PORT": apiPort,
         "CELERY_APP": existing.get("CELERY_APP") or "app.workers.task_queue",
         "CELERY_LOGLEVEL": existing.get("CELERY_LOGLEVEL") or "info",
-        "PROTOCOL_WORKER_CONCURRENCY": existing.get("PROTOCOL_WORKER_CONCURRENCY") or "4",
+        "PROTOCOL_WORKER_CONCURRENCY": existing.get("PROTOCOL_WORKER_CONCURRENCY") or str(DEFAULT_PROTOCOL_WORKER_CONCURRENCY),
         "SERVE_WEB": existing.get("SERVE_WEB") or "0",
         "API_MOUNT_PATH": existing.get("API_MOUNT_PATH") or "/api",
         "WEB_DIST_PATH": existing.get("WEB_DIST_PATH") or str((scipionHome / "web" / "dist").resolve()),

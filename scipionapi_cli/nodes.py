@@ -44,6 +44,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from scipionapi_cli.envfile import readEnvFile, writeEnvFile
 
+# Protocols the protocol worker of a machine runs at once (each one in streaming keeps its place all along)
+DEFAULT_PROTOCOL_WORKER_CONCURRENCY = 12
 NODES_FOLDER = "nodes"
 NODE_ROLE_KEY = "SCIPIONAPI_NODE_ROLE"
 MAIN_NODE_KEY = "SCIPIONAPI_MAIN_NODE"
@@ -290,9 +292,8 @@ def joinNode(repoRoot: Path, scipionHome: Path, env: Dict[str, str], queue: Opti
     if not all(check.ok for check in checks if check.required):
         return False
     name = nodeName()
-    gpus = gpuCount()
     values = profileValues(scipionHome, name, (queue or DEFAULT_QUEUE).strip() or DEFAULT_QUEUE,
-                           concurrency or max(1, gpus or 4))
+                           concurrency or DEFAULT_PROTOCOL_WORKER_CONCURRENCY)
     path = profilePath(scipionHome, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     writeEnvFile(path, values)

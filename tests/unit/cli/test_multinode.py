@@ -171,7 +171,7 @@ def test_AMachineJoinsOnlyWhenItSeesTheInstallationAndReachesTheMainNode(tmp_pat
                           start=lambda: started.append(True))
     profile = readEnvFile(nodes.profilePath(scipionHome))
     assert profile == {"SCIPIONAPI_NODE_ROLE": "protocols", "PROTOCOLS_CELERY_QUEUE": "protocols-gpu",
-                       "PROTOCOL_WORKER_CONCURRENCY": "2",
+                       "PROTOCOL_WORKER_CONCURRENCY": str(nodes.DEFAULT_PROTOCOL_WORKER_CONCURRENCY),
                        "LOGS_PATH": str(scipionHome / "logs" / "nodes" / "gpu-node-1")}
     assert started == [True] and printed
 
