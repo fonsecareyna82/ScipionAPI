@@ -11,8 +11,9 @@ How it reaches each one is their channel for its kind:
 A user's channel is their choice, else the administrator's default for the kind, else the kind's own. Mandatory
 kinds (what someone must hear, e.g. their data are about to go) are always mailed: instantly or in the digest.
 A notice can also go to mail addresses outside the users (``notifyAddresses``: the facility's alert list).
-Nothing is mailed while there is no mail server: the notices wait (``notification_sender``), and still show in
-the web.
+Nothing is mailed until an administrator sets a mail server and turns the mail on (``MailService.sending``): until
+then the notices only show in the web, and are not mailed later. The kinds that can be turned off are only shown in
+the web by default: the administrator chooses which are mailed (the defaults), and each user may change theirs.
 """
 from __future__ import annotations
 
@@ -48,12 +49,12 @@ KINDS: Dict[str, Dict[str, Any]] = {
     "project.shared": {
         "group": "Projects", "label": "A project shared with me",
         "description": "Someone shares a project with you or with a group of yours.",
-        "default": "instant", "mandatory": False,
+        "default": "web", "mandatory": False,
     },
     "protocol.failed": {
         "group": "Projects", "label": "A protocol failed",
         "description": "A protocol you launched, or one of a project of yours, failed.",
-        "default": "instant", "mandatory": False,
+        "default": "web", "mandatory": False,
     },
     "protocol.finished": {
         "group": "Projects", "label": "A long run of mine finished",
@@ -63,22 +64,22 @@ KINDS: Dict[str, Dict[str, Any]] = {
     "facility.session": {
         "group": "Facility", "label": "My session started or finished",
         "description": "Your acquisition session (or one of your group, as its PI) started or finished.",
-        "default": "instant", "mandatory": False, "facility": True,
+        "default": "web", "mandatory": False, "facility": True,
     },
     "facility.processing": {
         "group": "Facility", "label": "My data are being processed",
         "description": "The project of a DATA of your session was made and launched: its monitor shows it live.",
-        "default": "instant", "mandatory": False, "facility": True,
+        "default": "web", "mandatory": False, "facility": True,
     },
     "facility.bookingRequest": {
         "group": "Facility staff", "label": "A booking was requested",
         "description": "A user asks for time on a resource: it waits for the staff.",
-        "default": "instant", "mandatory": False, "facility": True, "permission": "facility.sessions",
+        "default": "web", "mandatory": False, "facility": True, "permission": "facility.sessions",
     },
     "facility.booking": {
         "group": "Facility", "label": "My bookings",
         "description": "A booking of yours confirmed, moved, offered another time, rejected or cancelled.",
-        "default": "instant", "mandatory": False, "facility": True,
+        "default": "web", "mandatory": False, "facility": True,
     },
     "facility.retention": {
         "group": "Facility", "label": "My session's data are about to be deleted",
@@ -88,7 +89,7 @@ KINDS: Dict[str, Dict[str, Any]] = {
     "facility.alert": {
         "group": "Facility staff", "label": "Facility alerts",
         "description": "A DATA without new movies, a processing or a protocol that failed in the sessions.",
-        "default": "instant", "mandatory": False, "facility": True, "permission": "facility.sessions",
+        "default": "web", "mandatory": False, "facility": True, "permission": "facility.sessions",
     },
 }
 
@@ -134,6 +135,7 @@ class Notifications:
         if not userIds:
             return []
         title, body = str(title)[:TITLE_LIMIT], str(body or "")[:BODY_LIMIT]
+        mailing = self._mailing()
         defaults = self.defaults()
         preferences = self.mapper.preferencesOf(userIds)
         ids = []
@@ -141,20 +143,31 @@ class Notifications:
             channel = self.channelFor(kind, preferences.get(userId, {}), defaults)
             if channel == "off":
                 continue
+            # With the mail off nothing waits to be mailed (a secret, never shown in the web, is not kept at all)
+            if not mailing and KINDS[kind].get("secret"):
+                continue
             ids.append(self.mapper.insert(userId, None, kind, title, body, str(link or ""),
-                                          not KINDS[kind].get("secret"), emailStateOf(channel)))
+                                          not KINDS[kind].get("secret"),
+                                          emailStateOf(channel) if mailing else "skipped"))
         self._wakeSender()
         return ids
 
     def notifyAddresses(self, addresses: Iterable[str], kind: str, title: str, body: str = "",
                         link: str = "") -> List[int]:
-        """Mail a notice to addresses outside the users (nothing shows in the web)."""
+        """Mail a notice to addresses outside the users (nothing shows in the web; nothing at all with the mail off)."""
+        if not self._mailing():
+            return []
         ids = [self.mapper.insert(None, address, kind, str(title)[:TITLE_LIMIT], str(body or "")[:BODY_LIMIT],
                                   str(link or ""), False, "pending")
                for address in dict.fromkeys(address.strip() for address in addresses if address and address.strip())]
         if ids:
             self._wakeSender()
         return ids
+
+    def _mailing(self) -> bool:
+        from app.backend.api.services.mail_service import MailService
+
+        return MailService(self.db).sending()
 
     @staticmethod
     def _wakeSender() -> None:
@@ -189,7 +202,7 @@ class Notifications:
                           "description": spec["description"], "mandatory": spec["mandatory"],
                           "channels": list(self.channelsOf(kind)), "default": defaults[kind],
                           "channel": self.channelFor(kind, mine, defaults), "chosen": kind in mine})
-        return {"kinds": kinds, "mailEnabled": MailService(self.db).enabled()}
+        return {"kinds": kinds, "mailEnabled": MailService(self.db).sending()}
 
     def savePreferences(self, user: Dict[str, Any], channels: Dict[str, Optional[str]],
                         facilityOn: bool) -> Dict[str, Any]:

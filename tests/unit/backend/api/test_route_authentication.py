@@ -14,6 +14,7 @@ PUBLIC_ROUTES = {
     ("POST", "/auth/verify"),
     ("POST", "/auth/resend-code"),
     ("POST", "/auth/login"),
+    ("GET", "/auth/password-reset"),
     ("POST", "/auth/forgot-password"),
     ("POST", "/auth/reset-password"),
     ("POST", "/auth/refresh"),

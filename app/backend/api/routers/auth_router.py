@@ -279,6 +279,15 @@ def refreshToken(
     return {"accessToken": new_access_token}
 
 
+@router.get("/password-reset", status_code=status.HTTP_200_OK)
+def passwordResetAvailable(mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Whether a forgotten password can be reset by mail (the sign-in page offers it only then)."""
+    from app.backend.api.services.mail_service import MailService
+
+    mail = MailService(mapper.db)
+    return {"available": mail.sending() and bool(mail.publicUrl())}
+
+
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
 def forgotPassword(payload: ForgotPasswordRequest, mapper: PostgresqlFlatMapper = Depends(getMapper)):
     """Mail a one-time link to choose a new password; answers the same whether the address has an account."""

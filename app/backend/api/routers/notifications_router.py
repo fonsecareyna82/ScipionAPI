@@ -37,6 +37,8 @@ class MailSettingsPayload(BaseModel):
     # The web's address as its users open it, for the links of the mails
     publicUrl: Optional[str] = None
     digest: Optional[DigestPayload] = None
+    # Notices are mailed only once this is on (off by default)
+    mailOn: Optional[bool] = None
 
 
 class TestMailPayload(BaseModel):
@@ -85,6 +87,7 @@ def saveMailSettings(payload: MailSettingsPayload, mapper: PostgresqlFlatMapper 
     settings = MailService(mapper.db).saveSettings(values, userId=currentUser.get("id"))
     recordAudit(mapper, currentUser, "settings.mailUpdated", "settings", None, "mail",
                 {"host": settings["host"], "sender": settings["sender"], "publicUrl": settings["publicUrl"],
+                 "mailOn": settings["mailOn"],
                  "password": "changed" if payload.password is not None else "kept"})
     return settings
 

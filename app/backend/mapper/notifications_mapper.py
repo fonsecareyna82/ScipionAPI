@@ -170,6 +170,11 @@ class NotificationsPostgresqlMapper:
                         '"emailNextAt" = NOW() + %s * INTERVAL \'1 minute\' WHERE id = %s',
                         (error[:1000], bool(giveUp), float(delayMinutes), int(notificationId)))
 
+    def skipWaiting(self, reason: str) -> int:
+        cursor = self.db.execute('UPDATE notifications SET "emailState" = \'skipped\', "emailError" = %s '
+                                 'WHERE "emailState" IN (\'pending\', \'digest\')', (reason,))
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
     def skipStale(self, days: float) -> int:
         """Pending mails older than days (no mail server all that time) are not sent any more."""
         cursor = self.db.execute('UPDATE notifications SET "emailState" = \'skipped\', '

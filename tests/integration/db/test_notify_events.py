@@ -46,7 +46,8 @@ def _notices(world, userId):
                                 'WHERE id > %s AND "userId" = %s ORDER BY id', (world["first"], userId))
 
 
-def test_AnActivatedAccountIsTold(world):
+def test_AnActivatedAccountIsTold(world, monkeypatch):
+    monkeypatch.setattr(MailService, "sending", lambda self: True)
     notify_events.accountActivated(world["db"], world["users"]["Luis"])
 
     notice = _notices(world, world["users"]["Luis"])[0]
@@ -128,6 +129,10 @@ def test_AForgottenPasswordIsResetOnceWithTheMailedLink(world, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", FakeSmtp)
     db.execute("""UPDATE notifications SET "emailState" = 'skipped' WHERE "emailState" IN ('pending', 'digest')""")
     MailService(db).saveSettings({"host": "smtp.example.org", "sender": "scipion@example.org"})
+    # With the mail off, nothing is sent (and the same is answered)
+    password_reset.askReset(flat, email)
+    assert _notices(world, users["Luis"]) == []
+    MailService(db).saveSettings({"mailOn": True})
 
     # The same answer for an address without an account
     assert password_reset.askReset(flat, "nobody@example.org") == password_reset.askReset(flat, email)

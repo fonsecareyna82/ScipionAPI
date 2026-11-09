@@ -623,7 +623,10 @@ def test_AFailedProcessingOrProtocolIsAnAlertThatSomeoneTakes(facility, owner):
     assert {alert["kind"] for alert in alerts.listAlerts() if alert["sessionId"] == session["id"]} == {"processingFailed"}
 
 
-def test_TheNewAlertsAreToldOnceToTheFacilitysAddresses(facility, keptSettings, postgresqlIntegrationDb):
+def test_TheNewAlertsAreToldOnceToTheFacilitysAddresses(facility, keptSettings, postgresqlIntegrationDb, monkeypatch):
+    from app.backend.api.services.mail_service import MailService
+
+    monkeypatch.setattr(MailService, "sending", lambda self: True)
     from app.backend.api.services.facility_alerts import FacilityAlerts
     from app.backend.api.services.facility_settings_service import FacilitySettingsService
 

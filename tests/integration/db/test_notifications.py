@@ -69,7 +69,7 @@ def outbox(postgresqlIntegrationDb, postgresqlMigratedEnv, monkeypatch):
 def _mail(db, **change):
     return MailService(db).saveSettings(dict({"host": "smtp.example.org", "port": 587, "security": "starttls",
                                               "user": "scipion", "password": "s3cret", "sender": "scipion@example.org",
-                                              "publicUrl": "https://scipion.example.org/"}, **change))
+                                              "publicUrl": "https://scipion.example.org/", "mailOn": True}, **change))
 
 
 def _rows(outbox):
@@ -94,6 +94,9 @@ def test_TheMailPasswordIsKeptEncryptedAndNeverAnswered(outbox):
 
 def test_EachUserGetsANoticeAsTheyChose(outbox):
     db = outbox["db"]
+    _mail(db)
+    # Mailed only where an administrator or the user chose it: by default a notice only shows in the web
+    Notifications(db).saveDefaults({"facility.booking": "instant"})
     ana, luis = outbox["users"]
     notifications = Notifications(db)
     user = {"id": luis, "permissions": []}
@@ -158,14 +161,18 @@ def test_TheSenderMailsWhatIsPendingWithItsLinkAndRetriesWhatFails(outbox):
                          "/facility/calendar")
     notifications.notifyAddresses(["ops@example.org"], "facility.alert", "Facility: 1 new alert", "boom")
 
-    # Without a mail server nothing goes, and nothing is lost
-    assert sender.sendOnce(db) == {"sent": [], "digests": []}
-    assert {row["emailState"] for row in _rows(outbox)} == {"pending"}
+    # Without the mail on, nothing is kept to be mailed: turning it on later does not mail it all at once
+    assert {row["emailState"] for row in _rows(outbox)} == {"skipped"}
+    assert len(_rows(outbox)) == 1
 
     _mail(db)
+    notifications.saveDefaults({"facility.booking": "instant"})
+    notifications.notify([ana], "facility.booking", "Booking of Krios: is confirmed", "Your booking is confirmed.",
+                         "/facility/calendar")
+    notifications.notifyAddresses(["ops@example.org"], "facility.alert", "Facility: 1 new alert", "boom")
     sent = sender.sendOnce(db)["sent"]
 
-    assert len(sent) == 2 and {row["emailState"] for row in _rows(outbox)} == {"sent"}
+    assert len(sent) == 2 and [row["emailState"] for row in _rows(outbox)] == ["skipped", "sent", "sent"]
     toAna = next(mail for mail in FakeSmtp.sent if mail["subject"] == "Booking of Krios: is confirmed")
     assert "https://scipion.example.org/facility/calendar" in toAna["body"]
     assert "https://scipion.example.org/settings?tab=notifications" in toAna["body"]
@@ -229,3 +236,26 @@ def test_ABookingDecisionIsNoticedToItsUser(outbox):
     assert "Reason: Gun maintenance" in notice["body"] and notice["link"] == "/facility/calendar"
     # Never fails, also for a booking without a user
     FacilityBookingService(db).notify(dict(booking, ownerId=None), "is confirmed")
+
+
+def test_NothingIsMailedUntilAnAdministratorTurnsTheMailOn(outbox):
+    db = outbox["db"]
+    ana, _ = outbox["users"]
+    notifications = Notifications(db)
+    _mail(db, mailOn=False)
+    settings = MailService(db).getSettings()
+    assert settings["enabled"] and not settings["mailOn"] and not settings["sending"]
+
+    # Even mandatory kinds only show in the web; addresses outside the users get nothing
+    notifications.notify([ana], "facility.retention", "Your data go soon")
+    assert notifications.notifyAddresses(["ops@example.org"], "facility.alert", "1 new alert") == []
+    assert [row["emailState"] for row in _rows(outbox)] == ["skipped"]
+    assert notifications.preferencesOf({"id": ana, "permissions": []}, True)["mailEnabled"] is False
+
+    # On: mailed; turned off again: what waited is not mailed later
+    _mail(db, mailOn=True)
+    notifications.notify([ana], "facility.retention", "Your data go soon")
+    assert _rows(outbox)[-1]["emailState"] == "pending"
+    _mail(db, mailOn=False)
+    assert _rows(outbox)[-1]["emailState"] == "skipped" and _rows(outbox)[-1]["emailError"] == "The mail was turned off"
+

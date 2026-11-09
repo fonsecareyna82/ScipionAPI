@@ -24,6 +24,8 @@ MAIL_FIELDS = ("host", "port", "security", "user", "sender")
 DEFAULT_MAIL = {"host": "", "port": 587, "security": "starttls", "user": "", "sender": ""}
 # The web's address as its users open it (https://scipion.example.org): the mails link to its pages
 PUBLIC_URL_KEY = "publicUrl"
+# Whether notices are mailed at all: off until an administrator turns it on (the server alone does not)
+MAIL_ON_KEY = "mailOn"
 # When the day's digest is mailed: an hour of the day in a time zone
 DIGEST_KEY = "digest"
 DEFAULT_DIGEST = {"hour": 8, "timezone": "Europe/Madrid"}
@@ -58,7 +60,13 @@ class MailService:
         return dict(DEFAULT_MAIL, **(self.mapper.getSettings().get(MAIL_KEY) or {}))
 
     def enabled(self) -> bool:
+        """A mail server is set (the test mail works)."""
         return bool(self._stored().get("host"))
+
+    def sending(self) -> bool:
+        """Notices are mailed: a server is set and an administrator turned the mail on."""
+        settings = self.mapper.getSettings()
+        return bool((settings.get(MAIL_KEY) or {}).get("host")) and settings.get(MAIL_ON_KEY) is True
 
     def getSettings(self) -> Dict[str, Any]:
         """The mail settings as the web shows them: the password only as whether there is one."""
@@ -67,6 +75,8 @@ class MailService:
         answer = {field: stored.get(field, DEFAULT_MAIL.get(field)) for field in MAIL_FIELDS}
         answer["passwordSet"] = bool(stored.get("passwordEncrypted"))
         answer["enabled"] = bool(stored.get("host"))
+        answer["mailOn"] = settings.get(MAIL_ON_KEY) is True
+        answer["sending"] = answer["enabled"] and answer["mailOn"]
         answer["publicUrl"] = str(settings.get(PUBLIC_URL_KEY) or "")
         answer["digest"] = dict(DEFAULT_DIGEST, **(settings.get(DIGEST_KEY) or {}))
         return answer
@@ -100,6 +110,11 @@ class MailService:
         else:
             values["passwordEncrypted"] = _fernet().encrypt(str(password).encode()).decode() if password else ""
         saved = {MAIL_KEY: values}
+        if payload.get("mailOn") is not None:
+            saved[MAIL_ON_KEY] = bool(payload["mailOn"])
+            if not saved[MAIL_ON_KEY]:
+                # What waits is not mailed later, all at once, when it is turned on again
+                self.mapper.skipWaiting("The mail was turned off")
         if payload.get("publicUrl") is not None:
             url = str(payload["publicUrl"]).strip().rstrip("/")
             if url and not url.startswith(("http://", "https://")):

@@ -128,7 +128,7 @@ def sendOnce(db) -> Dict[str, Any]:
     try:
         mapper.skipStale(STALE_DAYS)
         mail = MailService(db)
-        if not mail.enabled():
+        if not mail.sending():
             return {"sent": [], "digests": []}
         return {"sent": sendDue(db, mail), "digests": sendDigest(db, mail)}
     finally:

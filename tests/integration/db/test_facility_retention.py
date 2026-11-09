@@ -128,7 +128,10 @@ def test_ASessionNotFinishedHasNoDatesToKeep(facility):
     assert error.value.status_code == 404
 
 
-def test_TheUserAndThePiAreToldOnceBeforeTheDataGo(facility):
+def test_TheUserAndThePiAreToldOnceBeforeTheDataGo(facility, monkeypatch):
+    from app.backend.api.services.mail_service import MailService
+
+    monkeypatch.setattr(MailService, "sending", lambda self: True)
     db = facility["db"]
     session = _session(facility)
     _finishedOn(facility, session, datetime.datetime(2026, 8, 1, 12, tzinfo=datetime.timezone.utc))

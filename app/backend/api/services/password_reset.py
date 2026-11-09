@@ -38,7 +38,10 @@ def askReset(mapper, email: str) -> Dict[str, Any]:
     resets = PasswordResetPostgresqlMapper(mapper.db)
     if resets.recentlyAsked(user["id"], ASK_EVERY_MINUTES):
         return {"message": ANSWER}
-    publicUrl = MailService(mapper.db).publicUrl()
+    mail = MailService(mapper.db)
+    if not mail.sending():
+        return {"message": ANSWER}
+    publicUrl = mail.publicUrl()
     if not publicUrl:
         logger.warning("A password reset was asked, but the web's address is not set (Settings, Notifications): "
                        "the link cannot be mailed")
