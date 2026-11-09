@@ -33,6 +33,8 @@ BACKEND_ROOT = REPOSITORY_ROOT / "app" / "backend"
 SQLITE3_IMPORT_ALLOWLIST = {
     Path("app/backend/api/services/project_service.py"),
     Path("app/backend/utils/file_handlers.py"),
+    # Reads a copy of EMhub's own database file (read only), never ScipionWeb's
+    Path("app/backend/importers/emhub.py"),
 }
 
 PYWORKFLOW_SQLITE_IMPORT_ALLOWLIST = {

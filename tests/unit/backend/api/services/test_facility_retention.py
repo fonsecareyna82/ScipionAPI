@@ -115,3 +115,8 @@ def test_WrongNoticeDaysAreRefused(given):
     with pytest.raises(HTTPException) as error:
         noticeDays(given)
     assert error.value.status_code == 400
+
+
+def test_AnArchivedSessionIsHistoryAndOwesNoNotice():
+    # Its data gone, or brought from another system (EMhub): nobody is told of it
+    assert retention.noticesDue(_session(status="archived"), SETTINGS, datetime.date(2026, 10, 25)) == {}

@@ -120,6 +120,9 @@ def noticesDue(session: Dict[str, Any], settings: Dict[str, Any], on: datetime.d
     """The notices a session's user is owed on a day: {kind: (until, daysLeft, days)} for the kinds with one due,
     where days are the notice days it covers (a late look sends one notice, not each one missed)."""
     owed = {}
+    # An archived session is history (its data gone, or imported from another system): nobody is told of it
+    if session.get("status") == "archived":
+        return owed
     notices = session.get("retentionNotices") or {}
     for kind in KINDS:
         state = retentionState(session, kind, settings, on)

@@ -829,3 +829,49 @@ def version() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+@app.command(
+    "import-emhub",
+    help="Import EMhub's users, PIs' labs, resources and bookings (and, with --with-sessions, its sessions as "
+         "history) from a copy of its SQLite database. Only shows what it would do unless --apply is given.",
+)
+def importEmhub(
+    database: Path = typer.Argument(..., help="A copy of EMhub's SQLite database (opened read only)."),
+    apply: bool = typer.Option(False, "--apply", help="Write it (in one transaction); without it nothing changes."),
+    withSessions: bool = typer.Option(False, "--with-sessions", help="Also its sessions, archived, as history."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only bookings ending on or after this day (YYYY-MM-DD)."),
+    details: bool = typer.Option(False, "--details", help="List what was left out and why, and EMhub's staff."),
+) -> None:
+    """The import runs against this installation's database (its .env)."""
+    import datetime as _datetime
+
+    from scipionapi_cli.runtime import _loadEnv
+
+    _loadEnv(Path(__file__).resolve().parents[1])
+    from app.backend.database import getMapper
+    from app.backend.importers import emhub
+    from app.backend.mapper.import_mapper import ImportPostgresqlMapper
+
+    sinceDay = _datetime.date.fromisoformat(since) if since else None
+    data = emhub.readEmhub(str(database))
+    mapper = getMapper()
+    try:
+        if apply:
+            report = emhub.apply(data, mapper.db, withSessions=withSessions, since=sinceDay)
+        else:
+            report = emhub.plan(data, ImportPostgresqlMapper(mapper.db), withSessions=withSessions, since=sinceDay)
+            mapper.db.rollback()
+    finally:
+        mapper.db.close()
+    typer.echo(("Imported" if apply else "Would import (nothing written; --apply to do it)") + ":")
+    for kind, counts in emhub.summary(report).items():
+        typer.echo("  %-10s %s" % (kind, ", ".join("%s %d" % item for item in sorted(counts.items())) or "none"))
+    typer.echo("  counted only (not imported): %s" % ", ".join("%s %d" % item for item in report["countedOnly"].items()))
+    typer.echo("  EMhub staff to give roles to by hand: %d" % len(report["staffRoles"]))
+    if details:
+        for entry in report["skipped"]:
+            typer.echo("  left out %s %s: %s" % (entry["kind"], entry["id"], entry["why"]))
+        for entry in report["staffRoles"]:
+            typer.echo("  staff %s: %s" % (entry["email"], ", ".join(entry["roles"])))
+
