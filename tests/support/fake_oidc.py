@@ -52,7 +52,8 @@ class FakeProvider:
         return {"issuer": self.issuer, "authorization_endpoint": self.issuer + "/protocol/openid-connect/auth",
                 "token_endpoint": self.issuer + "/protocol/openid-connect/token",
                 "jwks_uri": self.issuer + "/protocol/openid-connect/certs",
-                "userinfo_endpoint": self.issuer + "/protocol/openid-connect/userinfo"}
+                "userinfo_endpoint": self.issuer + "/protocol/openid-connect/userinfo",
+                "end_session_endpoint": self.issuer + "/protocol/openid-connect/logout"}
 
     def idToken(self, nonce: Optional[str], **change) -> str:
         now = int(time.time())

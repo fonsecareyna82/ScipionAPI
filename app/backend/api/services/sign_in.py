@@ -288,26 +288,56 @@ def finish(db, flat, request: Dict[str, Any], code: str, http=None) -> str:
                                                               "provider": provider["key"]})
         raise SignInError("Your account waits for an administrator to activate it.")
     oneTime = secrets.token_urlsafe(32)
-    SignInPostgresqlMapper(db).saveRequest({"state": oneTime, "kind": "code", "userId": user["id"]})
+    SignInPostgresqlMapper(db).saveRequest({"state": oneTime, "kind": "code", "userId": user["id"],
+                                            "providerId": provider["id"], "returnTo": request.get("returnTo"),
+                                            "idToken": tokens["id_token"]})
     return oneTime
 
 
-def exchange(db, flat, code: str) -> Dict[str, Any]:
-    """The account a one-time code (from finish) was given for; it can be used once, within CODE_SECONDS."""
-    taken = SignInPostgresqlMapper(db).takeRequest(code or "", "code", CODE_SECONDS)
+def signOutReturn(returnTo: Optional[str]) -> Optional[str]:
+    """Where the provider sends the browser after signing out: the sign-in page of the web it came from."""
+    origin = _origin(returnTo or "")
+    return origin + "/signin" if origin else None
+
+
+def signOutUrl(provider: Optional[Dict[str, Any]], idToken: Optional[str], returnTo: Optional[str],
+               http=None) -> Optional[str]:
+    """The provider's address that ends its session in the browser (None when the provider is not set up to, or
+    publishes no such address)."""
+    if not provider or not provider.get("signOutAtProvider", True) or not idToken:
+        return None
+    try:
+        endpoint = discovery(provider["issuer"], http).get("end_session_endpoint")
+    except SignInError:
+        return None
+    if not endpoint:
+        return None
+    values = {"id_token_hint": idToken, "client_id": provider["clientId"]}
+    back = signOutReturn(returnTo)
+    if back:
+        values["post_logout_redirect_uri"] = back
+    return withQuery(endpoint, values)
+
+
+def exchange(db, flat, code: str, http=None) -> Tuple[Dict[str, Any], Optional[str]]:
+    """The account a one-time code (from finish) was given for, and where signing out of the provider goes; the
+    code can be used once, within CODE_SECONDS."""
+    mapper = SignInPostgresqlMapper(db)
+    taken = mapper.takeRequest(code or "", "code", CODE_SECONDS)
     user = flat.getUserById(taken["userId"]) if taken and taken.get("userId") else None
     if not user:
         raise SignInError("This sign-in expired; sign in again.")
     if not bool(user.get("isActive", True)):
         raise SignInError("Your account waits for an administrator to activate it.")
-    return user
+    provider = mapper.providerById(taken["providerId"]) if taken.get("providerId") else None
+    return user, signOutUrl(provider, taken.get("idToken"), taken.get("returnTo"), http)
 
 
 # What the administrator sees ----------------------------------------------------------------------------------
 
 def providerOut(provider: Dict[str, Any], db=None) -> Dict[str, Any]:
     out = {key: provider.get(key) for key in ("id", "key", "label", "issuer", "clientId", "scopes", "newAccounts",
-                                              "enabled")}
+                                              "enabled", "signOutAtProvider")}
     out["hasSecret"] = bool(provider.get("clientSecret"))
     if db is not None:
         out["accounts"] = SignInPostgresqlMapper(db).identitiesCount(provider["id"])
@@ -360,6 +390,8 @@ def saveProvider(db, payload: Dict[str, Any], providerId: Optional[int] = None, 
         values["newAccounts"] = payload["newAccounts"]
     if "enabled" in payload:
         values["enabled"] = bool(payload["enabled"])
+    if "signOutAtProvider" in payload:
+        values["signOutAtProvider"] = bool(payload["signOutAtProvider"])
     if payload.get("clientSecret") is not None:
         values["clientSecret"] = encryptSecret(str(payload["clientSecret"])) if payload["clientSecret"] else None
     if current is None:

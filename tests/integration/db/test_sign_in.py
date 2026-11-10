@@ -41,7 +41,8 @@ def _signIn(world):
     world["fake"].nonce = query["nonce"][0]
     pending = sign_in.takeRequest(world["db"], query["state"][0])
     code = sign_in.finish(world["db"], world["flat"], pending, "provider-code", http=world["fake"])
-    return sign_in.exchange(world["db"], world["flat"], code)
+    user, world["signOutUrl"] = sign_in.exchange(world["db"], world["flat"], code, http=world["fake"])
+    return user
 
 
 def test_ANewPersonGetsAnActiveAccountWithTheDefaultRoles(world):
@@ -91,9 +92,9 @@ def test_ASignInIsUsedOnceAndItsCodeToo(world):
     pending = sign_in.takeRequest(world["db"], query["state"][0])
     assert sign_in.takeRequest(world["db"], query["state"][0]) is None
     code = sign_in.finish(world["db"], world["flat"], pending, "provider-code", http=world["fake"])
-    sign_in.exchange(world["db"], world["flat"], code)
+    sign_in.exchange(world["db"], world["flat"], code, http=world["fake"])
     with pytest.raises(sign_in.SignInError, match="expired"):
-        sign_in.exchange(world["db"], world["flat"], code)
+        sign_in.exchange(world["db"], world["flat"], code, http=world["fake"])
 
 
 def test_AnOldSignInHasExpired(world):
@@ -134,3 +135,19 @@ def test_AProviderIsCheckedWhenSaved(world):
     with pytest.raises(ValueError, match="key"):
         sign_in.saveProvider(world["db"], {"key": "Bad Key", "label": "Z", "clientId": "c",
                                            "issuer": world["fake"].issuer}, http=world["fake"])
+
+
+def test_SigningOutGoesToTheProviderUnlessItIsSetUpNotTo(world):
+    from urllib.parse import parse_qs, urlsplit
+
+    world["fake"].endSession = True
+    _signIn(world)
+    url = urlsplit(world["signOutUrl"])
+    query = parse_qs(url.query)
+    assert url.path.endswith("/protocol/openid-connect/logout")
+    assert query["post_logout_redirect_uri"] == ["http://localhost:5173/signin"]
+    assert query["client_id"] == [world["fake"].clientId] and query["id_token_hint"][0].count(".") == 2
+    sign_in.saveProvider(world["db"], {"signOutAtProvider": False}, world["provider"]["id"], http=world["fake"])
+    _signIn(world)
+    assert world["signOutUrl"] is None
+

@@ -3,8 +3,9 @@ sign-ins under way."""
 from typing import Any, Dict, List, Optional
 
 PROVIDER_COLUMNS = ('id, key, label, issuer, "clientId", "clientSecret", scopes, "newAccounts", enabled, '
-                    '"createdAt", "updatedAt"')
-EDITABLE = ("key", "label", "issuer", "clientId", "clientSecret", "scopes", "newAccounts", "enabled")
+                    '"signOutAtProvider", "createdAt", "updatedAt"')
+EDITABLE = ("key", "label", "issuer", "clientId", "clientSecret", "scopes", "newAccounts", "enabled",
+            "signOutAtProvider")
 
 
 class SignInPostgresqlMapper:
@@ -76,10 +77,10 @@ class SignInPostgresqlMapper:
     def saveRequest(self, values: Dict[str, Any]) -> None:
         self.db.execute(
             'INSERT INTO sign_in_requests (state, "providerId", nonce, "codeVerifier", "returnTo", "redirectUri", '
-            '"userId", kind) VALUES (%(state)s, %(providerId)s, %(nonce)s, %(codeVerifier)s, %(returnTo)s, '
-            '%(redirectUri)s, %(userId)s, %(kind)s)',
+            '"userId", kind, "idToken") VALUES (%(state)s, %(providerId)s, %(nonce)s, %(codeVerifier)s, '
+            '%(returnTo)s, %(redirectUri)s, %(userId)s, %(kind)s, %(idToken)s)',
             dict({"providerId": None, "nonce": None, "codeVerifier": None, "returnTo": None, "redirectUri": None,
-                  "userId": None, "kind": "request"}, **values))
+                  "userId": None, "kind": "request", "idToken": None}, **values))
 
     def takeRequest(self, state: str, kind: str, maxAgeSeconds: int) -> Optional[Dict[str, Any]]:
         """The sign-in (or code) of this state, used once: it is removed; None when unknown or too old."""

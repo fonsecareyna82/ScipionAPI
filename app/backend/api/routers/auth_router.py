@@ -380,15 +380,17 @@ def finishSignIn(key: str, request: Request, mapper: PostgresqlFlatMapper = Depe
     return RedirectResponse(sign_in.withQuery(returnTo, {"code": code}), status_code=302)
 
 
-@router.post("/oidc/exchange", response_model=LoginResponse)
+@router.post("/oidc/exchange")
 def exchangeSignInCode(payload: dict = Body(...), mapper: PostgresqlFlatMapper = Depends(getMapper)):
     """The web's session for the one-time code it was sent back with."""
     from app.backend.api.services import sign_in
 
     try:
-        user = sign_in.exchange(mapper.db, mapper, str(payload.get("code") or ""))
+        user, signOutUrl = sign_in.exchange(mapper.db, mapper, str(payload.get("code") or ""))
     except sign_in.SignInError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error))
     recordAudit(mapper, user, "auth.signIn", details={"method": "institution"})
-    return LoginResponse(accessToken=createAccessToken(data={"sub": user["email"]}),
-                         refreshToken=createRefreshToken(data={"sub": user["email"]}), tokenType="bearer")
+    # Signing out of ScipionWeb then goes there too, so the next person at this browser is asked who they are
+    return {"accessToken": createAccessToken(data={"sub": user["email"]}),
+            "refreshToken": createRefreshToken(data={"sub": user["email"]}), "tokenType": "bearer",
+            "signOutUrl": signOutUrl}
