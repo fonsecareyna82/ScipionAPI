@@ -38,7 +38,7 @@ def project(postgresqlIntegrationDb, postgresqlMigratedEnv):
 
 
 class _Service:
-    def _resolveScipionProtocolId(self, mapper, projectId, protocolId):
+    def _resolveScipionProtocolIdStrict(self, mapper, projectId, protocolId):
         return int(protocolId)
 
     def _resolvePostgresqlProjectPathForFilesystem(self, *args, **kwargs):

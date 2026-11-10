@@ -157,6 +157,18 @@ def _validation(lines: List[Tuple[int, str]], channel: str) -> Optional[Dict[str
     return found
 
 
+DETAIL = re.compile(r'"(detail|message|error|reason)"\s*:\s*"(?P<text>[^"]{3,400})"', re.IGNORECASE)
+
+
+def _detailAfter(lines: List[Tuple[int, str]], lineNumber: Optional[int]) -> Optional[str]:
+    """The explanation a service gave right after an error ({"detail": "..."} under "Response data")."""
+    if lineNumber is None:
+        return None
+    following = [text for number, text in lines if lineNumber < number <= lineNumber + 8]
+    match = DETAIL.search("\n".join(following))
+    return match.group("text").strip() if match else None
+
+
 def _errorLines(lines: List[Tuple[int, str]], channel: str) -> List[Dict[str, Any]]:
     found = []
     for number, text in lines:
@@ -256,6 +268,11 @@ def explainFailure(stdoutPath: Optional[str], stderrPath: Optional[str],
         error = failedLine
     elif stepErrors:
         error = {"text": stepErrors[-1][:500], "line": None, "channel": None}
+
+    if error and error.get("channel"):
+        detail = _detailAfter(stderr if error["channel"] == "stderr" else stdout, error.get("line"))
+        if detail and detail not in error["text"]:
+            error = dict(error, text="%s: %s" % (error["text"], detail))
 
     # A known error is looked for in what matters most first (the error shown and what the protocol said), then
     # in the other error lines, and last in the end of the logs: a warning further up never hides the cause

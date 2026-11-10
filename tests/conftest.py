@@ -2451,6 +2451,10 @@ def noBackgroundDiskMeasurer(monkeypatch):
     # An app started by a test would start the real disk measurer on the test database, which then measures the
     # projects other tests make (with the wrong projects folder) while they measure them themselves. The tests of
     # the measurer call it directly.
-    from app.backend.api.services import project_storage
+    from app.backend.api.services import facility_session_watcher, notification_sender, project_storage
 
     monkeypatch.setattr(project_storage, "startDiskUsageMeasurer", lambda *args, **kwargs: None)
+    # The same for the facility's session watcher and the mail sender: they change the sessions and notices
+    # other tests are checking
+    monkeypatch.setattr(facility_session_watcher, "startSessionWatcher", lambda *args, **kwargs: None)
+    monkeypatch.setattr(notification_sender, "startNotificationSender", lambda *args, **kwargs: None)

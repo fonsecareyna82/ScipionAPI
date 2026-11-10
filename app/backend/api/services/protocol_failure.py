@@ -17,7 +17,8 @@ def explainProtocolFailure(mapper, service, projectId: int, protocolId) -> Dict[
     """{failed, cause, error, command, traceback, ...} of a protocol; failed is False (and nothing else is read)
     for a protocol that did not fail. service resolves the protocol's ids and folder."""
     db = mapper.db
-    scipionId = service._resolveScipionProtocolId(mapper=mapper, projectId=projectId, protocolId=protocolId)
+    # The web asks by the protocol's Scipion id, as for its logs
+    scipionId = service._resolveScipionProtocolIdStrict(mapper=mapper, projectId=projectId, protocolId=protocolId)
     key = scipionId if scipionId is not None else protocolId
     failures = ProtocolFailurePostgresqlMapper(db)
     protocol = failures.protocol(projectId, key)
@@ -27,7 +28,7 @@ def explainProtocolFailure(mapper, service, projectId: int, protocolId) -> Dict[
     try:
         located = RuntimeProtocolLogService().resolvePostgresqlProtocolLogPaths(
             mapper=mapper, projectId=projectId, protocolId=protocolId,
-            resolveScipionProtocolIdCallback=service._resolveScipionProtocolId,
+            resolveScipionProtocolIdCallback=service._resolveScipionProtocolIdStrict,
             resolvePostgresqlProjectPathForFilesystemCallback=service._resolvePostgresqlProjectPathForFilesystem)
         paths = (located or {}).get("paths") or {}
     except Exception:

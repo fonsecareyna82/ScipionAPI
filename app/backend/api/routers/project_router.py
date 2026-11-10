@@ -2595,6 +2595,23 @@ def getProtocolSummaryRoute(
         raise _protocolRunActionError(exc) from None
 
 
+@router.get("/{projectId}/protocols/{protocolId}/failure", response_model=Any)
+def getProtocolFailureRoute(
+    projectId: int,
+    protocolId: int,
+    currentUser=Depends(getCurrentUser),
+    mapper: PostgresqlFlatMapper = Depends(getMapper),
+    service: ProjectService = Depends(getProjectService),
+):
+    """Why a protocol (by its Scipion id) failed: its cause when it is a known error, the error and the failed
+    command with their lines in the log; {"failed": false} when it did not fail."""
+    from app.backend.api.services.protocol_failure import explainProtocolFailure
+
+    if not service.getProjectDbRow(mapper, projectId, currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return explainProtocolFailure(mapper, service, projectId, protocolId)
+
+
 @router.get("/{projectId}/protocols/{protocolId}/run-actions", response_model=Any)
 def listProtocolRunActionsRoute(
     projectId: int,

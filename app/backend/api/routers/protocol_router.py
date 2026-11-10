@@ -114,24 +114,6 @@ async def loadNewProtocol(
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/failure/{projectId}/{protocolId}", response_model=Any)
-async def getProtocolFailure(
-        projectId: int,
-        protocolId: int,
-        currentUser=Depends(getCurrentUser),
-        mapper: PostgresqlFlatMapper = Depends(getMapper),
-        service: ProjectService = Depends(getProjectService),
-):
-    """Why a protocol failed (its cause when it is a known error, the error and the failed command with their
-    lines in the log); {"failed": false} when it did not fail."""
-    from app.backend.api.services.protocol_failure import explainProtocolFailure
-
-    project = service.getProjectDbRow(mapper=mapper, projectId=projectId, currentUser=currentUser)
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return explainProtocolFailure(mapper, service, projectId, protocolId)
-
-
 @router.get(
     "/logs/{projectId}/{protocolId}/{offset}/{errOffset}/{scheduleOffset}",
     response_model=Any,

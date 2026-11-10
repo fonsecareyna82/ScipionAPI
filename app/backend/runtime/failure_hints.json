@@ -100,6 +100,13 @@
       "hint": "Often an unexpected or damaged input, wrong parameters for this data, or a program that does not fit this machine; check the inputs and try once more."
     },
     {
+      "id": "service-refused",
+      "category": "service",
+      "pattern": "Received error response|\\bcode 4\\d\\d\\b|HTTP(Error)?\\s*4\\d\\d|status(_code)?[ =:]+4\\d\\d",
+      "title": "A service it relies on refused the work",
+      "hint": "The program that runs this step answered with an error (shown below): check how it is set up, such as where it may run work and with which GPUs."
+    },
+    {
       "id": "bad-input-values",
       "category": "input",
       "pattern": "ValueError|could not convert|invalid literal|IndexError|KeyError|ZeroDivisionError|shape mismatch|dimensions? (do not|don't) match|must be (a )?(positive|greater|smaller)",

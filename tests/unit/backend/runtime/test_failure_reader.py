@@ -97,3 +97,19 @@ def test_TheFirstRuleWins():
              dict(id="b", pattern="out", title="B", hint="", category="x", regex=re.compile("out"))]
     assert matchHint(["out of memory"], rules)["id"] == "a"
     assert matchHint(["nothing"], rules) is None
+
+
+def test_AServicesRefusalSaysTheReasonItGave(tmp_path):
+    stderr = ("Traceback (most recent call last):\n"
+              "  File \"/x/api.py\", line 179, in _handle_response\n"
+              "    raise APIError(\"Received error response\")\n"
+              "errors.APIError: *** [API] (POST http://host:61002/jobs/J1:enqueue, code 422) Received error response\n"
+              "Response data:\n"
+              "{\n"
+              "    \"detail\": \"Unable to queue to gpus without a specified target\"\n"
+              "}\n")
+    explained = explainFailure(*_logs(tmp_path, "", stderr))
+    assert explained["cause"]["id"] == "service-refused"
+    assert explained["error"]["text"].endswith("Received error response: Unable to queue to gpus without a specified "
+                                               "target")
+    assert explained["error"]["line"] == 4
