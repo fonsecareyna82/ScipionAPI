@@ -65,4 +65,5 @@ include = ["scipionapi_cli*", "app*"]
 
 [tool.setuptools.package-data]
 # Headless session of Xmipp's supervised picking classifier (run with java).
-"app.backend.runtime" = ["*.java"]
+# ... and the known errors of failed protocols (failure_reader).
+"app.backend.runtime" = ["*.java", "*.json"]

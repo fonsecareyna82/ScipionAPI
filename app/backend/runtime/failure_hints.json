@@ -1,0 +1,124 @@
+{
+  "_about": "Known errors of failed protocols: the first rule whose pattern (a case-insensitive regular expression) is found in what the log says wins, so the more specific rules go first. title and hint are shown to users: they name no plugin or program.",
+  "rules": [
+    {
+      "id": "gpu-out-of-memory",
+      "category": "gpu",
+      "pattern": "CUDA[^\\n]{0,80}out of memory|out of memory[^\\n]{0,80}(CUDA|GPU|device)|cudaErrorMemoryAllocation|CUDA_ERROR_OUT_OF_MEMORY|CUBLAS_STATUS_ALLOC_FAILED|CUFFT_ALLOC_FAILED|cudaMalloc[^\\n]{0,40}fail|GPU memory[^\\n]{0,40}(insufficient|not enough|exceed)",
+      "title": "The GPU ran out of memory",
+      "hint": "Try a smaller box size or fewer images per batch, run it on a GPU with more memory, or check that no other run uses the same GPU."
+    },
+    {
+      "id": "gpu-not-usable",
+      "category": "gpu",
+      "pattern": "no CUDA-capable device|CUDA_ERROR_NO_DEVICE|cudaErrorNoDevice|invalid device ordinal|cudaErrorInvalidDevice|CUDA driver version is insufficient|cudaErrorInsufficientDriver|unsupported (gpu|cuda) architecture|no kernel image is available",
+      "title": "The GPU could not be used",
+      "hint": "Check that the GPU ids given exist on the machine where it ran and that its driver works; a program built for other GPUs fails the same way."
+    },
+    {
+      "id": "machine-out-of-memory",
+      "category": "memory",
+      "pattern": "MemoryError|Cannot allocate memory|std::bad_alloc|Out of memory: Kill|oom-kill|returned non-zero exit status -9\\b|exit status 137\\b|\\bKilled\\b",
+      "title": "The machine ran out of memory",
+      "hint": "Use fewer threads or parallel processes, a smaller batch, or run it on a machine with more memory."
+    },
+    {
+      "id": "disk-full",
+      "category": "disk",
+      "pattern": "No space left on device|ENOSPC|Disk quota exceeded|EDQUOT",
+      "title": "The disk is full",
+      "hint": "Free space on the disk of the project (or of the scratch, if one is used), then continue the protocol."
+    },
+    {
+      "id": "not-installed",
+      "category": "installation",
+      "pattern": "Missing paths|point to non existing paths|scipion installb|binaries? (is|are) not installed|model[^\\n]{0,60}does not exist|Directory with models not found",
+      "title": "Something it needs is not installed",
+      "hint": "A program, its models or its data are missing on this installation: install them from Plugins (or ask who manages it)."
+    },
+    {
+      "id": "program-not-found",
+      "category": "installation",
+      "pattern": ": command not found|: not found\\s*$|No such file or directory: '[^']*/bin/|executable[^\\n]{0,40}not found|cannot execute binary file",
+      "title": "A program it runs could not be found",
+      "hint": "The program may not be installed on the machine where it ran, or its path is not set: check its installation in Plugins."
+    },
+    {
+      "id": "library-missing",
+      "category": "installation",
+      "pattern": "error while loading shared libraries|cannot open shared object file|undefined symbol:|GLIBC_[0-9.]+' not found",
+      "title": "A library the program needs is missing",
+      "hint": "The program's installation is incomplete or was built for another system: reinstall it from Plugins on that machine."
+    },
+    {
+      "id": "python-module-missing",
+      "category": "installation",
+      "pattern": "ModuleNotFoundError|No module named|ImportError: cannot import name|module '[^']+' has no attribute",
+      "title": "A part of the installation is missing or does not match",
+      "hint": "The environment the protocol runs in is incomplete, or its parts are of different versions: update or reinstall it from Plugins."
+    },
+    {
+      "id": "permission-denied",
+      "category": "files",
+      "pattern": "Permission denied|PermissionError|EACCES|Operation not permitted",
+      "title": "It was not allowed to read or write a file",
+      "hint": "Check the permissions of the project folder and of its inputs, for the account that runs the protocols."
+    },
+    {
+      "id": "input-data-unreadable",
+      "category": "input",
+      "pattern": "no such table|database disk image is malformed|file is not a database|unable to open database",
+      "title": "The data of an input is empty or damaged",
+      "hint": "The protocol that made that input may have failed, been stopped or still be writing it: check it, and run it again if needed."
+    },
+    {
+      "id": "file-damaged",
+      "category": "input",
+      "pattern": "unpack requires a buffer|struct\\.error|unexpected end of file|premature end|file (is )?truncated|EOFError|not a valid (mrc|image|tiff?)|header[^\\n]{0,40}(corrupt|invalid)",
+      "title": "An input file is damaged or incomplete",
+      "hint": "A file may have been copied only in part or still be being written: check the file, or wait and continue the protocol."
+    },
+    {
+      "id": "file-missing",
+      "category": "files",
+      "pattern": "FileNotFoundError|No such file or directory|does not exist|cannot open file|Could not open|Unable to open",
+      "title": "A file it needs is missing",
+      "hint": "An input may have been deleted or moved, or an earlier step did not make it: check the inputs and the log above the error."
+    },
+    {
+      "id": "mpi-failed",
+      "category": "parallel",
+      "pattern": "MPI_ABORT|mpirun (noticed|was unable|detected)|There are not enough slots|ORTE[^\\n]{0,40}(error|fail)|PMIX ERROR|mpiexec[^\\n]{0,40}(error|fail)",
+      "title": "The parallel run failed",
+      "hint": "Try fewer parallel (MPI) processes, or one to rule it out, and check the parallel setup of that machine."
+    },
+    {
+      "id": "crashed",
+      "category": "crash",
+      "pattern": "Segmentation fault|SIGSEGV|core dumped|Bus error|SIGBUS|Floating point exception|SIGFPE|Illegal instruction|SIGILL|double free|corrupted size",
+      "title": "The program crashed",
+      "hint": "Often an unexpected or damaged input, wrong parameters for this data, or a program that does not fit this machine; check the inputs and try once more."
+    },
+    {
+      "id": "bad-input-values",
+      "category": "input",
+      "pattern": "ValueError|could not convert|invalid literal|IndexError|KeyError|ZeroDivisionError|shape mismatch|dimensions? (do not|don't) match|must be (a )?(positive|greater|smaller)",
+      "title": "A value did not fit what was expected",
+      "hint": "A parameter or an input does not match what the protocol expects (a size, a sampling, an empty set): check the parameters and the inputs."
+    },
+    {
+      "id": "timed-out",
+      "category": "time",
+      "pattern": "timed out|TimeoutError|DUE TO TIME LIMIT|walltime exceeded",
+      "title": "It took longer than allowed",
+      "hint": "Give it more time (the queue's time limit), or split the work."
+    },
+    {
+      "id": "not-valid",
+      "category": "parameters",
+      "pattern": "Protocol has validation errors|No files matching the pattern|validation error",
+      "title": "The parameters or inputs are not valid",
+      "hint": "The protocol did not start: fix what the message says (a parameter, a missing input, a pattern that finds no files) and launch it again."
+    }
+  ]
+}

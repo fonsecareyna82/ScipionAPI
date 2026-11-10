@@ -85,10 +85,19 @@ def runEnded(db, runId: int, status: str) -> List[int]:
     link = "/project/load/%s?protocol=%s" % (run["projectId"], run["protocolId"]) if run.get("projectId") else ""
     status = str(status or "").lower()
     if status == "failed":
-        return _notify(db, [run.get("userId"), run.get("ownerId")], "protocol.failed",
-                       "%s failed in %s" % (label, project),
-                       "The protocol %s (%s) failed in the project %s. Its log says why." % (
-                           label, run.get("protocolClassName") or "", project), link)
+        from app.backend.api.services.protocol_failure import causeOfRun
+
+        cause = causeOfRun(db, run.get("projectId"), run.get("projectPath"), run.get("protocolId"),
+                           run.get("protocolClassName"))
+        if cause:
+            title = "%s failed in %s: %s" % (label, project, cause["title"][:1].lower() + cause["title"][1:])
+            body = "The protocol %s (%s) failed in the project %s.\n\n%s. %s" % (
+                label, run.get("protocolClassName") or "", project, cause["title"], cause["hint"])
+        else:
+            title = "%s failed in %s" % (label, project)
+            body = "The protocol %s (%s) failed in the project %s. Its Summary shows the error." % (
+                label, run.get("protocolClassName") or "", project)
+        return _notify(db, [run.get("userId"), run.get("ownerId")], "protocol.failed", title, body, link)
     if status == "finished":
         started, ended = run.get("startedAt"), run.get("endedAt") or datetime.now(timezone.utc)
         minutes = (ended - started).total_seconds() / 60 if started else 0

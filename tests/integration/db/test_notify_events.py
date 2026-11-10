@@ -165,3 +165,25 @@ def test_AResetLinkExpires(world):
 
     with pytest.raises(HTTPException):
         password_reset.reset(flat, "old-token", "n3wPassword")
+
+
+def test_AFailedRunsNoticeSaysWhyWhenItIsAKnownError(world, tmp_path):
+    from app.backend.mapper.compute_usage_mapper import ComputeUsagePostgresqlMapper
+
+    db, users = world["db"], world["users"]
+    logs = tmp_path / "Workflow_2D" / "Runs" / "000008_ProtCryoRefine" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "run.stdout").write_text("** Running command: **\n refine --gpu 0\nProtocol failed: Command 'refine' "
+                                     "returned non-zero exit status 1.\n")
+    (logs / "run.stderr").write_text("RuntimeError: CUDA error: out of memory\n")
+    runs = ComputeUsagePostgresqlMapper(db)
+    runId = runs.startRun({"projectId": world["projectId"], "projectPath": str(tmp_path / "Workflow_2D"),
+                           "protocolId": "8", "protocolClassName": "ProtCryoRefine", "protocolLabel": "refine",
+                           "userId": users["Luis"], "executionId": None, "coordinatorRunId": None, "host": "h",
+                           "queueName": None, "queueJobId": None, "gpus": 1, "gpuIds": "0", "threads": 1, "mpi": 1,
+                           "streaming": False})
+    runs.endRun(runId, "failed")
+    notify_events.runEnded(db, runId, "failed")
+
+    notice = _notices(world, users["Ana"])[-1]
+    assert notice["title"] == "refine failed in Workflow_2D: the GPU ran out of memory"
