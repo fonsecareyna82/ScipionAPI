@@ -18,6 +18,11 @@ PUBLIC_ROUTES = {
     ("POST", "/auth/forgot-password"),
     ("POST", "/auth/reset-password"),
     ("POST", "/auth/refresh"),
+    # Signing in with an institution's account: before there is a session (the code and state prove each step)
+    ("GET", "/auth/providers"),
+    ("GET", "/auth/oidc/{key}/start"),
+    ("GET", "/auth/oidc/{key}/callback"),
+    ("POST", "/auth/oidc/exchange"),
     ("GET", "/system/version"),
     ("GET", "/system/update-check"),
     ("GET", "/projects/{projectId}/protocols/{protocolId}/fs/download-file"),

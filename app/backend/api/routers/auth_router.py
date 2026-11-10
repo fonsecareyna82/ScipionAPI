@@ -26,7 +26,7 @@
 # routers/auth_router.py
 
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from app.backend.api.schemas.user_schema import (UserCreate, UserOut, LoginResponse, LoginRequest, ResendCodeRequest,
                                                  UserUpdate, ChangePasswordRequest, ForgotPasswordRequest,
                                                  ResetPasswordRequest)
@@ -307,3 +307,88 @@ def resetPassword(payload: ResetPasswordRequest, mapper: PostgresqlFlatMapper = 
                 result["userId"], user.get("email"))
     return {"message": result["message"]}
 
+
+
+# Signing in with an institution's account (OpenID Connect) -------------------------------------------------------
+
+def _ownOrigins(request, mapper) -> list:
+    """The origins this installation's web is served from: the API's own, and the public address if set."""
+    origins = ["%s://%s" % (request.url.scheme, request.headers.get("host") or request.url.netloc)]
+    try:
+        from app.backend.api.services.mail_service import MailService
+
+        public = MailService(mapper.db).publicUrl()
+        if public:
+            origins.append(public)
+    except Exception:
+        pass
+    return origins
+
+
+def _signInPage(message: str):
+    from fastapi.responses import HTMLResponse
+    from html import escape
+
+    return HTMLResponse("<!doctype html><meta charset='utf-8'><title>Sign in</title>"
+                        "<p style='font:16px sans-serif;margin:2em'>%s</p>" % escape(message), status_code=400)
+
+
+@router.get("/providers")
+def listSignInProviders(mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """The institutions one may sign in with (the buttons of the sign-in page); none until an administrator adds
+    one."""
+    from app.backend.mapper.sign_in_mapper import SignInPostgresqlMapper
+
+    return [{"key": provider["key"], "label": provider["label"]}
+            for provider in SignInPostgresqlMapper(mapper.db).providers(enabledOnly=True)]
+
+
+@router.get("/oidc/{key}/start", name="oidcStart")
+def startSignIn(key: str, request: Request, returnTo: str, mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Send the browser to the institution's sign-in page; it comes back to oidcCallback."""
+    from fastapi.responses import RedirectResponse
+    from app.backend.api.services import sign_in
+
+    if not sign_in.returnAllowed(returnTo, _ownOrigins(request, mapper)):
+        return _signInPage("This sign-in was not asked from this installation's web.")
+    try:
+        target = sign_in.start(mapper.db, key, str(request.url_for("oidcCallback", key=key)), returnTo)
+    except sign_in.SignInError as error:
+        return RedirectResponse(sign_in.withQuery(returnTo, {"error": str(error)}), status_code=302)
+    return RedirectResponse(target, status_code=302)
+
+
+@router.get("/oidc/{key}/callback", name="oidcCallback")
+def finishSignIn(key: str, request: Request, mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """The institution's answer: back to the web with a one-time code (or why it did not work)."""
+    from fastapi.responses import RedirectResponse
+    from app.backend.api.services import sign_in
+
+    params = request.query_params
+    pending = sign_in.takeRequest(mapper.db, params.get("state", ""))
+    if not pending:
+        return _signInPage("This sign-in expired or was already used. Go back to ScipionWeb and sign in again.")
+    returnTo = pending["returnTo"]
+    if params.get("error"):
+        reason = params.get("error_description") or params.get("error")
+        return RedirectResponse(sign_in.withQuery(returnTo, {"error": "The institution did not sign you in: %s"
+                                                                      % reason}), status_code=302)
+    try:
+        code = sign_in.finish(mapper.db, mapper, pending, params.get("code", ""))
+    except sign_in.SignInError as error:
+        return RedirectResponse(sign_in.withQuery(returnTo, {"error": str(error)}), status_code=302)
+    return RedirectResponse(sign_in.withQuery(returnTo, {"code": code}), status_code=302)
+
+
+@router.post("/oidc/exchange", response_model=LoginResponse)
+def exchangeSignInCode(payload: dict = Body(...), mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """The web's session for the one-time code it was sent back with."""
+    from app.backend.api.services import sign_in
+
+    try:
+        user = sign_in.exchange(mapper.db, mapper, str(payload.get("code") or ""))
+    except sign_in.SignInError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error))
+    recordAudit(mapper, user, "auth.signIn", details={"method": "institution"})
+    return LoginResponse(accessToken=createAccessToken(data={"sub": user["email"]}),
+                         refreshToken=createRefreshToken(data={"sub": user["email"]}), tokenType="bearer")

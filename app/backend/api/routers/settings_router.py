@@ -27,7 +27,7 @@
 # settingsRouter
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
@@ -619,3 +619,80 @@ def patchHostSettings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to patch host settings: {e}",
         )
+
+
+# Signing in with an institution's account --------------------------------------------------------------------
+
+def _withCallbacks(request: Request, providers):
+    for provider in providers:
+        provider["callbackUrl"] = str(request.url_for("oidcCallback", key=provider["key"]))
+    return providers
+
+
+@router.get("/sign-in-providers")
+def listSignInProvidersAdmin(request: Request, currentUser=Depends(requirePermission("settings.manage")),
+                             mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """The institutions one may sign in with, as set up (never the client secrets), each with the callback
+    address to register at the institution."""
+    from app.backend.api.services import sign_in
+    from app.backend.mapper.sign_in_mapper import SignInPostgresqlMapper
+
+    return _withCallbacks(request, [sign_in.providerOut(provider, mapper.db)
+                                    for provider in SignInPostgresqlMapper(mapper.db).providers()])
+
+
+def _saveSignInProvider(request: Request, mapper, payload, providerId=None, currentUser=None):
+    from app.backend.api.audit import recordAudit
+    from app.backend.api.services import sign_in
+
+    try:
+        saved = sign_in.saveProvider(mapper.db, payload or {}, providerId)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except (ValueError, sign_in.SignInError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    recordAudit(mapper, currentUser, "settings.signInProviderSaved", "signInProvider", saved["id"], saved["label"])
+    return _withCallbacks(request, [saved])[0]
+
+
+@router.post("/sign-in-providers")
+def addSignInProvider(request: Request, payload: Dict[str, Any] = Body(...),
+                      currentUser=Depends(requirePermission("settings.manage")),
+                      mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    return _saveSignInProvider(request, mapper, payload, None, currentUser)
+
+
+@router.put("/sign-in-providers/{providerId}")
+def changeSignInProvider(providerId: int, request: Request, payload: Dict[str, Any] = Body(...),
+                         currentUser=Depends(requirePermission("settings.manage")),
+                         mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    return _saveSignInProvider(request, mapper, payload, providerId, currentUser)
+
+
+@router.delete("/sign-in-providers/{providerId}")
+def removeSignInProvider(providerId: int, currentUser=Depends(requirePermission("settings.manage")),
+                         mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Remove a provider: its accounts stay, but they can no longer sign in with it."""
+    from app.backend.api.audit import recordAudit
+    from app.backend.mapper.sign_in_mapper import SignInPostgresqlMapper
+
+    provider = SignInPostgresqlMapper(mapper.db).providerById(providerId)
+    if not provider:
+        raise HTTPException(status_code=404, detail="No such sign-in provider")
+    SignInPostgresqlMapper(mapper.db).deleteProvider(providerId)
+    recordAudit(mapper, currentUser, "settings.signInProviderRemoved", "signInProvider", providerId,
+                provider["label"])
+    return {"removed": providerId}
+
+
+@router.post("/sign-in-providers/{providerId}/test")
+def testSignInProvider(providerId: int, currentUser=Depends(requirePermission("settings.manage")),
+                       mapper: PostgresqlFlatMapper = Depends(getMapper)):
+    """Whether the institution's sign-in service answers now."""
+    from app.backend.api.services import sign_in
+
+    try:
+        return sign_in.testProvider(mapper.db, providerId)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+
