@@ -9190,7 +9190,8 @@ class ThumbnailService:
     def _resolveImageSourceFromItem(self, item) -> Tuple[Optional[str], Optional[int]]:
         candidateObjects = [item]
 
-        for methodName in ("getRepresentative", "getAverage", "getMicrograph", "getParticle", "getImage"):
+        # Not getImage: it reads the whole image (every frame of a movie) instead of giving a related object.
+        for methodName in ("getRepresentative", "getAverage", "getMicrograph", "getParticle"):
             getter = getattr(item, methodName, None)
             if callable(getter):
                 try:

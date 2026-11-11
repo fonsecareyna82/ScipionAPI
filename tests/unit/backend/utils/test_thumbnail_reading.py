@@ -39,3 +39,17 @@ def test_MoviesShowTheMeanOfSeveralFrames(tmp_path):
 
     # The square stands out from the noise once frames are averaged.
     assert averaged[24:40, 24:40].mean() - averaged[:12, :12].mean() > 25
+
+
+def test_FindingWhereAnImageIsDoesNotReadIt():
+    reads = []
+
+    class Movie:
+        def getImage(self):
+            reads.append(1)  # reads every frame of the movie
+
+        def getLocation(self):
+            return 1, "Runs/000002_ProtImportMovies/extra/movie.tif"
+
+    assert _service()._resolveImageSourceFromItem(Movie()) == ("Runs/000002_ProtImportMovies/extra/movie.tif", 1)
+    assert not reads
