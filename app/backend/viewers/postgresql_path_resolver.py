@@ -23,9 +23,12 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+import re
 from pathlib import Path
 from typing import Any, Optional
 from app.backend.runtime.project_runtime_repository import ProjectRuntimeRepository
+
+FORMAT_ENDING = re.compile(r":[A-Za-z][A-Za-z0-9]*$")
 
 
 class PostgresqlProjectPathResolver:
@@ -64,6 +67,15 @@ class PostgresqlProjectPathResolver:
         if not text:
             return None
 
+        found = self._resolveText(text)
+        if found is None:
+            # Scipion may end a file name with its format ("map.mrc:mrc" says "read it as a volume").
+            withoutFormat = FORMAT_ENDING.sub("", text)
+            if withoutFormat != text:
+                found = self._resolveText(withoutFormat)
+        return found
+
+    def _resolveText(self, text: str) -> Optional[str]:
         path = Path(text).expanduser()
         candidates = []
 

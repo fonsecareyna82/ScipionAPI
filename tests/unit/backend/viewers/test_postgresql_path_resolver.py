@@ -112,5 +112,20 @@ def test_PostgresqlProjectPathResolverDelegatesProjectLookup(monkeypatch, tmp_pa
     assert ".fetchOne(" not in source
 
 
+def test_PostgresqlProjectPathResolverReadsFileNamesEndingInTheirFormat(tmp_path):
+    projectPath = tmp_path / "project"
+    filePath = projectPath / "Runs" / "000220_ProtRelionClassify3D" / "extra" / "relion_it025_class001.mrc"
+    filePath.parent.mkdir(parents=True)
+    filePath.write_bytes(b"fake")
 
+    class FakeDb:
+        def fetchOne(self, query, params):
+            return {"name": str(projectPath)}
 
+    resolver = PostgresqlProjectPathResolver(db=FakeDb(), projectId=1)
+
+    assert resolver.resolveExistingPath(
+        "Runs/000220_ProtRelionClassify3D/extra/relion_it025_class001.mrc:mrc"
+    ) == str(filePath.resolve())
+    assert resolver.resolveExistingPath(str(filePath) + ":mrc") == str(filePath.resolve())
+    assert resolver.resolveExistingPath("Runs/000220_ProtRelionClassify3D/extra/missing.mrc:mrc") is None
