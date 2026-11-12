@@ -1307,3 +1307,30 @@ def test_CreateNewSetOfCtftomoSeriesDoesNotCreateSqliteSet(
             "outputName": "CTFTomoSeries2",
         }
     ]
+
+def test_RenderCtfTomoPsdImageServiceReadsPathsRelativeToTheProject(projectServiceModule, service, monkeypatch,
+                                                                    tmp_path):
+    from app.backend.viewers.postgresql_path_resolver import PostgresqlProjectPathResolver
+
+    FakeOutputsPreview.instances = []
+    psdFile = tmp_path / "Runs" / "000005_ProtAreTomoAlignRecon" / "extra" / "ts_ctf.mrc"
+    psdFile.parent.mkdir(parents=True)
+    psdFile.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(PostgresqlProjectPathResolver, "getProjectPath", lambda self: tmp_path)
+    monkeypatch.setattr(projectServiceModule, "OutputsPreview", FakeOutputsPreview)
+    service.currentProject = FakeCurrentProject(FakeProtocol("CTFTomoSeries", None, tmp_path))
+
+    result = service.renderCtfTomoPsdImageService(
+        projectId=1,
+        protocolId=10,
+        outputName="CTFTomoSeries",
+        psdPath="1@Runs/000005_ProtAreTomoAlignRecon/extra/ts_ctf.mrc",
+        size=256,
+        fmt="png",
+        inline=True,
+        index=0,
+        mapper=type("Mapper", (), {"db": object()})(),
+    )
+
+    assert result == {"rendered": True, "filePath": str(psdFile.resolve())}
+    assert FakeOutputsPreview.instances[0].lastRenderCall["index"] == 1

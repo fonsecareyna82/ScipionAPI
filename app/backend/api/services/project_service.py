@@ -12072,12 +12072,20 @@ class ProjectService:
                     except Exception:
                         imageIndex = int(index)
 
-                candidatePath = Path(splitPath[-1]).expanduser()
+                from app.backend.viewers.postgresql_path_resolver import (
+                    PostgresqlProjectPathResolver,
+                )
 
-                if candidatePath.is_absolute():
-                    absPath = candidatePath.resolve()
+                # PSD paths are often relative to the project ("Runs/…")
+                resolvedPath = PostgresqlProjectPathResolver(
+                    db=mapper.db,
+                    projectId=projectId,
+                ).resolveExistingPath(splitPath[-1])
 
-                    if absPath.exists() and absPath.is_file():
+                if resolvedPath is not None:
+                    absPath = Path(resolvedPath)
+
+                    if absPath.is_file():
                         preview = OutputsPreview(
                             currentProject=self.currentProject,
                             protocol=None,
