@@ -5,6 +5,17 @@ keeps its rows in scipion_set_table_items. Readers take both through LOGICAL_TAB
 always read from the Set's items, never from a copy of them.
 """
 
+import os
+
+# "1": a Set's items are stored once, without their copies in its root logical table
+SINGLE_ITEM_STORAGE_ENV = "SCIPIONAPI_SINGLE_ITEM_STORAGE"
+
+
+def writesRootCopies() -> bool:
+    """Whether a Set's items are also copied into its root logical table, as before (no reader needs them)."""
+    return os.environ.get(SINGLE_ITEM_STORAGE_ENV, "").strip() != "1"
+
+
 # The columns of scipion_set_table_items, for every logical table. Filtering on "tableId" narrows each branch
 # through its index.
 LOGICAL_TABLE_ITEMS = """(

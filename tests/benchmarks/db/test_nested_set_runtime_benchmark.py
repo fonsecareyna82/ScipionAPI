@@ -59,6 +59,7 @@ import pytest
 from pwem import objects as emobj
 
 from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
+from app.backend.mapper.set_item_sources import logicalTableItems
 from app.backend.mapper.scipion_set_mapper import ScipionSetPostgresqlMapper
 from app.backend.runtime.postgresql_runtime_set_factory import PostgresqlRuntimeSetFactory
 from app.backend.runtime.postgresql_runtime_set_sqlite_materializer import PostgresqlRuntimeSetSqliteMaterializer
@@ -510,8 +511,9 @@ def _dumpStoredSet(db, projectId, protocolDbId, outputName, tmpPath, path):
                 'SELECT "labelProperty", "columnName", "className", "valueType", position, indexed, properties '
                 'FROM scipion_set_table_columns WHERE "tableId" = %s ORDER BY position', (table["id"],)),
             "items": {str(row["scipionItemId"]): row for row in db.fetchAll(
-                'SELECT "scipionItemId", "parentItemId", %s FROM scipion_set_table_items WHERE "tableId" = %%s'
-                % itemColumns, (table["id"],))},
+                # A root table's rows as its readers see them, whether or not they are copied
+                'SELECT "scipionItemId", "parentItemId", %s FROM %s WHERE "tableId" = %%s'
+                % (itemColumns, logicalTableItems("table_items")), (table["id"],))},
         })
     Path(path).write_text(json.dumps(dump, sort_keys=True, indent=1, default=str))
 

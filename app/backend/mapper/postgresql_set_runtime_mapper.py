@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from app.backend.mapper.postgresql import canStageCopyRows
 from app.backend.mapper.postgresql_append_buffer import EncodedAppendItem, PostgresqlAppendBuffer
+from app.backend.mapper.set_item_sources import writesRootCopies
 
 
 class _PostgresqlItemIterator:
@@ -1200,6 +1201,10 @@ class PostgresqlSetRuntimeMapper:
                     "updatedAt" = NOW()
                 """
             rootTableId = int(self.rootTableId)
+            if not writesRootCopies():
+                # The items only: the root logical table reads them from the Set
+                canonicalSql = canonicalSql[:canonicalSql.index("RETURNING")].replace(
+                    "WITH canonical AS (", "", 1)
             if stageRows is not None:
                 stageRows(
                     canonicalSql.format(
@@ -1468,7 +1473,7 @@ class PostgresqlSetRuntimeMapper:
 
         columns = ", ".join(key if key in copiedMetadata else "%%(%s)s" % key
                             for key in ("enabled", "label", "comment", "creation"))
-        self.db.execute(self._copiedItemsSql("""
+        insertSql = """
             , canonical AS (
                 INSERT INTO scipion_set_items (
                     "setId", "scipionItemId", enabled, label, comment, creation, "values"
@@ -1490,7 +1495,11 @@ class PostgresqlSetRuntimeMapper:
             SELECT %(rootTableId)s, "scipionItemId", NULL, enabled,
                    label, comment, creation, "values"
               FROM canonical
-        """.format(columns=columns), logicalSources), params, commit=False)
+        """.format(columns=columns)
+        if not writesRootCopies():
+            # The items only: the root logical table reads them from the Set
+            insertSql = insertSql[:insertSql.index("RETURNING")].replace(", canonical AS (", "", 1)
+        self.db.execute(self._copiedItemsSql(insertSql, logicalSources), params, commit=False)
         self._refreshSetCounters()
         return int(last["itemId"])
 
@@ -2257,6 +2266,8 @@ class PostgresqlSetRuntimeMapper:
             ),
             commit=False,
         )
+        if not writesRootCopies():
+            return
 
         self.db.execute(
             """

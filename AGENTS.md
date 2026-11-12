@@ -140,6 +140,11 @@ opts into native template reuse for `iterItems()`/`for x in set` (honoring
 always return independent objects, and nested Set items are always built anew.
 Enable it only once every plugin in use clones the items it keeps; code here
 that keeps iterated items must clone them or pass `iterate=False`.
+A Set's root logical table has no rows of its own: readers take them from the
+Set's items through `mapper/set_item_sources.py` (`logicalTableItems`), never
+from `scipion_set_table_items`. Items are still copied there by default;
+`SCIPIONAPI_SINGLE_ITEM_STORAGE=1` stores them once (faster writes, half the
+disk of flat Sets). New readers of logical tables must use that source.
 Runtime `append()` does not go through a Set's `_insertItem`, so it calls the
 Set's `_validateNewItem(item)` when defined (e.g. tomo Sets refusing a repeated
 tsId) before storing: keep native admission checks working there. Where filters

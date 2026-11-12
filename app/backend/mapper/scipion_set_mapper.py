@@ -37,7 +37,7 @@ from pyworkflow.object import (
     Set as ScipionSet,
 )
 
-from app.backend.mapper.set_item_sources import logicalTableItems
+from app.backend.mapper.set_item_sources import logicalTableItems, writesRootCopies
 from app.backend.mapper.scipion_object_mapper import (
     ScipionObjectPostgresqlMapper,
 )
@@ -3107,6 +3107,8 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
         tableRows: List[Tuple[Any, ...]] = []
         itemsCount = 0
         maxItemId: Optional[int] = None
+        # The root logical table reads the Set's items: copies only while they are still written
+        copiesTableId = tableId if writesRootCopies() else None
 
         for item in self._chainFirst(firstItem, remainingItems):
             itemId = self._getSourceObjId(item)
@@ -3129,18 +3131,19 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             )
 
             if tableId is not None:
-                tableRows.append(
-                    (
-                        tableId,
-                        itemId,
-                        None,
-                        self._getItemEnabled(item),
-                        self._getObjectLabel(item),
-                        self._getObjectComment(item),
-                        self._getObjectCreation(item),
-                        self._jsonParam(itemValues),
+                if copiesTableId is not None:
+                    tableRows.append(
+                        (
+                            tableId,
+                            itemId,
+                            None,
+                            self._getItemEnabled(item),
+                            self._getObjectLabel(item),
+                            self._getObjectComment(item),
+                            self._getObjectCreation(item),
+                            self._jsonParam(itemValues),
+                        )
                     )
-                )
 
                 nestedTableId = (
                     self
