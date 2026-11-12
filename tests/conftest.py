@@ -2447,6 +2447,13 @@ def noWarmViewerWorker(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def defaultItemStorage(monkeypatch):
+    # The .env of the installation may store Set items once; tests start from the default (items and their root
+    # copies) and the tests of single storage turn it on themselves.
+    monkeypatch.delenv("SCIPIONAPI_SINGLE_ITEM_STORAGE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def noBackgroundDiskMeasurer(monkeypatch):
     # An app started by a test would start the real disk measurer on the test database, which then measures the
     # projects other tests make (with the wrong projects folder) while they measure them themselves. The tests of
