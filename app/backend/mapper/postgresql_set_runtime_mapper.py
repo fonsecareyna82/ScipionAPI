@@ -389,6 +389,7 @@ class PostgresqlSetRuntimeMapper:
         else:
             self._scopeId = self.tableId
             self._scopeColumn = "tableId"
+            # Only child tables are opened by table: a Set's root rows are read through its setId
             self._itemsTable = self.LOGICAL_ITEMS_TABLE
             self._columnsTable = self.LOGICAL_COLUMNS_TABLE
             self._parentItemExpression = '"parentItemId"'

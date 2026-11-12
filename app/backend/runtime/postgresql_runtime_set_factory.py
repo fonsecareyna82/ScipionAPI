@@ -1406,8 +1406,11 @@ class PostgresqlRuntimeSetMixin:
             return False
         db = mapper.db
         if logicalSources:
-            scopes = db.fetchAll('SELECT "itemClassName", 0 AS children FROM scipion_set_tables '
+            scopes = db.fetchAll('SELECT "itemClassName", 0 AS children, "tableKind" FROM scipion_set_tables '
                                  'WHERE id = ANY(%s::int[])', (sourceIds,)) or []
+            # The whole-Set copy reads child tables only: a root table's rows are its Set's items
+            if any(scope.get("tableKind") == "root" for scope in scopes):
+                return False
         else:
             scopes = db.fetchAll(
                 """

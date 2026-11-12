@@ -136,7 +136,9 @@ def test_LoadProtocolRuntimeArtifactRows():
     assert 'protocol_row.id = stored_set."protocolDbId"' in setQuery
     assert "FROM scipion_set_items root_item" in setQuery
     assert "FROM scipion_set_tables set_table" in setQuery
-    assert "JOIN scipion_set_table_items table_item" in setQuery
+    # Logical table rows: child tables from their table, a root table from its Set's items
+    assert "FROM scipion_set_table_items child_item" in setQuery
+    assert ") AS table_item" in setQuery
     assert 'root_item."setId" = stored_set.id' in setQuery
     assert 'set_table."setId" = stored_set.id' in setQuery
 

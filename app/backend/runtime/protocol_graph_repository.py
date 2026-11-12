@@ -27,6 +27,12 @@ import json
 from typing import Any, Dict, List, Optional
 
 
+
+def _logicalTableItems(alias):
+    # Imported here: the mapper package imports this module
+    from app.backend.mapper.set_item_sources import logicalTableItems
+    return logicalTableItems(alias)
+
 class ProtocolGraphRepository:
     """
     Persist PostgreSQL runtime protocol graph data.
@@ -634,7 +640,7 @@ class ProtocolGraphRepository:
                     (
                         SELECT COUNT(table_item.id)
                           FROM scipion_set_tables set_table
-                          JOIN scipion_set_table_items table_item
+                          JOIN LOGICAL_ITEMS_TABLE_ITEM
                             ON table_item."tableId" = set_table.id
                          WHERE set_table."setId" = stored_set.id
                     ) AS "tableItemsCount"
@@ -645,7 +651,7 @@ class ProtocolGraphRepository:
                  WHERE stored_set."projectId" = %s
                    AND protocol_row."protocolId" = %s
                  ORDER BY stored_set."outputName"
-                """,
+                """.replace("LOGICAL_ITEMS_TABLE_ITEM", _logicalTableItems("table_item")),
                 (
                     int(projectId),
                     protocolIdText,
@@ -1025,10 +1031,10 @@ class ProtocolGraphRepository:
                     """
                     SELECT COUNT(ti.id) AS count
                       FROM scipion_set_tables t
-                      JOIN scipion_set_table_items ti
+                      JOIN LOGICAL_ITEMS_TI
                         ON ti."tableId" = t.id
                      WHERE t."setId" = %s
-                    """,
+                    """.replace("LOGICAL_ITEMS_TI", _logicalTableItems("ti")),
                     (int(setId),),
                 )
                 tableItemsCount = int(countRow.get("count") or 0) if countRow else 0

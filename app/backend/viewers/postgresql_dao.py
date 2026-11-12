@@ -56,6 +56,7 @@ from metadataviewer.model import (
 from pwem.convert.transformations import euler_from_matrix
 
 from app.backend.mapper import ScipionSetPostgresqlMapper
+from app.backend.mapper.set_item_sources import logicalTableItems
 
 # (table, scope, column, direction, version) -> the item ids in that order: a table sorted by a column is
 # sorted once, not again at every window scrolled to. Its version is the Set's (and its table's) last write.
@@ -791,7 +792,12 @@ class PostgresqlDAO(IDAO):
             return None
         if self._useLogicalTables:
             table = self._getLogicalTable(tableName)
-            return ("scipion_set_table_items", '"tableId"', int(table["id"])) if table else None
+            if not table:
+                return None
+            if table.get("tableKind") == "root":
+                # A root table's rows are its Set's own items
+                return "scipion_set_items", '"setId"', int(self._getStoredSetHeader()["id"])
+            return "scipion_set_table_items", '"tableId"', int(table["id"])
         if tableName != OBJECT_TABLE:
             return None
         return "scipion_set_items", '"setId"', int(self._getStoredSetHeader()["id"])
@@ -1138,9 +1144,9 @@ class PostgresqlDAO(IDAO):
         row = self.db.fetchOne(
             """
             SELECT COUNT(*) AS count
-              FROM scipion_set_table_items
+              FROM LOGICAL_ITEMS
              WHERE "tableId" = %s
-            """,
+            """.replace("LOGICAL_ITEMS", logicalTableItems("table_items")),
             (tableId,),
         )
         if not row:

@@ -37,6 +37,7 @@ from pyworkflow.object import (
     Set as ScipionSet,
 )
 
+from app.backend.mapper.set_item_sources import logicalTableItems
 from app.backend.mapper.scipion_object_mapper import (
     ScipionObjectPostgresqlMapper,
 )
@@ -2274,8 +2275,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                           ) FILTER (WHERE ti.id IS NOT NULL)
                       ) AS "rootTableItemsValueSignature"
                     FROM scipion_set_tables t
-                    LEFT JOIN scipion_set_table_items ti
-                      ON ti."tableId" = t.id
+                    -- A root table's rows are its Set's own items
+                    LEFT JOIN scipion_set_items ti
+                      ON ti."setId" = t."setId"
                    WHERE t."tableKind" = 'root'
                    GROUP BY t."setId"
               ) root_table_stats
@@ -3274,9 +3276,9 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 MAX(
                     "scipionItemId"
                 ) AS "maxItemId"
-              FROM scipion_set_table_items
+              FROM LOGICAL_ITEMS
              WHERE "tableId" = %s
-            """,
+            """.replace("LOGICAL_ITEMS", logicalTableItems("table_items")),
             (
                 tableId,
             ),
@@ -3877,10 +3879,10 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
                 """
                 SELECT id, "tableId", "scipionItemId", "parentItemId", enabled,
                        label, comment, creation, "values", "createdAt", "updatedAt"
-                  FROM scipion_set_table_items
+                  FROM LOGICAL_ITEMS
                  WHERE "tableId" = %s
                  ORDER BY "scipionItemId" ASC
-                """,
+                """.replace("LOGICAL_ITEMS", logicalTableItems("table_items")),
                 (tableId,),
             )
 
@@ -3888,11 +3890,11 @@ class ScipionSetPostgresqlMapper(ScipionObjectPostgresqlMapper):
             """
             SELECT id, "tableId", "scipionItemId", "parentItemId", enabled,
                    label, comment, creation, "values", "createdAt", "updatedAt"
-              FROM scipion_set_table_items
+              FROM LOGICAL_ITEMS
              WHERE "tableId" = %s
              ORDER BY "scipionItemId" ASC
              LIMIT %s OFFSET %s
-            """,
+            """.replace("LOGICAL_ITEMS", logicalTableItems("table_items")),
             (tableId, limit, offset),
         )
 
