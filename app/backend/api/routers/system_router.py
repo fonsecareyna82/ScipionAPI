@@ -105,8 +105,40 @@ def _readJsonUrl(url: str, timeoutSec: float) -> Dict[str, Any]:
 
 
 def _getUpdateBaseUrl() -> str:
-    # getUpdateBaseUrl
-    return _normalizeBaseUrl(os.getenv("SCIPIONAPI_UPDATE_BASE_URL"))
+    """Where updates come from: the address an administrator chose, else ScipionWeb's releases on GitHub (then the
+    CNB download server)."""
+    from scipionapi_cli import update as updateModule
+
+    chosen = updateModule.chosenBaseUrl(os.getenv("SCIPIONAPI_UPDATE_BASE_URL"))
+    if chosen:
+        return _normalizeBaseUrl(chosen)
+    return f"https://github.com/{updateModule._githubRepo({})}/releases/"
+
+
+CHECK_TIMEOUT_SECONDS = 15.0
+
+
+def _findLatestRelease(timeoutSec: float) -> Tuple[str, str, Dict[str, Any]]:
+    """(base URL, manifest URL, manifest) of the newest release: from the address an administrator chose, else
+    from ScipionWeb's releases on GitHub first and the CNB download server next (as install.sh and
+    `scipionapi update` do). Raises with both reasons when neither answers."""
+    from scipionapi_cli import update as updateModule
+
+    chosen = updateModule.chosenBaseUrl(os.getenv("SCIPIONAPI_UPDATE_BASE_URL"))
+    if chosen:
+        baseUrl = _normalizeBaseUrl(chosen)
+        manifestUrl = urljoin(baseUrl, DEFAULT_MANIFEST_NAME)
+        return baseUrl, manifestUrl, _readJsonUrl(manifestUrl, timeoutSec=timeoutSec)
+    try:
+        baseUrl, _ = updateModule._resolveFromGithub(updateModule._githubRepo({}), "latest", timeoutSec=timeoutSec)
+        manifestUrl = urljoin(baseUrl, DEFAULT_MANIFEST_NAME)
+        return baseUrl, manifestUrl, _readJsonUrl(manifestUrl, timeoutSec=timeoutSec)
+    except Exception as githubError:
+        manifestUrl = urljoin(DEFAULT_UPDATE_BASE_URL, DEFAULT_MANIFEST_NAME)
+        try:
+            return DEFAULT_UPDATE_BASE_URL, manifestUrl, _readJsonUrl(manifestUrl, timeoutSec=timeoutSec)
+        except Exception as cnbError:
+            raise RuntimeError(f"GitHub: {githubError}; CNB download server: {cnbError}") from cnbError
 
 
 def _getUpdateTimeout() -> float:
@@ -194,12 +226,13 @@ def getSystemVersion():
 def getUpdateCheck():
     # getUpdateCheck
     versionPayload = _buildVersionPayload()
-    baseUrl = versionPayload["updateBaseUrl"]
-    manifestUrl = urljoin(baseUrl, DEFAULT_MANIFEST_NAME)
-    timeoutSec = _getUpdateTimeout()
+    manifestUrl = None
+    # A short wait: the dashboard waits for it, and a server that does not answer must not hold it for minutes
+    timeoutSec = min(_getUpdateTimeout(), CHECK_TIMEOUT_SECONDS)
 
     try:
-        manifest = _readJsonUrl(manifestUrl, timeoutSec=timeoutSec)
+        baseUrl, manifestUrl, manifest = _findLatestRelease(timeoutSec)
+        versionPayload["updateBaseUrl"] = baseUrl
         latestVersion = _normalizeVersionTag(str(manifest.get("latest") or ""))
         currentVersion = versionPayload["currentVersion"]
         updateAvailable = _isNewerVersion(latestVersion, currentVersion)

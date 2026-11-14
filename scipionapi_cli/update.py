@@ -334,6 +334,15 @@ def _resolveFromGithub(
     return baseUrl, _releaseFromManifest(manifest, tag)
 
 
+def chosenBaseUrl(*values: Optional[str]) -> Optional[str]:
+    """The update address an administrator chose, if any. The CNB default does not count: updates before
+    2026-11-14 wrote it to .env as SCIPIONAPI_UPDATE_BASE_URL, and it would keep them off GitHub."""
+    for value in values:
+        if value and value.strip() and _normalizeBaseUrl(value) != DEFAULT_UPDATE_BASE_URL:
+            return value.strip()
+    return None
+
+
 def _resolveSource(
     explicitBaseUrl: Optional[str],
     env: Dict[str, str],
@@ -912,8 +921,7 @@ def updateCommand(
 
     explicitBaseUrl = (
         baseUrl
-        or env.get("SCIPIONAPI_UPDATE_BASE_URL")
-        or os.environ.get("SCIPIONAPI_UPDATE_BASE_URL")
+        or chosenBaseUrl(env.get("SCIPIONAPI_UPDATE_BASE_URL"), os.environ.get("SCIPIONAPI_UPDATE_BASE_URL"))
     )
 
     requestedVersionInput = (version or "").strip()
@@ -1114,7 +1122,8 @@ def updateCommand(
         updateMetadata = {
             "SCIPIONAPI_LAST_UPDATE_VERSION": targetVersion,
             "SCIPIONAPI_LAST_UPDATE_AT": timestamp,
-            "SCIPIONAPI_UPDATE_BASE_URL": effectiveBaseUrl,
+            # Where it came from, for information only: SCIPIONAPI_UPDATE_BASE_URL would pin the next updates
+            "SCIPIONAPI_LAST_UPDATE_SOURCE": effectiveBaseUrl,
         }
         # Installations from before it get the setting, limiting nothing until it is changed
         if "SCIPIONWEB_DATA_ROOTS" not in readEnvFile(envPath):

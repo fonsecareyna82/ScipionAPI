@@ -29,6 +29,9 @@ FastAPI + Uvicorn, PostgreSQL via SQLAlchemy 2.0 + Alembic migrations, Celery + 
   - `--base-url` or `SCIPIONWEB_DOWNLOAD_BASE_URL` downloads only from the address given. `SCIPIONWEB_GITHUB_REPO` names another repository.
   - The script runs `main` only when executed, so `tests/unit/cli/test_guided_installer.py` sources it and fakes `curl`.
   - `scipionapi update` follows the same order (`update._resolveSource`, `_resolveFromGithub`). `--base-url` or `SCIPIONAPI_UPDATE_BASE_URL` is the only source when given.
+    - `update.chosenBaseUrl` ignores the CNB default, which updates before 2026-11-14 wrote to `.env` and which would keep an installation off GitHub.
+    - An update now records where it came from as `SCIPIONAPI_LAST_UPDATE_SOURCE`.
+  - The dashboard's `GET /system/update-check` (`system_router._findLatestRelease`) uses the same order, waiting at most `CHECK_TIMEOUT_SECONDS` (15 s); before, it waited `SCIPIONAPI_UPDATE_TIMEOUT` (300 s) on the CNB server. When neither answers, `error` names both reasons.
   - `scipionapi release --upload` publishes on both (`release.releaseGithubCommand`, `github_release.publishRelease`). When one fails it still does the other and then fails, naming which.
   - GitHub needs `GITHUB_TOKEN`. The release is a pre-release unless `--official` is given, and its tag points to ScipionWeb's current commit (it must be pushed).
   - `--force` replaces an existing GitHub release with the same tag. The new one is made as a draft with all its files (under a provisional tag), the old release and its tag are deleted, then the new one is published, so the version can stay `v4.0.0` as on the CNB server.
