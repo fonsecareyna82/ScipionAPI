@@ -12,8 +12,13 @@ set -euo pipefail
 # and optionally manifest.json) are taken from the folder of this script, or
 # from --local-dir, when they are there: nothing is downloaded then, so an
 # installation does not need the download server.
+#
+# Otherwise they are downloaded from the releases of ScipionWeb on GitHub first,
+# and from the CNB download server when GitHub does not have them or does not
+# answer. --base-url downloads only from the address given.
 
 DEFAULT_BASE_URL="https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
+DEFAULT_GITHUB_REPO="fonsecareyna82/ScipionWeb"
 DEFAULT_INSTALL_DIR="${HOME}/scipionweb"
 DEFAULT_VERSION="latest"
 INSTALL_MARKER_NAME=".scipionweb-installation"
@@ -21,6 +26,10 @@ CLI_ALIAS_BEGIN="# >>> ScipionWeb scipionapi >>>"
 CLI_ALIAS_END="# <<< ScipionWeb scipionapi <<<"
 
 BASE_URL="${SCIPIONWEB_DOWNLOAD_BASE_URL:-${DEFAULT_BASE_URL}}"
+BASE_URL_EXPLICIT=0
+if [[ -n "${SCIPIONWEB_DOWNLOAD_BASE_URL:-}" ]]; then BASE_URL_EXPLICIT=1; fi
+GITHUB_REPO="${SCIPIONWEB_GITHUB_REPO:-${DEFAULT_GITHUB_REPO}}"
+RELEASE_SOURCE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_DIR="${SCIPIONWEB_LOCAL_DIR:-${SCRIPT_DIR}}"
 LOCAL_RELEASE=0
@@ -73,7 +82,8 @@ Options:
   --user USER          ScipionWeb administrator username.
   --email EMAIL        ScipionWeb administrator email.
   --version VERSION    Release to install, e.g. v4.0.0. Default: latest
-  --base-url URL       Release download base URL.
+  --base-url URL       Download the release only from this address. Default: the releases of
+                       ScipionWeb on GitHub, then the CNB download server.
   --local-dir PATH     Folder with the release archives to install without downloading
                        (ScipionAPI-<version>.zip, ScipionWeb-<version>-dist.zip and,
                        optionally, manifest.json). Default: the folder of this script.
@@ -100,6 +110,7 @@ Environment equivalents:
   SCIPIONWEB_ADMIN_PASSWORD
   SCIPIONWEB_VERSION
   SCIPIONWEB_DOWNLOAD_BASE_URL
+  SCIPIONWEB_GITHUB_REPO
   SCIPIONWEB_LOCAL_DIR
   SCIPIONWEB_API_PORT
   SCIPIONAPI_CONDA_EXE
@@ -159,7 +170,7 @@ while [[ $# -gt 0 ]]; do
     --user) need_arg "$1" "${2:-}"; ADMIN_USER="$2"; shift 2 ;;
     --email) need_arg "$1" "${2:-}"; ADMIN_EMAIL="$2"; shift 2 ;;
     --version) need_arg "$1" "${2:-}"; REQUESTED_VERSION="$2"; shift 2 ;;
-    --base-url) need_arg "$1" "${2:-}"; BASE_URL="$2"; shift 2 ;;
+    --base-url) need_arg "$1" "${2:-}"; BASE_URL="$2"; BASE_URL_EXPLICIT=1; shift 2 ;;
     --local-dir) need_arg "$1" "${2:-}"; LOCAL_DIR="$2"; shift 2 ;;
     --api-port) need_arg "$1" "${2:-}"; API_PORT="$2"; shift 2 ;;
     --create-alias) CREATE_CLI_ALIAS="1"; shift ;;
@@ -437,7 +448,7 @@ resolve_local_release() {
 }
 
 resolve_release() {
-  local requested_version manifest_path="${TMP_DIR}/manifest.json" listing_path="${TMP_DIR}/downloads.html"
+  local requested_version
   requested_version="$(normalize_version "${REQUESTED_VERSION}")"
 
   print_step "Resolving ScipionWeb release"
@@ -451,46 +462,115 @@ resolve_release() {
     return 0
   fi
   print_line "No local archives of this release in ${LOCAL_DIR}; downloading."
-  print_line "Base URL: ${BASE_URL}"
 
-  local manifest_ok=0
-  if download_quiet "${BASE_URL}manifest.json" "${manifest_path}" 2>/dev/null; then manifest_ok=1; fi
-
-  RELEASE_VERSION=""; API_FILE=""; API_SHA256=""; WEB_FILE=""; WEB_SHA256=""
-
-  if [[ ${manifest_ok} -eq 1 ]]; then
-    local release_values=()
-    RELEASE_VERSION=""
-    if mapfile -t release_values < <(resolve_release_from_manifest "${manifest_path}" "${requested_version}"); then
-      if [[ ${#release_values[@]} -eq 5 ]]; then
-        RELEASE_VERSION="${release_values[0]}"
-        API_FILE="${release_values[1]}"
-        API_SHA256="${release_values[2]}"
-        WEB_FILE="${release_values[3]}"
-        WEB_SHA256="${release_values[4]}"
-      fi
+  if [[ ${BASE_URL_EXPLICIT} -eq 1 ]]; then
+    print_line "Base URL: ${BASE_URL}"
+    if ! resolve_from_base_url "${requested_version}" 1; then
+      print_error "Could not resolve release ${requested_version} from ${BASE_URL}."
+      print_local_hint
+      exit 1
     fi
-  fi
-
-  if [[ -z "${RELEASE_VERSION}" ]]; then
-    print_warn "manifest.json could not resolve the requested release; using archive naming fallback."
-    if [[ "${requested_version}" == "latest" ]]; then
-      if ! download_quiet "${BASE_URL}" "${listing_path}"; then
-        print_error "Could not retrieve the release directory listing from ${BASE_URL}."
+    RELEASE_SOURCE="${BASE_URL}"
+  else
+    print_line "Looking on GitHub (${GITHUB_REPO})..."
+    if resolve_from_github "${requested_version}"; then
+      RELEASE_SOURCE="GitHub"
+    else
+      print_warn "GitHub does not have release ${requested_version} or does not answer."
+      if ! resolve_from_cnb "${requested_version}"; then
+        print_error "Could not resolve release ${requested_version} from GitHub nor from ${DEFAULT_BASE_URL}."
         print_local_hint
         exit 1
       fi
-      RELEASE_VERSION="$(resolve_latest_from_listing "${listing_path}")"
-    else
-      RELEASE_VERSION="${requested_version}"
     fi
-    API_FILE="ScipionAPI-${RELEASE_VERSION}.zip"
-    WEB_FILE="ScipionWeb-${RELEASE_VERSION}-dist.zip"
   fi
 
-  print_ok "Resolved release: ${RELEASE_VERSION}"
+  print_ok "Resolved release: ${RELEASE_VERSION} (from ${RELEASE_SOURCE})"
   print_line "  API: ${API_FILE}"
   print_line "  Web: ${WEB_FILE}"
+}
+
+# The release at BASE_URL, from its manifest.json; with allow_listing=1 (the CNB server), when there is no
+# manifest, from the archives' names in the directory listing. Returns 1, without exiting, when it cannot.
+resolve_from_base_url() {
+  local requested_version="$1" allow_listing="$2"
+  local manifest_path="${TMP_DIR}/manifest.json" listing_path="${TMP_DIR}/downloads.html"
+  rm -f "${manifest_path}" "${listing_path}"
+  RELEASE_VERSION=""; API_FILE=""; API_SHA256=""; WEB_FILE=""; WEB_SHA256=""
+
+  if download_quiet "${BASE_URL}manifest.json" "${manifest_path}" 2>/dev/null; then
+    local release_values=()
+    mapfile -t release_values < <(resolve_release_from_manifest "${manifest_path}" "${requested_version}" 2>/dev/null)
+    if [[ ${#release_values[@]} -eq 5 ]]; then
+      RELEASE_VERSION="${release_values[0]}"
+      API_FILE="${release_values[1]}"
+      API_SHA256="${release_values[2]}"
+      WEB_FILE="${release_values[3]}"
+      WEB_SHA256="${release_values[4]}"
+      return 0
+    fi
+  fi
+  [[ "${allow_listing}" == "1" ]] || return 1
+
+  print_warn "manifest.json could not resolve the requested release; using archive naming fallback."
+  if [[ "${requested_version}" == "latest" ]]; then
+    if ! download_quiet "${BASE_URL}" "${listing_path}" 2>/dev/null; then
+      print_warn "Could not retrieve the release directory listing from ${BASE_URL}."
+      return 1
+    fi
+    RELEASE_VERSION="$(resolve_latest_from_listing "${listing_path}" 2>/dev/null)" || return 1
+  else
+    RELEASE_VERSION="${requested_version}"
+  fi
+  API_FILE="ScipionAPI-${RELEASE_VERSION}.zip"
+  WEB_FILE="ScipionWeb-${RELEASE_VERSION}-dist.zip"
+}
+
+# The release on GitHub: the one asked for, or the newest one, test releases (pre-releases) included, which
+# GitHub's own "latest" link leaves out. Its files are at releases/download/<tag>/.
+resolve_from_github() {
+  local tag="$1" releases_path="${TMP_DIR}/github-releases.json"
+  if [[ "${tag}" == "latest" ]]; then
+    download_quiet "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=1" "${releases_path}" 2>/dev/null \
+      || return 1
+    tag="$("${CONDA_PYTHON}" - "${releases_path}" <<'PY' 2>/dev/null
+import json, sys
+releases = json.load(open(sys.argv[1], encoding="utf-8"))
+print(releases[0]["tag_name"] if isinstance(releases, list) and releases else "")
+PY
+)" || return 1
+    [[ -n "${tag}" ]] || return 1
+  fi
+  BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${tag}/"
+  resolve_from_base_url "${tag}" 0
+}
+
+resolve_from_cnb() {
+  BASE_URL="${DEFAULT_BASE_URL}"
+  print_line "Trying the CNB download server: ${BASE_URL}"
+  resolve_from_base_url "$1" 1 || return 1
+  RELEASE_SOURCE="the CNB download server"
+}
+
+# Both archives into TMP_DIR. When GitHub resolved the release but its files do not download, the same release
+# is taken from the CNB server.
+download_release_archives() {
+  local api_zip="$1" web_zip="$2"
+  print_step "Downloading ScipionWeb release ${RELEASE_VERSION}"
+  if download_file "$(asset_url "${API_FILE}")" "${api_zip}" && download_file "$(asset_url "${WEB_FILE}")" "${web_zip}"; then
+    return 0
+  fi
+  if [[ "${RELEASE_SOURCE}" == "GitHub" ]]; then
+    print_warn "Could not download the release from GitHub."
+    if resolve_from_cnb "${RELEASE_VERSION}" \
+        && download_file "$(asset_url "${API_FILE}")" "${api_zip}" \
+        && download_file "$(asset_url "${WEB_FILE}")" "${web_zip}"; then
+      return 0
+    fi
+  fi
+  print_error "Could not download release ${RELEASE_VERSION}."
+  print_local_hint
+  exit 1
 }
 
 print_local_hint() {
@@ -934,11 +1014,7 @@ main() {
   else
     api_zip="${TMP_DIR}/${API_FILE##*/}"
     web_zip="${TMP_DIR}/${WEB_FILE##*/}"
-    print_step "Downloading ScipionWeb release ${RELEASE_VERSION}"
-    print_line "ScipionAPI:"
-    download_file "$(asset_url "${API_FILE}")" "${api_zip}" || { print_error "Could not download ${API_FILE}."; print_local_hint; exit 1; }
-    print_line "ScipionWeb:"
-    download_file "$(asset_url "${WEB_FILE}")" "${web_zip}" || { print_error "Could not download ${WEB_FILE}."; print_local_hint; exit 1; }
+    download_release_archives "${api_zip}" "${web_zip}"
   fi
 
   print_step "Verifying release archives"
@@ -952,4 +1028,7 @@ main() {
   print_success_summary
 }
 
-main "$@"
+# Only when run, not when a test loads its functions (source install.sh)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

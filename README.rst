@@ -80,9 +80,15 @@ everything.
 3. Download and Unpack (API + Web)
 ----------------------------------------------------------
 
-Versioned ZIPs are published under:
+Versioned ZIPs are published in two places, with the same files:
 
-* ``https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/``
+* the releases of ScipionWeb on GitHub:
+  ``https://github.com/fonsecareyna82/ScipionWeb/releases`` (looked at first);
+* ``https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/`` (used when GitHub
+  does not have the release or does not answer).
+
+``install.sh`` and ``scipionapi update`` try GitHub first and the CNB server
+next; ``--base-url`` makes them use only the address given.
 
 Recommended installation layout (example):
 
@@ -99,11 +105,11 @@ Example download + unpack flow (adjust filenames to the published version):
     mkdir -p "$HOME/scipionweb"
     cd "$HOME/scipionweb"
 
-    # Download API bundle
-    wget https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/ScipionAPI-<version>.zip
+    # Download API bundle (or from https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/)
+    wget https://github.com/fonsecareyna82/ScipionWeb/releases/download/<version>/ScipionAPI-<version>.zip
 
     # Download compiled web bundle (optional but recommended for integrated mode)
-    wget https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/ScipionWeb-<version>-dist.zip
+    wget https://github.com/fonsecareyna82/ScipionWeb/releases/download/<version>/ScipionWeb-<version>-dist.zip
 
     # Unpack API bundle
     unzip ScipionAPI-<version>.zip
@@ -474,7 +480,14 @@ Build and publish both archives in one command:
       --downloads-dir /path/to/release/files
 
 The upload flow also publishes ``install.sh`` and updates ``manifest.json`` as
-the final atomic step. ``--version`` is optional and acts only as an assertion
+the final atomic step. It publishes on the CNB download server and on GitHub
+(a release of ScipionWeb with both archives, ``manifest.json`` and
+``install.sh``); when one fails the other is still done and the command fails
+saying which. GitHub needs ``GITHUB_TOKEN``, a token that can write the
+repository's contents. The GitHub release is a test release (pre-release)
+unless ``--official`` is given, and ``--force`` replaces the earlier one with
+the same version, as on the CNB server. ``--no-cnb`` or ``--no-github``
+publish in one place only; ``--github-repo`` names another repository. ``--version`` is optional and acts only as an assertion
 against the versions declared by both packages.
 
 Use ``--dry-run`` with ``--upload`` to build the archives and inspect the

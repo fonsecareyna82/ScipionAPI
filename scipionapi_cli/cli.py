@@ -37,6 +37,7 @@ from scipionapi_cli.nodes_cli import multinodeApp, nodeApp
 from scipionapi_cli.install import installCommand
 from scipionapi_cli.provision import provisionCommand
 from scipionapi_cli.doctor import doctorCommand
+from scipionapi_cli.github_release import DEFAULT_GITHUB_REPO
 from scipionapi_cli.release import (
     DEFAULT_RELEASE_BASE_URL,
     DEFAULT_RELEASE_LOGIN,
@@ -565,6 +566,31 @@ def release(
             help="Intentionally replace an already-published release version.",
             show_default=True,
         ),
+        toCnb: bool = typer.Option(
+            True,
+            "--cnb/--no-cnb",
+            help="Publish on the CNB download server.",
+            show_default=True,
+        ),
+        toGithub: bool = typer.Option(
+            True,
+            "--github/--no-github",
+            help="Publish on GitHub too (needs GITHUB_TOKEN). Installs and updates look there first.",
+            show_default=True,
+        ),
+        githubRepo: str = typer.Option(
+            DEFAULT_GITHUB_REPO,
+            "--github-repo",
+            envvar="SCIPIONWEB_GITHUB_REPO",
+            help="GitHub repository whose releases hold ScipionWeb.",
+            show_default=True,
+        ),
+        prerelease: bool = typer.Option(
+            True,
+            "--prerelease/--official",
+            help="Mark the GitHub release as a test release (pre-release) or as an official one.",
+            show_default=True,
+        ),
     ) -> None:
     if not buildArtifacts and not upload:
         raise typer.BadParameter(
@@ -587,6 +613,10 @@ def release(
         dryRun=dryRun,
         yes=yes,
         force=force,
+        toCnb=toCnb,
+        toGithub=toGithub,
+        githubRepo=githubRepo,
+        prerelease=prerelease,
     )
 
 

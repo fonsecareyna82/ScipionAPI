@@ -45,6 +45,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
+from scipionapi_cli.github_release import DEFAULT_GITHUB_REPO
 from scipionapi_cli.shell import resolveRepoRoot
 from scipionapi_cli.update import (
     API_MANAGED_PATHS,
@@ -928,6 +929,72 @@ def releaseUploadCommand(
         )
 
 
+def releaseGithubCommand(
+    version: Optional[str] = None,
+    webRoot: Optional[str] = None,
+    downloadsDir: str = ".",
+    apiFile: Optional[str] = None,
+    webFile: Optional[str] = None,
+    githubRepo: str = DEFAULT_GITHUB_REPO,
+    prerelease: bool = True,
+    dryRun: bool = False,
+    yes: bool = False,
+    force: bool = False,
+) -> None:
+    """Publishes the release on GitHub (see github_release.py): both archives, a manifest.json with only this
+    release, and the installer."""
+    from scipionapi_cli import github_release
+
+    repoRoot = resolveRepoRoot()
+    resolvedWebRoot = _resolveWebRoot(repoRoot, webRoot)
+    normalizedVersion = _resolvePairedReleaseVersion(resolvedWebRoot, requestedVersion=version)
+    manifestModule = _loadManifestModule(repoRoot)
+    downloadsPath = Path(downloadsDir).expanduser().resolve()
+    apiPath = _resolveAssetPath(downloadsPath, apiFile, f"ScipionAPI-{normalizedVersion}.zip")
+    webPath = _resolveAssetPath(downloadsPath, webFile, f"ScipionWeb-{normalizedVersion}-dist.zip")
+    installerPath = (repoRoot / "install.sh").resolve()
+    for path, label in [(apiPath, "ScipionAPI release ZIP"), (webPath, "ScipionWeb release ZIP"),
+                        (installerPath, "guided installer")]:
+        if not path.is_file():
+            raise RuntimeError(f"{label} not found: {path}")
+
+    token = github_release.githubToken()
+    if not token and not dryRun:
+        raise RuntimeError("Set GITHUB_TOKEN to a GitHub token that can write the contents of "
+                           f"{githubRepo} to publish the release there.")
+    commit = github_release.headCommit(resolvedWebRoot)
+
+    _printPanel("ScipionWeb release on GitHub")
+    with tempfile.TemporaryDirectory(prefix="scipionweb-github-release-") as tempDir:
+        manifestPath = Path(tempDir) / "manifest.json"
+        _, manifest = manifestModule.updateManifest(downloadsDir=downloadsPath, version=normalizedVersion,
+                                                    manifestPath=manifestPath, apiFile=str(apiPath),
+                                                    webFile=str(webPath), setLatest=True)
+        _printKeyValueTable("GitHub release plan", [
+            ("Repository", githubRepo),
+            ("Release", normalizedVersion),
+            ("Test release (pre-release)", "yes" if prerelease else "no"),
+            ("Tag on commit", commit),
+            ("Files", ", ".join([apiPath.name, webPath.name, "manifest.json", "install.sh"])),
+            ("Replace an existing one", "yes" if force else "no"),
+        ])
+        if dryRun:
+            _printInfo("Dry run: nothing was published on GitHub.")
+            return
+        if not yes:
+            console.print()
+            console.print("[bold yellow]This publishes the release on GitHub.[/bold yellow]")
+            if not Confirm.ask("Continue?", default=False):
+                _printInfo("GitHub release cancelled")
+                return
+        installerCopy = Path(tempDir) / "install.sh"
+        shutil.copy2(installerPath, installerCopy)
+        url = github_release.publishRelease(githubRepo, normalizedVersion,
+                                            [apiPath, webPath, manifestPath, installerCopy], token, commit,
+                                            prerelease=prerelease, replace=force, log=_printInfo)
+    _printSuccess(f"ScipionWeb release {normalizedVersion} published on GitHub: {url}")
+
+
 def releaseCommand(
     upload: bool = False,
     buildArtifacts: bool = True,
@@ -943,6 +1010,10 @@ def releaseCommand(
     dryRun: bool = False,
     yes: bool = False,
     force: bool = False,
+    toCnb: bool = True,
+    toGithub: bool = True,
+    githubRepo: str = DEFAULT_GITHUB_REPO,
+    prerelease: bool = True,
 ) -> None:
     resolvedVersion = version
     resolvedApiFile = apiFile
@@ -969,17 +1040,47 @@ def releaseCommand(
     if not upload:
         return
 
-    releaseUploadCommand(
-        version=resolvedVersion,
-        webRoot=webRoot,
-        downloadsDir=downloadsDir,
-        apiFile=resolvedApiFile,
-        webFile=resolvedWebFile,
-        login=login,
-        remoteDir=remoteDir,
-        baseUrl=baseUrl,
-        setLatest=setLatest,
-        dryRun=dryRun,
-        yes=yes,
-        force=force,
-    )
+    # Published on both; when one fails the other is still done, and the command fails saying which
+    failures: List[str] = []
+    if toCnb:
+        try:
+            releaseUploadCommand(
+                version=resolvedVersion,
+                webRoot=webRoot,
+                downloadsDir=downloadsDir,
+                apiFile=resolvedApiFile,
+                webFile=resolvedWebFile,
+                login=login,
+                remoteDir=remoteDir,
+                baseUrl=baseUrl,
+                setLatest=setLatest,
+                dryRun=dryRun,
+                yes=yes,
+                force=force,
+            )
+        except Exception as exc:
+            if not toGithub:
+                raise
+            failures.append(f"CNB download server: {exc}")
+            _printWarning(f"Could not publish on the CNB download server: {exc}")
+    if toGithub:
+        try:
+            releaseGithubCommand(
+                version=resolvedVersion,
+                webRoot=webRoot,
+                downloadsDir=downloadsDir,
+                apiFile=resolvedApiFile,
+                webFile=resolvedWebFile,
+                githubRepo=githubRepo,
+                prerelease=prerelease,
+                dryRun=dryRun,
+                yes=yes,
+                force=force,
+            )
+        except Exception as exc:
+            if not toCnb:
+                raise
+            failures.append(f"GitHub: {exc}")
+            _printWarning(f"Could not publish on GitHub: {exc}")
+    if failures:
+        raise RuntimeError("The release was not published everywhere. " + " | ".join(failures))

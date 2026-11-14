@@ -62,6 +62,9 @@ except Exception:
 
 
 DEFAULT_UPDATE_BASE_URL = "https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
+# Releases are looked for on GitHub first (ScipionWeb's releases), then on the CNB server above
+DEFAULT_GITHUB_REPO = "fonsecareyna82/ScipionWeb"
+GITHUB_RESOLVE_TIMEOUT = 30.0
 DEFAULT_MANIFEST_NAME = "manifest.json"
 
 API_ARCHIVE_RE = re.compile(
@@ -302,6 +305,54 @@ def _resolveLatestFromDirectory(baseUrl: str, timeoutSec: float) -> str:
         )
 
     return _normalizeVersionTag(versions[-1])
+
+
+def _githubRepo(env: Dict[str, str]) -> str:
+    return (env.get("SCIPIONWEB_GITHUB_REPO") or os.environ.get("SCIPIONWEB_GITHUB_REPO")
+            or DEFAULT_GITHUB_REPO).strip().strip("/")
+
+
+def _resolveFromGithub(
+    repo: str,
+    requestedVersion: str,
+    timeoutSec: float,
+) -> Tuple[str, Tuple[str, str, str, Optional[str], Optional[str]]]:
+    """(base URL, release) of a GitHub release: the one asked for, or the newest one, test releases (pre-releases)
+    included, which GitHub's own "latest" link leaves out. Raises when GitHub does not have it or does not answer."""
+    tag = _normalizeVersionTag(requestedVersion)
+    if tag == "latest":
+        text = _readUrlText(f"https://api.github.com/repos/{repo}/releases?per_page=1", timeoutSec=timeoutSec)
+        releases = json.loads(text)
+        if not isinstance(releases, list) or not releases or not releases[0].get("tag_name"):
+            raise RuntimeError(f"{repo} has no releases on GitHub")
+        tag = str(releases[0]["tag_name"])
+    baseUrl = f"https://github.com/{repo}/releases/download/{tag}/"
+    manifest = _readJsonUrl(urljoin(baseUrl, DEFAULT_MANIFEST_NAME), timeoutSec=timeoutSec)
+    releases = manifest.get("releases") if isinstance(manifest.get("releases"), dict) else {}
+    if tag not in releases:
+        raise RuntimeError(f"The manifest of GitHub release {tag} does not list it")
+    return baseUrl, _releaseFromManifest(manifest, tag)
+
+
+def _resolveSource(
+    explicitBaseUrl: Optional[str],
+    env: Dict[str, str],
+    requestedVersion: str,
+    timeoutSec: float,
+) -> Tuple[str, Tuple[str, str, str, Optional[str], Optional[str]], Optional[str]]:
+    """(base URL, release, the base URL to fall back to when its files do not download). An address given is the
+    only source; otherwise GitHub first and the CNB server when GitHub does not give the release."""
+    if explicitBaseUrl:
+        baseUrl = _normalizeBaseUrl(explicitBaseUrl)
+        return baseUrl, _resolveRelease(baseUrl, requestedVersion, timeoutSec=timeoutSec), None
+    try:
+        baseUrl, release = _resolveFromGithub(
+            _githubRepo(env), requestedVersion, timeoutSec=min(timeoutSec, GITHUB_RESOLVE_TIMEOUT))
+        return baseUrl, release, DEFAULT_UPDATE_BASE_URL
+    except Exception as exc:
+        _printWarning(f"GitHub does not give release {requestedVersion} ({exc}); using the CNB download server.")
+    return (DEFAULT_UPDATE_BASE_URL,
+            _resolveRelease(DEFAULT_UPDATE_BASE_URL, requestedVersion, timeoutSec=timeoutSec), None)
 
 
 def _resolveRelease(
@@ -859,11 +910,10 @@ def updateCommand(
     repoRoot = resolveRepoRoot()
     scipionHome, envPath, env = _loadCurrentEnv(repoRoot)
 
-    effectiveBaseUrl = _normalizeBaseUrl(
+    explicitBaseUrl = (
         baseUrl
         or env.get("SCIPIONAPI_UPDATE_BASE_URL")
         or os.environ.get("SCIPIONAPI_UPDATE_BASE_URL")
-        or DEFAULT_UPDATE_BASE_URL
     )
 
     requestedVersionInput = (version or "").strip()
@@ -888,11 +938,8 @@ def updateCommand(
             "Run `scipionapi install` or `scipionapi provision` before update."
         )
 
-    targetVersion, apiFile, webFile, apiSha256, webSha256 = _resolveRelease(
-        effectiveBaseUrl,
-        requestedVersion,
-        timeoutSec=timeoutSec,
-    )
+    effectiveBaseUrl, release, fallbackBaseUrl = _resolveSource(explicitBaseUrl, env, requestedVersion, timeoutSec)
+    targetVersion, apiFile, webFile, apiSha256, webSha256 = release
 
     resolvedApiUrl = apiZipUrl or urljoin(effectiveBaseUrl, apiFile)
     resolvedWebUrl = webZipUrl or urljoin(effectiveBaseUrl, webFile)
@@ -960,15 +1007,27 @@ def updateCommand(
         _printInfo(f"Extraction directory: {extractDir}")
         _printSuccess("Update workspace ready.")
 
-        if includeApi:
-            _printStep("Downloading API archive", resolvedApiUrl)
-            _downloadFile(resolvedApiUrl, apiZipPath, timeoutSec=timeoutSec)
-            _verifySha256(apiZipPath, apiSha256)
+        def downloadArchives(apiUrl, webUrl, apiChecksum, webChecksum):
+            if includeApi:
+                _printStep("Downloading API archive", apiUrl)
+                _downloadFile(apiUrl, apiZipPath, timeoutSec=timeoutSec)
+                _verifySha256(apiZipPath, apiChecksum)
+            if includeWeb:
+                _printStep("Downloading Web archive", webUrl)
+                _downloadFile(webUrl, webZipPath, timeoutSec=timeoutSec)
+                _verifySha256(webZipPath, webChecksum)
 
-        if includeWeb:
-            _printStep("Downloading Web archive", resolvedWebUrl)
-            _downloadFile(resolvedWebUrl, webZipPath, timeoutSec=timeoutSec)
-            _verifySha256(webZipPath, webSha256)
+        try:
+            downloadArchives(resolvedApiUrl, resolvedWebUrl, apiSha256, webSha256)
+        except Exception as exc:
+            # The release came from GitHub but its files did not: the same release from the CNB server
+            if fallbackBaseUrl is None or apiZipUrl or webZipUrl:
+                raise
+            _printWarning(f"Could not download the release from GitHub ({exc}); using the CNB download server.")
+            _, cnbApiFile, cnbWebFile, cnbApiSha, cnbWebSha = _resolveRelease(
+                fallbackBaseUrl, targetVersion, timeoutSec=timeoutSec)
+            downloadArchives(urljoin(fallbackBaseUrl, cnbApiFile), urljoin(fallbackBaseUrl, cnbWebFile),
+                             cnbApiSha, cnbWebSha)
 
         apiSourceRoot: Optional[Path] = None
         if includeApi:

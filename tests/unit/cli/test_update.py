@@ -145,3 +145,58 @@ def test_WorkDirectoriesOfEarlierUpdatesAreRemoved(monkeypatch, tmp_path):
     updateModule._cleanupWorkDirs(tmp_path, keep=work / "current")
 
     assert [path.name for path in work.iterdir()] == ["current"]
+
+
+# Where an update comes from: GitHub first, then the CNB server ------------------------------------------------
+
+import json as _json
+
+GITHUB_API = "https://api.github.com/repos/fonsecareyna82/ScipionWeb/releases?per_page=1"
+GITHUB_BASE = "https://github.com/fonsecareyna82/ScipionWeb/releases/download/v4.0.0/"
+CNB_BASE = "https://scipion.cnb.csic.es/downloads/scipion/scipionWeb/"
+RELEASE_MANIFEST = {"latest": "v4.0.0", "releases": {"v4.0.0": {
+    "api": {"file": "ScipionAPI-v4.0.0.zip", "sha256": "aaa"}, "web": {"file": "ScipionWeb-v4.0.0-dist.zip"}}}}
+
+
+def _serve(monkeypatch, served):
+    asked = []
+
+    def read(url, timeoutSec):
+        asked.append(url)
+        if url not in served:
+            raise updateModule.URLError("not served")
+        return _json.dumps(served[url])
+
+    monkeypatch.setattr(updateModule, "_readUrlText", read)
+    return asked
+
+
+def test_AnUpdateTakesTheNewestGithubReleaseTestReleasesIncluded(monkeypatch):
+    asked = _serve(monkeypatch, {GITHUB_API: [{"tag_name": "v4.0.0", "prerelease": True}],
+                                 GITHUB_BASE + "manifest.json": RELEASE_MANIFEST})
+    base, release, fallback = updateModule._resolveSource(None, {}, "latest", 60)
+    assert base == GITHUB_BASE
+    assert release == ("v4.0.0", "ScipionAPI-v4.0.0.zip", "ScipionWeb-v4.0.0-dist.zip", "aaa", None)
+    assert fallback == CNB_BASE
+    assert not any(CNB_BASE in url for url in asked)
+
+
+def test_AnUpdateUsesTheCnbServerWhenGithubHasNoRelease(monkeypatch):
+    _serve(monkeypatch, {GITHUB_API: [], CNB_BASE + "manifest.json": RELEASE_MANIFEST})
+    base, release, fallback = updateModule._resolveSource(None, {}, "latest", 60)
+    assert (base, release[0], fallback) == (CNB_BASE, "v4.0.0", None)
+
+
+def test_AnUpdateOfAVersionNotOnGithubUsesTheCnbServer(monkeypatch):
+    _serve(monkeypatch, {GITHUB_BASE + "manifest.json": {"latest": "v3.9.0", "releases": {"v3.9.0": {}}},
+                         CNB_BASE + "manifest.json": RELEASE_MANIFEST})
+    base, release, _ = updateModule._resolveSource(None, {}, "4.0.0", 60)
+    assert (base, release[3]) == (CNB_BASE, "aaa")
+
+
+def test_AnUpdateFromAnAddressGivenAsksOnlyThere(monkeypatch):
+    mirror = "https://mirror.example.org/scipionweb/"
+    asked = _serve(monkeypatch, {mirror + "manifest.json": RELEASE_MANIFEST})
+    base, release, fallback = updateModule._resolveSource(mirror.rstrip("/"), {}, "latest", 60)
+    assert (base, release[0], fallback) == (mirror, "v4.0.0", None)
+    assert asked == [mirror + "manifest.json"]
