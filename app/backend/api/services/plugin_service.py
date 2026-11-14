@@ -18,6 +18,8 @@ from packaging.utils import canonicalize_name
 from pyworkflow.config import Config
 from scipion.install.plugin_funcs import PluginRepository
 
+from app.backend.api.services import plugin_catalog
+
 from app.backend.api.services.plugin_devel_service import PluginDevelService
 from app.backend.api.services.plugin_task_log import (
     appendPluginTaskLog,
@@ -38,7 +40,8 @@ class PluginService:
         pluginRepository: Optional[PluginRepository] = None,
         pluginDevelService: Optional[PluginDevelService] = None,
     ):
-        self.pluginRepository = pluginRepository or PluginRepository()
+        # The catalog with time limits and a saved copy, not Scipion's PluginRepository (see plugin_catalog.py)
+        self.pluginRepository = pluginRepository or plugin_catalog.PluginCatalog()
         self.pluginDevelService = pluginDevelService or PluginDevelService()
         self._pluginsCache: Optional[List[Dict[str, Any]]] = None
         self._rawPluginsCache: Optional[Dict[str, Any]] = None
@@ -145,7 +148,7 @@ class PluginService:
                     )
 
             try:
-                self.pluginRepository = PluginRepository()
+                self.pluginRepository = plugin_catalog.PluginCatalog()
             except Exception:
                 logger.exception(
                     "Could not recreate PluginRepository after plugin change."
@@ -681,6 +684,10 @@ class PluginService:
                 reloadRepository=False
             )
 
+        # A saved catalog was shown because the server did not answer: ask it again now and then
+        if plugin_catalog.shouldRetry():
+            forceRefresh = True
+
         with self._cacheLock:
             if self._pluginsCache is not None and not forceRefresh:
                 return list(self._pluginsCache)
@@ -859,12 +866,28 @@ class PluginService:
 
                     binariesStartedAt = monotonic()
 
-                    plugin.installBin({
-                        "args": [
-                            "-j",
-                            "3",
-                        ]
-                    })
+                    installable, blocked = self._binariesInstallableNow(plugin)
+                    if blocked and taskId:
+                        writePluginTaskMessage(
+                            taskId,
+                            "Scipion's download server does not answer: these binaries cannot be installed now "
+                            "and are skipped (install them later from the plugin's page): " + ", ".join(blocked),
+                        )
+
+                    if installable is None:
+                        plugin.installBin({
+                            "args": [
+                                "-j",
+                                "3",
+                            ]
+                        })
+                    elif installable:
+                        plugin.installBin({
+                            "args": installable + [
+                                "-j",
+                                "3",
+                            ]
+                        })
 
                     binariesElapsed = (
                             monotonic()
@@ -1015,6 +1038,11 @@ class PluginService:
                 "alreadyInstalled": True,
             }
 
+        # Without Scipion's download server a binary it serves cannot install: say so now, not after minutes
+        from app.backend.api.services.binary_downloads import checkDownloads
+
+        checkDownloads(environment, [cleanTarget])
+
         if taskId:
             writePluginTaskStep(
                 taskId,
@@ -1063,6 +1091,25 @@ class PluginService:
             "binaryTarget": cleanTarget,
             "alreadyInstalled": False,
         }
+
+    @staticmethod
+    def _binariesInstallableNow(plugin):
+        """(default binaries to install, those skipped): None to install them all as usual; without Scipion's
+        download server, those that need it are skipped instead of waiting minutes for it."""
+        from app.backend.api.services import binary_downloads
+
+        try:
+            environment = plugin.getInstallenv()
+            if environment is None:
+                return None, []
+            defaults = binary_downloads.defaultTargets(environment)
+            needServer = {name for name in defaults if binary_downloads.pendingServerDownloads(environment, [name])}
+        except Exception:
+            logger.warning("Could not check which binaries need Scipion's download server", exc_info=True)
+            return None, []
+        if not needServer or binary_downloads.serverAnswers():
+            return None, []
+        return [name for name in defaults if name not in needServer], sorted(needServer)
 
     def _beginJournal(self, taskId: Optional[str], subject: str):
         """The snapshot a failed installation goes back to (None, with a warning, if it cannot be taken)."""

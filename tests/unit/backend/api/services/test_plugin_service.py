@@ -1145,8 +1145,8 @@ def test_clear_cache_can_skip_domain_refresh(
     )
 
     monkeypatch.setattr(
-        pluginServiceModule,
-        "PluginRepository",
+        pluginServiceModule.plugin_catalog,
+        "PluginCatalog",
         lambda: recreatedRepository,
     )
 

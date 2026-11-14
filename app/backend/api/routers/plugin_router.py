@@ -352,6 +352,14 @@ def loadPlugins(currentUser=Depends(getCurrentUser)):
     return service.getPlugins()
 
 
+@router.get("/catalog-status", response_model=Any)
+def catalogStatus(currentUser=Depends(getCurrentUser)):
+    """{source, savedAt}: live, or the saved/shipped/local catalog shown because Scipion's server did not answer."""
+    from app.backend.api.services import plugin_catalog
+
+    return plugin_catalog.status()
+
+
 @router.post("/devel/validate", response_model=Any)
 def validateDevelPluginPath(payload: DevelPluginPathRequest, currentUser=Depends(requirePermission("plugins.manage"))):
     try:

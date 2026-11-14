@@ -8829,22 +8829,14 @@ class ProjectService:
         installedNames: TypingSet[str] = set()
 
         try:
-            from app.backend.api.services.plugin_service import PluginService
+            # What is installed here, without asking Scipion's plugin catalog server (it may not answer)
+            from app.backend.api.services.plugin_packages import installedModulePackages
 
-            plugins = PluginService().getPlugins(forceRefresh=False)
-            for plugin in plugins or []:
-                if not isinstance(plugin, dict):
-                    continue
-
-                if not plugin.get("installed"):
-                    continue
-
-                for key in ("name", "pipName", "pluginName", "moduleName", "packageName"):
-                    value = plugin.get(key)
-                    if value:
-                        installedNames.add(str(value).strip())
+            for module, package in installedModulePackages(refresh=True).items():
+                installedNames.add(str(module).strip())
+                installedNames.add(str(package).strip())
         except Exception:
-            logger.debug("Could not load installed plugin names from PluginService", exc_info=True)
+            logger.debug("Could not read the installed plugin packages", exc_info=True)
 
         try:
             domain = self.currentProject.getDomain()

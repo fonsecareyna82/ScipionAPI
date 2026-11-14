@@ -394,6 +394,39 @@ Downloads: a plain link cannot carry the bearer token, so `POST .../fs/download-
 - **Streaming runs take no slot** (`runsInStreaming`): a protocol that `worksInStreaming()` whose parent is still running/launched/scheduled, or an import with `dataStreaming`. They mostly wait for data; counting them held any chain of more than "limit" streaming protocols launched one by one in `launched` for the whole session. A streaming-capable protocol on finished inputs counts like any other.
 - Decided once per run and stored in the runtime metadata (`mapper.setProtocolRuntimeValue`, an atomic jsonb update): `slotExempt` (excluded from the count), and `waitingForSlot` `{inUse, limit}` while it waits, cleared when it starts. The graph and the active-protocols poll send `waitingForSlot` for launched protocols; the node's status badge reads "launched · waiting for a run slot" with the reason in its tooltip.
 
+## The plugin catalog when Scipion's servers do not answer
+
+`services/plugin_catalog.py` replaces Scipion's `PluginRepository` as `PluginService.pluginRepository`.
+
+**Why.** Scipion asks its catalog server (`REPOSITORY_URL`) without a time limit and then PyPI once per plugin, one after the other. With that server down, `getPlugins` took 136 s and returned 0 plugins, cached empty until a restart.
+
+**How `PluginCatalog.getPlugins` works.**
+- It asks the catalog server with a time limit of 5 s to connect and 20 s to read.
+- It asks PyPI (`pypi.org`) for all the plugins at once, 16 at a time. If the first plugin fails and `pip` itself does not answer either, PyPI is not asked for the rest.
+- When the catalog server does not answer, the source is, in order:
+  - `SCIPION_HOME/cache/plugin_catalog.json`, the last live catalog, saved together with the trimmed PyPI data;
+  - `resources/plugin_catalog.json`, the copy that ships with ScipionWeb (refresh it with `scripts/update_plugin_catalog.py`);
+  - the plugins in `resources/plugin_categories.py` plus the installed ones (`localCatalog`), leaving out `CORE_PACKAGES`.
+- It builds the same `PluginInfo` objects Scipion does: `pluginInfo` uses `getCompatiblePipReleases` and `setLocalPluginInfo`. A plugin with no release for this Scipion is left out, as Scipion does.
+- When PyPI has nothing for a plugin, it uses the saved data. With no data at all, the plugin has `latestRelease ""` and the web shows "unknown".
+
+**What the catalog adds.** It only gives each plugin's name, logo and `pluginSourceUrl`. The versions, author and summary come from PyPI.
+
+**Status and retries.**
+- `plugin_catalog.status()` (`GET /plugins/catalog-status`) gives `{source: live|saved|shipped|local, savedAt}`. The Plugins page shows a notice when the source is not live.
+- When the source is not live, `PluginService.getPlugins` asks again after `RETRY_SECONDS` (10 minutes).
+- A logo that does not load falls back to the plugin's initials or icon (`PluginLogoImage` in the web).
+
+**Workflow import.** `ProjectService._getInstalledPluginNamesForWorkflowImport` reads `installedModulePackages`. It no longer builds a `PluginService`, which used to fetch the whole catalog.
+
+**Binaries served by Scipion** (`services/binary_downloads.py`).
+- `wget` downloads from `Config.SCIPION_URL_SOFTWARE`. It tries 20 times, so a server that does not answer meant waiting for minutes.
+- `pendingServerDownloads` walks a target and its dependencies. It finds the download commands that point to that server and whose file is not on disk yet.
+- `serverAnswers` checks the server once, with a 5 s limit, and remembers the result for a minute.
+- `installPluginBinary` calls `checkDownloads`, which raises `DownloadServerDown` at once and names the binaries.
+- `installPlugin` installs only the default binaries that do not need the server (`_binariesInstallableNow`). The skipped ones are written to the task log.
+- `makeVoidTgz` creates the empty `void.tgz` that conda, pip and git binaries are declared with. `pendingServerDownloads` makes it where the download would leave it. Scipion never unpacks it, so those binaries install without the server, also on a new installation.
+
 ## Installing plugins: a failure leaves the environment as it was
 
 The journal is `services/plugin_install_journal.py`.
