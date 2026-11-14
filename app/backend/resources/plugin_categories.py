@@ -146,7 +146,7 @@ plugins = {
     "scipion-em-smartscope": ["unclassified"],
     "scipion-em-goctf": ["unclassified"],
     "scipion-em-empiar": ["unclassified"],
-    "scipion-em-facilities": ["unclassified"],
+    "scipion-em-facilities": ["single_particle", "tomography"],
     "scipion-em-datamanager": ["unclassified"],
     "scipion-em-workflowhub": ["unclassified"],
     "scipion-em-xmltools": ["unclassified"],
