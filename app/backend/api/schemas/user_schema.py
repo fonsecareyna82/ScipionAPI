@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, validator
@@ -42,6 +43,9 @@ class UserOut(BaseModel):
     country: Optional[str] = None
     city: Optional[str] = None
     postalCode: Optional[str] = None
+    isVerified: bool = False
+    # When the account was made
+    createdAt: Optional[datetime] = None
     # What the user may do: their roles' and their groups' roles' permissions
     permissions: List[str] = []
     isSystemAdmin: bool = False

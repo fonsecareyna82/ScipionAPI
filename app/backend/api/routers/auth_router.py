@@ -211,7 +211,8 @@ def updateMe(
             detail="User not found"
         )
 
-    return userProfile
+    return dict(userProfile, permissions=currentUser.get("permissions") or [],
+                isSystemAdmin=bool(currentUser.get("isSystemAdmin")))
 
 
 @router.put("/me/password", status_code=status.HTTP_200_OK)

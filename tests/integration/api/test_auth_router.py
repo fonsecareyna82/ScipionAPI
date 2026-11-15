@@ -23,6 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # ******************************************************************************
+
+from datetime import datetime, timezone
+
+
 def test_SignupCreatesUser(authClient, fakeMapper):
     response = authClient.post(
         "/auth/signup",
@@ -271,6 +275,8 @@ def test_GetMeReturnsCurrentUserProfile(authClient, fakeMapper):
         "role": "user",
         "isActive": True,
         "isVerified": True,
+        "createdAt": datetime(2026, 3, 2, 10, 0, tzinfo=timezone.utc),
+        "hashedPassword": "never shown",
     }
 
     response = authClient.get("/auth/me")
@@ -279,6 +285,10 @@ def test_GetMeReturnsCurrentUserProfile(authClient, fakeMapper):
     body = response.json()
     assert body["id"] == 1
     assert body["email"] == "user@example.com"
+    # The profile page tells when the account was made and whether the email is verified
+    assert body["isVerified"] is True
+    assert body["createdAt"].startswith("2026-03-02T10:00:00")
+    assert "hashedPassword" not in body
 
 
 def test_GetMeReturns404WhenProfileIsMissing(authClient):
@@ -310,6 +320,8 @@ def test_UpdateMePersistsOnlyProvidedFields(authClient, fakeMapper):
     assert body["firstName"] == "New"
     assert body["institution"] == "CNB-CSIC"
     assert body["lastName"] == "Name"
+    # Saving answers like reading: with what the user may do
+    assert "permissions" in body and "isSystemAdmin" in body
 
     assert fakeMapper.updatedUserFields == [
         (1, {"firstName": "New", "institution": "CNB-CSIC"})
