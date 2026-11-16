@@ -60,6 +60,8 @@ class ProjectOut(BaseModel):
     createdAt: datetime
     updatedAt: Optional[datetime]
     protocolsCount: int = 0
+    # How many protocols are in each status (running, failed, finished…)
+    statusCounts: Optional[Dict[str, int]] = None
     # The last measure (the list's, from the background measurer: none until a project is measured)
     diskUsage: Optional[str] = f"{0.0} GB"
     diskUsageBytes: Optional[int] = None

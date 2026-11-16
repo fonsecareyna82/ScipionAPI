@@ -3161,6 +3161,24 @@ class PostgresqlFlatMapper(Mapper):
         value = row.get("count") if isinstance(row, dict) else row[0]
         return int(value or 0)
 
+    def countProjectProtocolsByStatus(self, projectId: int) -> Dict[str, int]:
+        """How many protocols the project has in each status."""
+        rows = self.db.fetchAll(
+            """
+            SELECT LOWER(COALESCE(status, '')) AS status, COUNT(*) AS count
+              FROM protocols
+             WHERE "projectId" = %s
+             GROUP BY LOWER(COALESCE(status, ''))
+            """,
+            (projectId,),
+        ) or []
+        counts: Dict[str, int] = {}
+        for row in rows:
+            status = row.get("status") if isinstance(row, dict) else row[0]
+            value = row.get("count") if isinstance(row, dict) else row[1]
+            counts[str(status or "unknown")] = int(value or 0)
+        return counts
+
     def setProtocolRuntimeValue(self, projectId: int, protocolId, key: str, value: Any) -> None:
         """Set one value of a protocol's runtime metadata, leaving the rest as it is (None removes it)."""
         if value is None:

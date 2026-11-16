@@ -664,6 +664,7 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
             "protocolsCount": 7,
+            "statusCounts": None,
             "diskUsage": "3.00 GB",
             "diskUsageBytes": 3 * 1024 ** 3,
             "diskUsageMeasuredAt": "2026-04-15T12:00:00",
@@ -679,6 +680,29 @@ def test_ListProjectsBuildsComputedFields(service, mapper, currentUser, monkeypa
         }
     ]
     assert mapper.lastCountProjectProtocolsCall == {"projectId": 1}
+
+
+def test_ListProjectsCountsProtocolsByStatus(service, mapper, currentUser, monkeypatch):
+    mapper.projectsListResult = [
+        {
+            "id": 1,
+            "name": "/some/scipion/projects/demo-project",
+            "description": "",
+            "createdAt": "2026-04-15T10:00:00",
+            "updatedAt": "2026-04-15T11:00:00",
+            "status": "active",
+            "ownerId": 1,
+        }
+    ]
+    mapper.countProjectProtocolsByStatus = lambda projectId: {"running": 2, "failed": 1, "finished": 14}
+    monkeypatch.setattr(service, "_buildProjectThumbnailVersion", lambda **kwargs: "thumb-v1")
+
+    project = service.listProjects(mapper, currentUser)[0]
+
+    # The project list says how its protocols are doing, and the total comes from the same query
+    assert project["statusCounts"] == {"running": 2, "failed": 1, "finished": 14}
+    assert project["protocolsCount"] == 17
+    assert mapper.lastCountProjectProtocolsCall is None
 
 
 def test_ListProjectsRaisesWhenPostgresqlProtocolCountFails(
@@ -936,6 +960,7 @@ def test_ListProjectsBuildsProjectOutFromPostgresqlOnly(
             "createdAt": "2026-04-15T10:00:00",
             "status": "active",
             "protocolsCount": 7,
+            "statusCounts": None,
             "diskUsage": None,
             "diskUsageBytes": None,
             "diskUsageMeasuredAt": None,
@@ -1040,6 +1065,7 @@ def test_GetProjectSummaryFromPostgresqlBuildsProjectOutWithoutLoadingRuntime(
         "createdAt": "2026-04-15T10:00:00",
         "status": "active",
         "protocolsCount": 7,
+        "statusCounts": None,
         "diskUsage": "3.00 GB",
         "isOwner": True,
         "isShared": False,

@@ -3046,10 +3046,21 @@ class ProjectService:
         storedProjectPath = dbProj.get("name")
         displayName = self._getProjectDisplayNameFromPostgresqlPath(storedProjectPath)
 
-        protocolsCount = self._countProjectProtocolsFromPostgresql(
-            mapper=mapper,
-            projectId=projectId,
-        )
+        # How many protocols are in each status (one query, which also gives the total)
+        statusCounts = None
+        countByStatus = getattr(mapper, "countProjectProtocolsByStatus", None)
+        if callable(countByStatus):
+            try:
+                statusCounts = {str(key): int(value) for key, value in (countByStatus(projectId) or {}).items()}
+            except Exception:
+                logger.exception("Failed to count the project's protocols by status. projectId=%s", projectId)
+        if isinstance(statusCounts, dict):
+            protocolsCount = sum(statusCounts.values())
+        else:
+            protocolsCount = self._countProjectProtocolsFromPostgresql(
+                mapper=mapper,
+                projectId=projectId,
+            )
 
         currentUserId = currentUser["id"]
         isOwner = dbProj.get("isOwner", dbProj.get("ownerId") == currentUserId)
@@ -3077,6 +3088,7 @@ class ProjectService:
             "createdAt": dbProj.get("createdAt"),
             "status": dbProj.get("status", "active"),
             "protocolsCount": protocolsCount,
+            "statusCounts": statusCounts,
             "diskUsage": diskUsage,
             "isOwner": bool(isOwner),
             "isShared": bool(isShared),
