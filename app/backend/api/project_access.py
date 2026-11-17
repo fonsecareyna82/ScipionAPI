@@ -33,6 +33,7 @@ VIEW_ROUTES = {
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/image/batch"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/metadata/tables/{tableName}/selection-ids"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/external-viewers/{viewerId}/launch"),
+    ("POST", "/projects/{projectId}/protocols/{protocolId}/outputs/{outputName}/remote-display"),
     ("POST", "/projects/{projectId}/thumbnail/rebuild"),
     ("POST", "/projects/{projectId}/protocols/{protocolId}/thumbnail/rebuild"),
     ("POST", "/projects/{projectId}/output-thumbnails"),

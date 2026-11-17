@@ -20522,6 +20522,7 @@ class ProjectService:
             projectId: Optional[int] = None,
 
             protocolIdIsScipionId=False,
+            inBrowserUserId: Optional[int] = None,
     ) -> Dict[str, Any]:
 
         protocol, outputObj = self._getProtocolOutputObject(
@@ -20544,6 +20545,11 @@ class ProjectService:
             viewerClasses=viewerClasses,
             viewerId=viewerId,
         )
+
+        if inBrowserUserId is not None:
+            return self._launchExternalViewerInBrowser(
+                userId=inBrowserUserId, projectId=projectId, protocolId=protocolId, outputName=outputName,
+                viewerId=viewerId, objectId=objectId, objectKind=objectKind, descriptor=descriptor)
 
         if mapper is not None and projectId is not None:
             if self.currentProject is None:
@@ -20587,6 +20593,42 @@ class ProjectService:
                 "objectId": objectId,
                 "objectKind": objectKind,
             },
+        }
+
+    def _launchExternalViewerInBrowser(self, *, userId: int, projectId: Optional[int], protocolId: int,
+                                       outputName: str, viewerId: str, objectId, objectKind,
+                                       descriptor: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the viewer on this server, on a display of its own, and say where the browser shows it."""
+        import sys
+        from app.backend.api.services import remote_display_service as displays
+
+        if projectId is None or self.currentProject is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="No current Scipion project loaded")
+        request = {
+            "projectId": int(projectId), "projectPath": self.currentProject.getPath(),
+            "protocolId": int(protocolId), "outputName": outputName, "viewerId": viewerId,
+            "objectId": objectId, "objectKind": objectKind,
+        }
+        apiRoot = str(Path(__file__).resolve().parents[4])
+        pythonPath = os.pathsep.join(filter(None, [apiRoot, os.environ.get("PYTHONPATH")]))
+        try:
+            session = displays.startSession(
+                userId=userId, projectId=int(projectId),
+                title=f"{descriptor.get('label') or viewerId} · {outputName} (#{protocolId})",
+                command=[sys.executable, "-m", "app.backend.api.services.remote_viewer_worker",
+                         json.dumps(request)],
+                cwd=apiRoot, env={"PYTHONPATH": pythonPath})
+        except displays.RemoteDisplayError as exc:
+            codes = {"unavailable": 503, "too_many": 409, "start_failed": 502}
+            raise HTTPException(status_code=codes.get(exc.code, 500),
+                                detail={"code": exc.code, "message": str(exc)}) from None
+        return {
+            "success": True,
+            "viewerId": descriptor["id"],
+            "message": f"{descriptor['label']} is opening in the browser.",
+            "pid": None,
+            "display": displays.publicView(session),
         }
 
     def _safeRunPostgresqlExternalViewer(

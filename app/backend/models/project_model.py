@@ -82,3 +82,5 @@ class ExternalViewerLaunchRequest(BaseModel):
     objectId: Optional[Union[str, int]] = None
     objectKind: Optional[str] = None
     params: Optional[Dict[str, Any]] = None
+    # Open it on this server and show its window in the browser (remote_display_service)
+    inBrowser: bool = False

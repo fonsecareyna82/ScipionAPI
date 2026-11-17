@@ -5138,6 +5138,7 @@ def launchExternalViewer(
             mapper=mapper,
             projectId=projectId,
             protocolIdIsScipionId=True,
+            inBrowserUserId=int(currentUser["id"]) if payload.inBrowser else None,
         )
 
     except HTTPException:

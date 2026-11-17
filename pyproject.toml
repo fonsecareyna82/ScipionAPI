@@ -16,6 +16,9 @@ dependencies = [
 
   "fastapi==0.116.1",
   "uvicorn[standard]==0.33.0",
+  # The programs opened on the server and shown in the browser go through the API
+  "httpx==0.28.1",
+  "websockets>=10",
 
   "celery[redis]==5.5.3",
   "redis>=5.2.1,<6",

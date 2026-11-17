@@ -28,6 +28,8 @@ PUBLIC_ROUTES = {
     ("GET", "/projects/{projectId}/protocols/{protocolId}/fs/download-file"),
     ("GET", "/facility/room"),
     ("GET", "/facility/room/microscopes/{microscopeId}/photo"),
+    # The page of a program shown in the browser, which the browser opens itself: its long random session id is the key
+    ("GET", "/remote-displays/{sessionId}/{path:path}"),
 }
 
 
