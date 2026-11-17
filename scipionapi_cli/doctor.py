@@ -810,6 +810,28 @@ def _hasNvidiaDisplayDevice() -> Optional[bool]:
 
     return False
 
+_XPRA_WEB_PAGES = (Path("/usr/share/xpra/www"), Path("/usr/local/share/xpra/www"))
+
+
+def _checkRemoteViewers() -> StatusRow:
+    # Optional: Xpra and its web page show desktop viewers (opened on this machine) in the users' browsers.
+    label = "Viewers in the browser"
+    executable = shutil.which("xpra")
+    if not executable:
+        return _warn(label, "Optional, off: Xpra is not installed, so desktop viewers open on this machine's "
+                            "screen. See the docs: Installation > Desktop Viewers in the Browser")
+    if not any((path / "index.html").is_file() for path in _XPRA_WEB_PAGES):
+        return _warn(label, "Xpra is installed without its web page: install the xpra-html5 package")
+    version = ""
+    try:
+        import subprocess
+        proc = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=15)
+        version = (proc.stdout or "").strip().splitlines()[0] if proc.returncode == 0 and proc.stdout else ""
+    except Exception:
+        pass
+    return _ok(label, f"On: {version or executable}")
+
+
 def _checkNvidiaRuntime() -> List[StatusRow]:
     # Check NVIDIA hardware, driver, and CUDA capability exposed by the driver.
     rows: List[StatusRow] = []
@@ -1367,6 +1389,8 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
     else:
         rows.append(_checkPidFile(runDir / "api.pid", "API PID"))
         rows.append(_checkPidFile(runDir / "worker.pid", "Plugin worker PID"))
+        # The viewers run where the API runs
+        rows.append(_checkRemoteViewers())
     rows.append(_checkPidFile(runDir / "protocol-worker.pid", "Protocol worker PID"))
 
     if envExists:

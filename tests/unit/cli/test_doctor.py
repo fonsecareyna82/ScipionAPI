@@ -587,3 +587,18 @@ def test_ScipionCoreVersionsAreReported(monkeypatch):
 
 
 
+
+
+def test_ViewersInTheBrowserAreOptional(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    name, status, detail = doctor._checkRemoteViewers()
+    assert status == "WARN" and "Optional" in detail
+
+    # Xpra without its web page cannot show anything in the browser
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/bin/xpra")
+    monkeypatch.setattr(doctor, "_XPRA_WEB_PAGES", (tmp_path / "www",))
+    assert "xpra-html5" in doctor._checkRemoteViewers()[2]
+
+    (tmp_path / "www").mkdir()
+    (tmp_path / "www" / "index.html").write_text("<html></html>")
+    assert doctor._checkRemoteViewers()[1] == "OK"
