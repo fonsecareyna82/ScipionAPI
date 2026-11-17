@@ -343,6 +343,12 @@ def chosenBaseUrl(*values: Optional[str]) -> Optional[str]:
     return None
 
 
+def _explicitBaseUrl(baseUrl: Optional[str], env: Dict[str, str]) -> Optional[str]:
+    """The only source of an update, if one was chosen. `--base-url` also comes from the environment variable
+    SCIPIONAPI_UPDATE_BASE_URL (older installations exported the CNB address), so it is filtered too."""
+    return chosenBaseUrl(baseUrl, env.get("SCIPIONAPI_UPDATE_BASE_URL"), os.environ.get("SCIPIONAPI_UPDATE_BASE_URL"))
+
+
 def _resolveSource(
     explicitBaseUrl: Optional[str],
     env: Dict[str, str],
@@ -919,10 +925,7 @@ def updateCommand(
     repoRoot = resolveRepoRoot()
     scipionHome, envPath, env = _loadCurrentEnv(repoRoot)
 
-    explicitBaseUrl = (
-        baseUrl
-        or chosenBaseUrl(env.get("SCIPIONAPI_UPDATE_BASE_URL"), os.environ.get("SCIPIONAPI_UPDATE_BASE_URL"))
-    )
+    explicitBaseUrl = _explicitBaseUrl(baseUrl, env)
 
     requestedVersionInput = (version or "").strip()
     if requestedVersionInput.lower() == "latest":

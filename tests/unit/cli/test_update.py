@@ -194,6 +194,16 @@ def test_AnUpdateOfAVersionNotOnGithubUsesTheCnbServer(monkeypatch):
     assert (base, release[3]) == (CNB_BASE, "aaa")
 
 
+def test_TheCnbAddressLeftByOlderInstallationsDoesNotKeepAnUpdateOffGithub(monkeypatch):
+    # --base-url takes the environment variable, which older installations set to the CNB server
+    monkeypatch.setenv("SCIPIONAPI_UPDATE_BASE_URL", CNB_BASE)
+    assert updateModule._explicitBaseUrl(CNB_BASE, {"SCIPIONAPI_UPDATE_BASE_URL": CNB_BASE}) is None
+    assert updateModule._explicitBaseUrl(CNB_BASE.rstrip("/"), {}) is None
+    mirror = "https://mirror.example.org/scipionweb/"
+    assert updateModule._explicitBaseUrl(mirror, {}) == mirror
+    assert updateModule._explicitBaseUrl(None, {"SCIPIONAPI_UPDATE_BASE_URL": mirror}) == mirror
+
+
 def test_AnUpdateFromAnAddressGivenAsksOnlyThere(monkeypatch):
     mirror = "https://mirror.example.org/scipionweb/"
     asked = _serve(monkeypatch, {mirror + "manifest.json": RELEASE_MANIFEST})
