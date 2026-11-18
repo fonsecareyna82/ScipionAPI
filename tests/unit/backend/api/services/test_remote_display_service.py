@@ -87,6 +87,7 @@ def test_ABrowserOnTheMachineOfTheApiOpensProgramsOnItsScreen(monkeypatch):
         return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers)
 
     monkeypatch.setattr(router, "_thisMachineAddresses", lambda: {"10.0.0.5"})
+    monkeypatch.setattr(router, "_connectionOwner", lambda clientPort, serverPort: None)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     assert router._browserIsOnThisMachine(request("127.0.0.1"))
@@ -101,3 +102,40 @@ def test_ABrowserOnTheMachineOfTheApiOpensProgramsOnItsScreen(monkeypatch):
     # Started from an ssh -X login: that screen is another machine's
     monkeypatch.setenv("DISPLAY", "localhost:10.0")
     assert not router._browserIsOnThisMachine(request("127.0.0.1"))
+
+
+def test_AnotherAccountOnTheMachineOfTheApiSeesProgramsInTheBrowser(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from app.backend.api.routers import remote_display_router as router
+
+    def request(forwarded=None):
+        headers = {"x-forwarded-for": forwarded} if forwarded else {}
+        return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1", port=51000), headers=headers,
+                               scope={"server": ("127.0.0.1", 8080)})
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(router, "_connectionOwner", lambda clientPort, serverPort: os.getuid())
+    assert router._browserIsOnThisMachine(request())
+    monkeypatch.setattr(router, "_connectionOwner", lambda clientPort, serverPort: os.getuid() + 1)
+    assert not router._browserIsOnThisMachine(request())
+    monkeypatch.setattr(router, "_connectionOwner", lambda clientPort, serverPort: None)
+    assert router._browserIsOnThisMachine(request())  # cannot tell: as before
+
+
+def test_TheOwnerOfAConnectionIsReadFromTheKernel():
+    import os
+    import socket
+    from app.backend.api.routers import remote_display_router as router
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    client = socket.create_connection(server.getsockname())
+    try:
+        clientPort, serverPort = client.getsockname()[1], server.getsockname()[1]
+        assert router._connectionOwner(clientPort, serverPort) == os.getuid()
+        assert router._connectionOwner(None, serverPort) is None
+    finally:
+        client.close()
+        server.close()

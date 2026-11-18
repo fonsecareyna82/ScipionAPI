@@ -68,6 +68,28 @@ def _hasOwnScreen() -> bool:
     return display.startswith(":") or display.startswith("unix:")
 
 
+def _connectionOwner(clientPort: Any, serverPort: Any) -> Any:
+    """The account of this machine that opened a connection to the API, from the kernel's table of open
+    connections (Linux). None when it cannot be told."""
+    if not clientPort or not serverPort:
+        return None
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table) as handle:
+                next(handle, None)
+                for line in handle:
+                    fields = line.split()
+                    if len(fields) < 8:
+                        continue
+                    local, remote = fields[1], fields[2]
+                    if (int(local.rsplit(":", 1)[1], 16) == int(clientPort)
+                            and int(remote.rsplit(":", 1)[1], 16) == int(serverPort)):
+                        return int(fields[7])
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def _browserIsOnThisMachine(request: Request) -> bool:
     """Whether the browser runs on the machine of the API, in front of its screen (then programs open there)."""
     if not _hasOwnScreen():
@@ -77,11 +99,19 @@ def _browserIsOnThisMachine(request: Request) -> bool:
     if not host:
         return False
     try:
-        if ipaddress.ip_address(host).is_loopback:
-            return True
+        if not ipaddress.ip_address(host).is_loopback and host not in _thisMachineAddresses():
+            return False
     except ValueError:
         return False
-    return host in _thisMachineAddresses()
+    if not forwarded:
+        # Another account logged in on this machine sits in front of its own screen, where programs of the
+        # account that runs the API are not allowed to draw: show them in the browser instead
+        scope = getattr(request, "scope", None) or {}
+        server = scope.get("server") or (None, None)
+        owner = _connectionOwner(getattr(request.client, "port", None), server[1])
+        if owner is not None and owner != os.getuid():
+            return False
+    return True
 
 
 @router.get("/remote-displays/available")
