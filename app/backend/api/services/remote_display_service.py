@@ -153,8 +153,9 @@ def startSession(*, userId: int, projectId: int, title: str, command: Sequence[s
         "--start-new-commands=no", "--file-transfer=no", "--open-files=no", "--open-url=no",
         "--printing=no", "--webcam=no", "--pulseaudio=no", "--speaker=no", "--microphone=no",
         "--notifications=no", "--mdns=no", "--splash=no",
-        # Sharp picture: never too compressed while it changes
-        f"--min-quality={MIN_QUALITY}",
+        # Sharp picture: never too compressed while it changes, and never sent as a video (shrunk and blurred
+        # where the picture changes a lot, until the exact one comes)
+        f"--min-quality={MIN_QUALITY}", "--video-encoders=none", "--video-scaling=0",
     ]
     with open(logPath, "ab") as log:
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,

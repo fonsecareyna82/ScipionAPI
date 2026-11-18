@@ -59,9 +59,18 @@ def _thisMachineAddresses() -> set:
     return addresses
 
 
+def _hasOwnScreen() -> bool:
+    """Whether the API shows programs on a screen of this machine. A display forwarded through SSH (localhost:10.0,
+    from a login with ssh -X) is the screen of another machine, and goes away with that login."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    display = (os.environ.get("DISPLAY") or "").strip()
+    return display.startswith(":") or display.startswith("unix:")
+
+
 def _browserIsOnThisMachine(request: Request) -> bool:
     """Whether the browser runs on the machine of the API, in front of its screen (then programs open there)."""
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+    if not _hasOwnScreen():
         return False  # no screen here: nobody sits in front of it
     forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
     host = forwarded or (request.client.host if request.client else "")

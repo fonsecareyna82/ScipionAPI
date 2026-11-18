@@ -97,3 +97,7 @@ def test_ABrowserOnTheMachineOfTheApiOpensProgramsOnItsScreen(monkeypatch):
 
     monkeypatch.delenv("DISPLAY")
     assert not router._browserIsOnThisMachine(request("127.0.0.1"))  # no screen here
+
+    # Started from an ssh -X login: that screen is another machine's
+    monkeypatch.setenv("DISPLAY", "localhost:10.0")
+    assert not router._browserIsOnThisMachine(request("127.0.0.1"))
