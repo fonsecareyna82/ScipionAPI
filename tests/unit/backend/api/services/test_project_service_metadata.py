@@ -2518,6 +2518,8 @@ def _renderClassAverageMetadataCellWithMode(service, mode):
 @pytest.mark.parametrize("setClassName", [
     "SetOfClasses2D",
     "SetOfClasses3D",
+    # A subset of class averages shows as the classes it came from
+    "SetOfAverages",
 ])
 def test_ClassAverageMetadataCellEnhancedModeRendersPixelsWithNewAlgorithm(
         service, monkeypatch, setClassName,

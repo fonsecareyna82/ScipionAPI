@@ -18879,15 +18879,16 @@ class ProjectService:
             except Exception:
                 header = None
             if isinstance(header, dict) and header.get("setClassName"):
+                # Averages (a subset of class averages, for example) are class averages too
                 return str(header["setClassName"]).strip().lower() in (
-                    "setofclasses2d", "setofclasses3d",
+                    "setofclasses2d", "setofclasses3d", "setofaverages",
                 )
 
         getAlias = getattr(table, "getAlias", None)
         if callable(getAlias):
             try:
                 return str(getAlias() or "").strip().lower() in (
-                    "class2d", "class3d", "setofclasses2d", "setofclasses3d",
+                    "class2d", "class3d", "setofclasses2d", "setofclasses3d", "setofaverages", "averages",
                 )
             except Exception:
                 return False
