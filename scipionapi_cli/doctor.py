@@ -813,6 +813,17 @@ def _hasNvidiaDisplayDevice() -> Optional[bool]:
 _XPRA_WEB_PAGES = (Path("/usr/share/xpra/www"), Path("/usr/local/share/xpra/www"))
 
 
+def _checkHostQueues(scipionHome: Path) -> StatusRow:
+    # Whether hosts.conf matches the scheduler of this server (Settings → Host → Detect sets it up)
+    try:
+        from app.backend.api.services.host_detection_service import checkHostsConf
+
+        result = checkHostsConf(scipionHome / "config" / "hosts.conf")
+    except Exception as exc:  # noqa: BLE001 - shown as it is
+        return _warn("Queues", f"Could not be checked: {exc}")
+    return _ok("Queues", result["detail"]) if result["status"] == "ok" else _warn("Queues", result["detail"])
+
+
 def _checkRemoteViewers() -> StatusRow:
     # Optional: Xpra and its web page show desktop viewers (opened on this machine) in the users' browsers.
     label = "Viewers in the browser"
@@ -1391,6 +1402,7 @@ def doctorCommand(strict: bool = False, full: bool = True) -> None:
         rows.append(_checkPidFile(runDir / "worker.pid", "Plugin worker PID"))
         # The viewers run where the API runs
         rows.append(_checkRemoteViewers())
+        rows.append(_checkHostQueues(scipionHome))
     rows.append(_checkPidFile(runDir / "protocol-worker.pid", "Protocol worker PID"))
 
     if envExists:

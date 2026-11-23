@@ -602,3 +602,15 @@ def test_ViewersInTheBrowserAreOptional(tmp_path, monkeypatch):
     (tmp_path / "www").mkdir()
     (tmp_path / "www" / "index.html").write_text("<html></html>")
     assert doctor._checkRemoteViewers()[1] == "OK"
+
+
+def test_TheDoctorTellsWhenTheSchedulerIsNotSetUp(tmp_path, monkeypatch):
+    from app.backend.api.services import host_detection_service as detection
+    from scipionapi_cli import doctor
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "hosts.conf").write_text('[localhost]\nQUEUES = { "default": {} }\n')
+    monkeypatch.setattr(detection.shutil, "which", lambda command: f"/usr/bin/{command}"
+                        if command in ("sbatch", "squeue", "sinfo") else None)
+    row = doctor._checkHostQueues(tmp_path)
+    assert "not set up" in str(row) and "Detect" in str(row)

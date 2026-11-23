@@ -420,6 +420,21 @@ QUEUES = { "default": {} }
     return _writeFileIfMissingOrEmpty(configDir / "hosts.conf", content)
 
 
+def _autoConfigureQueues(hostsConfPath: Path) -> None:
+    # The queues of this server's scheduler (Slurm, PBS, SGE), when hosts.conf has none set up yet
+    try:
+        from app.backend.api.services.host_detection_service import autoConfigureHostsConf
+
+        result = autoConfigureHostsConf(hostsConfPath)
+    except Exception as exc:  # noqa: BLE001 - the installation goes on; Settings → Host → Detect does the same
+        _printWarning(f"Could not look for a scheduler: {exc}")
+        return
+    if result["written"]:
+        _printSuccess(f"Queues set up from this server: {result['message']}")
+    elif result["reason"] == "nothing":
+        _printInfo(result["message"])
+
+
 def _ensureScipionConfigFiles(
     configDir: Path,
     condaActivationCmd: str,
@@ -589,6 +604,7 @@ def installCommand(
     )
     _printSuccess(f"Scipion config ready: {scipionConfPath}")
     _printSuccess(f"Hosts config ready: {hostsConfPath}")
+    _autoConfigureQueues(hostsConfPath)
 
     javaHome = _resolveManagedJavaHome()
 

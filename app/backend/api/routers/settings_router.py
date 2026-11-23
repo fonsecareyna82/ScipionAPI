@@ -621,6 +621,63 @@ def patchHostSettings(
         )
 
 
+class HostTestIn(BaseModel):
+    settings: Dict[str, Any]
+    queue: str
+
+
+@router.post("/host/detect", status_code=status.HTTP_200_OK)
+def detectHostSettings(
+        currentUser=Depends(requirePermission("settings.manage")),
+        mapper: PostgresqlFlatMapper = Depends(getMapper),
+        service: SettingsService = Depends(getSettingsService),
+):
+    """The scheduler this server can send jobs to and a host configuration proposed for it (nothing is saved)."""
+    from app.backend.api.services import host_detection_service as detection
+
+    try:
+        current = service.getHostSettings(mapper, currentUser)
+        alias = getattr(current, "hostAlias", None) or "localhost"
+    except Exception:  # noqa: BLE001 - without the current alias, the default one
+        alias = "localhost"
+    return detection.detectHost(alias)
+
+
+@router.post("/host/test", status_code=status.HTTP_202_ACCEPTED)
+def startHostTest(
+        payload: HostTestIn,
+        currentUser=Depends(requirePermission("settings.manage")),
+):
+    """Sends a small test job with the given host configuration (as in the form, saved or not)."""
+    from app.backend.api.services import host_detection_service as detection
+    from app.backend.api.services.project_storage import projectsRoot
+
+    try:
+        return detection.startTest(payload.settings, payload.queue, projectsRoot().parent / "host-tests")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/host/test/{testId}", status_code=status.HTTP_200_OK)
+def getHostTest(testId: str, currentUser=Depends(requirePermission("settings.manage"))):
+    from app.backend.api.services import host_detection_service as detection
+
+    try:
+        return detection.getTest(testId)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such test job.")
+
+
+@router.delete("/host/test/{testId}", status_code=status.HTTP_200_OK)
+def cancelHostTest(testId: str, currentUser=Depends(requirePermission("settings.manage"))):
+    from app.backend.api.services import host_detection_service as detection
+
+    try:
+        return detection.cancelTest(testId)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such test job.")
+
+
 # Signing in with an institution's account --------------------------------------------------------------------
 
 def _withCallbacks(request: Request, providers):
