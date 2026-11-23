@@ -44,7 +44,7 @@ class UserSettings(BaseModel):
     ] = "treeTb"
 
     language: Literal["en", "es"] = "en"
-    timeZone: str = "Europe/Madrid"
+    timeZone: str = ""  # empty: the time zone of the computer the browser runs on
 
     graphMiniMapEnabled: bool = True
     graphFocusModeEnabled: bool = False
