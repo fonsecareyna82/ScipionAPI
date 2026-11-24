@@ -56,6 +56,8 @@ def facility(postgresqlIntegrationDb, postgresqlMigratedEnv, tmp_path):
         db.execute("DELETE FROM facility_samples WHERE id = %s", (sample["id"],))
         db.execute("DELETE FROM facility_microscopes WHERE id = %s", (microscope["id"],))
         db.execute("DELETE FROM user_groups WHERE id = %s", (group["id"],))
+        # A test that stopped halfway may leave its projects: they would keep the users
+        db.execute('DELETE FROM projects WHERE "ownerId" = ANY(%s)', ([userId, piId],))
         db.execute("DELETE FROM users WHERE id = ANY(%s)", ([userId, piId],))
         db.execute("DELETE FROM facility_settings")
         for row in kept:
@@ -252,9 +254,11 @@ def test_TheWatcherCountsTheAtlasAndADatasAcquisitionCanBeReadAgain(facility):
     assert error.value.status_code == 404
 
 
-def test_TheSessionsProjectsAreDeletedOnlyWhereTheUserManagesThem(facility, tmp_path):
+def test_TheSessionsProjectsAreDeletedOnlyWhereTheUserManagesThem(facility, tmp_path, monkeypatch):
     from app.backend.utils.background_delete import waitForBackgroundDeletes
 
+    # Deleting a project needs the projects' folder: here, where these ones are (no installation in the CI)
+    monkeypatch.setenv("PROJECTS_PATH", str(tmp_path))
     db = facility["db"]
     flat = PostgresqlFlatMapper(db)
     session = _session(facility)

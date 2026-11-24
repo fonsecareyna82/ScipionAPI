@@ -29,6 +29,8 @@ def _makeRouterModule(moduleName: str) -> types.ModuleType:
     module.router = router
     # The projects module also has the routes reached without a signed-in user
     module.publicRouter = APIRouter()
+    # ...and the dependency other routers take from it (the remote viewers')
+    module.getProjectService = lambda: None
     return module
 
 
