@@ -12,17 +12,21 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.backend.api import dependencies
-from app.backend.api.routers import auth_router, settings_router
-from app.backend.api.services import sign_in
-from app.backend.mapper.postgresql import PostgresqlFlatMapper
 
 ENV = {name: os.environ.get("SCIPIONAPI_TEST_KEYCLOAK_" + name.upper())
        for name in ("issuer", "client_id", "client_secret", "username", "password", "username2", "password2")}
-pytestmark = pytest.mark.skipif(not all(ENV.values()), reason="No test Keycloak set up")
+if not all(ENV.values()):
+    # Skipped before the API's modules are imported: they need the installation's environment (DATABASE_URL…),
+    # which a machine without a test Keycloak (the CI) does not have
+    pytest.skip("No test Keycloak set up", allow_module_level=True)
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.backend.api import dependencies  # noqa: E402
+from app.backend.api.routers import auth_router, settings_router  # noqa: E402
+from app.backend.api.services import sign_in  # noqa: E402
+from app.backend.mapper.postgresql import PostgresqlFlatMapper  # noqa: E402
 
 RETURN = "http://localhost:5173/auth/sso"
 
