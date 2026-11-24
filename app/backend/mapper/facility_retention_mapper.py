@@ -22,6 +22,11 @@ LIST_FINISHED_SQL = """
              WHERE d."sessionId" = s.id AND d.kind = 'data') AS "movieCount",
            (SELECT COALESCE(SUM(d."movieBytes"), 0) FROM facility_session_datasets d
              WHERE d."sessionId" = s.id AND d.kind = 'data') AS "movieBytes",
+           m."offloadPath",
+           COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('folder', d.folder, 'movieCount', d."movieCount",
+                                                      'movieBytes', d."movieBytes") ORDER BY d.number, d.id)
+                       FROM facility_session_datasets d
+                      WHERE d."sessionId" = s.id AND d.kind = 'data'), '[]'::JSON) AS "rawFolders",
            COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('id', p.id, 'name', p.name, 'ownerId', p."ownerId",
                                                       'bytes', du."totalBytes") ORDER BY p.id)
                        FROM projects p

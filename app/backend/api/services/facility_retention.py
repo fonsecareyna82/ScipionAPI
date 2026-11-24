@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
@@ -160,6 +162,14 @@ def noticeText(session: Dict[str, Any], owed: Dict[str, Any], downloadInstructio
             "body": "\n\n".join(body) + "\n"}
 
 
+def _rawFolder(offloadPath: str, folder: Dict[str, Any]) -> Dict[str, Any]:
+    """A DATA's folder of raw movies: its full path (none when its microscope has no offload folder) and whether
+    it is still there."""
+    path = str(Path(offloadPath) / folder["folder"]) if offloadPath and folder.get("folder") else None
+    return {"folder": folder.get("folder"), "path": path, "present": bool(path) and os.path.isdir(path),
+            "movieCount": folder.get("movieCount") or 0, "movieBytes": folder.get("movieBytes") or 0}
+
+
 class FacilityRetention:
     def __init__(self, db):
         self.db = db
@@ -179,6 +189,9 @@ class FacilityRetention:
         for key in ("rawKeepUntil", "processedKeepUntil", "rawDeletedAt", "processedDeletedAt", "rawDeletedByName",
                     "rawDeletedByEmail", "processedDeletedByName", "processedDeletedByEmail"):
             session.pop(key, None)
+        # Where the raw movies are, for the staff to delete them there: each DATA's folder in the offload
+        offloadPath = session.pop("offloadPath", None) or ""
+        session["rawFolders"] = [_rawFolder(offloadPath, folder) for folder in session.get("rawFolders") or []]
         for project in session.get("projects") or []:
             # The project's name, not its folder's path
             project["name"] = str(project.get("name") or "").rstrip("/").split("/")[-1]

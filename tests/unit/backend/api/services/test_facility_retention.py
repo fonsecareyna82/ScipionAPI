@@ -120,3 +120,17 @@ def test_WrongNoticeDaysAreRefused(given):
 def test_AnArchivedSessionIsHistoryAndOwesNoNotice():
     # Its data gone, or brought from another system (EMhub): nobody is told of it
     assert retention.noticesDue(_session(status="archived"), SETTINGS, datetime.date(2026, 10, 25)) == {}
+
+
+def test_ADatasRawMoviesAreInItsFolderInTheOffload(tmp_path):
+    from app.backend.api.services.facility_retention import _rawFolder
+
+    (tmp_path / "S1_DATA_01").mkdir()
+    kept = _rawFolder(str(tmp_path), {"folder": "S1_DATA_01", "movieCount": 12, "movieBytes": 900})
+    gone = _rawFolder(str(tmp_path), {"folder": "S1_DATA_02", "movieCount": None, "movieBytes": None})
+
+    assert kept == {"folder": "S1_DATA_01", "path": str(tmp_path / "S1_DATA_01"), "present": True,
+                    "movieCount": 12, "movieBytes": 900}
+    assert gone["path"] == str(tmp_path / "S1_DATA_02") and gone["present"] is False and gone["movieCount"] == 0
+    # A microscope with no offload folder: no path to show
+    assert _rawFolder("", {"folder": "S1_DATA_01"})["path"] is None

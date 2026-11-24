@@ -102,6 +102,19 @@ def test_AFinishedSessionIsKeptTheFacilitysDaysUnlessGivenItsOwnDate(facility):
     assert seen["retention"]["raw"]["until"] == "2026-10-30" and seen["rawKeptUntil"] == "2026-10-30"
 
 
+def test_TheStaffSeeWhereEachDatasRawMoviesAre(facility):
+    session = _session(facility)
+    _finishedOn(facility, session, datetime.datetime(2026, 8, 1, 12, tzinfo=datetime.timezone.utc))
+    first, second = sorted(dataset["folder"] for dataset in session["datasets"] if dataset["kind"] == "data")
+    (facility["offload"] / first).mkdir()
+
+    listed = FacilityRetention(facility["db"]).getRetention(session["id"])
+
+    assert [(row["folder"], row["path"], row["present"]) for row in listed["rawFolders"]] == [
+        (first, str(facility["offload"] / first), True), (second, str(facility["offload"] / second), False)]
+    assert "offloadPath" not in listed
+
+
 def test_RecordingTheRawDataDeletedArchivesASessionWithoutProjects(facility):
     session = _session(facility)
     _finishedOn(facility, session, datetime.datetime(2026, 8, 1, 12, tzinfo=datetime.timezone.utc))
