@@ -254,7 +254,8 @@ def test_TheWatcherCountsTheAtlasAndADatasAcquisitionCanBeReadAgain(facility):
     assert error.value.status_code == 404
 
 
-def test_TheSessionsProjectsAreDeletedOnlyWhereTheUserManagesThem(facility, tmp_path, monkeypatch):
+def test_TheSessionsProjectsAreDeletedOnlyWhereTheUserManagesThem(facility, tmp_path, monkeypatch,
+                                                                  backgroundDeletesOnTestDb):
     from app.backend.utils.background_delete import waitForBackgroundDeletes
 
     # Deleting a project needs the projects' folder: here, where these ones are (no installation in the CI)

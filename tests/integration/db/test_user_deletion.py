@@ -18,7 +18,7 @@ def _user(flat, name):
 
 
 @pytest.fixture
-def accounts(postgresqlIntegrationDb, postgresqlMigratedEnv, tmp_path, monkeypatch):
+def accounts(postgresqlIntegrationDb, postgresqlMigratedEnv, tmp_path, monkeypatch, backgroundDeletesOnTestDb):
     """An administrator, a user with two projects (one shared with another user) and that other user."""
     # Deleting a project needs the projects' folder: here, where these ones are (no installation in the CI)
     monkeypatch.setenv("PROJECTS_PATH", str(tmp_path))

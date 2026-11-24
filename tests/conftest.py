@@ -330,6 +330,26 @@ def postgresqlIntegrationDb(
         db.close()
 
 
+@pytest.fixture
+def backgroundDeletesOnTestDb(postgresqlMigratedEnv, monkeypatch):
+    """The background steps of a deletion (a project's rows) open their own connection with the installation's
+    settings: here they open it on the test database. Without it they reach no database in the CI, and the
+    developer's own one on a machine with an installation."""
+    from app.backend import database
+    from app.backend.mapper.postgresql import PostgresqlDb, PostgresqlFlatMapper
+
+    def testMapper():
+        return PostgresqlFlatMapper(PostgresqlDb(
+            dbName=postgresqlMigratedEnv["databaseName"],
+            user=postgresqlMigratedEnv["databaseUser"],
+            password=postgresqlMigratedEnv["databasePass"],
+            host=postgresqlMigratedEnv["postgresHost"],
+            port=postgresqlMigratedEnv["postgresPort"],
+        ))
+
+    monkeypatch.setattr(database, "getMapper", testMapper)
+
+
 def makeProjectOut(projectId: int = 1, name: str = "Demo Project", **overrides):
     # makeProjectOut
     payload = {
