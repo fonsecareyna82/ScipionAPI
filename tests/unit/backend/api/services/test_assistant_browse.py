@@ -12,14 +12,15 @@ from app.backend.api.services.assistant_browse import (
     "/projects/", "/projects", "projects/7/overview", "/api/projects/7/protocols/12/steps",
     "/projects/7/protocols/12/outputs/outputCTF/ctf",
     "/projects/7/protocols/12/outputs/outputParticles/metadata/tables/objects/page",
-    "/facility/sessions/3", "/resources",
+    "/facility/sessions/3", "/resources", "/settings/jobs", "/settings/jobs/nodes", "/plugins/tasks/abc-1/log",
 ])
 def test_ListedPagesAreAllowed(path):
     assert allowedPath(path) is not None
 
 
 @pytest.mark.parametrize("path", [
-    "/settings/environment", "/users", "/audit", "/auth/me", "/notifications/settings/mail",
+    "/settings/environment", "/settings/host", "/settings/sign-in-providers", "/users", "/audit", "/auth/me",
+    "/notifications/settings/mail",
     "/projects/7/protocols/12/fs/download", "/projects/7/protocols/12/logs/raw",
     "/projects/7/protocols/12/outputs/x/metadata/tables/objects/export",
     "/projects/7/../../settings", "/projects/7/overview?x=1", "/projects//overview", "http://evil/projects/",
@@ -31,8 +32,8 @@ def test_EverythingElseIsRefused(path):
 
 def test_NothingPrivateIsListed():
     paths = [template for template, _ in READ_ROUTES]
-    for word in ("settings", "users", "auth", "audit", "access", "fs/", "download", "export", "/raw", "mail",
-                 "shares", "sign-in"):
+    for word in ("settings/environment", "settings/host", "settings/mail", "users", "auth", "audit", "access",
+                 "fs/", "download", "export", "/raw", "mail", "shares", "sign-in"):
         assert not [path for path in paths if word in path], word
     assert "/projects/{projectId}/overview" in catalogue()
 

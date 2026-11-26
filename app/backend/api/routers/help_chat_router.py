@@ -284,9 +284,17 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         comparison = compare_protocols.compare([describeProtocol(assistant, help_, projectId, pid) for pid in ids])
         return dict(comparison, projectId=int(projectId))
 
+    def serverLog(which: str, node: Optional[str], search: str):
+        from app.backend.api.services.server_logs import readLog
+
+        return readLog(which, node, search)
+
     reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains,
                "searchProjects": searchProjects, "prepareReport": prepareReport,
-               "compareProtocols": compareProtocols}
+               "compareProtocols": compareProtocols,
+               # The server's logs only for who runs the installation
+               "serverLog": serverLog if (hasPermission(currentUser, "settings.manage")
+                                         or hasPermission(currentUser, "jobs.manage")) else None}
     if not canPropose:
         return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                               **reading)

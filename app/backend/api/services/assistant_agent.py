@@ -174,6 +174,20 @@ SEARCH_TOOL = _function(
      "until": {"type": "string", "description": "Run before this date, YYYY-MM-DD"},
      "status": {"type": "string", "enum": ["", "finished", "failed", "running", "aborted", "saved"]}}, [])
 
+SERVER_LOG_TOOL = _function(
+    "server_log", "Administrators only: the end of the server's own logs (the API's, the plugins worker's, the "
+                  "protocols worker's, also of a node), or its lines with some words. Private values are hidden.",
+    {"which": {"type": "string", "enum": ["api", "plugins-worker", "protocols-worker"]},
+     "node": {"type": "string", "description": "A node's name, for its protocols worker; empty for this machine"},
+     "search": {"type": "string", "description": "Words the lines must have (e.g. 'error worker'); empty for the "
+                                                "end of the log"}},
+    ["which"])
+
+ADMIN_RULE = ("- This user runs the installation. For questions about it (queues, workers, nodes, disk, plugin "
+              "installs, updates), read the administrators' pages with read_page and the server logs with "
+              "server_log, and say what you found and what to check or do. You cannot change the installation: "
+              "point to the Settings tab where it is done.")
+
 COMPARE_TOOL = _function(
     "compare_protocols", "Compare two to four protocols of a project: the parameters that differ, what each takes, "
                          "what each produced (sizes) and how long each ran. The user sees the table; explain what "
@@ -247,6 +261,7 @@ STEP_LABELS = {
     "search_projects": "Searched your projects for \"{words}\"",
     "prepare_report": "Prepared the report of project {projectId}",
     "compare_protocols": "Compared protocols of project {projectId}",
+    "server_log": "Read the server's {which} log",
     "list_chains": "Looked at the chains of project {projectId}",
     "propose_template": "Proposed a template for project {projectId}",
     "propose_continue_chain": "Proposed going on after protocol {stopProtocolId}",
@@ -294,7 +309,8 @@ class AssistantTools:
                  searchProjects: Optional[Callable[..., Dict[str, Any]]] = None,
                  prepareReport: Optional[Callable[[int, Optional[str]], Dict[str, Any]]] = None,
                  compareProtocols: Optional[Callable[[int, List[str]], Dict[str, Any]]] = None,
-                 proposeSubset: Optional[Callable[..., Dict[str, Any]]] = None):
+                 proposeSubset: Optional[Callable[..., Dict[str, Any]]] = None,
+                 serverLog: Optional[Callable[[str, Optional[str], str], Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -321,6 +337,11 @@ class AssistantTools:
         if self.canCompare:
             self._calls["compare_protocols"] = lambda args: self._compared(compareProtocols(
                 int(args["projectId"]), [str(pid) for pid in args.get("protocolIds") or []]))
+        # The server's logs, for the administrators only
+        self.isAdmin = serverLog is not None
+        if self.isAdmin:
+            self._calls["server_log"] = lambda args: serverLog(
+                str(args.get("which") or ""), str(args.get("node") or "") or None, str(args.get("search") or ""))
         # The processing report, shown as a card to download
         self.canReport = prepareReport is not None
         if self.canReport:
@@ -400,7 +421,7 @@ class AssistantTools:
     def definitions(self) -> List[Dict[str, Any]]:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \
             + ([SEARCH_TOOL] if self.canSearch else []) + ([REPORT_TOOL] if self.canReport else []) \
-            + ([COMPARE_TOOL] if self.canCompare else []) \
+            + ([COMPARE_TOOL] if self.canCompare else []) + ([SERVER_LOG_TOOL] if self.isAdmin else []) \
             + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
         if not self.canPropose:
             return reading
@@ -432,7 +453,7 @@ class AssistantTools:
         try:
             step = STEP_LABELS[name].format(**{key: args.get(key, "") for key in
                                                ("projectId", "protocolId", "channel", "query", "path",
-                                                "stopProtocolId", "words")})
+                                                "stopProtocolId", "words", "which")})
         except (KeyError, IndexError):
             step = name
         try:
@@ -489,6 +510,8 @@ class AssistantAgent:
             if self.tools.canPropose else READ_ONLY_RULE
         if self.tools.canPropose and self.tools.canProposeTemplates:
             rule += "\n" + TEMPLATE_RULE
+        if self.tools.isAdmin:
+            rule += "\n" + ADMIN_RULE
         messages: List[Dict[str, Any]] = [{"role": "system",
                                            "content": SYSTEM_PROMPT.replace("{actions}", rule) + "\n\n" + context}]
         messages += historyMessages(history or [])

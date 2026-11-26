@@ -1,8 +1,9 @@
 """The AI assistant reading the web's own pages: the GET routes in READ_ROUTES, run inside the API as the user who
 asks (with their own sign-in), so every route checks their permissions exactly as when the web calls it.
 
-Only routes listed here: reading ones that answer JSON and say nothing private (no settings, users, sign-in, audit,
-mail, server files or downloads). The answer is cut to MAX_CHARS for the model.
+Only routes listed here: reading ones that answer JSON and say nothing private (no users, sign-in, audit, mail,
+host or environment settings, server files or downloads). The administrators' pages (jobs, nodes, disk, plugin
+installs) answer only users with their permission, as in the web. The answer is cut to MAX_CHARS for the model.
 """
 import json
 import logging
@@ -60,6 +61,17 @@ READ_ROUTES: List[Tuple[str, str]] = [
     ("/facility/my-bookings", "the user's bookings"),
     ("/facility/microscopes", "the microscopes and their detectors"),
     ("/facility/samples", "the samples and grids"),
+    # For the people who run the installation (each page answers only those with its permission)
+    ("/settings/jobs", "administrators: the queues, the workers and the jobs running, waiting and recent"),
+    ("/settings/jobs/nodes", "administrators: the machines (nodes) that run protocols, their GPUs and state"),
+    ("/settings/instance/resources", "administrators: the resources of the main machine"),
+    ("/storage/usage", "administrators: the disk each user, group and project uses, and the free space"),
+    ("/storage/quotas", "administrators: the disk quotas"),
+    ("/usage/compute", "administrators: the computing each user and group used"),
+    ("/plugins/tasks", "administrators: the plugin installs and updates, and how they ended"),
+    ("/plugins/tasks/{taskId}", "administrators: one plugin install or update"),
+    ("/plugins/tasks/{taskId}/log", "administrators: the log of a plugin install or update"),
+    ("/system/update-check", "administrators: whether a newer ScipionWeb is out"),
 ]
 
 _SEGMENT = r"[A-Za-z0-9_.\-]+"
