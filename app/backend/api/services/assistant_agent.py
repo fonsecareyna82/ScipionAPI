@@ -108,8 +108,8 @@ _CHANGES = {"type": "array", "description": "The parameters to change, by their 
 _REASON = {"type": "string", "description": "One sentence for the user: why"}
 
 DUPLICATE_TOOL = _function(
-    "propose_duplicate", "Propose a copy of a protocol, not launched, with changed parameters if asked; its form opens "
-                         "for the user. It leaves the original and the protocols depending on it untouched.",
+    "propose_duplicate", "Propose a copy of a protocol, not launched, with changed parameters if asked. It leaves "
+                         "the original and the protocols depending on it untouched; the user launches the copy.",
     {"projectId": _PROJECT, "protocolId": _PROTOCOL, "changes": _CHANGES, "reason": _REASON},
     ["projectId", "protocolId", "changes", "reason"])
 

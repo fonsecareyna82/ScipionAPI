@@ -10,7 +10,7 @@ Relaunch follows the protocol form's rules:
   "the whole workflow" (they run again); nothing is chosen for them.
 Only parameters the user sees in the form can change, never an input (a pointer to another protocol's output).
 
-Duplicate makes a copy that is not launched, with the changes asked, and opens its form.
+Duplicate makes a copy that is not launched, with the changes asked (the user launches it).
 
 Delete (only when the administrator allows it besides proposing) is the one that cannot be undone, so: protocols
 only (never projects), never a running one, never one whose depending protocols run or have results (as the web's
