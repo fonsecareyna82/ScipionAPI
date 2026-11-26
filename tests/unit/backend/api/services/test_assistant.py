@@ -263,7 +263,7 @@ def test_NoCreditIsToldApartFromTooManyQuestions():
     assert "no credit" in str(error.value)
     tooMany = FakeHttp(status=429, body={"error": {"code": "rate_limit_exceeded", "message": "Rate limit"}})
     with pytest.raises(AssistantProviderError) as error:
-        AssistantProvider("http://x/v1", "sk", "m", http=tooMany).chat([])
+        AssistantProvider("http://x/v1", "sk", "m", http=tooMany, sleep=lambda seconds: None).chat([])
     assert "too many questions" in str(error.value)
 
 
