@@ -6,6 +6,7 @@ of one.
 """
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -61,12 +62,26 @@ def _explain(statusCode: int, body: str, key: str = "") -> str:
     return "The provider refused the question (error %d)%s" % (statusCode, suffix)
 
 
+# A busy provider (overloaded, or too many questions in a minute) is asked again after these waits, in seconds
+RETRY_WAITS = (2.0, 5.0)
+RETRY_STATUSES = (500, 502, 503, 504)
+
+
+def _retryable(statusCode: int, body: str) -> bool:
+    if statusCode in RETRY_STATUSES:
+        return True
+    # Too many questions in a short time passes; an account without credit does not
+    lowered = body.lower()
+    return statusCode == 429 and not ("quota" in lowered or "billing" in lowered or "credit" in lowered)
+
+
 class AssistantProvider:
-    def __init__(self, baseUrl: str, key: str = "", model: str = "", http=None):
+    def __init__(self, baseUrl: str, key: str = "", model: str = "", http=None, sleep=None):
         self.baseUrl = baseUrl.rstrip("/")
         self.key = key
         self.model = model
         self._http = http
+        self._sleep = sleep or time.sleep
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -78,13 +93,20 @@ class AssistantProvider:
         import httpx
 
         http = self._http or httpx
-        try:
-            response = http.request(method, self.baseUrl + path, headers=self._headers(), json=json, timeout=timeout)
-        except httpx.TimeoutException:
-            raise AssistantProviderError("The provider took too long to answer")
-        except httpx.HTTPError as error:
-            raise AssistantProviderError("Could not reach the provider at %s (%s)" % (self.baseUrl,
-                                                                                      type(error).__name__))
+        for attempt in range(len(RETRY_WAITS) + 1):
+            try:
+                response = http.request(method, self.baseUrl + path, headers=self._headers(), json=json,
+                                        timeout=timeout)
+            except httpx.TimeoutException:
+                raise AssistantProviderError("The provider took too long to answer")
+            except httpx.HTTPError as error:
+                raise AssistantProviderError("Could not reach the provider at %s (%s)" % (self.baseUrl,
+                                                                                          type(error).__name__))
+            if attempt < len(RETRY_WAITS) and _retryable(response.status_code, response.text):
+                logger.info("The assistant's provider is busy (%s); asking again", response.status_code)
+                self._sleep(RETRY_WAITS[attempt])
+                continue
+            break
         if response.status_code >= 400:
             raise AssistantProviderError(_explain(response.status_code, response.text, self.key),
                                          response.status_code)

@@ -275,3 +275,42 @@ def test_ProviderOwnWordsAreShownWithTheKeyBlottedOut():
     assert "gemini-x is not found" in str(error.value)
     assert "AIzaSecretKey123" not in str(error.value)
     assert "SecretKey123" not in str(error.value)
+
+
+class SequenceHttp:
+    """Answers with the (status, body) given, one per call."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), 0
+
+    def request(self, method, url, headers=None, json=None, timeout=None):
+        self.calls += 1
+        status, body = self.answers.pop(0)
+        return FakeResponse(status, body)
+
+
+OK = (200, {"choices": [{"message": {"content": "ready"}}], "usage": {}})
+BUSY = (503, {"error": {"message": "This model is currently experiencing high demand."}})
+
+
+def test_BusyProviderIsAskedAgain():
+    waits = []
+    http = SequenceHttp([BUSY, BUSY, OK])
+    reply = AssistantProvider("http://x/v1", "k", "m", http=http, sleep=waits.append).chat([])
+    assert reply["message"]["content"] == "ready"
+    assert http.calls == 3 and waits == [2.0, 5.0]
+
+
+def test_BusyProviderGivesUpAfterTheRetries():
+    http = SequenceHttp([BUSY, BUSY, BUSY])
+    with pytest.raises(AssistantProviderError) as error:
+        AssistantProvider("http://x/v1", "k", "m", http=http, sleep=lambda s: None).chat([])
+    assert "high demand" in str(error.value) and http.calls == 3
+
+
+def test_NoCreditAndBadKeyAreNotAskedAgain():
+    for answer in [(429, {"error": {"code": "insufficient_quota", "message": "quota"}}), (401, {"error": "bad"})]:
+        http = SequenceHttp([answer, OK])
+        with pytest.raises(AssistantProviderError):
+            AssistantProvider("http://x/v1", "k", "m", http=http, sleep=lambda s: None).chat([])
+        assert http.calls == 1
