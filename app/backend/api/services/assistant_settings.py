@@ -27,8 +27,8 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
     "local": {"label": "Local or compatible model", "baseUrl": "", "needsKey": False},
 }
 
-# What it may do: only answer (phase 1). Proposing actions comes later.
-MODES = ("answer",)
+# What it may do: only read and answer, or also propose actions the user confirms (see assistant_actions.py)
+MODES = ("answer", "propose")
 
 DEFAULTS: Dict[str, Any] = {
     "enabled": False,

@@ -36,6 +36,11 @@ class _Usage:
         row["outputTokens"] += outputTokens
         _Usage.rows[userId] = row
 
+    protocolRow = None
+
+    def protocol(self, projectId, protocolId):
+        return _Usage.protocolRow
+
     def totals(self, days):
         return {"users": len(_Usage.rows), "questions": sum(r["questions"] for r in _Usage.rows.values()),
                 "inputTokens": 0, "outputTokens": 0}
@@ -61,7 +66,7 @@ def router(authTestEnv, monkeypatch):
     monkeypatch.setattr(module, "AssistantPostgresqlMapper", _Usage)
     monkeypatch.setattr(module, "AssistantProvider", _Model)
     monkeypatch.setattr(module, "recordAudit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "_projectTools", lambda mapper, user: module.AssistantTools(
+    monkeypatch.setattr(module, "_projectTools", lambda mapper, user, canPropose=False: module.AssistantTools(
         lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []))
     return module
 
@@ -137,3 +142,86 @@ def test_ModelsAndTestUseTheFormBeforeSaving(router):
     assert test.json()["ok"] is True
     # Nothing was saved by asking
     assert _Settings.store == {}
+
+
+# Applying a proposal ---------------------------------------------------------------------------------------------
+
+class _Service:
+    calls = []
+    access = "work"
+    affected = []
+
+    def getProjectDbRow(self, mapper, projectId, currentUser):
+        return {"id": projectId, "name": "p", "access": _Service.access}
+
+    def loadPostgresqlRuntimeProjectForMutation(self, mapper, projectId, currentUser):
+        return {"id": projectId}
+
+    def getProtocolWorkflowExecutionPreflight(self, mapper, projectId, protocolId, mode):
+        return {"affectedProtocols": _Service.affected}
+
+    def executeProtocolWorkflow(self, **kwargs):
+        _Service.calls.append(("workflow", kwargs))
+        return {"status": 0, "errors": []}
+
+    def stopProtocol(self, mapper, projectId, protocolIds, protocolIdIsScipionId=False):
+        _Service.calls.append(("stop", protocolIds))
+        return {"status": 0, "errors": []}
+
+
+HELP = {"className": "Prot2D", "label": "2D", "params": [{"name": "numberOfClasses", "label": "Classes",
+                                                          "pointer": False}]}
+
+
+@pytest.fixture
+def applying(router, monkeypatch):
+    services = importlib.import_module("app.backend.api.services.project_service")
+    _Service.calls, _Service.access, _Service.affected = [], "work", []
+    monkeypatch.setattr(services, "ProjectService", _Service)
+    monkeypatch.setattr(router.help_index, "protocolHelp", lambda className: HELP)
+    _Usage.protocolRow = {"protocolId": "37", "label": "2D", "className": "Prot2D", "status": "finished",
+                          "params": {"numberOfClasses": 50}}
+    module = router
+    module.AssistantSettings(None).save({"provider": "openai", "key": "sk", "model": "m", "enabled": True,
+                                         "mode": "propose"}, 1)
+    return module
+
+
+def test_ApplyRelaunchSendsOnlyTheChangedParams(applying):
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "relaunch", "projectId": 7, "protocolId": "37",
+                                                             "mode": "restart", "changes": {"numberOfClasses": "100"}})
+    assert response.status_code == 200, response.text
+    kind, kwargs = _Service.calls[0]
+    assert kind == "workflow"
+    assert kwargs["params"] == {"numberOfClasses": 100}
+    assert kwargs["mode"] == "restart" and kwargs["scope"] == "single"
+
+
+def test_ApplyWithChildrenNeedsTheUserToChoose(applying):
+    _Service.affected = [{"protocolId": "37"}, {"protocolId": "105", "runName": "subset"}]
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "relaunch", "projectId": 7, "protocolId": "37", "mode": "restart"}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 409
+    assert client.post("/help-chat/actions/apply", json=dict(body, scope="all")).status_code == 200
+    assert _Service.calls[0][1]["scope"] == "all"
+
+
+def test_ApplyStopOnlyWhenRunning(applying):
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "stop", "projectId": 7, "protocolId": "37"}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 409
+    _Usage.protocolRow = dict(_Usage.protocolRow, status="running")
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 200
+    assert _Service.calls == [("stop", ["37"])]
+
+
+def test_ApplyNeedsWorkAccessAndTheProposeMode(applying):
+    _Service.access = "view"
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "relaunch", "projectId": 7, "protocolId": "37", "mode": "restart"}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 403
+    _Service.access = "work"
+    applying.AssistantSettings(None).save({"mode": "answer"}, 1)
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 403
+    assert _Service.calls == []

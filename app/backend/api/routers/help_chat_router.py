@@ -8,8 +8,10 @@ from pydantic import BaseModel, Field
 
 from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
-from app.backend.api.permissions import hasPermission, requirePermission
+from app.backend.api.permissions import checkProjectAccess, hasPermission, requirePermission
 from app.backend.api.services import help_index
+from app.backend.api.services import assistant_actions
+from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
 from app.backend.api.services.assistant_provider import AssistantProvider, AssistantProviderError
 from app.backend.api.services.assistant_settings import (
@@ -41,6 +43,16 @@ class HelpQuestion(BaseModel):
     protocolId: Optional[str] = Field(None, max_length=32)
     # The conversation so far, for the assistant (the rule-based answers do not use it)
     history: Optional[List[HistoryTurn]] = Field(None, max_items=40)
+
+
+class ActionPayload(BaseModel):
+    action: str = Field(..., max_length=16)
+    projectId: int
+    protocolId: str = Field(..., max_length=32)
+    mode: Optional[str] = Field(None, max_length=16)
+    # single: only this protocol (the ones depending on it are reset); all: its whole workflow
+    scope: Optional[str] = Field(None, max_length=16)
+    changes: Optional[Dict[str, Any]] = None
 
 
 class AssistantSettingsPayload(BaseModel):
@@ -77,18 +89,44 @@ def chatStatus(currentUser: dict = Depends(getCurrentUser),
     return {"assistant": True, "dailyLimit": limit, "left": max(0, limit - used)}
 
 
-def _projectTools(mapper, currentUser) -> AssistantTools:
+def _canWork(project: Dict[str, Any]) -> bool:
+    try:
+        checkProjectAccess(project, "work")
+        return True
+    except HTTPException:
+        return False
+
+
+def _preflight(service, mapper, currentUser, projectId: int, protocolId: str, mode: str) -> Dict[str, Any]:
+    """The protocols a relaunch would touch, as the protocol form asks before one."""
+    if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId,
+                                                           currentUser=currentUser):
+        raise PermissionError("The user cannot see that project")
+    return service.getProtocolWorkflowExecutionPreflight(mapper=mapper, projectId=projectId,
+                                                         protocolId=int(protocolId), mode=mode) or {}
+
+
+def _projectTools(mapper, currentUser, canPropose: bool = False) -> AssistantTools:
     from app.backend.api.services.project_service import ProjectService
     from app.backend.api.services.protocol_failure import explainProtocolFailure
 
     service = ProjectService()
-    seen: Dict[int, bool] = {}
+    seen: Dict[int, Optional[Dict[str, Any]]] = {}
 
-    def allowed(projectId: int) -> None:
+    def allowed(projectId: int) -> Dict[str, Any]:
         if projectId not in seen:
-            seen[projectId] = bool(service.getProjectDbRow(mapper, projectId, currentUser))
+            seen[projectId] = service.getProjectDbRow(mapper, projectId, currentUser)
         if not seen[projectId]:
             raise PermissionError(projectId)
+        return seen[projectId]
+
+    def workable(projectId: int, protocolId: str) -> Dict[str, Any]:
+        if not _canWork(allowed(projectId)):
+            raise PermissionError("The user can only look at that project, not run things in it")
+        protocol = AssistantPostgresqlMapper(mapper.db).protocol(projectId, protocolId)
+        if not protocol:
+            raise ProposalError("There is no protocol %s in that project" % protocolId)
+        return protocol
 
     def listProjects():
         return [{"id": row.get("id"), "name": row.get("name")}
@@ -124,7 +162,24 @@ def _projectTools(mapper, currentUser) -> AssistantTools:
     def searchHelp(query: str):
         return HelpChat(help_index.protocolsHelp)._search(query, None, False).get("cards") or []
 
-    return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp)
+    def proposeRelaunch(projectId: int, protocolId: str, changes: Dict[str, Any], reason: str):
+        protocol = workable(projectId, protocolId)
+        help_ = help_index.protocolHelp(protocol.get("className"))
+        checked = assistant_actions.parameterChanges(protocol.get("params") or {}, help_, changes or {})
+        mode, _ = assistant_actions.relaunchModes(protocol.get("status"), bool(checked))
+        preflight = _preflight(service, mapper, currentUser, projectId, protocolId, mode)
+        return assistant_actions.relaunchCard(projectId, protocol, help_, changes, preflight, reason)
+
+    def proposeStop(projectId: int, protocolId: str, reason: str):
+        return assistant_actions.stopCard(projectId, workable(projectId, protocolId), reason)
+
+    def proposeNextStep(projectId: int, protocolId: str, className: str, reason: str):
+        source = workable(projectId, protocolId)
+        return assistant_actions.nextStepCard(projectId, source, help_index.protocolHelp(className), reason)
+
+    proposals = (proposeRelaunch, proposeStop, proposeNextStep) if canPropose else (None, None, None)
+    return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
+                          *proposals)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser) -> Dict[str, Any]:
@@ -145,7 +200,7 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
             raise HTTPException(status_code=404, detail="Project not found")
         if payload.protocolId:
             protocol = HelpChatPostgresqlMapper(mapper.db).protocol(int(payload.projectId), payload.protocolId)
-    agent = AssistantAgent(_providerOf(stored), _projectTools(mapper, currentUser))
+    agent = AssistantAgent(_providerOf(stored), _projectTools(mapper, currentUser, stored.get("mode") == "propose"))
     try:
         answer = agent.answer(payload.question, contextLine(project, protocol),
                               [turn.dict() for turn in payload.history or []])
@@ -192,6 +247,57 @@ def ask(payload: HelpQuestion, currentUser: dict = Depends(getCurrentUser),
 
     chat = HelpChat(help_index.protocolsHelp, projectProtocols, explainFailure, protocolOutputs=protocolOutputs)
     return chat.answer(payload.question, payload.protocolId)
+
+
+@router.post("/actions/apply")
+def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUser),
+                mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> Dict[str, Any]:
+    """Run what the user confirmed on an assistant's card, checked again as things are now, through the same
+    services as the web's own buttons."""
+    from app.backend.api.services.project_service import ProjectService
+
+    settings = _assistantFor(mapper, currentUser)
+    if settings is None or settings.stored().get("mode") != "propose":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose actions")
+    service = ProjectService()
+    project = service.getProjectDbRow(mapper, payload.projectId, currentUser)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    checkProjectAccess(project, "work")
+    protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
+    try:
+        help_ = help_index.protocolHelp((protocol or {}).get("className"))
+        hasChildren = False
+        if payload.action == "relaunch" and protocol is not None:
+            preflight = _preflight(service, mapper, currentUser, payload.projectId, payload.protocolId,
+                                   payload.mode or "restart")
+            hasChildren = any(str(item.get("protocolId")) != str(protocol["protocolId"])
+                              for item in preflight.get("affectedProtocols") or [])
+        plan = assistant_actions.applyChecks(protocol, help_, payload.action, payload.mode or "", payload.scope,
+                                             payload.changes or {}, hasChildren)
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+    if payload.action == "stop":
+        if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
+                                                               currentUser=currentUser):
+            raise HTTPException(status_code=404, detail="Project not found")
+        result = service.stopProtocol(mapper, payload.projectId, [payload.protocolId],
+                                      protocolIdIsScipionId=True) or {}
+    else:
+        result = service.executeProtocolWorkflow(mapper=mapper, projectId=payload.projectId,
+                                                 protocolId=int(payload.protocolId),
+                                                 protocolClassName=protocol["className"], params=plan["params"],
+                                                 mode=plan["mode"], scope=plan["scope"],
+                                                 currentUserId=currentUser["id"]) or {}
+    errors = [str(error) for error in result.get("errors") or []]
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                str(payload.protocolId), {"action": payload.action, "mode": plan.get("mode"),
+                                          "scope": plan.get("scope"), "params": plan.get("params"),
+                                          "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return {"ok": True}
 
 
 # Settings (administrators) ---------------------------------------------------------------------------------------

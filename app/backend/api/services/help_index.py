@@ -22,7 +22,7 @@ import sys
 
 with contextlib.redirect_stdout(sys.stderr):
     from pyworkflow import Config
-    from pyworkflow.protocol.params import ElementGroup
+    from pyworkflow.protocol.params import ElementGroup, MultiPointerParam, PointerParam, RelationParam
 
     Config.setDomain("pwem")
     _protocols = Config.getDomain().getProtocols()
@@ -50,8 +50,10 @@ def _params(definition):
             # Hidden params (the ones conditions use) have no label
             if not label:
                 continue
+            # Inputs (pointers to other protocols' outputs) are told apart: the assistant never changes them
             found.append({"name": name, "label": label, "help": _text(param.help),
-                          "section": section, "group": groupLabel or ""})
+                          "section": section, "group": groupLabel or "",
+                          "pointer": isinstance(param, (PointerParam, MultiPointerParam, RelationParam))})
 
     for section in definition.iterSections():
         walk(section, _text(section.label), "")
@@ -87,7 +89,7 @@ def _read() -> List[Dict[str, Any]]:
 
 
 def protocolsHelp(read=_read) -> List[Dict[str, Any]]:
-    """[{className, label, doc, params: [{name, label, help, section, group}]}] of the installed protocols."""
+    """[{className, label, doc, params: [{name, label, help, section, group, pointer}]}] of the installed protocols."""
     revision = int(getPluginsRevision() or 0)
     with _lock:
         if _cache["protocols"] is not None and _cache["revision"] == revision:
