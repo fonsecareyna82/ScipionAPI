@@ -69,6 +69,39 @@ def _resizeUnit(values, size: int) -> np.ndarray:
     return np.dstack(channels)
 
 
+# Brightest displayed value of a 2D class: this percentile of the image (a few hot pixels do not
+# turn the rest gray).
+_CLASS_2D_WHITE_PERCENTILE = 99.9
+
+
+def displayClass2DAverage(image, size: int) -> np.ndarray:
+    """A uint8 (size x size) display image of a 2D class average, as the classification programs
+    show theirs: linear, its background at mid gray and its brightest part white, not smoothed.
+    What is darker than the background goes down from the gray the same way."""
+    data = np.asarray(image, dtype=np.float64)
+    if data.ndim != 2 or data.size == 0:
+        return np.zeros((size, size), dtype=np.uint8)
+    finite = np.isfinite(data)
+    if not finite.any():
+        return np.zeros((size, size), dtype=np.uint8)
+    data = np.where(finite, data, np.median(data[finite]))
+
+    # An area the plugin masked holds one exact value over a large part of the image: it shows as background
+    values, counts = np.unique(data, return_counts=True)
+    masked = (data == values[counts.argmax()]) if counts.max() > 0.05 * data.size else np.zeros(data.shape, bool)
+    valid = ~masked
+    if valid.sum() < 16:
+        return np.full((size, size), 128, dtype=np.uint8)
+
+    center = float(np.median(data[valid]))
+    span = float(np.percentile(data[valid], _CLASS_2D_WHITE_PERCENTILE)) - center
+    if not np.isfinite(span) or span <= 0:
+        return np.full((size, size), 128, dtype=np.uint8)
+    unit = np.clip((data - center) / (2.0 * span) + 0.5, 0, 1)
+    unit = np.where(valid, unit, 0.5)
+    return _resizeUnit(unit, size)
+
+
 def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING,
                         knee: float = _SIGNAL_KNEE_SIGMA, noiseFloor: float = _NOISE_FLOOR_SIGMA) -> np.ndarray:
     """A uint8 (size x size) display image of a 2D class average."""
@@ -181,7 +214,7 @@ def renderClassVolume(volume, size: int, view: str = "surface") -> np.ndarray:
     """A display image of a 3D class: a lit surface (RGB), a projection or the central slice."""
     data = np.squeeze(np.asarray(volume, dtype=np.float64))
     if data.ndim == 2:
-        return displayClassAverage(data, size)
+        return displayClass2DAverage(data, size)
     if data.ndim != 3 or data.size == 0:
         return np.zeros((size, size), dtype=np.uint8)
     data = np.where(np.isfinite(data), data, np.nanmedian(data) if np.isfinite(data).any() else 0.0)

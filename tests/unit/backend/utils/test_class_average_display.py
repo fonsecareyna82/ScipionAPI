@@ -107,3 +107,35 @@ def test_representatives_are_read_from_their_original_data(tmp_path):
     with mrcfile.new(str(volume)) as mrc:
         mrc.set_data(blob(16).astype(np.float32))
     assert display.readClassRepresentative(str(volume), None).shape == (16, 16, 16)
+
+
+def test_a_2d_class_shows_linear_with_its_background_at_mid_gray():
+    # As the classification programs show their averages: not smoothed, nothing turned black
+    weak = display.displayClass2DAverage(classAverage(signal=3, seed=1), 64).astype(float)
+    strong = display.displayClass2DAverage(classAverage(signal=8, seed=2) * 50 + 1000, 64).astype(float)
+    yy, xx = np.mgrid[:64, :64]
+    background = np.hypot(yy - 32, xx - 32) > 16
+    for image in (weak, strong):
+        assert abs(float(np.median(image[background])) - 128) < 12
+        assert image[28:36, 28:36].mean() > float(np.median(image[background])) + 50
+    # The noise keeps its spread: no dark blots made of it
+    assert np.percentile(weak[background], 1) > 40
+
+
+def test_a_few_hot_pixels_do_not_turn_a_2d_class_gray():
+    image = classAverage(signal=6, seed=5)
+    image[0, 0] = image[0, 1] = 1000.0
+    shown = display.displayClass2DAverage(image, 64).astype(float)
+    assert shown[28:36, 28:36].mean() > 200
+
+
+def test_the_area_a_plugin_masked_shows_as_the_background_of_a_2d_class():
+    image = display.displayClass2DAverage(classAverage(masked=True), 64)
+    assert image.shape == (64, 64) and image.dtype == np.uint8
+    assert image[0, 0] == image[0, 63] == image[63, 0] == 128
+    assert image[32, 32] > 200
+
+
+def test_a_flat_2d_class_shows_uniform_gray():
+    image = display.displayClass2DAverage(np.full((32, 32), 3.0), 16)
+    assert (image == 128).all()
