@@ -97,13 +97,14 @@ def _notices(mapper, userId: int, since: Optional[datetime]) -> List[Dict[str, A
     except Exception:
         logger.warning("The notifications of user %s could not be read", userId, exc_info=True)
         return []
-    from app.backend.api.services.failure_explainer import HEADER
+    from app.backend.api.services.failure_explainer import HEADER, SUMMARY_HEADER
 
     for row in rows:
         createdAt = row.get("createdAt")
         body = str(row.get("body") or "")
         # The assistant's explanation of a failure, shown under the notice
-        detail = body.split(HEADER, 1)[1].strip() if HEADER in body else ""
+        marker = HEADER if HEADER in body else SUMMARY_HEADER if SUMMARY_HEADER in body else None
+        detail = body.split(marker, 1)[1].strip() if marker else ""
         events.append({
             "projectId": 0,
             "projectName": str(row.get("body") or "").strip().split("\n")[0][:160],

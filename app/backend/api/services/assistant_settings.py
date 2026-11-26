@@ -41,6 +41,8 @@ DEFAULTS: Dict[str, Any] = {
     "allowDelete": False,
     # Explaining every failed protocol in its notice (one question to the model each), off by default
     "explainFailures": False,
+    # Summarizing every finished acquisition session in its notice, off by default
+    "summarizeSessions": False,
     "dailyLimit": 50,
 }
 
@@ -108,7 +110,7 @@ class AssistantSettings:
         an empty one removes it."""
         stored = self.stored()
         values = dict(stored)
-        provider = payload.get("provider", stored["provider"])
+        provider = payload.get("provider") or stored["provider"]
         if provider not in PROVIDERS:
             raise _badRequest("Unknown provider: %s" % provider)
         if provider != stored["provider"]:
@@ -129,6 +131,8 @@ class AssistantSettings:
             values["allowDelete"] = bool(payload["allowDelete"])
         if payload.get("explainFailures") is not None:
             values["explainFailures"] = bool(payload["explainFailures"])
+        if payload.get("summarizeSessions") is not None:
+            values["summarizeSessions"] = bool(payload["summarizeSessions"])
         if payload.get("dailyLimit") is not None:
             # 0 (or empty): no limit, e.g. for a model the centre runs itself
             text = str(payload["dailyLimit"]).strip()

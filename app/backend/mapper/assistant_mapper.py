@@ -78,10 +78,20 @@ EXPLAINED_SQL = """
      WHERE id = ANY(%s)
 """
 
-# Older failure notices are not explained any more (they were mailed or seen already)
+# Older notices are not explained or summarized any more (they were mailed or seen already)
 FORGET_OLD_FAILURES_SQL = """
     UPDATE notifications SET "assistantState" = 'off'
-     WHERE kind = 'protocol.failed' AND "assistantState" IS NULL AND "createdAt" <= NOW() - INTERVAL '1 hour'
+     WHERE kind IN ('protocol.failed', 'facility.session') AND "assistantState" IS NULL
+       AND "createdAt" <= NOW() - INTERVAL '1 hour'
+"""
+
+# The session notices the assistant has not looked at yet, the newest hour's
+SESSIONS_TO_SUMMARIZE_SQL = """
+    SELECT id, "userId", title, body, link, "createdAt"
+      FROM notifications
+     WHERE kind = 'facility.session' AND "assistantState" IS NULL AND "createdAt" > NOW() - INTERVAL '1 hour'
+     ORDER BY id
+     LIMIT %s
 """
 
 # Only one API process explains at a time
@@ -204,6 +214,9 @@ class AssistantPostgresqlMapper:
     def failuresToExplain(self, limit: int = 20) -> List[Dict[str, Any]]:
         self.db.execute(FORGET_OLD_FAILURES_SQL)
         return [dict(row) for row in self.db.fetchAll(FAILURES_TO_EXPLAIN_SQL, (int(limit),)) or []]
+
+    def sessionsToSummarize(self, limit: int = 20) -> List[Dict[str, Any]]:
+        return [dict(row) for row in self.db.fetchAll(SESSIONS_TO_SUMMARIZE_SQL, (int(limit),)) or []]
 
     def markExplained(self, noticeIds: List[int], addition: str, state: str, bodyLimit: int) -> None:
         self.db.execute(EXPLAINED_SQL, (addition, addition, int(bodyLimit), state, [int(i) for i in noticeIds]))

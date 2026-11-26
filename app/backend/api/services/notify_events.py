@@ -136,7 +136,9 @@ def sessionChanged(db, before: Optional[Dict[str, Any]], session: Dict[str, Any]
         title = "Your session %s finished" % session["name"]
         body = ("The acquisition of your session %s on %s finished. Its data and how long they are kept are in "
                 "ScipionWeb, Facility, My sessions." % (session["name"], where))
-    return _notify(db, people, "facility.session", title, body, "/facility/mine")
+    # The finished one names its session: the assistant may summarize it in the notice
+    link = "/facility/mine" if current == "acquiring" else "/facility/mine?session=%s" % session["id"]
+    return _notify(db, people, "facility.session", title, body, link)
 
 
 def processingLaunched(db, row: Dict[str, Any], projectId: Optional[int]) -> List[int]:

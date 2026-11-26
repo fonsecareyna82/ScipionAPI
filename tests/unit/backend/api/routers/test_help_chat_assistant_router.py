@@ -284,3 +284,11 @@ def test_NoLimitWhenItIsZero(router):
         answer = client.post("/help-chat/ask", json={"question": "again"})
         assert answer.status_code == 200
         assert "left" not in answer.json()
+
+
+def test_TheNoticeSwitchesAreSaved(router):
+    admin = _client(router, ["settings.manage"])
+    response = admin.put("/help-chat/settings", json={"explainFailures": True, "summarizeSessions": True})
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["explainFailures"] is True and saved["summarizeSessions"] is True

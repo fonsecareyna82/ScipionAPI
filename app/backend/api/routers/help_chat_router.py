@@ -81,6 +81,8 @@ class AssistantSettingsPayload(BaseModel):
     key: Optional[str] = Field(None, max_length=2000)
     mode: Optional[str] = None
     allowDelete: Optional[bool] = None
+    explainFailures: Optional[bool] = None
+    summarizeSessions: Optional[bool] = None
     # 0: no limit
     dailyLimit: Optional[int] = None
 
