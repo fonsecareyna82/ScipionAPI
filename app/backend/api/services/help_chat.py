@@ -4,7 +4,8 @@ No language model: the answer is a short sentence and cards, each a real piece o
 - why a protocol failed: the failure explainer (protocol_failure);
 - what usually comes after a protocol: the next-protocol suggestions (Scipion's usage statistics);
 - how the project's protocols are: their status;
-- anything else: a search over the user guide (resources/help_guide, from scipion-docs) and the help of the
+- anything else: a search over the documentation for users and administrators (resources/help_guide, from
+  scipion-docs) and the help of the
   installed protocols and their parameters (help_index), the parameters of the protocol the user is looking at
   first.
 
@@ -403,8 +404,8 @@ def guideCard(entry: Dict[str, Any]) -> Dict[str, Any]:
     if len(body) > GUIDE_TEXT_CHARS:
         cut = body[:GUIDE_TEXT_CHARS]
         body = cut[:cut.rfind("\n")] if cut.rfind("\n") > GUIDE_TEXT_CHARS // 2 else cut.rstrip() + "…"
-    return {"kind": "guide", "page": entry.get("page", ""), "title": entry.get("title", ""), "text": body,
-            "url": entry.get("url", "")}
+    return {"kind": "guide", "area": entry.get("area", "user-guide"), "page": entry.get("page", ""),
+            "title": entry.get("title", ""), "text": body, "url": entry.get("url", "")}
 
 
 def projectProtocolRef(row: Dict[str, Any]) -> Dict[str, Any]:

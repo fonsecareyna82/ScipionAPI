@@ -1,7 +1,8 @@
-"""Write app/backend/resources/help_guide.py from the user guide of scipion-docs, for the help chat.
+"""Write app/backend/resources/help_guide.py from the documentation of scipion-docs, for the help chat.
 
-Each "## " section of a page of docs/user-guide becomes one entry: its page, its title, its text (without images,
-HTML or markup) and its address in the published documentation. Run it again when the user guide changes:
+Each "## " section of a page of the parts in AREAS becomes one entry: its part, its page, its title, its text
+(without images, HTML or markup) and its address in the published documentation. The parts for developers
+(backend, frontend, development, release) are left out. Run it again when the documentation changes:
 
     python scripts/build_help_guide.py ../scipion-docs
 """
@@ -15,6 +16,8 @@ SITE = "https://fonsecareyna82.github.io/scipion-docs/"
 OUT = os.path.join(os.path.dirname(__file__), "..", "app", "backend", "resources", "help_guide.py")
 # Pages that are not for the users of the web
 SKIP = {"index.md"}
+# The parts of the documentation for the people who use or run ScipionWeb, in the order they are read
+AREAS = ("user-guide", "getting-started", "installation", "configuration", "operations", "cli", "support")
 
 
 def slug(title: str) -> str:
@@ -36,7 +39,7 @@ def cleanText(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def sections(path: str, page: str):
+def sections(path: str, page: str, area: str = "user-guide"):
     with open(path, encoding="utf-8") as handle:
         content = handle.read()
     pageTitle = re.search(r"^#\s+(.+)$", content, flags=re.MULTILINE)
@@ -47,23 +50,26 @@ def sections(path: str, page: str):
         text = cleanText(parts[index + 1])
         if not text:
             continue
-        yield {"page": pageTitle, "title": title, "text": text,
-               "url": "%suser-guide/%s/#%s" % (SITE, page[:-3], slug(title))}
+        yield {"area": area, "page": pageTitle, "title": title, "text": text,
+               "url": "%s%s/%s/#%s" % (SITE, area, page[:-3], slug(title))}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("docs", help="the scipion-docs folder")
     args = parser.parse_args()
-    folder = os.path.join(args.docs, "docs", "user-guide")
-    if not os.path.isdir(folder):
-        sys.exit("No user guide in %s" % folder)
+    if not os.path.isdir(os.path.join(args.docs, "docs", "user-guide")):
+        sys.exit("No user guide in %s" % args.docs)
     entries = []
-    for name in sorted(os.listdir(folder)):
-        if name.endswith(".md") and name not in SKIP:
-            entries.extend(sections(os.path.join(folder, name), name))
+    for area in AREAS:
+        folder = os.path.join(args.docs, "docs", area)
+        if not os.path.isdir(folder):
+            continue
+        for name in sorted(os.listdir(folder)):
+            if name.endswith(".md") and name not in SKIP:
+                entries.extend(sections(os.path.join(folder, name), name, area))
     with open(OUT, "w", encoding="utf-8") as handle:
-        handle.write('"""The sections of the user guide (scipion-docs), for the help chat.\n\n'
+        handle.write('"""The sections of the documentation (scipion-docs) for its users, for the help chat.\n\n'
                      'Written by scripts/build_help_guide.py: do not change it by hand."""\n\n')
         handle.write("GUIDE = ")
         handle.write(pprint.pformat(entries, width=118, sort_dicts=False))
