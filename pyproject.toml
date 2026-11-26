@@ -40,6 +40,8 @@ dependencies = [
   "pillow==10.1.0",
   # The processing report's PDF (the assistant's report)
   "reportlab>=4.0,<5",
+  # Claude as the assistant's provider (Anthropic's SDK; Python < 3.10 gets its last 0.x)
+  "anthropic>=0.40",
   "numpy~=1.24.4; python_version == '3.8'",
   "numpy==1.26.1; python_version >= '3.9'",
   "matplotlib~=3.7.3; python_version == '3.8'",

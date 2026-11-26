@@ -17,14 +17,16 @@ logger = logging.getLogger(__name__)
 ASSISTANT_KEY = "assistant"
 _KEY_SALT = "assistant-key:"
 
-# The providers offered. Every one here speaks the same chat protocol (the one OpenAI made common), so one
-# client talks to all; "local" is any server of the centre that speaks it too (it needs its address).
+# The providers offered. All but Anthropic speak the same chat protocol (the one OpenAI made common), so one
+# client talks to them; "local" is any server of the centre that speaks it too (it needs its address).
 PROVIDERS: Dict[str, Dict[str, Any]] = {
     "openai": {"label": "OpenAI (ChatGPT)", "baseUrl": "https://api.openai.com/v1", "needsKey": True},
     "google": {"label": "Google (Gemini)", "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
                "needsKey": True},
     "mistral": {"label": "Mistral", "baseUrl": "https://api.mistral.ai/v1", "needsKey": True},
     "local": {"label": "Local or compatible model", "baseUrl": "", "needsKey": False},
+    # Claude speaks Anthropic's own format: its own client (assistant_anthropic.py, Anthropic's SDK)
+    "anthropic": {"label": "Anthropic (Claude)", "baseUrl": "https://api.anthropic.com", "needsKey": True},
 }
 
 # What it may do: only read and answer, or also propose actions the user confirms (see assistant_actions.py)
@@ -161,3 +163,15 @@ class AssistantSettings:
                 raise _badRequest("Choose a model before turning the assistant on")
         self.mapper.saveSettings({ASSISTANT_KEY: {key: values[key] for key in DEFAULTS}}, userId)
         return self.view()
+
+
+def providerFor(stored: Dict[str, Any]):
+    """The client for the settings' provider, with their key and model."""
+    key, model = decryptKey(stored.get("keyEncrypted")), stored.get("model") or ""
+    if stored.get("provider") == "anthropic":
+        from app.backend.api.services.assistant_anthropic import AnthropicProvider
+
+        return AnthropicProvider(key, model)
+    from app.backend.api.services.assistant_provider import AssistantProvider
+
+    return AssistantProvider(baseUrlOf(stored), key, model)

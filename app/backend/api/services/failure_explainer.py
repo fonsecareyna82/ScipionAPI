@@ -118,9 +118,10 @@ def explainOne(provider: AssistantProvider, data: Dict[str, Any]) -> Dict[str, A
     return {"text": text[:ANSWER_CHARS], "usage": reply["usage"]}
 
 
-def _provider(db) -> AssistantProvider:
-    stored = AssistantSettings(db).stored()
-    return AssistantProvider(baseUrlOf(stored), decryptKey(stored.get("keyEncrypted")), stored.get("model") or "")
+def _provider(db):
+    from app.backend.api.services.assistant_settings import providerFor
+
+    return providerFor(AssistantSettings(db).stored())
 
 
 def summarizePending(db, provider: Optional[AssistantProvider] = None,

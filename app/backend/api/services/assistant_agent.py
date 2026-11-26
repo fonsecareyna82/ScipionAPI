@@ -509,7 +509,11 @@ class AssistantAgent:
             if not calls:
                 text = str(message.get("content") or "").strip()
                 break
-            messages.append({"role": "assistant", "content": message.get("content") or None, "tool_calls": calls})
+            turn = {"role": "assistant", "content": message.get("content") or None, "tool_calls": calls}
+            if message.get("_raw"):
+                # The provider's own content of this turn (Claude's thinking with it), sent back unchanged
+                turn["_raw"] = message["_raw"]
+            messages.append(turn)
             for call in calls:
                 function = call.get("function") or {}
                 result, step = self.tools.call(str(function.get("name") or ""), function.get("arguments") or "{}")

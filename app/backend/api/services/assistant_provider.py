@@ -131,7 +131,10 @@ class AssistantProvider:
         """{message, usage}: the model's reply (its text and the tools it wants used) and the tokens it took."""
         if not self.model:
             raise AssistantProviderError("No model is chosen")
-        body: Dict[str, Any] = {"model": self.model, "messages": messages}
+        # Keys starting with "_" are this side's own (another provider's raw content), never sent
+        clean = [{key: value for key, value in message.items() if not str(key).startswith("_")}
+                 for message in messages]
+        body: Dict[str, Any] = {"model": self.model, "messages": clean}
         if tools:
             body["tools"] = tools
         data = self._request("POST", "/chat/completions", TIMEOUT_SECONDS, json=body)

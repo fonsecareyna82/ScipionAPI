@@ -17,7 +17,7 @@ from app.backend.api.services.assistant_browse import WebReader
 from app.backend.api.services.assistant_chains import TemplateChains
 from app.backend.api.services.assistant_provider import AssistantProvider, AssistantProviderError
 from app.backend.api.services.assistant_settings import (
-    PROVIDERS, AssistantSettings, baseUrlOf, decryptKey,
+    PROVIDERS, AssistantSettings, baseUrlOf, decryptKey, providerFor,
 )
 from app.backend.api.services.help_chat import MAX_QUESTION, HelpChat
 from app.backend.database import getMapperDependency
@@ -110,7 +110,9 @@ def _assistantFor(mapper, currentUser) -> Optional[AssistantSettings]:
     return None
 
 
-def _providerOf(stored: Dict[str, Any]) -> AssistantProvider:
+def _providerOf(stored: Dict[str, Any]):
+    if stored.get("provider") == "anthropic":
+        return providerFor(stored)
     return AssistantProvider(baseUrlOf(stored), decryptKey(stored.get("keyEncrypted")), stored.get("model") or "")
 
 
@@ -624,7 +626,7 @@ def saveAssistantSettings(payload: AssistantSettingsPayload, mapper: PostgresqlF
     return settings
 
 
-def _providerForPayload(payload: AssistantSettingsPayload, mapper) -> AssistantProvider:
+def _providerForPayload(payload: AssistantSettingsPayload, mapper):
     """The provider as the form shows it now, before it is saved: the key typed, or the one kept."""
     stored = AssistantSettings(mapper.db).merged(payload.dict())
     if not baseUrlOf(stored):
