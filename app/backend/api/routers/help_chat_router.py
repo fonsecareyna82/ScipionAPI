@@ -70,6 +70,12 @@ class ActionPayload(BaseModel):
     launch: Optional[bool] = None
     # Going on with a chain after its stop protocolId ("" starts one that was only added)
     chainId: Optional[int] = None
+    # A subset of protocolId's output kept by its values
+    outputName: Optional[str] = Field(None, max_length=200)
+    table: Optional[str] = Field(None, max_length=200)
+    conditions: Optional[List[Dict[str, Any]]] = Field(None, max_items=6)
+    makes: Optional[str] = Field(None, max_length=100)
+    name: Optional[str] = Field(None, max_length=200)
 
 
 class ReportPayload(BaseModel):
@@ -261,8 +267,24 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         return {"kind": "report", "projectId": int(projectId), "protocolId": protocolId or "",
                 "project": str(project.get("name") or "").rstrip("/").split("/")[-1], "protocols": len(ids)}
 
+    def compareProtocols(projectId: int, protocolIds: List[str]):
+        from app.backend.api.services import compare_protocols
+        from app.backend.api.services.workflow_report import describeProtocol
+
+        allowed(projectId)
+        ids = list(dict.fromkeys(protocolIds))
+        if not compare_protocols.MIN_PROTOCOLS <= len(ids) <= compare_protocols.MAX_PROTOCOLS:
+            raise ValueError("Compare two to four protocols")
+        assistant, help_ = AssistantPostgresqlMapper(mapper.db), HelpChatPostgresqlMapper(mapper.db)
+        for pid in ids:
+            if not assistant.protocol(projectId, pid):
+                raise ValueError("There is no protocol %s in that project" % pid)
+        comparison = compare_protocols.compare([describeProtocol(assistant, help_, projectId, pid) for pid in ids])
+        return dict(comparison, projectId=int(projectId))
+
     reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains,
-               "searchProjects": searchProjects, "prepareReport": prepareReport}
+               "searchProjects": searchProjects, "prepareReport": prepareReport,
+               "compareProtocols": compareProtocols}
     if not canPropose:
         return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                               **reading)
@@ -275,6 +297,17 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
             raise PermissionError("The user can only look at that project, not run things in it")
         return chains.card(projectId, chains.plan(projectId, templateId, fromProtocolId, fromOutput, anchor), reason)
 
+    def proposeSubset(projectId: int, protocolId: str, outputName: str, table: str, conditions, makes, name: str,
+                      reason: str):
+        protocol = workable(projectId, protocolId)
+        plan = _subsetPlan(service, mapper, projectId, protocolId, outputName, table, conditions, makes)
+        return {"kind": "action", "action": "subset", "projectId": int(projectId), "protocolId": str(protocolId),
+                "label": protocol.get("label") or "", "outputName": outputName, "table": table,
+                "conditions": plan["conditions"], "makes": plan["action"], "actions": plan["actions"],
+                "total": plan["total"], "kept": len(plan["kept"]), "removed": len(plan["removed"]),
+                "examples": plan["examples"], "name": name or "subset of %s" % outputName,
+                "reason": str(reason or "")[:500]}
+
     def proposeContinue(projectId: int, chainId: int, stopProtocolId: Optional[str], reason: str):
         if stopProtocolId:
             workable(projectId, stopProtocolId)
@@ -285,7 +318,7 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                           proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
                           proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
-                          proposeContinue=proposeContinue, **reading)
+                          proposeContinue=proposeContinue, proposeSubset=proposeSubset, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -381,6 +414,8 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     checkProjectAccess(project, "work")
     if payload.action in ("template", "continue"):
         return _applyChain(payload, service, mapper, currentUser)
+    if payload.action == "subset":
+        return _applySubset(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -442,6 +477,54 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
     return answer
+
+
+def _subsetPlan(service, mapper, projectId: int, protocolId: str, outputName: str, table: str, conditions,
+                makes: Optional[str]) -> Dict[str, Any]:
+    from app.backend.api.services import subset_by_values
+
+    common = {"projectId": projectId, "protocolId": int(protocolId), "outputName": outputName, "tableName": table,
+              "mapper": mapper, "protocolIdIsScipionId": True}
+    try:
+        schema = service.getMetadataTableSchemaService(**common) or {}
+    except Exception:
+        logger.warning("Could not read the table %s of %s.%s", table, protocolId, outputName, exc_info=True)
+        raise subset_by_values.SubsetError("Protocol %s has no table %s in %s" % (protocolId, table, outputName))
+    return subset_by_values.plan(
+        schema, lambda page, size: service.getMetadataTablePageService(
+            page=page, pageSize=size, sortBy="id", asc=True, selectionOnly=False, **common), conditions, makes)
+
+
+def _applySubset(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """The subset the user confirmed, chosen again by its values now, made with the viewer's own action."""
+    from app.backend.api.services.subset_by_values import SubsetError
+
+    table = payload.table or "objects"
+    try:
+        if not payload.outputName or not payload.protocolId:
+            raise SubsetError("Which output?")
+        plan = _subsetPlan(service, mapper, payload.projectId, payload.protocolId, payload.outputName, table,
+                           payload.conditions or [], payload.makes)
+    except SubsetError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
+                                                           currentUser=currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    name = (payload.name or "").strip() or "subset of %s" % payload.outputName
+    result = service.runMetadataTableActionService(
+        projectId=payload.projectId, protocolId=int(payload.protocolId), outputName=payload.outputName,
+        tableName=table, action=plan["action"], subsetName=name, ids=plan["kept"], currentUser=currentUser,
+        mapper=mapper, protocolIdIsScipionId=True)
+    errors = [str(error) for error in (result.get("errors") or [])] if isinstance(result, dict) else []
+    if isinstance(result, dict) and result.get("success") is False and not errors:
+        errors = [str(result.get("message") or "The subset could not be made")]
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, str(payload.protocolId),
+                {"action": "subset", "output": payload.outputName, "table": table, "makes": plan["action"],
+                 "conditions": plan["conditions"], "kept": len(plan["kept"]), "total": plan["total"],
+                 "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return {"ok": True, "kept": len(plan["kept"]), "total": plan["total"]}
 
 
 def _applyChain(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:

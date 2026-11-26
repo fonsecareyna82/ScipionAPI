@@ -114,6 +114,26 @@ _CHANGES = {"type": "array", "description": "The parameters to change, by their 
                 "required": ["name", "value"]}}
 _REASON = {"type": "string", "description": "One sentence for the user: why"}
 
+SUBSET_TOOL = _function(
+    "propose_subset", "Propose a subset of an output kept by its values: the rows of one of its tables that meet "
+                      "every condition (e.g. CTFs with a resolution better than 5, 2D classes with more than 1000 "
+                      "particles). Read the table's schema first (read_page .../metadata/tables/{table}/schema) "
+                      "for the column names and what a subset can make (its actions). The card says how many are "
+                      "kept; a subset protocol is made when the user applies it.",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL,
+     "outputName": {"type": "string", "description": "The output, e.g. outputCTF"},
+     "table": {"type": "string", "description": "Its table; 'objects' (the items) unless said"},
+     "conditions": {"type": "array", "description": "What to keep: every condition must hold",
+                    "items": {"type": "object", "properties": {
+                        "column": {"type": "string", "description": "A column name of the schema"},
+                        "op": {"type": "string", "enum": ["<", "<=", ">", ">=", "=", "!="]},
+                        "value": {"type": "string"}}, "required": ["column", "op", "value"]}},
+     "makes": {"type": "string", "description": "One of the schema's actions (what the subset is made of); the "
+                                                "first one if left out"},
+     "name": {"type": "string", "description": "A short name for the new subset"},
+     "reason": _REASON},
+    ["projectId", "protocolId", "outputName", "conditions", "reason"])
+
 DUPLICATE_TOOL = _function(
     "propose_duplicate", "Propose a copy of a protocol, not launched, with changed parameters if asked. It leaves "
                          "the original and the protocols depending on it untouched; the user launches the copy.",
@@ -127,7 +147,7 @@ DELETE_TOOL = _function(
 
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
-PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy or the next step with the propose_* tools when the "
+PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
@@ -153,6 +173,14 @@ SEARCH_TOOL = _function(
      "since": {"type": "string", "description": "Run on or after this date, YYYY-MM-DD"},
      "until": {"type": "string", "description": "Run before this date, YYYY-MM-DD"},
      "status": {"type": "string", "enum": ["", "finished", "failed", "running", "aborted", "saved"]}}, [])
+
+COMPARE_TOOL = _function(
+    "compare_protocols", "Compare two to four protocols of a project: the parameters that differ, what each takes, "
+                         "what each produced (sizes) and how long each ran. The user sees the table; explain what "
+                         "changed and what it did to the results.",
+    {"projectId": _PROJECT, "protocolIds": {"type": "array", "items": {"type": "string"},
+                                            "description": "Two to four protocol ids of the project"}},
+    ["projectId", "protocolIds"])
 
 REPORT_TOOL = _function(
     "prepare_report", "Prepare the processing report of a project, for the user to download: a PDF with every "
@@ -218,6 +246,7 @@ STEP_LABELS = {
     "list_templates": "Looked at the templates",
     "search_projects": "Searched your projects for \"{words}\"",
     "prepare_report": "Prepared the report of project {projectId}",
+    "compare_protocols": "Compared protocols of project {projectId}",
     "list_chains": "Looked at the chains of project {projectId}",
     "propose_template": "Proposed a template for project {projectId}",
     "propose_continue_chain": "Proposed going on after protocol {stopProtocolId}",
@@ -225,6 +254,7 @@ STEP_LABELS = {
     "propose_stop": "Proposed stopping protocol {protocolId}",
     "propose_next_step": "Proposed a next step after protocol {protocolId}",
     "propose_duplicate": "Proposed a copy of protocol {protocolId}",
+    "propose_subset": "Proposed a subset of protocol {protocolId}",
     "propose_delete": "Proposed deleting protocol {protocolId}",
 }
 
@@ -262,7 +292,9 @@ class AssistantTools:
                  proposeTemplate: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeContinue: Optional[Callable[[int, int, str, str], Dict[str, Any]]] = None,
                  searchProjects: Optional[Callable[..., Dict[str, Any]]] = None,
-                 prepareReport: Optional[Callable[[int, Optional[str]], Dict[str, Any]]] = None):
+                 prepareReport: Optional[Callable[[int, Optional[str]], Dict[str, Any]]] = None,
+                 compareProtocols: Optional[Callable[[int, List[str]], Dict[str, Any]]] = None,
+                 proposeSubset: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -284,6 +316,11 @@ class AssistantTools:
             self._calls["search_projects"] = lambda args: searchProjects(
                 str(args.get("words") or ""), args.get("since") or None, args.get("until") or None,
                 str(args.get("status") or ""))
+        # Comparing protocols, shown as a table under the answer
+        self.canCompare = compareProtocols is not None
+        if self.canCompare:
+            self._calls["compare_protocols"] = lambda args: self._compared(compareProtocols(
+                int(args["projectId"]), [str(pid) for pid in args.get("protocolIds") or []]))
         # The processing report, shown as a card to download
         self.canReport = prepareReport is not None
         if self.canReport:
@@ -321,6 +358,11 @@ class AssistantTools:
             self._calls["propose_continue_chain"] = lambda args: self._proposed(proposeContinue(
                 int(args["projectId"]), int(args["chainId"]), str(args.get("stopProtocolId") or "") or None,
                 str(args.get("reason") or "")))
+        if self.canPropose and proposeSubset is not None:
+            self._calls["propose_subset"] = lambda args: self._proposed(proposeSubset(
+                int(args["projectId"]), str(args["protocolId"]), str(args["outputName"]),
+                str(args.get("table") or "objects"), args.get("conditions") or [], args.get("makes") or None,
+                str(args.get("name") or ""), str(args.get("reason") or "")))
         # Deleting only when it is given on top of proposing (the administrator turned it on)
         self.canDelete = self.canPropose and proposeDelete is not None
         if self.canDelete:
@@ -328,6 +370,11 @@ class AssistantTools:
                 int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or "")))
         self.cards: List[Dict[str, Any]] = []
         self.proposals: List[Dict[str, Any]] = []
+
+    def _compared(self, comparison: Dict[str, Any]) -> Dict[str, Any]:
+        card = dict(comparison, kind="comparison")
+        self.cards = [item for item in self.cards if item.get("kind") != "comparison"] + [card]
+        return dict(comparison, note="The user sees this as a table under your answer: explain, do not repeat it.")
 
     def _reported(self, card: Dict[str, Any]) -> Dict[str, Any]:
         if not any(item.get("kind") == "report" for item in self.cards):
@@ -353,17 +400,19 @@ class AssistantTools:
     def definitions(self) -> List[Dict[str, Any]]:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \
             + ([SEARCH_TOOL] if self.canSearch else []) + ([REPORT_TOOL] if self.canReport else []) \
+            + ([COMPARE_TOOL] if self.canCompare else []) \
             + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
         if not self.canPropose:
             return reading
         return reading + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
+            + ([SUBSET_TOOL] if "propose_subset" in self._calls else []) \
             + (TEMPLATE_PROPOSAL_TOOLS if self.canProposeTemplates else []) \
             + ([DELETE_TOOL] if self.canDelete else [])
 
     def _proposed(self, card: Dict[str, Any]) -> Dict[str, Any]:
         self.proposals.append(card)
         summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs", "links",
-                                              "missing", "next") if key in card}
+                                              "missing", "next", "kept", "removed", "total", "makes") if key in card}
         if "steps" in card:
             summary["stops"] = [step["id"] for step in card["steps"] if step.get("stop")]
         return {"proposed": True, "shownToTheUser": summary,

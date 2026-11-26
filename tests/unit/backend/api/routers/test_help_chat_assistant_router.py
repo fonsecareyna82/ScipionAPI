@@ -179,6 +179,17 @@ class _Service:
         _Service.calls.append(("duplicate", [item.id for item in items]))
         return {"status": 0, "errors": [], "duplicated": [{"sourceId": items[0].id, "newId": "200"}]}
 
+    def getMetadataTableSchemaService(self, **kwargs):
+        return {"columns": [{"name": "id"}, {"name": "_resolution"}], "actions": ["CTFModel"]}
+
+    def getMetadataTablePageService(self, page, pageSize, **kwargs):
+        rows = [{"id": 1, "values": [1, 3.1]}, {"id": 2, "values": [2, 6.0]}, {"id": 3, "values": [3, 2.8]}]
+        return {"totalRows": 3, "rows": rows if page == 1 else []}
+
+    def runMetadataTableActionService(self, **kwargs):
+        _Service.calls.append(("subset", kwargs["ids"], kwargs["action"], kwargs["subsetName"]))
+        return {"success": True}
+
     def saveProtocol(self, mapper, projectId, protocolId, className, params, setToSave=True,
                      protocolIdIsScipionId=False):
         _Service.calls.append(("save", protocolId, params))
@@ -334,3 +345,16 @@ def test_ReportWithoutThePdfLibraryIsSaid(router, monkeypatch):
     monkeypatch.setattr(workflow_report_pdf, "render", missing)
     response = _client(router, []).post("/help-chat/report", json={"projectId": 7})
     assert response.status_code == 501 and "reportlab" in response.json()["detail"]
+
+
+def test_ApplySubsetChoosesTheRowsAgainAndUsesTheViewersAction(applying):
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "subset", "projectId": 7, "protocolId": "5", "outputName": "outputCTF",
+            "conditions": [{"column": "_resolution", "op": "<", "value": "5"}], "name": "good CTFs"}
+    response = client.post("/help-chat/actions/apply", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "kept": 2, "total": 3}
+    assert _Service.calls == [("subset", [1, 3], "CTFModel", "good CTFs")]
+    bad = client.post("/help-chat/actions/apply", json=dict(body, conditions=[{"column": "_nope", "op": "<",
+                                                                               "value": "5"}]))
+    assert bad.status_code == 409

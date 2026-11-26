@@ -81,11 +81,45 @@ def protocolIdsOf(mapper, projectId: int, protocolId: Optional[str]) -> List[str
     return ids
 
 
+def describeProtocol(assistant, help_, projectId: int, pid: str, plugin: Optional[str] = None,
+                     packages: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """One protocol as the report and the comparison show it: its kind, program and version, inputs, every
+    parameter of its form (options by their text), outputs with their sizes and its last run."""
+    from app.backend.api.services import help_index
+
+    row = assistant.protocol(projectId, pid) or {}
+    className = row.get("className") or ""
+    helpOf = help_index.protocolHelp(className) or {}
+    stored = row.get("params") or {}
+    params = []
+    for param in helpOf.get("params") or []:
+        if param.get("pointer") or param["name"] not in stored or stored[param["name"]] in (None, "", [], {}):
+            continue
+        params.append({"section": param.get("section") or "", "name": param["name"], "label": param["label"],
+                       "value": _value(_choice(param, stored[param["name"]]))})
+    package = (packages or {}).get(plugin) if plugin else None
+    run = assistant.lastRun(projectId, pid) or {}
+    inputs = []
+    for name, refs in assistant.pointerParams(projectId, pid).items():
+        for ref in refs if isinstance(refs, list) else [refs]:
+            parent, _, output = str(ref).partition(".")
+            inputs.append({"input": name, "protocolId": parent, "output": output})
+    return {
+        "protocolId": str(pid), "label": row.get("label") or className, "className": className,
+        "protocol": helpOf.get("label") or className, "status": row.get("status") or "",
+        "plugin": plugin, "package": package, "version": _packageVersion(package),
+        "inputs": inputs, "params": params,
+        "outputs": [{"name": output.get("outputName"), "type": output.get("setClassName"),
+                     "size": output.get("size")} for output in help_.protocolOutputs(projectId, pid)],
+        "run": {"started": _when(run.get("startedAt")), "ended": _when(run.get("endedAt")),
+                "host": run.get("host"), "queue": run.get("queueName"), "gpus": run.get("gpus"),
+                "threads": run.get("threads"), "mpi": run.get("mpi")} if run else None,
+    }
+
+
 def reportData(service, mapper, currentUser: Dict[str, Any], projectId: int,
                protocolId: Optional[str] = None) -> Dict[str, Any]:
     """Everything the report says, and the workflow file to import (its "workflowFile")."""
-    from app.backend.api.services import help_index
-
     project = service.getProjectDbRow(mapper, projectId, currentUser)
     if not project:
         raise PermissionError("The user cannot see that project")
@@ -107,37 +141,7 @@ def reportData(service, mapper, currentUser: Dict[str, Any], projectId: int,
     packages = metadata.get("requiredPackages") or {}
     assistant = AssistantPostgresqlMapper(mapper.db)
     help_ = HelpChatPostgresqlMapper(mapper.db)
-    protocols = []
-    for pid in ids:
-        row = assistant.protocol(projectId, pid) or {}
-        className = row.get("className") or ""
-        helpOf = help_index.protocolHelp(className) or {}
-        stored = row.get("params") or {}
-        params = []
-        for param in helpOf.get("params") or []:
-            if param.get("pointer") or param["name"] not in stored or stored[param["name"]] in (None, "", [], {}):
-                continue
-            params.append({"section": param.get("section") or "", "name": param["name"], "label": param["label"],
-                           "value": _value(_choice(param, stored[param["name"]]))})
-        plugin = pluginOf.get(pid)
-        package = packages.get(plugin) if plugin else None
-        run = assistant.lastRun(projectId, pid) or {}
-        inputs = []
-        for name, refs in assistant.pointerParams(projectId, pid).items():
-            for ref in refs if isinstance(refs, list) else [refs]:
-                parent, _, output = str(ref).partition(".")
-                inputs.append({"input": name, "protocolId": parent, "output": output})
-        protocols.append({
-            "protocolId": pid, "label": row.get("label") or className, "className": className,
-            "protocol": helpOf.get("label") or className, "status": row.get("status") or "",
-            "plugin": plugin, "package": package, "version": _packageVersion(package),
-            "inputs": inputs, "params": params,
-            "outputs": [{"name": output.get("outputName"), "type": output.get("setClassName"),
-                         "size": output.get("size")} for output in help_.protocolOutputs(projectId, pid)],
-            "run": {"started": _when(run.get("startedAt")), "ended": _when(run.get("endedAt")),
-                    "host": run.get("host"), "queue": run.get("queueName"), "gpus": run.get("gpus"),
-                    "threads": run.get("threads"), "mpi": run.get("mpi")} if run else None,
-        })
+    protocols = [describeProtocol(assistant, help_, projectId, pid, pluginOf.get(pid), packages) for pid in ids]
     programs = {}
     for protocol in protocols:
         if protocol["package"]:
