@@ -126,12 +126,14 @@ class AssistantSettings:
         if payload.get("allowDelete") is not None:
             values["allowDelete"] = bool(payload["allowDelete"])
         if payload.get("dailyLimit") is not None:
+            # 0 (or empty): no limit, e.g. for a model the centre runs itself
+            text = str(payload["dailyLimit"]).strip()
             try:
-                limit = int(payload["dailyLimit"])
+                limit = int(text) if text else 0
             except (TypeError, ValueError):
                 raise _badRequest("The daily limit must be a number")
-            if not 1 <= limit <= MAX_DAILY_LIMIT:
-                raise _badRequest("The daily limit must be between 1 and %d" % MAX_DAILY_LIMIT)
+            if not 0 <= limit <= MAX_DAILY_LIMIT:
+                raise _badRequest("The daily limit must be between 0 (no limit) and %d" % MAX_DAILY_LIMIT)
             values["dailyLimit"] = limit
         key = payload.get("key")
         if key is not None:

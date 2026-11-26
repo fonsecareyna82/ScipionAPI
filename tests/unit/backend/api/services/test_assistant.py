@@ -85,8 +85,13 @@ def test_LocalModelNeedsItsAddressButNoKey(settings):
 
 def test_DailyLimitIsChecked(settings):
     with pytest.raises(HTTPException):
-        settings.save({"dailyLimit": 0}, 1)
+        settings.save({"dailyLimit": -1}, 1)
+    with pytest.raises(HTTPException):
+        settings.save({"dailyLimit": "many"}, 1)
     assert settings.save({"dailyLimit": 7}, 1)["dailyLimit"] == 7
+    # 0 or empty: no limit
+    assert settings.save({"dailyLimit": 0}, 1)["dailyLimit"] == 0
+    assert settings.save({"dailyLimit": ""}, 1)["dailyLimit"] == 0
 
 
 # Provider ----------------------------------------------------------------------------------------------------

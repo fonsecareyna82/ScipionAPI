@@ -269,3 +269,14 @@ def test_ApplyDeleteRefusedWhenAChildHasResults(applying, monkeypatch):
                                                              "confirm": "37"})
     assert response.status_code == 409 and "#105" in response.json()["detail"]
     assert _Service.calls == []
+
+
+def test_NoLimitWhenItIsZero(router):
+    _turnOn(router, limit=1)
+    router.AssistantSettings(None).save({"dailyLimit": 0}, 1)
+    client = _client(router, ["assistant.use"])
+    assert client.get("/help-chat/status").json() == {"assistant": True, "dailyLimit": 0}
+    for _ in range(3):
+        answer = client.post("/help-chat/ask", json={"question": "again"})
+        assert answer.status_code == 200
+        assert "left" not in answer.json()

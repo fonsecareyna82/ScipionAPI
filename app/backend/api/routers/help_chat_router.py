@@ -67,6 +67,7 @@ class AssistantSettingsPayload(BaseModel):
     key: Optional[str] = Field(None, max_length=2000)
     mode: Optional[str] = None
     allowDelete: Optional[bool] = None
+    # 0: no limit
     dailyLimit: Optional[int] = None
 
 
@@ -88,7 +89,9 @@ def chatStatus(currentUser: dict = Depends(getCurrentUser),
     settings = _assistantFor(mapper, currentUser)
     if settings is None:
         return {"assistant": False}
-    limit = int(settings.stored()["dailyLimit"])
+    limit = int(settings.stored()["dailyLimit"] or 0)
+    if limit <= 0:
+        return {"assistant": True, "dailyLimit": 0}
     used = AssistantPostgresqlMapper(mapper.db).usageToday(int(currentUser["id"]))["questions"]
     return {"assistant": True, "dailyLimit": limit, "left": max(0, limit - used)}
 
@@ -222,8 +225,9 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
     stored = settings.stored()
     usage = AssistantPostgresqlMapper(mapper.db)
     userId = int(currentUser["id"])
-    limit = int(stored["dailyLimit"])
-    if usage.usageToday(userId)["questions"] >= limit:
+    # 0: no limit
+    limit = int(stored["dailyLimit"] or 0)
+    if limit > 0 and usage.usageToday(userId)["questions"] >= limit:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                             detail="You asked the assistant %d times today, the most allowed. "
                                    "It answers again tomorrow." % limit)
@@ -248,7 +252,8 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
     tokens = answer.pop("usage")
     usage.addUsage(userId, 1, tokens["inputTokens"], tokens["outputTokens"])
-    answer["left"] = max(0, limit - usage.usageToday(userId)["questions"])
+    if limit > 0:
+        answer["left"] = max(0, limit - usage.usageToday(userId)["questions"])
     return answer
 
 
