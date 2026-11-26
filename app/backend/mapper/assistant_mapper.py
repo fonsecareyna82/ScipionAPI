@@ -267,3 +267,46 @@ class AssistantPostgresqlMapper:
     def lastRun(self, projectId: int, protocolId) -> Optional[Dict[str, Any]]:
         row = self.db.fetchOne(LAST_RUN_SQL, (int(projectId), str(protocolId)))
         return dict(row) if row else None
+
+    # Conversations of the help chat ------------------------------------------------------------------------
+    def conversation(self, userId: int, conversationId: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne('SELECT id, "projectId", title, "createdAt", "updatedAt" FROM assistant_conversations '
+                               'WHERE id = %s AND "userId" = %s', (int(conversationId), int(userId)))
+        return dict(row) if row else None
+
+    def addConversation(self, userId: int, projectId: Optional[int], title: str) -> int:
+        row = self.db.executeReturningOne('INSERT INTO assistant_conversations ("userId", "projectId", title) '
+                                          'VALUES (%s, %s, %s) RETURNING id', (int(userId), projectId, title))
+        return int(row["id"])
+
+    def addMessage(self, conversationId: int, role: str, text: str, answer: Optional[Dict[str, Any]] = None) -> None:
+        with self.db.transaction():
+            self.db.execute('INSERT INTO assistant_messages ("conversationId", role, text, answer) '
+                            'VALUES (%s, %s, %s, %s::JSONB)',
+                            (int(conversationId), role, text, json.dumps(answer, default=str) if answer else None),
+                            commit=False)
+            self.db.execute('UPDATE assistant_conversations SET "updatedAt" = NOW() WHERE id = %s',
+                            (int(conversationId),), commit=False)
+
+    def conversations(self, userId: int, limit: int) -> List[Dict[str, Any]]:
+        rows = self.db.fetchAll("""
+            SELECT c.id, c."projectId", c.title, c."createdAt", c."updatedAt", p.name AS "projectPath",
+                   (SELECT COUNT(*) FROM assistant_messages m WHERE m."conversationId" = c.id) AS messages
+              FROM assistant_conversations c
+              LEFT JOIN projects p ON p.id = c."projectId"
+             WHERE c."userId" = %s
+             ORDER BY c."updatedAt" DESC
+             LIMIT %s""", (int(userId), int(limit)))
+        return [dict(row) for row in rows or []]
+
+    def messages(self, conversationId: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """The messages of a conversation in order; with limit, only its last ones."""
+        rows = self.db.fetchAll('SELECT id, role, text, answer, "createdAt" FROM assistant_messages '
+                                'WHERE "conversationId" = %s ORDER BY id DESC LIMIT %s',
+                                (int(conversationId), int(limit or 1000)))
+        return [dict(row) for row in reversed(rows or [])]
+
+    def deleteConversation(self, userId: int, conversationId: int) -> bool:
+        cursor = self.db.execute('DELETE FROM assistant_conversations WHERE id = %s AND "userId" = %s',
+                                 (int(conversationId), int(userId)))
+        return bool(getattr(cursor, "rowcount", 1))

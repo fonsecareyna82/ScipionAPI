@@ -33,6 +33,12 @@ MAX_PROJECTS = 200
 MAX_PARAM_CHARS = 500
 
 
+# How many turns of a conversation the assistant reads; how long a conversation's title is
+MAX_HISTORY_TURNS = 12
+TITLE_CHARS = 80
+MAX_CONVERSATIONS = 100
+
+
 class HistoryTurn(BaseModel):
     role: str = Field(..., max_length=16)
     text: str = Field("", max_length=20000)
@@ -43,8 +49,11 @@ class HelpQuestion(BaseModel):
     # Where the user is: the project open and the protocol selected in it (its Scipion id), if any
     projectId: Optional[int] = None
     protocolId: Optional[str] = Field(None, max_length=32)
-    # The conversation so far, for the assistant (the rule-based answers do not use it)
+    # The conversation so far, for the assistant (the rule-based answers do not use it); with conversationId the
+    # server reads it from the conversation kept instead
     history: Optional[List[HistoryTurn]] = Field(None, max_items=40)
+    # The conversation this question goes on (one of the user's own); a new one when left out
+    conversationId: Optional[int] = None
 
 
 class ActionPayload(BaseModel):
@@ -332,7 +341,7 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
-                  authorization: str = "") -> Dict[str, Any]:
+                  authorization: str = "", history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     stored = settings.stored()
     usage = AssistantPostgresqlMapper(mapper.db)
     userId = int(currentUser["id"])
@@ -357,7 +366,7 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
                                                               authorization))
     try:
         answer = agent.answer(payload.question, contextLine(project, protocol),
-                              [turn.dict() for turn in payload.history or []])
+                              history if history is not None else [turn.dict() for turn in payload.history or []])
     except AssistantProviderError as error:
         logger.warning("The assistant could not answer: %s", error)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error))
@@ -373,10 +382,44 @@ def ask(payload: HelpQuestion, request: Request, currentUser: dict = Depends(get
         mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> Dict[str, Any]:
     """{text, cards}: a short sentence and the pieces of help that answer the question; from the assistant, also
     the steps it took and how many questions are left today."""
+    conversations = AssistantPostgresqlMapper(mapper.db)
+    userId = int(currentUser["id"])
+    history = None
+    if payload.conversationId is not None:
+        if not conversations.conversation(userId, payload.conversationId):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        # The turns kept, not the ones the browser sends
+        history = [{"role": row["role"], "text": row["text"]}
+                   for row in conversations.messages(payload.conversationId, MAX_HISTORY_TURNS)]
     settings = _assistantFor(mapper, currentUser)
     if settings is not None:
-        return _askAssistant(payload, settings, mapper, currentUser, request.headers.get("authorization") or "")
+        answer = _askAssistant(payload, settings, mapper, currentUser, request.headers.get("authorization") or "",
+                               history)
+    else:
+        answer = _askByRules(payload, mapper, currentUser)
+    answer["conversationId"] = _keepTurn(conversations, userId, payload, answer)
+    return answer
 
+
+def _keepTurn(conversations, userId: int, payload: HelpQuestion, answer: Dict[str, Any]) -> Optional[int]:
+    """Keep the question and its answer in the user's conversation (a new one for a first question); the
+    conversation's id. A conversation that cannot be kept does not lose the answer."""
+    try:
+        conversationId = payload.conversationId
+        if conversationId is None:
+            title = " ".join(payload.question.split())[:TITLE_CHARS]
+            conversationId = conversations.addConversation(userId, payload.projectId, title)
+        conversations.addMessage(conversationId, "user", payload.question)
+        kept = {key: value for key, value in answer.items() if key not in ("left", "conversationId")}
+        conversations.addMessage(conversationId, "assistant", str(answer.get("text") or ""), kept)
+        return conversationId
+    except Exception:
+        logger.warning("Could not keep the help chat conversation of user %s", userId, exc_info=True)
+        return payload.conversationId
+
+
+def _askByRules(payload: HelpQuestion, mapper, currentUser) -> Dict[str, Any]:
+    """The answer of the help without a model (services/help_chat.py)."""
     projectProtocols = explainFailure = protocolOutputs = None
     if payload.projectId is not None:
         from app.backend.api.services.project_service import ProjectService
@@ -605,6 +648,43 @@ def processingReport(payload: ReportPayload, currentUser: dict = Depends(getCurr
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(error))
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": 'attachment; filename="%s_report.pdf"' % stem})
+
+
+# Conversations ----------------------------------------------------------------------------------------------------
+
+@router.get("/conversations")
+def listConversations(currentUser: dict = Depends(getCurrentUser),
+                      mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> Dict[str, Any]:
+    """The user's conversations, the newest first."""
+    rows = AssistantPostgresqlMapper(mapper.db).conversations(int(currentUser["id"]), MAX_CONVERSATIONS)
+    return {"conversations": [{
+        "id": row["id"], "title": row.get("title") or "", "projectId": row.get("projectId"),
+        "project": str(row.get("projectPath") or "").rstrip("/").split("/")[-1] or None,
+        "messages": int(row.get("messages") or 0),
+        "createdAt": row["createdAt"].isoformat() if hasattr(row.get("createdAt"), "isoformat") else row.get("createdAt"),
+        "updatedAt": row["updatedAt"].isoformat() if hasattr(row.get("updatedAt"), "isoformat") else row.get("updatedAt"),
+    } for row in rows]}
+
+
+@router.get("/conversations/{conversationId}")
+def getConversation(conversationId: int, currentUser: dict = Depends(getCurrentUser),
+                    mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> Dict[str, Any]:
+    """One of the user's conversations with its messages (an answer as it was, cards and steps included)."""
+    conversations = AssistantPostgresqlMapper(mapper.db)
+    conversation = conversations.conversation(int(currentUser["id"]), conversationId)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"id": conversation["id"], "title": conversation.get("title") or "",
+            "projectId": conversation.get("projectId"),
+            "messages": [{"role": row["role"], "text": row["text"], "answer": row.get("answer")}
+                         for row in conversations.messages(conversationId)]}
+
+
+@router.delete("/conversations/{conversationId}", status_code=status.HTTP_204_NO_CONTENT)
+def deleteConversation(conversationId: int, currentUser: dict = Depends(getCurrentUser),
+                       mapper: PostgresqlFlatMapper = Depends(getMapperDependency)):
+    if not AssistantPostgresqlMapper(mapper.db).deleteConversation(int(currentUser["id"]), conversationId):
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 # Settings (administrators) ---------------------------------------------------------------------------------------

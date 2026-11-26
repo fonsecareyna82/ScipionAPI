@@ -37,6 +37,36 @@ class _Usage:
         _Usage.rows[userId] = row
 
     protocolRow = None
+    conversationsKept = {}
+    messagesKept = []
+
+    def conversation(self, userId, conversationId):
+        kept = _Usage.conversationsKept.get(conversationId)
+        return kept if kept and kept["userId"] == userId else None
+
+    def addConversation(self, userId, projectId, title):
+        conversationId = len(_Usage.conversationsKept) + 1
+        _Usage.conversationsKept[conversationId] = {"id": conversationId, "userId": userId, "projectId": projectId,
+                                                    "title": title}
+        return conversationId
+
+    def addMessage(self, conversationId, role, text, answer=None):
+        _Usage.messagesKept.append({"conversationId": conversationId, "role": role, "text": text, "answer": answer})
+
+    def messages(self, conversationId, limit=None):
+        rows = [dict(row) for row in _Usage.messagesKept if row["conversationId"] == conversationId]
+        return rows[-limit:] if limit else rows
+
+    def conversations(self, userId, limit):
+        import datetime
+        now = datetime.datetime(2026, 11, 27, tzinfo=datetime.timezone.utc)
+        return [dict(item, createdAt=now, updatedAt=now, projectPath=None, messages=2)
+                for item in _Usage.conversationsKept.values() if item["userId"] == userId]
+
+    def deleteConversation(self, userId, conversationId):
+        if not self.conversation(userId, conversationId):
+            return False
+        return _Usage.conversationsKept.pop(conversationId, None) is not None
 
     def protocol(self, projectId, protocolId):
         return _Usage.protocolRow
@@ -65,6 +95,7 @@ def router(authTestEnv, monkeypatch):
     module = importlib.import_module("app.backend.api.routers.help_chat_router")
     settingsModule = importlib.import_module("app.backend.api.services.assistant_settings")
     _Settings.store, _Usage.rows = {}, {}
+    _Usage.conversationsKept, _Usage.messagesKept = {}, []
     monkeypatch.setattr(settingsModule, "FacilitySettingsPostgresqlMapper", _Settings)
     monkeypatch.setattr(module, "AssistantPostgresqlMapper", _Usage)
     monkeypatch.setattr(module, "AssistantProvider", _Model)
@@ -358,3 +389,40 @@ def test_ApplySubsetChoosesTheRowsAgainAndUsesTheViewersAction(applying):
     bad = client.post("/help-chat/actions/apply", json=dict(body, conditions=[{"column": "_nope", "op": "<",
                                                                                "value": "5"}]))
     assert bad.status_code == 409
+
+
+def test_AConversationIsKeptAndTheModelReadsItFromThere(router, monkeypatch):
+    _turnOn(router, limit=0)
+    seen = []
+
+    def answer(self, question, context, history=None):
+        seen.append(history)
+        return {"text": "Answer to " + question, "steps": [], "cards": [{"kind": "report"}], "usage": {
+            "inputTokens": 1, "outputTokens": 1}, "assistant": True}
+
+    monkeypatch.setattr(router.AssistantAgent, "answer", answer)
+    client = _client(router, ["assistant.use"])
+    first = client.post("/help-chat/ask", json={"question": "Why did #145 fail?", "projectId": None}).json()
+    conversationId = first["conversationId"]
+    second = client.post("/help-chat/ask", json={"question": "And #146?", "conversationId": conversationId,
+                                                  "history": [{"role": "user", "text": "forged"}]}).json()
+    assert second["conversationId"] == conversationId
+    # The model read the turns kept, not the browser's
+    assert seen[1] == [{"role": "user", "text": "Why did #145 fail?"},
+                       {"role": "assistant", "text": "Answer to Why did #145 fail?"}]
+    listed = client.get("/help-chat/conversations").json()["conversations"]
+    assert listed[0]["title"] == "Why did #145 fail?"
+    kept = client.get("/help-chat/conversations/%d" % conversationId).json()
+    assert [m["role"] for m in kept["messages"]] == ["user", "assistant", "user", "assistant"]
+    assert kept["messages"][1]["answer"]["cards"] == [{"kind": "report"}]
+    assert client.delete("/help-chat/conversations/%d" % conversationId).status_code == 204
+    assert client.get("/help-chat/conversations/%d" % conversationId).status_code == 404
+
+
+def test_AnotherUsersConversationIsNotFound(router):
+    _Usage.conversationsKept[9] = {"id": 9, "userId": 99, "projectId": None, "title": "theirs"}
+    client = _client(router, [])
+    assert client.get("/help-chat/conversations/9").status_code == 404
+    assert client.post("/help-chat/ask", json={"question": "hi", "conversationId": 9}).status_code == 404
+    assert client.delete("/help-chat/conversations/9").status_code == 404
+    assert client.get("/help-chat/conversations").json() == {"conversations": []}
