@@ -28,7 +28,8 @@ SYSTEM_PROMPT = """You are the assistant of ScipionWeb, a web application to pro
 staff.
 
 How to answer:
-- Answer in the language of the question. Be brief and concrete; use short paragraphs or lists.
+- Answer in the language of the user's last message, even when earlier messages were in another language. Be \
+brief and concrete; use short paragraphs or lists.
 - Use the tools to look at the user's real data before answering about it. Never invent protocols, parameters, \
 numbers or log lines. If the tools do not give the answer, say so.
 - When a protocol failed, read its failure explanation and the end of its logs, then explain the cause in plain \
@@ -397,6 +398,9 @@ class AssistantAgent:
         messages: List[Dict[str, Any]] = [{"role": "system",
                                            "content": SYSTEM_PROMPT.replace("{actions}", rule) + "\n\n" + context}]
         messages += historyMessages(history or [])
+        if history:
+            # Small models follow the language of the conversation so far; the question's own language wins
+            messages.append({"role": "system", "content": "Reply in the language of the next user message."})
         messages.append({"role": "user", "content": _clip(question, MAX_QUESTION_CHARS)})
         steps: List[str] = []
         usage = {"inputTokens": 0, "outputTokens": 0}

@@ -314,3 +314,13 @@ def test_NoCreditAndBadKeyAreNotAskedAgain():
         with pytest.raises(AssistantProviderError):
             AssistantProvider("http://x/v1", "k", "m", http=http, sleep=lambda s: None).chat([])
         assert http.calls == 1
+
+
+def test_TheLastMessagesLanguageWins():
+    model = ScriptedModel([{"content": "ok"}])
+    AssistantAgent(model, tools()).answer("Why did it fail?", "", [{"role": "user", "text": "¿Qué tal?"},
+                                                                   {"role": "assistant", "text": "Bien."}])
+    messages = model.sent[0]["messages"]
+    assert "language of the user's last message" in messages[0]["content"]
+    assert messages[-2] == {"role": "system", "content": "Reply in the language of the next user message."}
+    assert messages[-1] == {"role": "user", "content": "Why did it fail?"}
