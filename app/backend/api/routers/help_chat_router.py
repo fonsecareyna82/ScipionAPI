@@ -201,8 +201,13 @@ def getAssistantSettings(mapper: PostgresqlFlatMapper = Depends(getMapperDepende
                          currentUser: dict = Depends(requirePermission("settings.manage"))) -> Dict[str, Any]:
     settings = AssistantSettings(mapper.db)
     answer = settings.view()
-    answer["usage"] = {"today": AssistantPostgresqlMapper(mapper.db).totals(0),
-                       "last30Days": AssistantPostgresqlMapper(mapper.db).totals(29)}
+    try:
+        answer["usage"] = {"today": AssistantPostgresqlMapper(mapper.db).totals(0),
+                           "last30Days": AssistantPostgresqlMapper(mapper.db).totals(29)}
+    except Exception:
+        # The settings still load without the usage (its table comes with a migration)
+        logger.warning("Could not read the assistant's usage", exc_info=True)
+        mapper.db.rollback()
     return answer
 
 
