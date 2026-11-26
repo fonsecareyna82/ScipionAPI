@@ -14,6 +14,7 @@ from app.backend.api.services import assistant_actions
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
 from app.backend.api.services.assistant_browse import WebReader
+from app.backend.api.services.assistant_chains import TemplateChains
 from app.backend.api.services.assistant_provider import AssistantProvider, AssistantProviderError
 from app.backend.api.services.assistant_settings import (
     PROVIDERS, AssistantSettings, baseUrlOf, decryptKey,
@@ -49,13 +50,24 @@ class HelpQuestion(BaseModel):
 class ActionPayload(BaseModel):
     action: str = Field(..., max_length=16)
     projectId: int
-    protocolId: str = Field(..., max_length=32)
+    # The protocol the action is about ("" for a whole template)
+    protocolId: str = Field("", max_length=32)
     mode: Optional[str] = Field(None, max_length=16)
     # single: only this protocol (the ones depending on it are reset); all: its whole workflow
     scope: Optional[str] = Field(None, max_length=16)
     changes: Optional[Dict[str, Any]] = None
     # A delete is confirmed by writing the protocol's number
     confirm: Optional[str] = Field(None, max_length=32)
+    # A template: which, from which output of protocolId (cut) or whole with its fields, its links to the project
+    # (template ref -> project ref) and the template ids it stops after
+    templateId: Optional[str] = Field(None, max_length=300)
+    fromOutput: Optional[str] = Field(None, max_length=200)
+    anchor: Optional[str] = Field(None, max_length=200)
+    links: Optional[Dict[str, str]] = None
+    stops: Optional[List[str]] = Field(None, max_items=200)
+    fields: Optional[Dict[str, Any]] = None
+    # Going on with a chain after its stop protocolId
+    chainId: Optional[int] = None
 
 
 class AssistantSettingsPayload(BaseModel):
@@ -212,12 +224,36 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
 
     # The web's pages, read with the user's own sign-in (so as the user)
     readPage = WebReader(authorization).read if authorization else None
+    chains = TemplateChains(service, mapper, currentUser)
+
+    def listTemplates(query: str):
+        return chains.find(query)
+
+    def listChains(projectId: int):
+        allowed(projectId)
+        return chains.chainsOf(projectId)
+
+    reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains}
     if not canPropose:
         return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
-                              readPage=readPage)
+                              **reading)
+
+    def proposeTemplate(projectId: int, templateId: str, fromProtocolId: Optional[str], fromOutput: Optional[str],
+                        anchor: Optional[str], reason: str):
+        if fromProtocolId:
+            workable(projectId, fromProtocolId)
+        elif not _canWork(allowed(projectId)):
+            raise PermissionError("The user can only look at that project, not run things in it")
+        return chains.card(projectId, chains.plan(projectId, templateId, fromProtocolId, fromOutput, anchor), reason)
+
+    def proposeContinue(projectId: int, chainId: int, stopProtocolId: str, reason: str):
+        workable(projectId, stopProtocolId)
+        return chains.continueCard(projectId, chainId, stopProtocolId, reason)
+
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                           proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
-                          proposeDelete if canDelete else None, readPage=readPage)
+                          proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
+                          proposeContinue=proposeContinue, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -311,6 +347,8 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     checkProjectAccess(project, "work")
+    if payload.action in ("template", "continue"):
+        return _applyChain(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -365,6 +403,30 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
     return answer
+
+
+def _applyChain(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """A template added (and launched up to its first stops) or a chain gone on with after a stop."""
+    chains = TemplateChains(service, mapper, currentUser)
+    try:
+        if payload.action == "template":
+            if not payload.templateId:
+                raise ProposalError("Which template?")
+            result = chains.apply(payload.projectId, payload.templateId, payload.protocolId or None,
+                                  payload.fromOutput, payload.anchor, payload.links or {}, payload.stops or [],
+                                  payload.fields or {})
+        else:
+            if payload.chainId is None or not payload.protocolId:
+                raise ProposalError("Which chain and stop?")
+            result = chains.launchNext(payload.projectId, payload.chainId, payload.protocolId)
+    except ProposalError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                str(payload.templateId or payload.chainId or ""),
+                {"action": payload.action, "templateId": payload.templateId, "chainId": result.get("chainId") or
+                 payload.chainId, "from": payload.protocolId, "launched": result.get("launched"),
+                 "errors": (result.get("errors") or [])[:3]})
+    return dict(result, ok=not result.get("errors"))
 
 
 # Settings (administrators) ---------------------------------------------------------------------------------------
