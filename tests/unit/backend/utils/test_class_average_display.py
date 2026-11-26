@@ -109,33 +109,57 @@ def test_representatives_are_read_from_their_original_data(tmp_path):
     assert display.readClassRepresentative(str(volume), None).shape == (16, 16, 16)
 
 
-def test_a_2d_class_shows_linear_with_its_background_at_mid_gray():
-    # As the classification programs show their averages: not smoothed, nothing turned black
-    weak = display.displayClass2DAverage(classAverage(signal=3, seed=1), 64).astype(float)
-    strong = display.displayClass2DAverage(classAverage(signal=8, seed=2) * 50 + 1000, 64).astype(float)
-    yy, xx = np.mgrid[:64, :64]
-    background = np.hypot(yy - 32, xx - 32) > 16
-    for image in (weak, strong):
-        assert abs(float(np.median(image[background])) - 128) < 12
-        assert image[28:36, 28:36].mean() > float(np.median(image[background])) + 50
-    # The noise keeps its spread: no dark blots made of it
-    assert np.percentile(weak[background], 1) > 40
+
+def test_2d_classes_share_the_gray_window_of_their_set(tmp_path):
+    # As cryoSPARC: one window for the whole set, so a weak class shows dimmer than a strong one
+    import mrcfile
+    stack = np.stack([classAverage(signal=8, seed=1), classAverage(signal=8, seed=2),
+                      classAverage(signal=8, seed=3), classAverage(signal=2, seed=4)]).astype(np.float32)
+    path = tmp_path / "classes.mrcs"
+    with mrcfile.new(str(path)) as mrc:
+        mrc.set_data(stack)
+    window = display.classStackWindow(path)
+    minima, maxima = stack.reshape(4, -1).min(axis=1), stack.reshape(4, -1).max(axis=1)
+    assert window == pytest.approx((np.percentile(minima, 20) * 1.1, np.percentile(maxima, 75) * 1.1), rel=1e-5)
+    strong = display.displayClass2DAverage(stack[0], 64, window).astype(float)
+    weak = display.displayClass2DAverage(stack[3], 64, window).astype(float)
+    assert strong[28:36, 28:36].mean() > weak[28:36, 28:36].mean() + 60
+    # Both drawn from the same zero
+    assert abs(float(np.median(strong[:8])) - float(np.median(weak[:8]))) < 20
 
 
-def test_a_few_hot_pixels_do_not_turn_a_2d_class_gray():
+def test_a_2d_class_is_drawn_linear_and_not_smoothed():
+    image = np.zeros((16, 16))
+    image[8, 8] = 10.0
+    image[0, 0] = -10.0
+    shown = display.displayClass2DAverage(image, 16, window=(-10.0, 10.0))
+    assert shown[8, 8] == 255 and shown[0, 0] == 0
+    assert abs(int(shown[4, 4]) - 128) <= 1
+    # One bright pixel stays one pixel
+    assert shown[8, 9] == shown[4, 4]
+
+
+def test_a_2d_class_alone_takes_its_own_window():
     image = classAverage(signal=6, seed=5)
-    image[0, 0] = image[0, 1] = 1000.0
     shown = display.displayClass2DAverage(image, 64).astype(float)
-    assert shown[28:36, 28:36].mean() > 200
-
-
-def test_the_area_a_plugin_masked_shows_as_the_background_of_a_2d_class():
-    image = display.displayClass2DAverage(classAverage(masked=True), 64)
-    assert image.shape == (64, 64) and image.dtype == np.uint8
-    assert image[0, 0] == image[0, 63] == image[63, 0] == 128
-    assert image[32, 32] > 200
+    assert shown[28:36, 28:36].mean() > shown[:8].mean() + 60
 
 
 def test_a_flat_2d_class_shows_uniform_gray():
     image = display.displayClass2DAverage(np.full((32, 32), 3.0), 16)
     assert (image == 128).all()
+
+
+def test_the_window_of_a_stack_is_read_again_when_the_file_changes(tmp_path):
+    import os
+    import mrcfile
+    path = tmp_path / "classes.mrcs"
+    with mrcfile.new(str(path)) as mrc:
+        mrc.set_data(np.stack([classAverage(seed=1)] * 2).astype(np.float32))
+    first = display.classStackWindow(path)
+    with mrcfile.new(str(path), overwrite=True) as mrc:
+        mrc.set_data((np.stack([classAverage(seed=1)] * 2) * 3).astype(np.float32))
+    stat = os.stat(path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    assert display.classStackWindow(path)[1] == pytest.approx(first[1] * 3, rel=1e-5)
+    assert display.classStackWindow(tmp_path / "missing.mrcs") is None

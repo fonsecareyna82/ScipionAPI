@@ -14,6 +14,9 @@ projection, or as their central slice.
 """
 from __future__ import annotations
 
+import os
+import threading
+from collections import OrderedDict
 from typing import Optional
 
 import numpy as np
@@ -69,15 +72,73 @@ def _resizeUnit(values, size: int) -> np.ndarray:
     return np.dstack(channels)
 
 
-# Brightest displayed value of a 2D class: this percentile of the image (a few hot pixels do not
-# turn the rest gray).
-_CLASS_2D_WHITE_PERCENTILE = 99.9
+# The gray window of 2D classes, as cryoSPARC draws them: one for every class of a
+# set, from the darkest and brightest values of its classes (these percentiles of
+# their minima and maxima, times this factor). A class with little signal then
+# shows dimmer than the good ones, as there.
+_CLASS_2D_BLACK_PERCENTILE = 20
+_CLASS_2D_WHITE_PERCENTILE = 75
+_CLASS_2D_WINDOW_FACTOR = 1.1
+_STACK_WINDOWS_MAX = 64
+_stackWindows: "OrderedDict" = OrderedDict()
+_stackWindowsLock = threading.Lock()
 
 
-def displayClass2DAverage(image, size: int) -> np.ndarray:
-    """A uint8 (size x size) display image of a 2D class average, as the classification programs
-    show theirs: linear, its background at mid gray and its brightest part white, not smoothed.
-    What is darker than the background goes down from the gray the same way."""
+def _windowOf(minima, maxima) -> Optional[tuple]:
+    black = float(np.percentile(minima, _CLASS_2D_BLACK_PERCENTILE)) * _CLASS_2D_WINDOW_FACTOR
+    white = float(np.percentile(maxima, _CLASS_2D_WHITE_PERCENTILE)) * _CLASS_2D_WINDOW_FACTOR
+    if not (np.isfinite(black) and np.isfinite(white)) or white <= black:
+        return None
+    return black, white
+
+
+def classStackWindow(filePath) -> Optional[tuple]:
+    """The (black, white) values shared by every 2D class of a stack file; None when it cannot be read.
+
+    Kept per file, its date and size: a streaming classification writes its averages again.
+    """
+    path = str(filePath)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (path, stat.st_mtime_ns, stat.st_size)
+    with _stackWindowsLock:
+        if key in _stackWindows:
+            _stackWindows.move_to_end(key)
+            return _stackWindows[key]
+    try:
+        if path.lower().endswith(_MRC_EXTENSIONS):
+            import mrcfile
+            data = mrcfile.mmap(path, mode="r", permissive=True).data
+        else:
+            data = readClassRepresentative(path, None)
+        data = np.asarray(data)
+        if data.ndim == 2:
+            data = data[np.newaxis]
+        if data.ndim != 3 or data.size == 0:
+            return None
+        minima, maxima = [], []
+        for image in data:
+            finite = np.asarray(image, dtype=np.float64)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                minima.append(finite.min())
+                maxima.append(finite.max())
+        window = _windowOf(minima, maxima) if minima else None
+    except Exception:
+        return None
+    with _stackWindowsLock:
+        _stackWindows[key] = window
+        while len(_stackWindows) > _STACK_WINDOWS_MAX:
+            _stackWindows.popitem(last=False)
+    return window
+
+
+def displayClass2DAverage(image, size: int, window: Optional[tuple] = None) -> np.ndarray:
+    """A uint8 (size x size) display image of a 2D class average, as cryoSPARC draws them:
+    linear, not smoothed, between the (black, white) values of its set (classStackWindow).
+    Without them, the class's own values set the window the same way."""
     data = np.asarray(image, dtype=np.float64)
     if data.ndim != 2 or data.size == 0:
         return np.zeros((size, size), dtype=np.uint8)
@@ -85,21 +146,12 @@ def displayClass2DAverage(image, size: int) -> np.ndarray:
     if not finite.any():
         return np.zeros((size, size), dtype=np.uint8)
     data = np.where(finite, data, np.median(data[finite]))
-
-    # An area the plugin masked holds one exact value over a large part of the image: it shows as background
-    values, counts = np.unique(data, return_counts=True)
-    masked = (data == values[counts.argmax()]) if counts.max() > 0.05 * data.size else np.zeros(data.shape, bool)
-    valid = ~masked
-    if valid.sum() < 16:
+    if window is None:
+        window = _windowOf([data.min()], [data.max()])
+    if window is None:
         return np.full((size, size), 128, dtype=np.uint8)
-
-    center = float(np.median(data[valid]))
-    span = float(np.percentile(data[valid], _CLASS_2D_WHITE_PERCENTILE)) - center
-    if not np.isfinite(span) or span <= 0:
-        return np.full((size, size), 128, dtype=np.uint8)
-    unit = np.clip((data - center) / (2.0 * span) + 0.5, 0, 1)
-    unit = np.where(valid, unit, 0.5)
-    return _resizeUnit(unit, size)
+    black, white = window
+    return _resizeUnit(np.clip((data - black) / (white - black), 0, 1), size)
 
 
 def displayClassAverage(image, size: int, smoothing: float = _CLASS_SMOOTHING,

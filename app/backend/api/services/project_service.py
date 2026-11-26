@@ -219,7 +219,7 @@ _METADATA_IMAGE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _METADATA_IMAGE_CACHE_MAX_ITEM_BYTES = 8 * 1024 * 1024
 _metadataImageCacheBytes = 0
 # Bumped when class representatives are drawn differently (see class_average_display).
-CLASS_DISPLAY_VERSION = 4
+CLASS_DISPLAY_VERSION = 5
 # Bumped when metadata image cells are drawn differently (2: movies as the mean of their frames)
 METADATA_IMAGE_DISPLAY_VERSION = 2
 # Tilts of a tilt series movie read at once for the tilt series viewer (each decodes its frames in threads too)
@@ -19431,7 +19431,7 @@ class ProjectService:
         """A class representative (2D average or 3D volume) for display; None to fall back."""
         from PIL import Image as PILImage
         from app.backend.utils.class_average_display import (
-            VOLUME_VIEWS, displayClass2DAverage, readClassRepresentative, renderClassVolume,
+            VOLUME_VIEWS, classStackWindow, displayClass2DAverage, readClassRepresentative, renderClassVolume,
         )
         try:
             data = np.squeeze(readClassRepresentative(str(filePath), index if index and index > 0 else None))
@@ -19439,7 +19439,9 @@ class ProjectService:
                 view = volumeView if volumeView in VOLUME_VIEWS else "surface"
                 pixels = renderClassVolume(data, size, view)
             else:
-                pixels = displayClass2DAverage(data, size)
+                # The gray window of the whole set of classes, as cryoSPARC shows them
+                window = classStackWindow(str(filePath)) if index and index > 0 else None
+                pixels = displayClass2DAverage(data, size, window)
         except Exception:
             logger.warning("Could not render class representative %s (index %s); using the preview",
                            filePath, index, exc_info=True)
