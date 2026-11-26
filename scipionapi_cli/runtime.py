@@ -215,6 +215,22 @@ def _ensureLogFile(logPath: Path) -> None:
         logPath.touch()
 
 
+def _rotateLogIfBig(logPath: Path, env: Dict[str, str]) -> None:
+    # Before a start too, for a log a stopped or crashed service left big
+    try:
+        from app.backend.utils import log_rotation
+    except Exception:
+        return
+    limit = log_rotation.DEFAULT_MAX_MB
+    keep = log_rotation.DEFAULT_BACKUPS
+    try:
+        limit = max(1, int(env.get("LOG_MAX_MB", limit)))
+        keep = max(1, int(env.get("LOG_BACKUPS", keep)))
+    except (TypeError, ValueError):
+        pass
+    log_rotation.rotateIfBig(logPath, limit * 1024 * 1024, keep)
+
+
 def _startDetachedProcess(
     args: List[str],
     cwd: Path,
@@ -224,6 +240,9 @@ def _startDetachedProcess(
 ) -> int:
     # startDetachedProcessWithSanityCheck
     _ensureLogFile(logPath)
+    _rotateLogIfBig(logPath, env)
+    # The service keeps its own log small while it runs (app/backend/utils/log_rotation.py)
+    env = dict(env, SCIPIONAPI_LOG_FILE=str(logPath))
 
     with open(logPath, "a", encoding="utf-8") as logFile:
         proc = subprocess.Popen(

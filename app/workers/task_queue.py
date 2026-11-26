@@ -939,6 +939,17 @@ def _startScratchCleaner(**_kwargs):
         logger.warning("Could not start the scratch cleaner", exc_info=True)
 
 
+@worker_ready.connect
+def _startLogRotation(**_kwargs):
+    """Each worker keeps its own log file (celery.log, celery-protocols.log) small."""
+    try:
+        from app.backend.utils.log_rotation import startLogRotation
+
+        startLogRotation()
+    except Exception:
+        logger.warning("Could not start the log rotation", exc_info=True)
+
+
 @control_command(args=[("hostname", str)], signature="<hostname>")
 def clean_scratch(state, hostname=""):
     """Clean this machine's scratch now (only the workers of that machine do it); answers the last cleaning."""

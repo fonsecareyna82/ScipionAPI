@@ -270,6 +270,13 @@ def startDiskUsageMeasurer():
     start(lambda: getMapper().db, projectsRoot)
 
 
+def startLogRotation():
+    """Keep app.log small while the API runs (only when the CLI started it with a log file)."""
+    from app.backend.utils.log_rotation import startLogRotation as start
+
+    start()
+
+
 @asynccontextmanager
 async def lifespan(_app):
     resumeBackgroundDeletes()
@@ -277,6 +284,7 @@ async def lifespan(_app):
     startFacilitySessionWatcher()
     startNotificationSender()
     startDiskUsageMeasurer()
+    startLogRotation()
     yield
 
 

@@ -583,3 +583,32 @@ def test_ProtocolWorkerDoesNotRecycleAfterEveryTask():
     )
 
 
+
+
+def test_StartDetachedProcessRotatesABigLogAndNamesItToTheService(tmp_path, monkeypatch):
+    logPath = tmp_path / "celery.log"
+    logPath.write_bytes(b"x" * (2 * 1024 * 1024))
+    seen = {}
+
+    class FakeProc:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fakePopen(args, **kwargs):
+        seen["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setattr(runtimeModule.subprocess, "Popen", fakePopen)
+    monkeypatch.setattr(runtimeModule.time, "sleep", lambda _s: None)
+
+    pid = runtimeModule._startDetachedProcess(
+        ["celery"], tmp_path, {"LOG_MAX_MB": "1", "LOG_BACKUPS": "2"}, logPath
+    )
+
+    assert pid == 4242
+    assert seen["env"]["SCIPIONAPI_LOG_FILE"] == str(logPath)
+    assert logPath.stat().st_size == 0
+    assert (tmp_path / "celery.log.1").stat().st_size == 2 * 1024 * 1024
