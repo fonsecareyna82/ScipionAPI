@@ -51,9 +51,14 @@ def _params(definition):
             if not label:
                 continue
             # Inputs (pointers to other protocols' outputs) are told apart: the assistant never changes them
-            found.append({"name": name, "label": label, "help": _text(param.help),
-                          "section": section, "group": groupLabel or "",
-                          "pointer": isinstance(param, (PointerParam, MultiPointerParam, RelationParam))})
+            entry = {"name": name, "label": label, "help": _text(param.help),
+                     "section": section, "group": groupLabel or "",
+                     "pointer": isinstance(param, (PointerParam, MultiPointerParam, RelationParam))}
+            # A list of options keeps the position of the one chosen: their texts say what it is
+            choices = getattr(param, "choices", None)
+            if choices:
+                entry["choices"] = [str(choice) for choice in choices]
+            found.append(entry)
 
     for section in definition.iterSections():
         walk(section, _text(section.label), "")
@@ -89,7 +94,8 @@ def _read() -> List[Dict[str, Any]]:
 
 
 def protocolsHelp(read=_read) -> List[Dict[str, Any]]:
-    """[{className, label, doc, params: [{name, label, help, section, group, pointer}]}] of the installed protocols."""
+    """[{className, label, doc, params: [{name, label, help, section, group, pointer, choices?}]}] of the installed
+    protocols."""
     revision = int(getPluginsRevision() or 0)
     with _lock:
         if _cache["protocols"] is not None and _cache["revision"] == revision:

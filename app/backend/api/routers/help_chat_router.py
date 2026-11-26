@@ -72,6 +72,16 @@ class ActionPayload(BaseModel):
     chainId: Optional[int] = None
 
 
+class ReportPayload(BaseModel):
+    projectId: int
+    # Only what led to this protocol; all the project's protocols when left out
+    protocolId: Optional[str] = Field(None, max_length=32)
+    # pdf: the report; workflow: the workflow file to import and run again
+    format: str = Field("pdf", max_length=16)
+    # A methods text written by the assistant (when the user may use it)
+    methods: bool = True
+
+
 class AssistantSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     provider: Optional[str] = None
@@ -243,8 +253,16 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         return search_projects.search(AssistantPostgresqlMapper(mapper.db),
                                       [row["id"] for row in listProjects()], words, since, until, status)
 
+    def prepareReport(projectId: int, protocolId: Optional[str]):
+        from app.backend.api.services.workflow_report import protocolIdsOf
+
+        project = allowed(projectId)
+        ids = protocolIdsOf(mapper, projectId, protocolId)
+        return {"kind": "report", "projectId": int(projectId), "protocolId": protocolId or "",
+                "project": str(project.get("name") or "").rstrip("/").split("/")[-1], "protocols": len(ids)}
+
     reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains,
-               "searchProjects": searchProjects}
+               "searchProjects": searchProjects, "prepareReport": prepareReport}
     if not canPropose:
         return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                               **reading)
@@ -448,6 +466,52 @@ def _applyChain(payload: ActionPayload, service, mapper, currentUser) -> Dict[st
                  payload.chainId, "from": payload.protocolId, "launched": result.get("launched"),
                  "errors": (result.get("errors") or [])[:3]})
     return dict(result, ok=not result.get("errors"))
+
+
+@router.post("/report")
+def processingReport(payload: ReportPayload, currentUser: dict = Depends(getCurrentUser),
+                     mapper: PostgresqlFlatMapper = Depends(getMapperDependency)):
+    """The processing report of a project (or of what led to one protocol) as a PDF, or its workflow file."""
+    from fastapi.responses import Response
+
+    from app.backend.api.services import workflow_report, workflow_report_pdf
+    from app.backend.api.services.project_service import ProjectService
+
+    try:
+        report = workflow_report.reportData(ProjectService(), mapper, currentUser, payload.projectId,
+                                            payload.protocolId or None)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Project not found")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    stem = "%s%s" % (report["project"], "_up_to_%s" % payload.protocolId if payload.protocolId else "")
+    stem = "".join(char if char.isalnum() or char in "-_." else "_" for char in stem)
+    if payload.format == "workflow":
+        if not report["workflowFile"]:
+            raise HTTPException(status_code=500, detail="The workflow could not be exported")
+        return Response(report["workflowFile"], media_type="application/json",
+                        headers={"Content-Disposition": 'attachment; filename="%s_workflow.json"' % stem})
+    methods = None
+    settings = _assistantFor(mapper, currentUser) if payload.methods else None
+    if settings is not None:
+        try:
+            written = workflow_report.writeMethods(_providerOf(settings.stored()), report)
+            methods = written["text"] or None
+            AssistantPostgresqlMapper(mapper.db).addUsage(int(currentUser["id"]), 1,
+                                                          written["usage"]["inputTokens"],
+                                                          written["usage"]["outputTokens"])
+        except AssistantProviderError as error:
+            logger.warning("The assistant could not write the methods of project %s: %s", payload.projectId, error)
+    try:
+        from scipionapi_cli.version import __version__ as version
+    except Exception:
+        version = ""
+    try:
+        pdf = workflow_report_pdf.render(report, methods, version)
+    except workflow_report_pdf.ReportUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(error))
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="%s_report.pdf"' % stem})
 
 
 # Settings (administrators) ---------------------------------------------------------------------------------------

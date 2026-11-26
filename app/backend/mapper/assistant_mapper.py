@@ -134,6 +134,15 @@ SEARCH_PROJECTS_SQL = """
      LIMIT %s
 """
 
+# A protocol's last run: when, where, with what
+LAST_RUN_SQL = """
+    SELECT "startedAt", "endedAt", host, "queueName", gpus, threads, mpi, status
+      FROM protocol_runs
+     WHERE "projectId" = %s AND "protocolId" = %s
+     ORDER BY "startedAt" DESC NULLS LAST, id DESC
+     LIMIT 1
+"""
+
 CHAIN_COLUMNS = ('id, "projectId", "userId", "templateId", title, "protocolIds", parents, stops, passed, launched, '
                  '"createdAt"')
 
@@ -254,3 +263,7 @@ class AssistantPostgresqlMapper:
         condition, values = self._wordsCondition("CONCAT_WS(' ', pr.name, pr.description)", words)
         sql = SEARCH_PROJECTS_SQL.replace("{words}", condition)
         return [dict(row) for row in self.db.fetchAll(sql, tuple([list(projectIds)] + values + [int(limit)])) or []]
+
+    def lastRun(self, projectId: int, protocolId) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne(LAST_RUN_SQL, (int(projectId), str(protocolId)))
+        return dict(row) if row else None

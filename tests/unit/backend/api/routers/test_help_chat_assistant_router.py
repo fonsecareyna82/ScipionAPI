@@ -292,3 +292,45 @@ def test_TheNoticeSwitchesAreSaved(router):
     assert response.status_code == 200, response.text
     saved = response.json()
     assert saved["explainFailures"] is True and saved["summarizeSessions"] is True
+
+
+def test_ReportGivesTheWorkflowFileAndThePdf(router, monkeypatch):
+    from app.backend.api.services import workflow_report, workflow_report_pdf
+
+    report = {"project": "SPA demo", "projectId": 7, "workflowFile": '["workflow"]', "protocols": []}
+    monkeypatch.setattr(workflow_report, "reportData", lambda *args: report)
+    monkeypatch.setattr(workflow_report_pdf, "render", lambda report, methods, version: b"%PDF-fake " +
+                        str(methods).encode())
+    client = _client(router, [])
+    workflow = client.post("/help-chat/report", json={"projectId": 7, "protocolId": "37", "format": "workflow"})
+    assert workflow.text == '["workflow"]'
+    assert 'filename="SPA_demo_up_to_37_workflow.json"' in workflow.headers["content-disposition"]
+    pdf = client.post("/help-chat/report", json={"projectId": 7})
+    assert pdf.headers["content-type"] == "application/pdf" and pdf.content == b"%PDF-fake None"
+
+
+def test_ReportWithMethodsFromTheAssistant(router, monkeypatch):
+    from app.backend.api.services import workflow_report, workflow_report_pdf
+
+    _turnOn(router)
+    monkeypatch.setattr(workflow_report, "reportData", lambda *args: {"project": "SPA", "projectId": 7,
+                                                                      "workflowFile": "", "protocols": []})
+    monkeypatch.setattr(workflow_report, "writeMethods", lambda provider, report: {
+        "text": "Methods text.", "usage": {"inputTokens": 5, "outputTokens": 2}})
+    monkeypatch.setattr(workflow_report_pdf, "render", lambda report, methods, version: methods.encode())
+    pdf = _client(router, ["assistant.use"]).post("/help-chat/report", json={"projectId": 7})
+    assert pdf.content == b"Methods text."
+    assert _Usage.rows[3]["questions"] == 1
+
+
+def test_ReportWithoutThePdfLibraryIsSaid(router, monkeypatch):
+    from app.backend.api.services import workflow_report, workflow_report_pdf
+
+    monkeypatch.setattr(workflow_report, "reportData", lambda *args: {"project": "SPA", "projectId": 7,
+                                                                      "workflowFile": "", "protocols": []})
+
+    def missing(report, methods, version):
+        raise workflow_report_pdf.ReportUnavailable("install reportlab")
+    monkeypatch.setattr(workflow_report_pdf, "render", missing)
+    response = _client(router, []).post("/help-chat/report", json={"projectId": 7})
+    assert response.status_code == 501 and "reportlab" in response.json()["detail"]

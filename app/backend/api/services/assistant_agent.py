@@ -154,6 +154,14 @@ SEARCH_TOOL = _function(
      "until": {"type": "string", "description": "Run before this date, YYYY-MM-DD"},
      "status": {"type": "string", "enum": ["", "finished", "failed", "running", "aborted", "saved"]}}, [])
 
+REPORT_TOOL = _function(
+    "prepare_report", "Prepare the processing report of a project, for the user to download: a PDF with every "
+                      "protocol in order, its program and version, inputs, all its parameters, outputs and runs, "
+                      "plus a methods text, and the workflow file to import and run it again. With a protocol, "
+                      "only what led to it (e.g. a final refinement).",
+    {"projectId": _PROJECT, "protocolId": {"type": "string", "description": "Only what led to this protocol"}},
+    ["projectId"])
+
 TEMPLATE_READ_TOOLS = [
     _function("list_templates", "The facility's processing templates: id, name, the protocols each runs (with their "
                                 "template ids and inputs) and the key steps. Filter with words (e.g. '2D'). Given a "
@@ -209,6 +217,7 @@ STEP_LABELS = {
     "read_page": "Read {path}",
     "list_templates": "Looked at the templates",
     "search_projects": "Searched your projects for \"{words}\"",
+    "prepare_report": "Prepared the report of project {projectId}",
     "list_chains": "Looked at the chains of project {projectId}",
     "propose_template": "Proposed a template for project {projectId}",
     "propose_continue_chain": "Proposed going on after protocol {stopProtocolId}",
@@ -252,7 +261,8 @@ class AssistantTools:
                  listChains: Optional[Callable[[int], Any]] = None,
                  proposeTemplate: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeContinue: Optional[Callable[[int, int, str, str], Dict[str, Any]]] = None,
-                 searchProjects: Optional[Callable[..., Dict[str, Any]]] = None):
+                 searchProjects: Optional[Callable[..., Dict[str, Any]]] = None,
+                 prepareReport: Optional[Callable[[int, Optional[str]], Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -274,6 +284,11 @@ class AssistantTools:
             self._calls["search_projects"] = lambda args: searchProjects(
                 str(args.get("words") or ""), args.get("since") or None, args.get("until") or None,
                 str(args.get("status") or ""))
+        # The processing report, shown as a card to download
+        self.canReport = prepareReport is not None
+        if self.canReport:
+            self._calls["prepare_report"] = lambda args: self._reported(prepareReport(
+                int(args["projectId"]), str(args.get("protocolId") or "") or None))
         # The facility's templates and the chains made from them
         self.canReadTemplates = listTemplates is not None and listChains is not None
         if self.canReadTemplates:
@@ -314,6 +329,12 @@ class AssistantTools:
         self.cards: List[Dict[str, Any]] = []
         self.proposals: List[Dict[str, Any]] = []
 
+    def _reported(self, card: Dict[str, Any]) -> Dict[str, Any]:
+        if not any(item.get("kind") == "report" for item in self.cards):
+            self.cards.append(card)
+        return {"ready": True, "protocols": card.get("protocols"),
+                "note": "The user downloads it from a card under your answer: the PDF and the workflow file."}
+
     def _templateOptions(self, args: Dict[str, Any], found: List[Dict[str, Any]]) -> Dict[str, Any]:
         """The templates for the model; asked from a protocol's output, they are also shown to the user as a list
         to choose from."""
@@ -331,7 +352,8 @@ class AssistantTools:
 
     def definitions(self) -> List[Dict[str, Any]]:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \
-            + ([SEARCH_TOOL] if self.canSearch else []) + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
+            + ([SEARCH_TOOL] if self.canSearch else []) + ([REPORT_TOOL] if self.canReport else []) \
+            + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
         if not self.canPropose:
             return reading
         return reading + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
