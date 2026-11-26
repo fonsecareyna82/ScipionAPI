@@ -251,9 +251,9 @@ class AssistantTools:
         # The facility's templates and the chains made from them
         self.canReadTemplates = listTemplates is not None and listChains is not None
         if self.canReadTemplates:
-            self._calls["list_templates"] = lambda args: {"templates": listTemplates(
+            self._calls["list_templates"] = lambda args: self._templateOptions(args, listTemplates(
                 str(args.get("query") or ""), args.get("projectId"), args.get("fromProtocolId") or None,
-                args.get("fromOutput") or None)}
+                args.get("fromOutput") or None))
             self._calls["list_chains"] = lambda args: {"chains": listChains(int(args["projectId"]))}
         # Proposals only when they are given (the administrator allowed them)
         self.canPropose = bool(proposeRelaunch and proposeStop and proposeNextStep)
@@ -287,6 +287,21 @@ class AssistantTools:
                 int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or "")))
         self.cards: List[Dict[str, Any]] = []
         self.proposals: List[Dict[str, Any]] = []
+
+    def _templateOptions(self, args: Dict[str, Any], found: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """The templates for the model; asked from a protocol's output, they are also shown to the user as a list
+        to choose from."""
+        options = [item for item in found if item.get("fromHere")]
+        if args.get("fromProtocolId") and options and not any(card.get("kind") == "templates" for card in self.cards):
+            self.cards.append({
+                "kind": "templates", "projectId": int(args["projectId"]),
+                "fromProtocolId": str(args["fromProtocolId"]),
+                "fromOutput": str(args.get("fromOutput") or ""),
+                "items": [{"id": item["id"], "name": item.get("name") or item["id"],
+                           "description": item.get("description") or "", "adds": item["fromHere"]["adds"],
+                           "keySteps": item["fromHere"]["keySteps"]} for item in options[:12]]})
+        return {"templates": found,
+                "note": "The user sees these as a list to choose from" if args.get("fromProtocolId") else ""}
 
     def definitions(self) -> List[Dict[str, Any]]:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \

@@ -221,3 +221,30 @@ def test_CardSaysWhenACutAddsVeryLittle(chains):
     plan = runner.plan(7, "WH:3D", "22", None)
     plan["kept"] = plan["kept"][:1]
     assert runner.card(7, plan)["few"] is True
+
+
+def test_TemplateOptionsAreShownToChooseFrom():
+    import json as _json
+
+    from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools
+
+    found = [{"id": "WH:3D", "name": "Workflow 3D", "fromHere": {"adds": 23, "keySteps": ["2D classes"]}},
+             {"id": "WH:tomo", "name": "Tomo", "fromHere": None}]
+    read = [lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []]
+    tools = AssistantTools(*read, listTemplates=lambda *args: found, listChains=lambda p: [])
+
+    class Model:
+        def __init__(self):
+            self.replies = [{"content": None, "tool_calls": [{"id": "c1", "function": {
+                "name": "list_templates", "arguments": _json.dumps(
+                    {"projectId": 7, "fromProtocolId": "105", "fromOutput": "outputParticles"})}}]},
+                {"content": "Choose one."}]
+
+        def chat(self, messages, tools=None):
+            return {"message": self.replies.pop(0), "usage": {"inputTokens": 1, "outputTokens": 1}}
+
+    answer = AssistantAgent(Model(), tools).answer("which workflows?", "")
+    options = [card for card in answer["cards"] if card["kind"] == "templates"]
+    assert options == [{"kind": "templates", "projectId": 7, "fromProtocolId": "105", "fromOutput": "outputParticles",
+                        "items": [{"id": "WH:3D", "name": "Workflow 3D", "description": "", "adds": 23,
+                                   "keySteps": ["2D classes"]}]}]
