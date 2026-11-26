@@ -66,7 +66,7 @@ def router(authTestEnv, monkeypatch):
     monkeypatch.setattr(module, "AssistantPostgresqlMapper", _Usage)
     monkeypatch.setattr(module, "AssistantProvider", _Model)
     monkeypatch.setattr(module, "recordAudit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "_projectTools", lambda mapper, user, canPropose=False: module.AssistantTools(
+    monkeypatch.setattr(module, "_projectTools", lambda mapper, user, *flags: module.AssistantTools(
         lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []))
     return module
 
@@ -168,6 +168,19 @@ class _Service:
         _Service.calls.append(("stop", protocolIds))
         return {"status": 0, "errors": []}
 
+    def deleteProtocol(self, mapper, projectId, protocolIds, protocolIdIsScipionId=False):
+        _Service.calls.append(("delete", protocolIds))
+        return {"status": 0, "errors": []}
+
+    def duplicateProtocol(self, mapper, projectId, items, protocolIdIsScipionId=False):
+        _Service.calls.append(("duplicate", [item.id for item in items]))
+        return {"status": 0, "errors": [], "duplicated": [{"sourceId": items[0].id, "newId": "200"}]}
+
+    def saveProtocol(self, mapper, projectId, protocolId, className, params, setToSave=True,
+                     protocolIdIsScipionId=False):
+        _Service.calls.append(("save", protocolId, params))
+        return None, []
+
 
 HELP = {"className": "Prot2D", "label": "2D", "params": [{"name": "numberOfClasses", "label": "Classes",
                                                           "pointer": False}]}
@@ -224,4 +237,35 @@ def test_ApplyNeedsWorkAccessAndTheProposeMode(applying):
     _Service.access = "work"
     applying.AssistantSettings(None).save({"mode": "answer"}, 1)
     assert client.post("/help-chat/actions/apply", json=body).status_code == 403
+    assert _Service.calls == []
+
+
+def test_ApplyDuplicateMakesTheCopyWithTheChanges(applying):
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37",
+                                                             "changes": {"numberOfClasses": "30"}})
+    assert response.json() == {"ok": True, "newProtocolId": "200"}
+    assert _Service.calls == [("duplicate", ["37"]), ("save", "200", {"numberOfClasses": 30})]
+
+
+def test_ApplyDeleteOnlyTurnedOnAndConfirmedWithTheNumber(applying, monkeypatch):
+    monkeypatch.setattr(applying.HelpChatPostgresqlMapper, "protocolOutputs", lambda self, p, q: [])
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "delete", "projectId": 7, "protocolId": "37", "confirm": "37"}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 403
+    applying.AssistantSettings(None).save({"allowDelete": True}, 1)
+    assert client.post("/help-chat/actions/apply", json=dict(body, confirm="3")).status_code == 409
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 200
+    assert _Service.calls == [("delete", ["37"])]
+
+
+def test_ApplyDeleteRefusedWhenAChildHasResults(applying, monkeypatch):
+    applying.AssistantSettings(None).save({"allowDelete": True}, 1)
+    _Service.affected = [{"protocolId": "37"}, {"protocolId": "105", "runName": "subset", "status": "finished"}]
+    monkeypatch.setattr(applying.HelpChatPostgresqlMapper, "protocolOutputs",
+                        lambda self, p, q: [{"outputName": "x"}] if q == "105" else [])
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "delete", "projectId": 7, "protocolId": "37",
+                                                             "confirm": "37"})
+    assert response.status_code == 409 and "#105" in response.json()["detail"]
     assert _Service.calls == []

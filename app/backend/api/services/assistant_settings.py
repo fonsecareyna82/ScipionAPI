@@ -37,6 +37,8 @@ DEFAULTS: Dict[str, Any] = {
     "model": "",
     "keyEncrypted": "",
     "mode": "answer",
+    # Proposing to delete protocols: on top of proposing, off unless an administrator turns it on
+    "allowDelete": False,
     "dailyLimit": 50,
 }
 
@@ -121,6 +123,8 @@ class AssistantSettings:
             if payload["mode"] not in MODES:
                 raise _badRequest("Unknown mode: %s" % payload["mode"])
             values["mode"] = payload["mode"]
+        if payload.get("allowDelete") is not None:
+            values["allowDelete"] = bool(payload["allowDelete"])
         if payload.get("dailyLimit") is not None:
             try:
                 limit = int(payload["dailyLimit"])

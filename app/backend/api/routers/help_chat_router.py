@@ -53,6 +53,8 @@ class ActionPayload(BaseModel):
     # single: only this protocol (the ones depending on it are reset); all: its whole workflow
     scope: Optional[str] = Field(None, max_length=16)
     changes: Optional[Dict[str, Any]] = None
+    # A delete is confirmed by writing the protocol's number
+    confirm: Optional[str] = Field(None, max_length=32)
 
 
 class AssistantSettingsPayload(BaseModel):
@@ -63,6 +65,7 @@ class AssistantSettingsPayload(BaseModel):
     # None keeps the key there is; "" removes it
     key: Optional[str] = Field(None, max_length=2000)
     mode: Optional[str] = None
+    allowDelete: Optional[bool] = None
     dailyLimit: Optional[int] = None
 
 
@@ -106,7 +109,21 @@ def _preflight(service, mapper, currentUser, projectId: int, protocolId: str, mo
                                                          protocolId=int(protocolId), mode=mode) or {}
 
 
-def _projectTools(mapper, currentUser, canPropose: bool = False) -> AssistantTools:
+def _children(service, mapper, currentUser, projectId: int, protocol: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The protocols depending on one, each with whether it runs or has results (what blocks a delete)."""
+    preflight = _preflight(service, mapper, currentUser, projectId, str(protocol["protocolId"]), "restart")
+    children = []
+    for item in preflight.get("affectedProtocols") or []:
+        childId = str(item.get("protocolId"))
+        if childId == str(protocol["protocolId"]):
+            continue
+        outputs = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, childId)
+        children.append({"protocolId": childId, "label": item.get("runName") or "", "status": item.get("status") or "",
+                         "active": bool(item.get("active")), "hasOutputs": bool(outputs)})
+    return children
+
+
+def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool = False) -> AssistantTools:
     from app.backend.api.services.project_service import ProjectService
     from app.backend.api.services.protocol_failure import explainProtocolFailure
 
@@ -177,9 +194,22 @@ def _projectTools(mapper, currentUser, canPropose: bool = False) -> AssistantToo
         source = workable(projectId, protocolId)
         return assistant_actions.nextStepCard(projectId, source, help_index.protocolHelp(className), reason)
 
-    proposals = (proposeRelaunch, proposeStop, proposeNextStep) if canPropose else (None, None, None)
+    def proposeDuplicate(projectId: int, protocolId: str, changes: Dict[str, Any], reason: str):
+        protocol = workable(projectId, protocolId)
+        return assistant_actions.duplicateCard(projectId, protocol, help_index.protocolHelp(protocol.get("className")),
+                                               changes, reason)
+
+    def proposeDelete(projectId: int, protocolId: str, reason: str):
+        protocol = workable(projectId, protocolId)
+        outputs = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, protocolId)
+        return assistant_actions.deleteCard(projectId, protocol, outputs,
+                                            _children(service, mapper, currentUser, projectId, protocol), reason)
+
+    if not canPropose:
+        return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp)
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
-                          *proposals)
+                          proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
+                          proposeDelete if canDelete else None)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser) -> Dict[str, Any]:
@@ -200,7 +230,9 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
             raise HTTPException(status_code=404, detail="Project not found")
         if payload.protocolId:
             protocol = HelpChatPostgresqlMapper(mapper.db).protocol(int(payload.projectId), payload.protocolId)
-    agent = AssistantAgent(_providerOf(stored), _projectTools(mapper, currentUser, stored.get("mode") == "propose"))
+    propose = stored.get("mode") == "propose"
+    agent = AssistantAgent(_providerOf(stored), _projectTools(mapper, currentUser, propose,
+                                                              propose and bool(stored.get("allowDelete"))))
     try:
         answer = agent.answer(payload.question, contextLine(project, protocol),
                               [turn.dict() for turn in payload.history or []])
@@ -257,8 +289,11 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     from app.backend.api.services.project_service import ProjectService
 
     settings = _assistantFor(mapper, currentUser)
-    if settings is None or settings.stored().get("mode") != "propose":
+    stored = settings.stored() if settings is not None else {}
+    if settings is None or stored.get("mode") != "propose":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose actions")
+    if payload.action == "delete" and not stored.get("allowDelete"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose deletes")
     service = ProjectService()
     project = service.getProjectDbRow(mapper, payload.projectId, currentUser)
     if not project:
@@ -273,17 +308,37 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
                                    payload.mode or "restart")
             hasChildren = any(str(item.get("protocolId")) != str(protocol["protocolId"])
                               for item in preflight.get("affectedProtocols") or [])
+        children = _children(service, mapper, currentUser, payload.projectId, protocol) \
+            if payload.action == "delete" and protocol is not None else None
         plan = assistant_actions.applyChecks(protocol, help_, payload.action, payload.mode or "", payload.scope,
-                                             payload.changes or {}, hasChildren)
+                                             payload.changes or {}, hasChildren, payload.confirm, children)
     except (ProposalError, PermissionError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
-    if payload.action == "stop":
+    answer: Dict[str, Any] = {"ok": True}
+    if payload.action in ("stop", "duplicate", "delete"):
         if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
                                                                currentUser=currentUser):
             raise HTTPException(status_code=404, detail="Project not found")
+    if payload.action == "stop":
         result = service.stopProtocol(mapper, payload.projectId, [payload.protocolId],
                                       protocolIdIsScipionId=True) or {}
+    elif payload.action == "delete":
+        result = service.deleteProtocol(mapper, payload.projectId, [payload.protocolId],
+                                        protocolIdIsScipionId=True) or {}
+    elif payload.action == "duplicate":
+        from app.backend.models.protocol_model import DuplicateItem
+
+        result = service.duplicateProtocol(mapper, payload.projectId, [DuplicateItem(id=payload.protocolId)],
+                                           protocolIdIsScipionId=True) or {}
+        copies = result.get("duplicated") or []
+        if copies and not result.get("errors"):
+            answer["newProtocolId"] = str(copies[0].get("newId"))
+            if plan["params"]:
+                _, saveErrors = service.saveProtocol(mapper, payload.projectId, answer["newProtocolId"],
+                                                     protocol["className"], plan["params"], setToSave=True,
+                                                     protocolIdIsScipionId=True)
+                result = dict(result, errors=list(result.get("errors") or []) + list(saveErrors or []))
     else:
         result = service.executeProtocolWorkflow(mapper=mapper, projectId=payload.projectId,
                                                  protocolId=int(payload.protocolId),
@@ -294,10 +349,10 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
                 str(payload.protocolId), {"action": payload.action, "mode": plan.get("mode"),
                                           "scope": plan.get("scope"), "params": plan.get("params"),
-                                          "errors": errors[:3]})
+                                          "newProtocolId": answer.get("newProtocolId"), "errors": errors[:3]})
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
-    return {"ok": True}
+    return answer
 
 
 # Settings (administrators) ---------------------------------------------------------------------------------------

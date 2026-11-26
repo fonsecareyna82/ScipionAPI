@@ -9,6 +9,12 @@ Relaunch follows the protocol form's rules:
 - with protocols depending on it, the user chooses "only this one" (they are reset and lose their outputs) or
   "the whole workflow" (they run again); nothing is chosen for them.
 Only parameters the user sees in the form can change, never an input (a pointer to another protocol's output).
+
+Duplicate makes a copy that is not launched, with the changes asked, and opens its form.
+
+Delete (only when the administrator allows it besides proposing) is the one that cannot be undone, so: protocols
+only (never projects), never a running one, never one whose depending protocols run or have results (as the web's
+own delete refuses), the card lists everything that is lost, and the user confirms by writing its number.
 """
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -122,13 +128,56 @@ def nextStepCard(projectId: int, source: Dict[str, Any], help_: Optional[Dict[st
             "reason": str(reason or "")[:500]}
 
 
+def duplicateCard(projectId: int, protocol: Dict[str, Any], help_: Optional[Dict[str, Any]],
+                  changes: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
+    checked = parameterChanges(protocol.get("params") or {}, help_, changes or {})
+    return {"kind": "action", "action": "duplicate", "projectId": int(projectId),
+            "protocolId": str(protocol["protocolId"]), "label": protocol.get("label") or "",
+            "className": protocol.get("className") or "", "status": protocol.get("status") or "",
+            "changes": checked, "reason": str(reason or "")[:500]}
+
+
+def blockingChildren(children: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The depending protocols that stop a delete: running ones and ones with results."""
+    return [child for child in children if child.get("active") or child.get("hasOutputs")]
+
+
+def deleteCard(projectId: int, protocol: Dict[str, Any], outputs: List[Dict[str, Any]],
+               children: List[Dict[str, Any]], reason: str = "") -> Dict[str, Any]:
+    status = (protocol.get("status") or "").lower()
+    if status in ACTIVE_STATUSES:
+        raise ProposalError("The protocol is %s; it cannot be deleted while it runs" % status)
+    blocking = blockingChildren(children)
+    if blocking:
+        raise ProposalError("Protocols depending on it are running or have results (%s); they would have to be "
+                            "deleted first, from the project's graph" % ", ".join("#%s" % child["protocolId"]
+                                                                                  for child in blocking))
+    return {"kind": "action", "action": "delete", "projectId": int(projectId),
+            "protocolId": str(protocol["protocolId"]), "label": protocol.get("label") or "",
+            "className": protocol.get("className") or "", "status": status,
+            "outputs": [{"name": item.get("outputName") or "", "type": item.get("setClassName") or "",
+                         "size": item.get("size")} for item in outputs or []],
+            "children": [{"protocolId": str(child["protocolId"]), "label": child.get("label") or "",
+                          "status": child.get("status") or ""} for child in children],
+            "reason": str(reason or "")[:500]}
+
+
 def applyChecks(protocol: Optional[Dict[str, Any]], help_: Optional[Dict[str, Any]], action: str, mode: str,
-                scope: Optional[str], changes: Dict[str, Any], hasChildren: bool) -> Dict[str, Any]:
-    """Check again, as things are now, what the user confirmed; the params to send for a relaunch."""
+                scope: Optional[str], changes: Dict[str, Any], hasChildren: bool,
+                confirm: Optional[str] = None, children: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Check again, as things are now, what the user confirmed; the params to send for a relaunch or a copy."""
     if protocol is None:
         raise ProposalError("The protocol is not in the project any more")
     if action == "stop":
         stopCard(0, protocol)
+        return {}
+    if action == "duplicate":
+        checked = parameterChanges(protocol.get("params") or {}, help_, changes or {})
+        return {"params": {item["name"]: item["to"] for item in checked}}
+    if action == "delete":
+        if str(confirm or "").strip().lstrip("#") != str(protocol["protocolId"]):
+            raise ProposalError("Write the protocol's number (%s) to confirm the delete" % protocol["protocolId"])
+        deleteCard(0, protocol, [], children or [])
         return {}
     if action != "relaunch":
         raise ProposalError("Unknown action: %s" % action)

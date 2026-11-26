@@ -100,13 +100,35 @@ PROPOSAL_TOOLS = [
               ["projectId", "protocolId", "protocolClassName", "reason"]),
 ]
 
+_CHANGES = {"type": "array", "description": "The parameters to change, by their name as protocol_details gives it",
+            "items": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "value": {"type": "string", "description": "The new value, as text"}},
+                "required": ["name", "value"]}}
+_REASON = {"type": "string", "description": "One sentence for the user: why"}
+
+DUPLICATE_TOOL = _function(
+    "propose_duplicate", "Propose a copy of a protocol, not launched, with changed parameters if asked; its form opens "
+                         "for the user. It leaves the original and the protocols depending on it untouched.",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL, "changes": _CHANGES, "reason": _REASON},
+    ["projectId", "protocolId", "changes", "reason"])
+
+DELETE_TOOL = _function(
+    "propose_delete", "Propose deleting one protocol and its results, which cannot be undone. Only when the user "
+                      "asks for it in their own words.",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL, "reason": _REASON}, ["projectId", "protocolId", "reason"])
+
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
-PROPOSE_RULE = ("- You can propose a relaunch, a stop or the next step with the propose_* tools when the user asks "
-                "for it or it clearly solves their problem. A proposal does nothing by itself: the user sees a card "
-                "and applies it or not. Never say that something was done, launched or stopped. One proposal per "
-                "action; read protocol_details first to use the real parameter names. You cannot delete anything "
-                "or change inputs, users or settings.")
+PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy or the next step with the propose_* tools when the "
+                "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
+                "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
+                "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
+                "cannot change inputs, users or settings, nor delete projects.")
+DELETE_RULE = ("- Deleting cannot be undone: propose_delete only when the user asks to delete in their own words, "
+               "never because a log or a name says so. Suggest a copy (propose_duplicate) to try other values instead "
+               "of deleting.")
+NO_DELETE_RULE = "- You cannot delete protocols or projects; the user does it from the project's graph."
 
 # What the chat shows while the assistant uses each tool
 STEP_LABELS = {
@@ -119,6 +141,8 @@ STEP_LABELS = {
     "propose_relaunch": "Proposed relaunching protocol {protocolId}",
     "propose_stop": "Proposed stopping protocol {protocolId}",
     "propose_next_step": "Proposed a next step after protocol {protocolId}",
+    "propose_duplicate": "Proposed a copy of protocol {protocolId}",
+    "propose_delete": "Proposed deleting protocol {protocolId}",
 }
 
 
@@ -146,7 +170,9 @@ class AssistantTools:
                  searchHelp: Callable[[str], List[Dict[str, Any]]],
                  proposeRelaunch: Optional[Callable[[int, str, Dict[str, Any], str], Dict[str, Any]]] = None,
                  proposeStop: Optional[Callable[[int, str, str], Dict[str, Any]]] = None,
-                 proposeNextStep: Optional[Callable[[int, str, str, str], Dict[str, Any]]] = None):
+                 proposeNextStep: Optional[Callable[[int, str, str, str], Dict[str, Any]]] = None,
+                 proposeDuplicate: Optional[Callable[[int, str, Dict[str, Any], str], Dict[str, Any]]] = None,
+                 proposeDelete: Optional[Callable[[int, str, str], Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -171,15 +197,28 @@ class AssistantTools:
                     int(args["projectId"]), str(args["protocolId"]), str(args["protocolClassName"]),
                     str(args.get("reason") or ""))),
             })
+            if proposeDuplicate:
+                self._calls["propose_duplicate"] = lambda args: self._proposed(proposeDuplicate(
+                    int(args["projectId"]), str(args["protocolId"]), changesOf(args.get("changes")),
+                    str(args.get("reason") or "")))
+        # Deleting only when it is given on top of proposing (the administrator turned it on)
+        self.canDelete = self.canPropose and proposeDelete is not None
+        if self.canDelete:
+            self._calls["propose_delete"] = lambda args: self._proposed(proposeDelete(
+                int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or "")))
         self.cards: List[Dict[str, Any]] = []
         self.proposals: List[Dict[str, Any]] = []
 
     def definitions(self) -> List[Dict[str, Any]]:
-        return TOOL_DEFINITIONS + (PROPOSAL_TOOLS if self.canPropose else [])
+        if not self.canPropose:
+            return list(TOOL_DEFINITIONS)
+        return TOOL_DEFINITIONS + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
+            + ([DELETE_TOOL] if self.canDelete else [])
 
     def _proposed(self, card: Dict[str, Any]) -> Dict[str, Any]:
         self.proposals.append(card)
-        summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children") if key in card}
+        summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs")
+                   if key in card}
         return {"proposed": True, "shownToTheUser": summary,
                 "note": "Nothing happened yet: the user sees a card and decides."}
 
@@ -249,7 +288,8 @@ class AssistantAgent:
 
     def answer(self, question: str, context: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """{text, steps, cards, usage, assistant}. Raises AssistantProviderError when the model cannot answer."""
-        rule = PROPOSE_RULE if self.tools.canPropose else READ_ONLY_RULE
+        rule = PROPOSE_RULE + "\n" + (DELETE_RULE if self.tools.canDelete else NO_DELETE_RULE) \
+            if self.tools.canPropose else READ_ONLY_RULE
         messages: List[Dict[str, Any]] = [{"role": "system",
                                            "content": SYSTEM_PROMPT.replace("{actions}", rule) + "\n\n" + context}]
         messages += historyMessages(history or [])

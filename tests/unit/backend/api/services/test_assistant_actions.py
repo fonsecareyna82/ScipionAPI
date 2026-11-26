@@ -196,3 +196,60 @@ def test_ChangesListOrObject():
     assert changesOf(None) == {}
     with pytest.raises(ValueError):
         changesOf([{"value": "1"}])
+
+
+# Duplicate and delete ------------------------------------------------------------------------------------------
+
+from app.backend.api.services.assistant_actions import blockingChildren, deleteCard, duplicateCard  # noqa: E402
+
+
+def test_DuplicateCarriesTheChangesAndAnyStatus():
+    card = duplicateCard(7, protocol("running"), HELP, {"numberOfClasses": "30"})
+    assert card["action"] == "duplicate" and card["changes"][0]["to"] == 30
+    assert duplicateCard(7, protocol(), HELP, {})["changes"] == []
+    assert applyChecks(protocol(), HELP, "duplicate", "", None, {"numberOfClasses": "30"}, False) == {
+        "params": {"numberOfClasses": 30}}
+
+
+def test_DeleteListsWhatIsLost():
+    outputs = [{"outputName": "outputClasses", "setClassName": "SetOfClasses2D", "size": 42}]
+    children = [{"protocolId": "105", "label": "subset", "status": "new", "active": False, "hasOutputs": False}]
+    card = deleteCard(7, protocol(), outputs, children, "Not needed")
+    assert card["outputs"] == [{"name": "outputClasses", "type": "SetOfClasses2D", "size": 42}]
+    assert card["children"] == [{"protocolId": "105", "label": "subset", "status": "new"}]
+
+
+def test_DeleteRefusedWhileItOrItsChildrenRunOrHaveResults():
+    with pytest.raises(ProposalError):
+        deleteCard(7, protocol("running"), [], [])
+    busy = [{"protocolId": "105", "active": False, "hasOutputs": True},
+            {"protocolId": "106", "active": True, "hasOutputs": False},
+            {"protocolId": "107", "active": False, "hasOutputs": False}]
+    assert [child["protocolId"] for child in blockingChildren(busy)] == ["105", "106"]
+    with pytest.raises(ProposalError) as error:
+        deleteCard(7, protocol(), [], busy)
+    assert "#105, #106" in str(error.value)
+
+
+def test_DeleteNeedsTheNumberWritten():
+    with pytest.raises(ProposalError) as error:
+        applyChecks(protocol(), HELP, "delete", "", None, {}, False, confirm="", children=[])
+    assert "(37)" in str(error.value)
+    with pytest.raises(ProposalError):
+        applyChecks(protocol(), HELP, "delete", "", None, {}, False, confirm="38", children=[])
+    assert applyChecks(protocol(), HELP, "delete", "", None, {}, False, confirm="#37", children=[]) == {}
+
+
+def test_DeleteToolOnlyWhenTurnedOn():
+    read = [lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []]
+    proposals = [lambda *a: {}, lambda *a: {}, lambda *a: {}, lambda *a: {}]
+    for canDelete in (False, True):
+        tools_ = AssistantTools(*read, *proposals, (lambda *a: {}) if canDelete else None)
+        model = ScriptedModel([{"content": "ok"}])
+        AssistantAgent(model, tools_).answer("hi", "")
+        names = {tool["function"]["name"] for tool in model.sent[0]["tools"]}
+        assert "propose_duplicate" in names
+        assert ("propose_delete" in names) is canDelete
+        system = model.sent[0]["messages"][0]["content"]
+        assert ("only when the user asks to delete in their own words" in system) is canDelete
+        assert ("You cannot delete protocols or projects" in system) is not canDelete
