@@ -63,6 +63,30 @@ MAX_PROTOCOL_ID_SQL = """
      WHERE "projectId" = %s
 """
 
+# The failure notices the assistant has not looked at yet, the newest hour's
+FAILURES_TO_EXPLAIN_SQL = """
+    SELECT id, "userId", title, body, link, "createdAt"
+      FROM notifications
+     WHERE kind = 'protocol.failed' AND "assistantState" IS NULL AND "createdAt" > NOW() - INTERVAL '1 hour'
+     ORDER BY id
+     LIMIT %s
+"""
+
+EXPLAINED_SQL = """
+    UPDATE notifications SET body = CASE WHEN %s <> '' THEN LEFT(body || %s, %s) ELSE body END,
+           "assistantState" = %s
+     WHERE id = ANY(%s)
+"""
+
+# Older failure notices are not explained any more (they were mailed or seen already)
+FORGET_OLD_FAILURES_SQL = """
+    UPDATE notifications SET "assistantState" = 'off'
+     WHERE kind = 'protocol.failed' AND "assistantState" IS NULL AND "createdAt" <= NOW() - INTERVAL '1 hour'
+"""
+
+# Only one API process explains at a time
+EXPLAINER_LOCK = 735190412
+
 CHAIN_COLUMNS = ('id, "projectId", "userId", "templateId", title, "protocolIds", parents, stops, passed, launched, '
                  '"createdAt"')
 
@@ -138,3 +162,18 @@ class AssistantPostgresqlMapper:
             values.setdefault(str(row["inputName"]), []).append(
                 "%s.%s" % (row["parentProtocolId"], row["parentOutputName"]))
         return {name: refs[0] if len(refs) == 1 else refs for name, refs in values.items()}
+
+    # Failure notices -------------------------------------------------------------------------------------------
+    def failuresToExplain(self, limit: int = 20) -> List[Dict[str, Any]]:
+        self.db.execute(FORGET_OLD_FAILURES_SQL)
+        return [dict(row) for row in self.db.fetchAll(FAILURES_TO_EXPLAIN_SQL, (int(limit),)) or []]
+
+    def markExplained(self, noticeIds: List[int], addition: str, state: str, bodyLimit: int) -> None:
+        self.db.execute(EXPLAINED_SQL, (addition, addition, int(bodyLimit), state, [int(i) for i in noticeIds]))
+
+    def tryExplainerLock(self) -> bool:
+        row = self.db.fetchOne("SELECT pg_try_advisory_lock(%s) AS locked", (EXPLAINER_LOCK,)) or {}
+        return bool(row.get("locked"))
+
+    def explainerUnlock(self) -> None:
+        self.db.execute("SELECT pg_advisory_unlock(%s)", (EXPLAINER_LOCK,))

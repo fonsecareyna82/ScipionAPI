@@ -39,6 +39,8 @@ DEFAULTS: Dict[str, Any] = {
     "mode": "answer",
     # Proposing to delete protocols: on top of proposing, off unless an administrator turns it on
     "allowDelete": False,
+    # Explaining every failed protocol in its notice (one question to the model each), off by default
+    "explainFailures": False,
     "dailyLimit": 50,
 }
 
@@ -125,6 +127,8 @@ class AssistantSettings:
             values["mode"] = payload["mode"]
         if payload.get("allowDelete") is not None:
             values["allowDelete"] = bool(payload["allowDelete"])
+        if payload.get("explainFailures") is not None:
+            values["explainFailures"] = bool(payload["explainFailures"])
         if payload.get("dailyLimit") is not None:
             # 0 (or empty): no limit, e.g. for a model the centre runs itself
             text = str(payload["dailyLimit"]).strip()

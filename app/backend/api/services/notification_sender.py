@@ -51,7 +51,9 @@ def sendDue(db, mail: Optional[MailService] = None) -> List[int]:
     mapper = NotificationsPostgresqlMapper(db)
     publicUrl = mail.publicUrl()
     sent = []
-    for notice in mapper.due(BATCH):
+    from app.backend.api.services.failure_explainer import holdSeconds
+
+    for notice in mapper.due(BATCH, holdSeconds(db)):
         if not notice.get("address") or (notice.get("userId") is not None and not notice.get("active")):
             mapper.markSkipped([notice["id"]], "No active user with a mail address")
             continue

@@ -272,6 +272,14 @@ def startDiskUsageMeasurer():
     start(lambda: getMapper().db, projectsRoot)
 
 
+def startFailureExplainer():
+    """Explain failed protocols in their notice with the AI assistant (idle unless an administrator turns it on)."""
+    from app.backend.api.services.failure_explainer import startFailureExplainer as start
+    from app.backend.database import getMapper
+
+    start(lambda: getMapper().db)
+
+
 def startLogRotation():
     """Keep app.log small while the API runs (only when the CLI started it with a log file)."""
     from app.backend.utils.log_rotation import startLogRotation as start
@@ -286,6 +294,7 @@ async def lifespan(_app):
     startFacilitySessionWatcher()
     startNotificationSender()
     startDiskUsageMeasurer()
+    startFailureExplainer()
     startLogRotation()
     yield
 

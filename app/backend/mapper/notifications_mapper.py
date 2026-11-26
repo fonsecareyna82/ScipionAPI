@@ -19,6 +19,9 @@ DUE_SQL = """
       FROM notifications n
       LEFT JOIN users u ON u.id = n."userId"
      WHERE n."emailState" = 'pending' AND n."emailNextAt" <= NOW()
+       -- While the assistant explains failures, a failure notice waits for it a few minutes
+       AND NOT (%s AND n.kind = 'protocol.failed' AND n."assistantState" IS NULL
+                AND n."createdAt" > NOW() - (%s * INTERVAL '1 second'))
      ORDER BY n.id
      LIMIT %s
 """
@@ -144,8 +147,11 @@ class NotificationsPostgresqlMapper:
                                  'AND "readAt" IS NULL' + condition, params)
         return int(getattr(cursor, "rowcount", 0) or 0)
 
-    def due(self, limit: int = 100) -> List[Dict[str, Any]]:
-        return [dict(row) for row in self.db.fetchAll(DUE_SQL, (int(limit),)) or []]
+    def due(self, limit: int = 100, holdFailuresSeconds: int = 0) -> List[Dict[str, Any]]:
+        """The notices to mail now; with holdFailuresSeconds, a failure notice the assistant has not explained yet
+        waits up to that long."""
+        hold = int(holdFailuresSeconds or 0)
+        return [dict(row) for row in self.db.fetchAll(DUE_SQL, (hold > 0, hold, int(limit))) or []]
 
     def digest(self) -> List[Dict[str, Any]]:
         return [dict(row) for row in self.db.fetchAll(DIGEST_SQL) or []]

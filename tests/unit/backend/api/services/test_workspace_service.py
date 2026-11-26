@@ -194,7 +194,24 @@ def test_every_user_hears_of_their_unread_notifications_even_on_a_first_call(mon
         "projectId": 0, "projectName": "Your booking of Krios, 10 Nov 09:00 to 11 Nov 08:59, is confirmed.",
         "protocolId": "notice-41", "protocolClassName": "", "label": "Booking of Krios: is confirmed",
         "status": "notice", "kind": "facility.booking", "link": "/facility/calendar", "notificationId": 41,
-        "endedAt": made.isoformat()}]
+        "detail": "", "endedAt": made.isoformat()}]
     # A notification waits until read: an old "since" is not capped for them
     workspace.protocolActivity(Mapper([], Db(rows=[])), 3, NOW - timedelta(days=30), now=NOW)
     assert asked == [(3, None), (3, NOW - timedelta(days=30))]
+
+
+
+def test_AFailureNoticeCarriesTheAssistantsExplanation(monkeypatch):
+    from app.backend.api.services.failure_explainer import HEADER
+    from app.backend.mapper import notifications_mapper
+
+    def unread(self, userId, since, limit):
+        return [{"id": 42, "kind": "protocol.failed", "title": "2D failed in SPA",
+                 "body": "The protocol 2D failed in the project SPA." + HEADER + "It ran out of GPU memory.",
+                 "link": "/project/load/7?protocol=145", "createdAt": NOW}]
+
+    monkeypatch.setattr(notifications_mapper.NotificationsPostgresqlMapper, "listUnreadSince", unread)
+    monkeypatch.setattr(workspace, "_notices", _realNotices)
+    event = workspace.protocolActivity(Mapper([], Db(rows=[])), 3, None, now=NOW)["events"][0]
+    assert event["detail"] == "It ran out of GPU memory."
+    assert event["projectName"] == "The protocol 2D failed in the project SPA."
