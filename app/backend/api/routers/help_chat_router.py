@@ -3,7 +3,7 @@ when an administrator turned it on and the user may use it (see services/assista
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.backend.api.audit import recordAudit
@@ -13,6 +13,7 @@ from app.backend.api.services import help_index
 from app.backend.api.services import assistant_actions
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
+from app.backend.api.services.assistant_browse import WebReader
 from app.backend.api.services.assistant_provider import AssistantProvider, AssistantProviderError
 from app.backend.api.services.assistant_settings import (
     PROVIDERS, AssistantSettings, baseUrlOf, decryptKey,
@@ -123,7 +124,8 @@ def _children(service, mapper, currentUser, projectId: int, protocol: Dict[str, 
     return children
 
 
-def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool = False) -> AssistantTools:
+def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool = False,
+                  authorization: str = "") -> AssistantTools:
     from app.backend.api.services.project_service import ProjectService
     from app.backend.api.services.protocol_failure import explainProtocolFailure
 
@@ -205,14 +207,18 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         return assistant_actions.deleteCard(projectId, protocol, outputs,
                                             _children(service, mapper, currentUser, projectId, protocol), reason)
 
+    # The web's pages, read with the user's own sign-in (so as the user)
+    readPage = WebReader(authorization).read if authorization else None
     if not canPropose:
-        return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp)
+        return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
+                              readPage=readPage)
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                           proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
-                          proposeDelete if canDelete else None)
+                          proposeDelete if canDelete else None, readPage=readPage)
 
 
-def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser) -> Dict[str, Any]:
+def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
+                  authorization: str = "") -> Dict[str, Any]:
     stored = settings.stored()
     usage = AssistantPostgresqlMapper(mapper.db)
     userId = int(currentUser["id"])
@@ -232,7 +238,8 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
             protocol = HelpChatPostgresqlMapper(mapper.db).protocol(int(payload.projectId), payload.protocolId)
     propose = stored.get("mode") == "propose"
     agent = AssistantAgent(_providerOf(stored), _projectTools(mapper, currentUser, propose,
-                                                              propose and bool(stored.get("allowDelete"))))
+                                                              propose and bool(stored.get("allowDelete")),
+                                                              authorization))
     try:
         answer = agent.answer(payload.question, contextLine(project, protocol),
                               [turn.dict() for turn in payload.history or []])
@@ -246,13 +253,13 @@ def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, cu
 
 
 @router.post("/ask")
-def ask(payload: HelpQuestion, currentUser: dict = Depends(getCurrentUser),
+def ask(payload: HelpQuestion, request: Request, currentUser: dict = Depends(getCurrentUser),
         mapper: PostgresqlFlatMapper = Depends(getMapperDependency)) -> Dict[str, Any]:
     """{text, cards}: a short sentence and the pieces of help that answer the question; from the assistant, also
     the steps it took and how many questions are left today."""
     settings = _assistantFor(mapper, currentUser)
     if settings is not None:
-        return _askAssistant(payload, settings, mapper, currentUser)
+        return _askAssistant(payload, settings, mapper, currentUser, request.headers.get("authorization") or "")
 
     projectProtocols = explainFailure = protocolOutputs = None
     if payload.projectId is not None:

@@ -54,6 +54,8 @@ def _function(name: str, description: str, properties: Dict[str, Any], required:
         "type": "object", "properties": properties, "required": required, "additionalProperties": False}}}
 
 
+from app.backend.api.services.assistant_browse import catalogue  # noqa: E402
+
 _PROJECT = {"type": "integer", "description": "The project's id"}
 _PROTOCOL = {"type": "string", "description": "The protocol's id in its project (the number the user sees)"}
 
@@ -130,6 +132,15 @@ DELETE_RULE = ("- Deleting cannot be undone: propose_delete only when the user a
                "of deleting.")
 NO_DELETE_RULE = "- You cannot delete protocols or projects; the user does it from the project's graph."
 
+READ_PAGE_TOOL = _function(
+    "read_page", "Read one of the web's pages as data, as the user sees it. Use it for what the other tools do not "
+                 "give. Fill the {braces} with real ids and names (list them first). The pages:\n" + catalogue(),
+    {"path": {"type": "string", "description": "One of the pages, e.g. /projects/7/protocols/12/steps"},
+     "query": {"type": "array", "description": "Query values the page takes, if any",
+               "items": {"type": "object", "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                         "required": ["name", "value"]}}},
+    ["path"])
+
 # What the chat shows while the assistant uses each tool
 STEP_LABELS = {
     "list_projects": "Looked at your projects",
@@ -138,6 +149,7 @@ STEP_LABELS = {
     "protocol_log": "Read the {channel} log of protocol {protocolId}",
     "explain_failure": "Read why protocol {protocolId} failed",
     "search_help": "Searched the help for \"{query}\"",
+    "read_page": "Read {path}",
     "propose_relaunch": "Proposed relaunching protocol {protocolId}",
     "propose_stop": "Proposed stopping protocol {protocolId}",
     "propose_next_step": "Proposed a next step after protocol {protocolId}",
@@ -172,7 +184,8 @@ class AssistantTools:
                  proposeStop: Optional[Callable[[int, str, str], Dict[str, Any]]] = None,
                  proposeNextStep: Optional[Callable[[int, str, str, str], Dict[str, Any]]] = None,
                  proposeDuplicate: Optional[Callable[[int, str, Dict[str, Any], str], Dict[str, Any]]] = None,
-                 proposeDelete: Optional[Callable[[int, str, str], Dict[str, Any]]] = None):
+                 proposeDelete: Optional[Callable[[int, str, str], Dict[str, Any]]] = None,
+                 readPage: Optional[Callable[[str, Dict[str, Any]], Any]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -184,6 +197,10 @@ class AssistantTools:
             "explain_failure": lambda args: explainFailure(int(args["projectId"]), str(args["protocolId"])),
             "search_help": lambda args: {"results": searchHelp(str(args.get("query") or ""))},
         }
+        # The web's pages, read as the user (assistant_browse)
+        self.canReadPages = readPage is not None
+        if self.canReadPages:
+            self._calls["read_page"] = lambda args: readPage(str(args["path"]), changesOf(args.get("query")))
         # Proposals only when they are given (the administrator allowed them)
         self.canPropose = bool(proposeRelaunch and proposeStop and proposeNextStep)
         if self.canPropose:
@@ -210,9 +227,10 @@ class AssistantTools:
         self.proposals: List[Dict[str, Any]] = []
 
     def definitions(self) -> List[Dict[str, Any]]:
+        reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else [])
         if not self.canPropose:
-            return list(TOOL_DEFINITIONS)
-        return TOOL_DEFINITIONS + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
+            return reading
+        return reading + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
             + ([DELETE_TOOL] if self.canDelete else [])
 
     def _proposed(self, card: Dict[str, Any]) -> Dict[str, Any]:
@@ -235,7 +253,7 @@ class AssistantTools:
             return json.dumps({"error": "There is no tool called %s" % name}), "Asked for an unknown tool"
         try:
             step = STEP_LABELS[name].format(**{key: args.get(key, "") for key in
-                                               ("projectId", "protocolId", "channel", "query")})
+                                               ("projectId", "protocolId", "channel", "query", "path")})
         except (KeyError, IndexError):
             step = name
         try:
@@ -247,8 +265,8 @@ class AssistantTools:
             result = {"error": str(error)}
         except KeyError as error:
             result = {"error": "Missing argument %s" % error}
-        except (TypeError, ValueError):
-            result = {"error": "Wrong arguments"}
+        except (TypeError, ValueError) as error:
+            result = {"error": str(error) or "Wrong arguments"}
         except Exception:
             logger.warning("The assistant's tool %s failed", name, exc_info=True)
             result = {"error": "The tool failed on the server"}
