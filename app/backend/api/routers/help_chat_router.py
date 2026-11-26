@@ -66,7 +66,9 @@ class ActionPayload(BaseModel):
     links: Optional[Dict[str, str]] = None
     stops: Optional[List[str]] = Field(None, max_items=200)
     fields: Optional[Dict[str, Any]] = None
-    # Going on with a chain after its stop protocolId
+    # A template only added (False), to start later
+    launch: Optional[bool] = None
+    # Going on with a chain after its stop protocolId ("" starts one that was only added)
     chainId: Optional[int] = None
 
 
@@ -248,8 +250,11 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
             raise PermissionError("The user can only look at that project, not run things in it")
         return chains.card(projectId, chains.plan(projectId, templateId, fromProtocolId, fromOutput, anchor), reason)
 
-    def proposeContinue(projectId: int, chainId: int, stopProtocolId: str, reason: str):
-        workable(projectId, stopProtocolId)
+    def proposeContinue(projectId: int, chainId: int, stopProtocolId: Optional[str], reason: str):
+        if stopProtocolId:
+            workable(projectId, stopProtocolId)
+        elif not _canWork(allowed(projectId)):
+            raise PermissionError("The user can only look at that project, not run things in it")
         return chains.continueCard(projectId, chainId, stopProtocolId, reason)
 
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
@@ -423,11 +428,11 @@ def _applyChain(payload: ActionPayload, service, mapper, currentUser) -> Dict[st
                 raise ProposalError("Which template?")
             result = chains.apply(payload.projectId, payload.templateId, payload.protocolId or None,
                                   payload.fromOutput, payload.anchor, payload.links or {}, payload.stops or [],
-                                  payload.fields or {})
+                                  payload.fields or {}, payload.launch is not False)
         else:
-            if payload.chainId is None or not payload.protocolId:
-                raise ProposalError("Which chain and stop?")
-            result = chains.launchNext(payload.projectId, payload.chainId, payload.protocolId)
+            if payload.chainId is None:
+                raise ProposalError("Which chain?")
+            result = chains.launchNext(payload.projectId, payload.chainId, payload.protocolId or None)
     except ProposalError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,

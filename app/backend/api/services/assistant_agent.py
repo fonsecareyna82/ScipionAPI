@@ -164,11 +164,13 @@ TEMPLATE_PROPOSAL_TOOLS = [
                "reason": {"type": "string", "description": "One sentence for the user: why"}},
               ["projectId", "templateId", "reason"]),
     _function("propose_continue_chain", "Propose going on with a chain after one of its stops has finished: it "
-                                        "launches what waits for that stop, up to the next stops.",
+                                        "launches what waits for that stop, up to the next stops. Without a stop, "
+                                        "it starts a chain that was only added (not launched).",
               {"projectId": _PROJECT, "chainId": {"type": "integer"},
-               "stopProtocolId": {"type": "string", "description": "The finished stop to go on from"},
+               "stopProtocolId": {"type": "string", "description": "The finished stop to go on from; empty to "
+                                                                   "start a chain that was only added"},
                "reason": {"type": "string", "description": "One sentence for the user: why"}},
-              ["projectId", "chainId", "stopProtocolId", "reason"]),
+              ["projectId", "chainId", "reason"]),
 ]
 
 READ_PAGE_TOOL = _function(
@@ -278,7 +280,7 @@ class AssistantTools:
                 int(args["projectId"]), str(args["templateId"]), args.get("fromProtocolId") or None,
                 args.get("fromOutput") or None, args.get("anchor") or None, str(args.get("reason") or "")))
             self._calls["propose_continue_chain"] = lambda args: self._proposed(proposeContinue(
-                int(args["projectId"]), int(args["chainId"]), str(args["stopProtocolId"]),
+                int(args["projectId"]), int(args["chainId"]), str(args.get("stopProtocolId") or "") or None,
                 str(args.get("reason") or "")))
         # Deleting only when it is given on top of proposing (the administrator turned it on)
         self.canDelete = self.canPropose and proposeDelete is not None

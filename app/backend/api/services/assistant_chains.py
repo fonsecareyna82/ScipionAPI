@@ -165,7 +165,7 @@ class TemplateChains:
 
     def apply(self, projectId: int, templateId: str, fromProtocolId: Optional[str], fromOutput: Optional[str],
               anchor: Optional[str], links: Dict[str, str], stops: List[str],
-              fields: Dict[str, Any]) -> Dict[str, Any]:
+              fields: Dict[str, Any], launch: bool = True) -> Dict[str, Any]:
         plan = self.plan(projectId, templateId, fromProtocolId, fromOutput, anchor, links)
         missing = [link["templateRef"] for link in plan["links"] if not link["projectRef"]]
         if missing:
@@ -199,8 +199,11 @@ class TemplateChains:
             title += " from #%s" % plan["source"]["protocolId"]
         chainId = self.db.addChain(projectId, self.currentUser.get("id"), str(templateId), title, order, parents,
                                    stopIds, [])
-        launch = self.launchNext(projectId, chainId)
-        return dict(launch, chainId=chainId, created=order)
+        if not launch:
+            # Added only: the chain starts when the user asks (continuing it with no stop)
+            return {"launched": [], "errors": [], "chainId": chainId, "created": order}
+        launched = self.launchNext(projectId, chainId)
+        return dict(launched, chainId=chainId, created=order)
 
     def launchNext(self, projectId: int, chainId: int, passedStop: Optional[str] = None) -> Dict[str, Any]:
         """Schedule the chain's protocols whose stops before them were all passed (passing passedStop first)."""
@@ -258,11 +261,19 @@ class TemplateChains:
                            "notLaunched": len(notLaunched), "readyToLaunch": waiting})
         return answer
 
-    def continueCard(self, projectId: int, chainId: int, stopProtocolId: str, reason: str = "") -> Dict[str, Any]:
+    def continueCard(self, projectId: int, chainId: int, stopProtocolId: Optional[str],
+                     reason: str = "") -> Dict[str, Any]:
+        """Going on after a finished stop, or (no stop) starting a chain that was only added."""
         chain = self.db.chain(projectId, chainId)
         if chain is None:
             raise ProposalError("There is no chain %s in the project" % chainId)
         stops = chain.get("stops") or []
+        if not stopProtocolId:
+            nextIds = templates.launchable(chain.get("protocolIds") or [], chain.get("parents") or {}, stops,
+                                           chain.get("passed") or [], chain.get("launched") or [])
+            if not nextIds:
+                raise ProposalError("Nothing of chain %s is waiting to start; it goes on after its stops" % chainId)
+            return self._nextCard(projectId, chain, "", "", nextIds, reason)
         if str(stopProtocolId) not in stops:
             raise ProposalError("Protocol %s is not a stop of chain %s (its stops: %s)"
                                 % (stopProtocolId, chainId, ", ".join(stops)))
@@ -275,11 +286,15 @@ class TemplateChains:
                                        chain.get("launched") or [])
         if not nextIds:
             raise ProposalError("Nothing is waiting for that stop")
+        return self._nextCard(projectId, chain, str(stopProtocolId), row.get("label") or "", nextIds, reason)
+
+    def _nextCard(self, projectId: int, chain: Dict[str, Any], stopProtocolId: str, stopLabel: str,
+                  nextIds: List[str], reason: str) -> Dict[str, Any]:
         labels = {str(item["protocolId"]): item for item in self.help.projectProtocols(projectId)}
-        nextStops = [pid for pid in nextIds if pid in stops]
-        return {"kind": "action", "action": "continue", "projectId": int(projectId), "chainId": int(chainId),
-                "protocolId": str(stopProtocolId), "label": row.get("label") or "", "title": chain.get("title"),
+        stops = chain.get("stops") or []
+        return {"kind": "action", "action": "continue", "projectId": int(projectId), "chainId": int(chain["id"]),
+                "protocolId": stopProtocolId, "label": stopLabel, "title": chain.get("title"),
                 "next": [{"protocolId": pid, "label": labels.get(pid, {}).get("label", ""),
-                          "className": labels.get(pid, {}).get("className", ""), "stop": pid in nextStops}
+                          "className": labels.get(pid, {}).get("className", ""), "stop": pid in stops}
                          for pid in nextIds],
                 "reason": str(reason or "")[:500]}

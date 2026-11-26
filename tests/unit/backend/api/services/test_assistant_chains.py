@@ -248,3 +248,15 @@ def test_TemplateOptionsAreShownToChooseFrom():
     assert options == [{"kind": "templates", "projectId": 7, "fromProtocolId": "105", "fromOutput": "outputParticles",
                         "items": [{"id": "WH:3D", "name": "Workflow 3D", "description": "", "adds": 23,
                                    "keySteps": ["2D classes"]}]}]
+
+
+def test_AddedWithoutLaunchingStartsWhenAsked(chains):
+    runner, service, db = chains
+    result = runner.apply(7, "WH:3D", "22", "outputParticles", None, {}, ["5", "6", "7"], {}, launch=False)
+    assert result["launched"] == [] and service.launched == []
+    card = runner.continueCard(7, result["chainId"], None)
+    assert card["protocolId"] == "" and [item["protocolId"] for item in card["next"]] == ["200", "201"]
+    runner.launchNext(7, result["chainId"], None)
+    assert service.launched == ["200", "201"]
+    with pytest.raises(ProposalError):
+        runner.continueCard(7, result["chainId"], None)
