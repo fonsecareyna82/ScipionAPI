@@ -41,6 +41,9 @@ class _Usage:
     def protocol(self, projectId, protocolId):
         return _Usage.protocolRow
 
+    def pointerParams(self, projectId, protocolId):
+        return {"inputParticles": "22.outputParticles"}
+
     def totals(self, days):
         return {"users": len(_Usage.rows), "questions": sum(r["questions"] for r in _Usage.rows.values()),
                 "inputTokens": 0, "outputTokens": 0}
@@ -207,7 +210,7 @@ def test_ApplyRelaunchSendsOnlyTheChangedParams(applying):
     assert response.status_code == 200, response.text
     kind, kwargs = _Service.calls[0]
     assert kind == "workflow"
-    assert kwargs["params"] == {"numberOfClasses": 100}
+    assert kwargs["params"] == {"inputParticles": "22.outputParticles", "numberOfClasses": 100}
     assert kwargs["mode"] == "restart" and kwargs["scope"] == "single"
 
 
@@ -245,7 +248,8 @@ def test_ApplyDuplicateMakesTheCopyWithTheChanges(applying):
     response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37",
                                                              "changes": {"numberOfClasses": "30"}})
     assert response.json() == {"ok": True, "newProtocolId": "200"}
-    assert _Service.calls == [("duplicate", ["37"]), ("save", "200", {"numberOfClasses": 30})]
+    assert _Service.calls == [("duplicate", ["37"]),
+                              ("save", "200", {"inputParticles": "22.outputParticles", "numberOfClasses": 30})]
 
 
 def test_ApplyDeleteOnlyTurnedOnAndConfirmedWithTheNumber(applying, monkeypatch):

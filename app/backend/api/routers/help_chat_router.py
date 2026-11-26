@@ -226,8 +226,10 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
     readPage = WebReader(authorization).read if authorization else None
     chains = TemplateChains(service, mapper, currentUser)
 
-    def listTemplates(query: str):
-        return chains.find(query)
+    def listTemplates(query: str, projectId=None, fromProtocolId=None, fromOutput=None):
+        if projectId is not None:
+            allowed(int(projectId))
+        return chains.find(query, int(projectId) if projectId is not None else None, fromProtocolId, fromOutput)
 
     def listChains(projectId: int):
         allowed(projectId)
@@ -385,14 +387,21 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         if copies and not result.get("errors"):
             answer["newProtocolId"] = str(copies[0].get("newId"))
             if plan["params"]:
+                # With the copy's inputs, as the form saves: a save without them leaves them empty
+                params = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(payload.projectId,
+                                                                                 answer["newProtocolId"]),
+                              **plan["params"])
                 _, saveErrors = service.saveProtocol(mapper, payload.projectId, answer["newProtocolId"],
-                                                     protocol["className"], plan["params"], setToSave=True,
+                                                     protocol["className"], params, setToSave=True,
                                                      protocolIdIsScipionId=True)
                 result = dict(result, errors=list(result.get("errors") or []) + list(saveErrors or []))
     else:
+        # With its inputs, as the protocol form relaunches one
+        params = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(payload.projectId, payload.protocolId),
+                      **plan["params"])
         result = service.executeProtocolWorkflow(mapper=mapper, projectId=payload.projectId,
                                                  protocolId=int(payload.protocolId),
-                                                 protocolClassName=protocol["className"], params=plan["params"],
+                                                 protocolClassName=protocol["className"], params=params,
                                                  mode=plan["mode"], scope=plan["scope"],
                                                  currentUserId=currentUser["id"]) or {}
     errors = [str(error) for error in result.get("errors") or []]

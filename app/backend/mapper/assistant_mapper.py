@@ -48,6 +48,15 @@ ANCESTORS_SQL = """
     SELECT "protocolId", MIN(depth) AS depth FROM up GROUP BY "protocolId" ORDER BY MIN(depth)
 """
 
+# A protocol's inputs as the protocol form sends them: "<parent protocol id>.<output>" each, in their order
+INPUT_REFS_SQL = """
+    SELECT "inputName", "itemIndex", "parentProtocolId", "parentOutputName"
+      FROM protocol_input_refs
+     WHERE "projectId" = %s AND "protocolId" = %s
+       AND "parentProtocolId" IS NOT NULL AND COALESCE("parentOutputName", '') <> ''
+     ORDER BY "inputName", "itemIndex"
+"""
+
 MAX_PROTOCOL_ID_SQL = """
     SELECT COALESCE(MAX(CASE WHEN "protocolId" ~ '^[0-9]+$' THEN "protocolId"::BIGINT END), 0) AS top
       FROM protocols
@@ -120,3 +129,12 @@ class AssistantPostgresqlMapper:
 
     def saveChainProgress(self, projectId: int, chainId: int, passed: List[str], launched: List[str]) -> None:
         self.db.execute(UPDATE_CHAIN_SQL, (json.dumps(passed), json.dumps(launched), int(chainId), int(projectId)))
+
+    def pointerParams(self, projectId: int, protocolId) -> Dict[str, Any]:
+        """{input: "parent.output"} (a list for several), to send with a save or a launch: the protocol form sends
+        them so, and a save without them leaves the protocol's inputs empty."""
+        values: Dict[str, List[str]] = {}
+        for row in self.db.fetchAll(INPUT_REFS_SQL, (int(projectId), str(protocolId))) or []:
+            values.setdefault(str(row["inputName"]), []).append(
+                "%s.%s" % (row["parentProtocolId"], row["parentOutputName"]))
+        return {name: refs[0] if len(refs) == 1 else refs for name, refs in values.items()}

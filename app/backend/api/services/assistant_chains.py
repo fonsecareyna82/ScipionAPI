@@ -40,8 +40,46 @@ class TemplateChains:
             self._templates = [item for item in self.service.listProjectWorkflows() or [] if isinstance(item, dict)]
         return self._templates
 
-    def find(self, query: str = "") -> List[Dict[str, Any]]:
-        return [templates.summary(item) for item in self.allTemplates() if templates.matches(item, query)]
+    def find(self, query: str = "", projectId: Optional[int] = None, fromProtocolId: Optional[str] = None,
+             fromOutput: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The templates matching the words; given a protocol's output, what each would add from it."""
+        found = [item for item in self.allTemplates() if templates.matches(item, query)]
+        source = None
+        if projectId is not None and fromProtocolId:
+            source = self.db.protocol(projectId, fromProtocolId)
+            if not source:
+                raise ProposalError("There is no protocol %s in the project" % fromProtocolId)
+            outputs = self.outputsOf(projectId, fromProtocolId)
+            if not fromOutput and len(outputs) == 1:
+                fromOutput = outputs[0]
+            if fromOutput not in outputs:
+                raise ProposalError("Say which output of protocol %s: %s" % (fromProtocolId, ", ".join(outputs)))
+        answer = []
+        for item in found:
+            summary = templates.summary(item)
+            if source is not None:
+                summary.pop("steps", None)
+                summary["fromHere"] = self._fromHere(item, fromOutput, source.get("className"))
+            answer.append(summary)
+        if source is not None:
+            # The ones that take it first, the ones adding most first among them
+            answer.sort(key=lambda summary: -(summary["fromHere"] or {}).get("adds", -1))
+        return answer
+
+    @staticmethod
+    def _fromHere(template: Dict[str, Any], output: str, className: Optional[str]) -> Optional[Dict[str, Any]]:
+        content = template.get("content") or []
+        candidates = templates.anchorCandidates(content, output, className)
+        if not candidates:
+            return None
+        kept, _ = templates.cut(content, candidates[0])
+        keySteps = []
+        for protocol in kept:
+            step = templates.keyStepOf(protocol.get("object.className"))
+            if step and step not in keySteps:
+                keySteps.append(step)
+        return {"anchor": candidates[0], "adds": len(kept), "keySteps": keySteps,
+                "protocols": [protocol.get("object.className") for protocol in kept][:30]}
 
     def template(self, templateId: str) -> Dict[str, Any]:
         found = next((item for item in self.allTemplates() if str(item.get("id")) == str(templateId)), None)
@@ -107,7 +145,8 @@ class TemplateChains:
         links = [dict(link, projectLabel=labels.get(str(link["projectRef"] or "").split(".")[0], ""))
                  for link in plan["links"]]
         fields = templates.summary(template)["fields"] if not plan["source"] else []
-        return {"kind": "action", "action": "template", "projectId": int(projectId),
+        few = len(plan["kept"]) <= 2
+        return {"kind": "action", "action": "template", "projectId": int(projectId), "few": few,
                 "protocolId": plan["source"]["protocolId"] if plan["source"] else "",
                 "label": plan["source"]["label"] if plan["source"] else "",
                 "templateId": str(template.get("id")), "templateName": str(template.get("name") or ""),
@@ -188,8 +227,10 @@ class TemplateChains:
         for protocolId in toLaunch:
             row = self.db.protocol(projectId, protocolId) or {}
             try:
+                # With its inputs, as the protocol form launches one: without them the save empties them
                 self.service.launchProtocol(mapper=self.mapper, projectId=projectId, protocolId=protocolId,
-                                            protocolClassName=row.get("className"), params={},
+                                            protocolClassName=row.get("className"),
+                                            params=self.db.pointerParams(projectId, protocolId),
                                             executeMode="schedule", currentUserId=self.currentUser.get("id"),
                                             protocolIdIsScipionId=True)
                 launched.append(protocolId)

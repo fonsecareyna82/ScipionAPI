@@ -24,6 +24,9 @@ class FakeDb:
     def topProtocolId(self, projectId):
         return 148
 
+    def pointerParams(self, projectId, protocolId):
+        return {"inputParticles": "22.outputParticles"} if str(protocolId) == "200" else {}
+
     def addChain(self, projectId, userId, templateId, title, protocolIds, parents, stops, launched):
         chainId = self.nextChain
         self.nextChain += 1
@@ -85,6 +88,8 @@ class FakeService:
     def launchProtocol(self, **kwargs):
         assert kwargs["executeMode"] == "schedule"
         self.launched.append(kwargs["protocolId"])
+        self.launchParams = getattr(self, "launchParams", {})
+        self.launchParams[kwargs["protocolId"]] = kwargs["params"]
         return {}
 
 
@@ -146,6 +151,8 @@ def test_ApplyAddsTheCutLinkedAndLaunchesUpToTheStops(chains):
     assert result["created"] == ["200", "201", "202", "203"]
     # 2D and the initial model run; the 3D waits for the initial model's stop
     assert service.launched == ["200", "201"] and result["launched"] == ["200", "201"]
+    # Launched with their inputs, as the protocol form does (else the save empties them)
+    assert service.launchParams["200"] == {"inputParticles": "22.outputParticles"}
     chain = db.saved[result["chainId"]]
     assert chain["stops"] == ["200", "201", "202"] and chain["parents"]["202"] == ["201"]
 
@@ -197,3 +204,20 @@ def test_WholeTemplateWithItsFields(chains):
     assert len(service.imported.workflow) == len(TEMPLATE)
     # Everything but what follows the stop (the 2D) runs
     assert len(result["launched"]) == len(TEMPLATE)
+
+
+def test_WhatEachTemplateAddsFromAnOutput(chains):
+    runner, _, _ = chains
+    found = runner.find("", 7, "22", None)
+    assert found[0]["id"] == "WH:3D"
+    assert found[0]["fromHere"]["adds"] == 4
+    assert found[0]["fromHere"]["keySteps"] == ["2D classes", "initial model", "3D classes"]
+    assert "steps" not in found[0]
+
+
+def test_CardSaysWhenACutAddsVeryLittle(chains):
+    runner, _, _ = chains
+    assert runner.card(7, runner.plan(7, "WH:3D", "22", None))["few"] is False
+    plan = runner.plan(7, "WH:3D", "22", None)
+    plan["kept"] = plan["kept"][:1]
+    assert runner.card(7, plan)["few"] is True
