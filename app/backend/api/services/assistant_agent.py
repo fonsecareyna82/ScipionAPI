@@ -139,6 +139,17 @@ DELETE_RULE = ("- Deleting cannot be undone: propose_delete only when the user a
                "of deleting.")
 NO_DELETE_RULE = "- You cannot delete protocols or projects; the user does it from the project's graph."
 
+SEARCH_TOOL = _function(
+    "search_projects", "Search every project the user can see: the projects and protocols whose names, kinds "
+                       "(class names, e.g. Relion, CryoSparc, Ctf, Classify2D) or comments have all the words, "
+                       "optionally run between two dates or with a status. Gives where and when; read a protocol to "
+                       "see its results.",
+    {"words": {"type": "string", "description": "Words to look for, in the names or kinds (e.g. 'apoferritin', "
+                                                "'cryosparc 2D'); empty for any"},
+     "since": {"type": "string", "description": "Run on or after this date, YYYY-MM-DD"},
+     "until": {"type": "string", "description": "Run before this date, YYYY-MM-DD"},
+     "status": {"type": "string", "enum": ["", "finished", "failed", "running", "aborted", "saved"]}}, [])
+
 TEMPLATE_READ_TOOLS = [
     _function("list_templates", "The facility's processing templates: id, name, the protocols each runs (with their "
                                 "template ids and inputs) and the key steps. Filter with words (e.g. '2D'). Given a "
@@ -193,6 +204,7 @@ STEP_LABELS = {
     "search_help": "Searched the help for \"{query}\"",
     "read_page": "Read {path}",
     "list_templates": "Looked at the templates",
+    "search_projects": "Searched your projects for \"{words}\"",
     "list_chains": "Looked at the chains of project {projectId}",
     "propose_template": "Proposed a template for project {projectId}",
     "propose_continue_chain": "Proposed going on after protocol {stopProtocolId}",
@@ -235,7 +247,8 @@ class AssistantTools:
                  listTemplates: Optional[Callable[[str], Any]] = None,
                  listChains: Optional[Callable[[int], Any]] = None,
                  proposeTemplate: Optional[Callable[..., Dict[str, Any]]] = None,
-                 proposeContinue: Optional[Callable[[int, int, str, str], Dict[str, Any]]] = None):
+                 proposeContinue: Optional[Callable[[int, int, str, str], Dict[str, Any]]] = None,
+                 searchProjects: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -251,6 +264,12 @@ class AssistantTools:
         self.canReadPages = readPage is not None
         if self.canReadPages:
             self._calls["read_page"] = lambda args: readPage(str(args["path"]), changesOf(args.get("query")))
+        # Every project the user can see
+        self.canSearch = searchProjects is not None
+        if self.canSearch:
+            self._calls["search_projects"] = lambda args: searchProjects(
+                str(args.get("words") or ""), args.get("since") or None, args.get("until") or None,
+                str(args.get("status") or ""))
         # The facility's templates and the chains made from them
         self.canReadTemplates = listTemplates is not None and listChains is not None
         if self.canReadTemplates:
@@ -308,7 +327,7 @@ class AssistantTools:
 
     def definitions(self) -> List[Dict[str, Any]]:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \
-            + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
+            + ([SEARCH_TOOL] if self.canSearch else []) + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
         if not self.canPropose:
             return reading
         return reading + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
@@ -338,7 +357,7 @@ class AssistantTools:
         try:
             step = STEP_LABELS[name].format(**{key: args.get(key, "") for key in
                                                ("projectId", "protocolId", "channel", "query", "path",
-                                                "stopProtocolId")})
+                                                "stopProtocolId", "words")})
         except (KeyError, IndexError):
             step = name
         try:

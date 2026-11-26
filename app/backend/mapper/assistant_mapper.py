@@ -87,6 +87,43 @@ FORGET_OLD_FAILURES_SQL = """
 # Only one API process explains at a time
 EXPLAINER_LOCK = 735190412
 
+# The protocols of the projects given whose project or protocol says every word, with when they last ran
+SEARCH_PROTOCOLS_SQL = """
+    SELECT p."projectId", pr.name AS "projectPath", p."protocolId", p."protocolClassName" AS "className",
+           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label,
+           LOWER(COALESCE(p.status, '')) AS status, p."createdAt", runs."startedAt", runs."endedAt"
+      FROM protocols p
+      JOIN projects pr ON pr.id = p."projectId"
+      LEFT JOIN LATERAL (
+            SELECT MAX(r."startedAt") AS "startedAt", MAX(r."endedAt") AS "endedAt"
+              FROM protocol_runs r
+             WHERE r."projectId" = p."projectId" AND r."protocolId" = p."protocolId"
+      ) runs ON TRUE
+     WHERE p."projectId" = ANY(%s)
+       AND {words}
+       -- Made or run (any time) between the dates
+       AND ((p."createdAt" >= COALESCE(%s::TIMESTAMPTZ, '-infinity') AND p."createdAt" < COALESCE(%s::TIMESTAMPTZ, 'infinity'))
+            OR EXISTS (SELECT 1 FROM protocol_runs r
+                        WHERE r."projectId" = p."projectId" AND r."protocolId" = p."protocolId"
+                          AND r."startedAt" >= COALESCE(%s::TIMESTAMPTZ, '-infinity')
+                          AND r."startedAt" < COALESCE(%s::TIMESTAMPTZ, 'infinity')))
+       AND (%s = '' OR LOWER(COALESCE(p.status, '')) = %s)
+     ORDER BY COALESCE(runs."startedAt", p."createdAt") DESC
+     LIMIT %s
+"""
+
+SEARCH_PROTOCOL_TEXT = ("CONCAT_WS(' ', pr.name, pr.description, p.\"protocolClassName\", p.params->>'runName', "
+                        "p.params->>'object.label', p.params->>'object.comment')")
+
+SEARCH_PROJECTS_SQL = """
+    SELECT pr.id AS "projectId", pr.name AS "projectPath", pr.description, pr."createdAt", pr."updatedAt",
+           (SELECT COUNT(*) FROM protocols p WHERE p."projectId" = pr.id) AS protocols
+      FROM projects pr
+     WHERE pr.id = ANY(%s) AND {words}
+     ORDER BY pr."updatedAt" DESC
+     LIMIT %s
+"""
+
 CHAIN_COLUMNS = ('id, "projectId", "userId", "templateId", title, "protocolIds", parents, stops, passed, launched, '
                  '"createdAt"')
 
@@ -177,3 +214,30 @@ class AssistantPostgresqlMapper:
 
     def explainerUnlock(self) -> None:
         self.db.execute("SELECT pg_advisory_unlock(%s)", (EXPLAINER_LOCK,))
+
+    # Searching every project the user can see ------------------------------------------------------------------
+    @staticmethod
+    def _wordsCondition(text: str, words: List[str]):
+        """(SQL saying every word is in text, its values); words are matched as written, case aside."""
+        if not words:
+            return "TRUE", []
+        escaped = ["%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                   for word in words]
+        return " AND ".join(["%s ILIKE %%s" % text] * len(words)), escaped
+
+    def searchProtocols(self, projectIds: List[int], words: List[str], since: Optional[str], until: Optional[str],
+                        status: str, limit: int) -> List[Dict[str, Any]]:
+        if not projectIds:
+            return []
+        condition, values = self._wordsCondition(SEARCH_PROTOCOL_TEXT, words)
+        sql = SEARCH_PROTOCOLS_SQL.replace("{words}", condition)
+        params = [list(projectIds)] + values + [since, until, since, until, status or "", (status or "").lower(),
+                                                int(limit)]
+        return [dict(row) for row in self.db.fetchAll(sql, tuple(params)) or []]
+
+    def searchProjects(self, projectIds: List[int], words: List[str], limit: int) -> List[Dict[str, Any]]:
+        if not projectIds or not words:
+            return []
+        condition, values = self._wordsCondition("CONCAT_WS(' ', pr.name, pr.description)", words)
+        sql = SEARCH_PROJECTS_SQL.replace("{words}", condition)
+        return [dict(row) for row in self.db.fetchAll(sql, tuple([list(projectIds)] + values + [int(limit)])) or []]

@@ -10,7 +10,7 @@ from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import checkProjectAccess, hasPermission, requirePermission
 from app.backend.api.services import help_index
-from app.backend.api.services import assistant_actions
+from app.backend.api.services import assistant_actions, search_projects
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
 from app.backend.api.services.assistant_browse import WebReader
@@ -237,7 +237,12 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         allowed(projectId)
         return chains.chainsOf(projectId)
 
-    reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains}
+    def searchProjects(words: str, since: Optional[str], until: Optional[str], status: str):
+        return search_projects.search(AssistantPostgresqlMapper(mapper.db),
+                                      [row["id"] for row in listProjects()], words, since, until, status)
+
+    reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains,
+               "searchProjects": searchProjects}
     if not canPropose:
         return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                               **reading)
