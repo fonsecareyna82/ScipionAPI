@@ -248,3 +248,15 @@ def test_ContextLineNamesTheProjectAndProtocol():
                                                   "status": "failed"})
     assert "project SPA (id 7)" in line and "145" in line and "failed" in line
     assert contextLine(None, None) == "The user is not inside a project right now."
+
+
+def test_NoCreditIsToldApartFromTooManyQuestions():
+    noCredit = FakeHttp(status=429, body={"error": {"code": "insufficient_quota",
+                                                    "message": "You exceeded your current quota"}})
+    with pytest.raises(AssistantProviderError) as error:
+        AssistantProvider("http://x/v1", "sk", "m", http=noCredit).chat([])
+    assert "no credit" in str(error.value)
+    tooMany = FakeHttp(status=429, body={"error": {"code": "rate_limit_exceeded", "message": "Rate limit"}})
+    with pytest.raises(AssistantProviderError) as error:
+        AssistantProvider("http://x/v1", "sk", "m", http=tooMany).chat([])
+    assert "too many questions" in str(error.value)

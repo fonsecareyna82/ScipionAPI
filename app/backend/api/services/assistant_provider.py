@@ -25,7 +25,11 @@ def _explain(statusCode: int, body: str) -> str:
     if statusCode == 404:
         return "The provider does not know that model or address"
     if statusCode == 429:
-        return "The provider says there were too many questions or the account has no credit left; try later"
+        lowered = body.lower()
+        if "quota" in lowered or "billing" in lowered or "credit" in lowered:
+            return ("The provider account has no credit left for its API (a chat subscription does not include it): "
+                    "add credit in the provider's billing page")
+        return "The provider says there were too many questions in a short time; try again in a minute"
     if statusCode >= 500:
         return "The provider is not answering properly right now (error %d); try later" % statusCode
     detail = body.strip().replace("\n", " ")[:300]
