@@ -4,6 +4,7 @@ and the usual local model servers all speak (POST <base>/chat/completions, GET <
 Errors come out as AssistantProviderError with a sentence for the administrator or the user; the key is never part
 of one.
 """
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -19,21 +20,45 @@ class AssistantProviderError(Exception):
         self.statusCode = statusCode
 
 
-def _explain(statusCode: int, body: str) -> str:
+def _providerMessage(body: str, key: str) -> str:
+    """The provider's own words about the error, short, with the key blotted out if it is there."""
+    message = ""
+    try:
+        data = json.loads(body)
+        if isinstance(data, list) and data:
+            data = data[0]
+        error = data.get("error") if isinstance(data, dict) else None
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        elif isinstance(error, str):
+            message = error
+    except (ValueError, AttributeError):
+        message = body
+    message = " ".join(message.split())[:300]
+    if key:
+        message = message.replace(key, "***")
+        # Some providers quote only the end of the key
+        if len(key) > 8:
+            message = message.replace(key[-8:], "***")
+    return message
+
+
+def _explain(statusCode: int, body: str, key: str = "") -> str:
+    said = _providerMessage(body, key)
+    suffix = " (the provider says: %s)" % said if said else ""
     if statusCode in (401, 403):
-        return "The provider did not accept the key"
+        return "The provider did not accept the key" + suffix
     if statusCode == 404:
-        return "The provider does not know that model or address"
+        return "The provider does not know that model or address" + suffix
     if statusCode == 429:
         lowered = body.lower()
         if "quota" in lowered or "billing" in lowered or "credit" in lowered:
             return ("The provider account has no credit left for its API (a chat subscription does not include it): "
-                    "add credit in the provider's billing page")
-        return "The provider says there were too many questions in a short time; try again in a minute"
+                    "add credit in the provider's billing page" + suffix)
+        return "The provider says there were too many questions in a short time; try again in a minute" + suffix
     if statusCode >= 500:
-        return "The provider is not answering properly right now (error %d); try later" % statusCode
-    detail = body.strip().replace("\n", " ")[:300]
-    return "The provider refused the question (error %d)%s" % (statusCode, ": " + detail if detail else "")
+        return "The provider is not answering properly right now (error %d); try later%s" % (statusCode, suffix)
+    return "The provider refused the question (error %d)%s" % (statusCode, suffix)
 
 
 class AssistantProvider:
@@ -61,7 +86,8 @@ class AssistantProvider:
             raise AssistantProviderError("Could not reach the provider at %s (%s)" % (self.baseUrl,
                                                                                       type(error).__name__))
         if response.status_code >= 400:
-            raise AssistantProviderError(_explain(response.status_code, response.text), response.status_code)
+            raise AssistantProviderError(_explain(response.status_code, response.text, self.key),
+                                         response.status_code)
         try:
             return response.json()
         except ValueError:

@@ -260,3 +260,13 @@ def test_NoCreditIsToldApartFromTooManyQuestions():
     with pytest.raises(AssistantProviderError) as error:
         AssistantProvider("http://x/v1", "sk", "m", http=tooMany).chat([])
     assert "too many questions" in str(error.value)
+
+
+def test_ProviderOwnWordsAreShownWithTheKeyBlottedOut():
+    http = FakeHttp(status=404, body=[{"error": {"code": 404, "message": "models/gemini-x is not found for API "
+                                                                         "version v1beta, key AIzaSecretKey123"}}])
+    with pytest.raises(AssistantProviderError) as error:
+        AssistantProvider("http://x/v1", "AIzaSecretKey123", "gemini-x", http=http).chat([])
+    assert "gemini-x is not found" in str(error.value)
+    assert "AIzaSecretKey123" not in str(error.value)
+    assert "SecretKey123" not in str(error.value)
