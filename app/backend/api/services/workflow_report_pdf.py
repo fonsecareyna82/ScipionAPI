@@ -26,8 +26,22 @@ def _when(value: Optional[str]) -> str:
     return str(value or "")[:16].replace("T", " ")
 
 
+def _md5WithoutSecurityFlag(pdfdoc) -> None:
+    """reportlab asks md5 for usedforsecurity=False, which some Pythons (3.8 built against some OpenSSLs) refuse:
+    there it is asked without it (it only names the document, it protects nothing)."""
+    import hashlib
+
+    try:
+        pdfdoc.md5(usedforsecurity=False)
+    except TypeError:
+        pdfdoc.md5 = lambda *args, usedforsecurity=True, **kwargs: hashlib.md5(*args, **kwargs)
+
+
 def render(report: Dict[str, Any], methods: Optional[str] = None, version: str = "") -> bytes:
     try:
+        from reportlab.pdfbase import pdfdoc
+
+        _md5WithoutSecurityFlag(pdfdoc)
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet

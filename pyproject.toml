@@ -39,7 +39,7 @@ dependencies = [
 
   "pillow==10.1.0",
   # The processing report's PDF (the assistant's report)
-  "reportlab>=4.0,<4.3",
+  "reportlab>=4.0,<5",
   "numpy~=1.24.4; python_version == '3.8'",
   "numpy==1.26.1; python_version >= '3.9'",
   "matplotlib~=3.7.3; python_version == '3.8'",
