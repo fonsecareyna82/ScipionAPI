@@ -33,6 +33,8 @@ PERMISSIONS: Dict[str, str] = {
     "facility.thresholds": "Change the facility's default quality thresholds",
     "facility.sessions": "Create and close acquisition sessions",
     "facility.manage": "Manage microscopes and processing templates",
+    # Assistant (only once an administrator turns it on in the settings)
+    "assistant.use": "Ask the AI assistant in the help chat",
 }
 
 # What one may do in a project, each level including the ones before it

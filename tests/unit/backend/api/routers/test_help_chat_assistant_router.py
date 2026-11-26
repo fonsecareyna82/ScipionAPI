@@ -1,0 +1,139 @@
+"""The help chat routes with the AI assistant: who gets it, its daily limit, and the settings only for admins."""
+import importlib
+import json
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+class _Settings:
+    store = {}
+
+    def __init__(self, db):
+        pass
+
+    def getSettings(self):
+        return dict(_Settings.store)
+
+    def saveSettings(self, values, userId):
+        _Settings.store.update(json.loads(json.dumps(values)))
+
+
+class _Usage:
+    rows = {}
+
+    def __init__(self, db):
+        pass
+
+    def usageToday(self, userId):
+        return dict(_Usage.rows.get(userId, {"questions": 0, "inputTokens": 0, "outputTokens": 0}))
+
+    def addUsage(self, userId, questions, inputTokens, outputTokens):
+        row = self.usageToday(userId)
+        row["questions"] += questions
+        row["inputTokens"] += inputTokens
+        row["outputTokens"] += outputTokens
+        _Usage.rows[userId] = row
+
+    def totals(self, days):
+        return {"users": len(_Usage.rows), "questions": sum(r["questions"] for r in _Usage.rows.values()),
+                "inputTokens": 0, "outputTokens": 0}
+
+
+class _Model:
+    def __init__(self, *args, **kwargs):
+        self.model = "gpt-x"
+
+    def chat(self, messages, tools=None):
+        return {"message": {"content": "From the model"}, "usage": {"inputTokens": 50, "outputTokens": 5}}
+
+    def models(self):
+        return ["gpt-x", "gpt-y"]
+
+
+@pytest.fixture
+def router(authTestEnv, monkeypatch):
+    module = importlib.import_module("app.backend.api.routers.help_chat_router")
+    settingsModule = importlib.import_module("app.backend.api.services.assistant_settings")
+    _Settings.store, _Usage.rows = {}, {}
+    monkeypatch.setattr(settingsModule, "FacilitySettingsPostgresqlMapper", _Settings)
+    monkeypatch.setattr(module, "AssistantPostgresqlMapper", _Usage)
+    monkeypatch.setattr(module, "AssistantProvider", _Model)
+    monkeypatch.setattr(module, "recordAudit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_projectTools", lambda mapper, user: module.AssistantTools(
+        lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []))
+    return module
+
+
+def _client(module, permissions):
+    dependencies = importlib.import_module("app.backend.api.dependencies")
+    database = importlib.import_module("app.backend.database")
+    app = FastAPI()
+    app.include_router(module.router)
+    app.dependency_overrides[dependencies.getCurrentUser] = lambda: {"id": 3, "permissions": list(permissions)}
+    app.dependency_overrides[database.getMapperDependency] = lambda: type("Mapper", (), {"db": None})()
+    return TestClient(app)
+
+
+def _turnOn(module, limit=50):
+    module.AssistantSettings(None).save({"provider": "openai", "key": "sk-test", "model": "gpt-x",
+                                         "enabled": True, "dailyLimit": limit}, 1)
+
+
+def test_RuleBasedChatWhileTheAssistantIsOff(router, monkeypatch):
+    monkeypatch.setattr(router.HelpChat, "answer", lambda self, question, protocolId=None: {"text": "rules",
+                                                                                         "cards": []})
+    client = _client(router, ["assistant.use"])
+    assert client.get("/help-chat/status").json() == {"assistant": False}
+    assert client.post("/help-chat/ask", json={"question": "hi"}).json()["text"] == "rules"
+
+
+def test_WithoutThePermissionTheUserKeepsTheRuleBasedChat(router, monkeypatch):
+    _turnOn(router)
+    monkeypatch.setattr(router.HelpChat, "answer", lambda self, question, protocolId=None: {"text": "rules",
+                                                                                         "cards": []})
+    client = _client(router, [])
+    assert client.get("/help-chat/status").json() == {"assistant": False}
+    assert client.post("/help-chat/ask", json={"question": "hi"}).json()["text"] == "rules"
+
+
+def test_AssistantAnswersAndCountsTheQuestion(router):
+    _turnOn(router, limit=5)
+    client = _client(router, ["assistant.use"])
+    assert client.get("/help-chat/status").json() == {"assistant": True, "dailyLimit": 5, "left": 5}
+    answer = client.post("/help-chat/ask", json={"question": "hi", "history": [{"role": "user", "text": "a"}]}).json()
+    assert answer["text"] == "From the model"
+    assert answer["assistant"] is True
+    assert answer["left"] == 4
+    assert _Usage.rows[3] == {"questions": 1, "inputTokens": 50, "outputTokens": 5}
+
+
+def test_DailyLimitStopsTheAssistant(router):
+    _turnOn(router, limit=1)
+    client = _client(router, ["assistant.use"])
+    assert client.post("/help-chat/ask", json={"question": "one"}).status_code == 200
+    response = client.post("/help-chat/ask", json={"question": "two"})
+    assert response.status_code == 429
+    assert "tomorrow" in response.json()["detail"]
+
+
+def test_SettingsOnlyForAdministratorsAndWithoutTheKey(router):
+    assert _client(router, ["assistant.use"]).get("/help-chat/settings").status_code == 403
+    admin = _client(router, ["settings.manage"])
+    saved = admin.put("/help-chat/settings", json={"provider": "openai", "key": "sk-very-secret"}).json()
+    assert saved["keySet"] is True
+    shown = admin.get("/help-chat/settings")
+    assert shown.status_code == 200
+    assert "sk-very-secret" not in shown.text
+
+
+def test_ModelsAndTestUseTheFormBeforeSaving(router):
+    admin = _client(router, ["settings.manage"])
+    assert admin.post("/help-chat/settings/models", json={"provider": "openai"}).status_code == 400
+    models = admin.post("/help-chat/settings/models", json={"provider": "openai", "key": "sk-1"})
+    assert models.json() == {"models": ["gpt-x", "gpt-y"]}
+    test = admin.post("/help-chat/settings/test", json={"provider": "openai", "key": "sk-1", "model": "gpt-x"})
+    assert test.json()["ok"] is True
+    # Nothing was saved by asking
+    assert _Settings.store == {}
