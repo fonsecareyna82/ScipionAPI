@@ -25,7 +25,8 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "if it has a file, and \"samplingRate\" if any. It writes its results in output/: volume.mrc becomes "
             "the protocol's output volume (pixel size of the first input that has one); any other .mrc there "
             "becomes its output set of volumes (several maps, in the order of their names); result.txt is shown in "
-            "its summary. Only numpy, scipy and mrcfile can be imported; there is no network and it can write only in "
+            "its summary; .png or .jpg plots there are shown in the summary as images (in the order of their "
+            "names). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: savefig) can be imported; there is no network and it can write only in "
             "its own folder.")
 
 
