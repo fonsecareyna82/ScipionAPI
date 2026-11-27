@@ -20,7 +20,8 @@ ROLES: Dict[str, Any] = {
     "particles": ("inputParticles", ("SetOfParticles",)),
 }
 
-CONTRACT = ("The script runs in a folder of its own. inputs.json there has the inputs given: \"volume\" and "
+CONTRACT = ("The script runs in a folder of its own, with a variable inputs already defined (also in inputs.json "
+            "there): the inputs given, \"volume\" and "
             "\"mask\" ({\"file\": an .mrc path, \"index\", \"samplingRate\"}) and \"particles\" ({\"file\": "
             "particles.csv with columns id, index, file; \"count\", \"samplingRate\"}). It writes its results in "
             "output/: volume.mrc becomes the protocol's output volume (same pixel size as the first input), "
