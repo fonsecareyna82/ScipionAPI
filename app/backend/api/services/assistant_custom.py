@@ -21,8 +21,9 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "metadata schema show them, e.g. _defocusU, _ctfModel._defocusU, _index, _filename; files are whole "
             "paths), listed in \"columns\". Anything else has its values by their names, \"file\" and \"index\" "
             "if it has a file, and \"samplingRate\" if any. It writes its results in output/: volume.mrc becomes "
-            "the protocol's output volume (pixel size of the first input that has one), result.txt is shown in its "
-            "summary. Only numpy, scipy and mrcfile can be imported; there is no network and it can write only in "
+            "the protocol's output volume (pixel size of the first input that has one); any other .mrc there "
+            "becomes its output set of volumes (several maps, in the order of their names); result.txt is shown in "
+            "its summary. Only numpy, scipy and mrcfile can be imported; there is no network and it can write only in "
             "its own folder.")
 
 
