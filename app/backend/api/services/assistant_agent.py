@@ -233,26 +233,26 @@ SUBWORKFLOW_TOOLS = [
 ]
 
 CUSTOM_TOOL = _function(
-    "propose_custom_operation", "Propose a custom operation: a short Python script you write, run on a volume, a "
-                                "mask and/or particles of the project, for something no installed protocol does "
+    "propose_custom_operation", "Propose a custom operation: a short Python script you write, run on outputs of "
+                                "the project (any: volumes, micrographs, CTFs, particles, classes…), for something "
+                                "no installed protocol does "
                                 "(search_help first; use a protocol when there is one). It becomes a protocol of "
                                 "the project, with the script kept in it, launched when the user applies the "
                                 "card. " + assistant_custom.CONTRACT,
     {"projectId": _PROJECT,
-     "inputs": {"type": "array", "description": "What the script reads: at most one of each role",
+     "inputs": {"type": "array", "description": "What the script reads, in this order (inputs[0], inputs[1]…)",
                 "items": {"type": "object", "properties": {
-                    "role": {"type": "string", "enum": ["volume", "mask", "particles"]},
                     "protocolId": {"type": "string", "description": "The protocol whose output it is"},
-                    "output": {"type": "string", "description": "The output's name; leave out when it has only "
-                                                                "one of that kind"}},
-                    "required": ["role", "protocolId"]}},
+                    "output": {"type": "string", "description": "The output's name (protocol_details lists "
+                                                                "them); leave out when it has only one"}},
+                    "required": ["protocolId"]}},
      "title": {"type": "string", "description": "A short name for the new protocol"},
      "operation": {"type": "string", "description": "What it does, in plain words for the user (one or two "
                                                     "sentences), in the user's language"},
      "script": {"type": "string", "description": "The whole Python script"},
      "reason": _REASON},
     ["projectId", "inputs", "title", "operation", "script", "reason"])
-CUSTOM_RULE = ("- When the user asks for an operation no installed protocol does (on a volume, a mask or particles), "
+CUSTOM_RULE = ("- When the user asks for an operation no installed protocol does on outputs of a project, "
                "you may write it as a short Python script with propose_custom_operation. Keep it simple and "
                "correct, say in the operation what it does and what it assumes, and never claim results before it "
                "runs.")

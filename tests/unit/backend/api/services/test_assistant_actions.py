@@ -465,7 +465,7 @@ def test_TheCustomOperationToolOnlyForWhoMayRunIt():
     assert "propose_custom_operation" not in names(AssistantTools(*read, **propose))
     seen = []
     tools = AssistantTools(*read, proposeCustom=lambda args: seen.append(args) or {
-        "action": "custom", "title": "Negate", "inputs": [{"role": "volume"}]}, **propose)
+        "action": "custom", "title": "Negate", "inputs": [{"protocolId": "45"}]}, **propose)
     assert "propose_custom_operation" in names(tools) and tools.canProposeCustom
     result, _ = tools.call("propose_custom_operation", '{"projectId": 7, "inputs": [], "title": "Negate", '
                                                        '"operation": "o", "script": "s", "reason": "r"}')

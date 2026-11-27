@@ -1021,9 +1021,12 @@ def _applyCustom(payload: ActionPayload, service, mapper, currentUser) -> Dict[s
         errors = _errorTexts(error.detail) or ["The protocol was not added"]
     launched = False
     if protocolId is not None and not errors:
+        params = helper.pointerParams(payload.projectId, protocolId)
+        # Its inputs are a list, also when there is one
+        if isinstance(params.get("inputs"), str):
+            params["inputs"] = [params["inputs"]]
         result = _executeWorkflow(service, mapper, currentUser, payload.projectId, protocolId,
-                                  assistant_custom.CLASS_NAME, helper.pointerParams(payload.projectId, protocolId),
-                                  "restart", "single")
+                                  assistant_custom.CLASS_NAME, params, "restart", "single")
         errors = ["Protocol #%s was added but not launched: %s" % (protocolId, "; ".join(
             str(error) for error in result.get("errors")))] if result.get("errors") else []
         launched = not errors

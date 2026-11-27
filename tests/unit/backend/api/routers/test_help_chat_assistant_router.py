@@ -797,6 +797,7 @@ def _customRows(monkeypatch, module, added):
     rows = {"45": {"protocolId": "45", "label": "refine", "className": "ProtRefine", "status": "finished"}}
     monkeypatch.setattr(_Usage, "protocol", lambda self, projectId, protocolId: rows.get(str(protocolId)))
     monkeypatch.setattr(_Usage, "topProtocolId", lambda self, projectId: 60, raising=False)
+    monkeypatch.setattr(_Usage, "pointerParams", lambda self, projectId, protocolId: {"inputs": "45.outputVolume"})
     monkeypatch.setattr(module.HelpChatPostgresqlMapper, "protocolOutputs", lambda self, p, q: [
         {"outputName": "outputVolume", "setClassName": "Volume"},
         {"outputName": "outputParticles", "setClassName": "SetOfParticles"}] if str(q) == "45" else [])
@@ -813,23 +814,25 @@ def test_CustomOperationIsAddedWithItsInputsAndLaunched(applying, monkeypatch):
     _customRows(monkeypatch, applying, added)
     client = _client(applying, ["assistant.use", "protocols.customCode"])
     body = {"action": "custom", "projectId": 7, "protocolId": "", "name": "Negated map",
-            "fields": {"inputs": [{"role": "volume", "protocolId": "45"}], "script": SCRIPT,
+            "fields": {"inputs": [{"protocolId": "45", "output": "outputVolume"}], "script": SCRIPT,
                        "operation": "Negates the map"}}
     response = client.post("/help-chat/actions/apply", json=body)
     assert response.json() == {"ok": True, "newProtocolId": "61", "started": True}, response.text
     mode, workflow = added[0]
     assert mode == "append" and workflow[0]["object.id"] == "100060"
-    assert workflow[0]["inputVolume"] == "45.outputVolume" and workflow[0]["script"] == SCRIPT
+    assert workflow[0]["inputs"] == ["45.outputVolume"] and workflow[0]["script"] == SCRIPT
     launched = _Service.calls[-1]
     assert launched[0] == "workflow" and launched[1]["protocolId"] == 9061
     assert launched[1]["protocolClassName"] == "ProtCustomOperation" and launched[1]["mode"] == "restart"
+    # One input is still a list
+    assert launched[1]["params"] == {"inputs": ["45.outputVolume"]}
 
 
 def test_CustomOperationNeedsItsPermissionAndAScriptThatCompiles(applying, monkeypatch):
     added = []
     _customRows(monkeypatch, applying, added)
     body = {"action": "custom", "projectId": 7, "protocolId": "", "name": "x",
-            "fields": {"inputs": [{"role": "volume", "protocolId": "45"}], "script": SCRIPT, "operation": "x"}}
+            "fields": {"inputs": [{"protocolId": "45", "output": "outputVolume"}], "script": SCRIPT, "operation": "x"}}
     refused = _client(applying, ["assistant.use"]).post("/help-chat/actions/apply", json=body)
     assert refused.status_code == 409 and "protocols.customCode" in refused.json()["detail"]
     client = _client(applying, ["assistant.use", "protocols.customCode"])
