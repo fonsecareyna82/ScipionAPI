@@ -192,6 +192,34 @@ SUBWORKFLOW_TOOLS = [
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
                "reason": _REASON},
               ["projectId", "what", "protocolIds", "reason"]),
+    _function("propose_new_project", "Propose a new project that imports the movies (or micrographs) of a folder "
+                                     "of the server. The code finds the files (or uses the pattern given) and "
+                                     "checks the folder is one the user may use. The import is added without "
+                                     "launching it: the user reviews its form. Give only acquisition values the "
+                                     "user said; the form asks for the rest.",
+              {"name": {"type": "string", "description": "The project's name"},
+               "folder": {"type": "string", "description": "The folder's whole path, from /"},
+               "data": {"type": "string", "enum": ["movies", "micrographs"]},
+               "pattern": {"type": "string", "description": "The files under the folder, e.g. *.tiff; leave out "
+                                                            "to find them"},
+               "samplingRate": {"type": "number", "description": "Pixel size in Å"},
+               "voltage": {"type": "number", "description": "kV"},
+               "sphericalAberration": {"type": "number", "description": "mm"},
+               "amplitudeContrast": {"type": "number"},
+               "dosePerFrame": {"type": "number", "description": "e/Å² per frame (movies)"},
+               "gainFile": {"type": "string", "description": "The gain reference's whole path (movies)"},
+               "streaming": {"type": "boolean", "description": "True while the microscope still writes files"},
+               "reason": _REASON},
+              ["name", "folder", "reason"]),
+    _function("propose_watch", "Propose watching a project that processes in streaming: every few minutes the "
+                               "code compares the newest micrographs with how they were when the watch began, and "
+                               "leaves the user a notice in the bell when something gets worse, stops or fails. "
+                               "For 'watch this session', 'tell me if something goes wrong'.",
+              {"projectId": _PROJECT, "hours": {"type": "integer", "description": "How long, 1 to 72; 24 if not said"},
+               "reason": _REASON},
+              ["projectId", "reason"]),
+    _function("propose_unwatch", "Propose to stop watching a project.",
+              {"projectId": _PROJECT, "reason": _REASON}, ["projectId", "reason"]),
     _function("propose_untag", "Propose taking a tag, by its name, off one or more protocols. The tag stays in the "
                                "project for other protocols. Never guess the tag from the conversation: leave it "
                                "out when the user did not name it, and the protocols' only tag is taken off (or "
@@ -217,8 +245,9 @@ DELETE_TOOL = _function(
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
 PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
-                "reset, a new name or comment, several protocols stopped or relaunched at once, a schedule (start after other protocols), adding or taking off a "
-                "tag, a subset or the next step with the propose_* tools when the "
+                "reset, a new name or comment, several protocols stopped or relaunched at once, a new project "
+                "importing a folder's movies, watching a stream, a schedule (start after other protocols), adding "
+                "or taking off a tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
@@ -376,6 +405,9 @@ STEP_LABELS = {
     "propose_rename": "Proposed renaming protocol {protocolId}",
     "propose_schedule": "Proposed scheduling protocol {protocolId}",
     "propose_many": "Proposed acting on several protocols",
+    "propose_new_project": "Proposed a new project",
+    "propose_watch": "Proposed watching project {projectId}",
+    "propose_unwatch": "Proposed to stop watching project {projectId}",
     "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
 }
 
@@ -426,7 +458,9 @@ class AssistantTools:
                  proposeRename: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeSchedule: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeMany: Optional[Callable[..., Dict[str, Any]]] = None,
-                 showProtocol: Optional[Callable[[int, str], Dict[str, Any]]] = None):
+                 showProtocol: Optional[Callable[[int, str], Dict[str, Any]]] = None,
+                 proposeNewProject: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeWatch: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -494,7 +528,8 @@ class AssistantTools:
                     str(args.get("reason") or ""), _yes(args.get("launch"))))
         # A protocol with everything depending on it, and tags
         self.canProposeMore = self.canPropose and None not in (proposeSubworkflow, proposeTag, proposeRename,
-                                                               proposeSchedule, proposeMany)
+                                                               proposeSchedule, proposeMany, proposeNewProject,
+                                                               proposeWatch)
         if self.canProposeMore:
             self._calls.update({
                 "propose_copy_subworkflow": lambda args: self._proposed(proposeSubworkflow(
@@ -516,6 +551,11 @@ class AssistantTools:
                 "propose_many": lambda args: self._proposed(proposeMany(
                     int(args["projectId"]), "stopmany" if args.get("what") == "stop" else "relaunchmany",
                     [str(item) for item in args.get("protocolIds") or []], str(args.get("reason") or ""))),
+                "propose_new_project": lambda args: self._proposed(proposeNewProject(args)),
+                "propose_watch": lambda args: self._proposed(proposeWatch(
+                    int(args["projectId"]), args.get("hours"), str(args.get("reason") or ""))),
+                "propose_unwatch": lambda args: self._proposed(proposeWatch(
+                    int(args["projectId"]), None, str(args.get("reason") or ""), True)),
                 "propose_untag": lambda args: self._proposed(proposeTag(
                     int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
                     str(args.get("tag") or ""), str(args.get("reason") or ""), True)),
@@ -595,7 +635,8 @@ class AssistantTools:
         self.proposals.append(card)
         summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs", "links",
                                               "missing", "next", "kept", "removed", "total", "makes", "launch",
-                                              "tag", "newTag", "waitFor") if key in card}
+                                              "tag", "newTag", "waitFor", "count", "pattern", "missing", "hours",
+                                              "watched") if key in card}
         if "protocols" in card:
             summary["protocols"] = [item["protocolId"] for item in card["protocols"]]
         if "items" in card:

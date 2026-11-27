@@ -331,7 +331,9 @@ def test_TheModelGetsTheNewToolsOnlyWhenAllowed():
                    proposeTag=lambda *a: seen.append(a) or {"action": "tag"},
                    proposeRename=lambda *a: seen.append(a) or {"action": "rename"},
                    proposeSchedule=lambda *a: seen.append(a) or {"action": "schedule"},
-                   proposeMany=lambda *a: seen.append(a) or {"action": a[1]})
+                   proposeMany=lambda *a: seen.append(a) or {"action": a[1]},
+                   proposeNewProject=lambda args: {"action": "newproject"},
+                   proposeWatch=lambda *a: {"action": "watch"})
     names = lambda tools: {tool["function"]["name"] for tool in tools.definitions()}  # noqa: E731
     tools = AssistantTools(*read, **propose)
     assert {"propose_copy_subworkflow", "propose_reset", "propose_tag"} <= names(tools)

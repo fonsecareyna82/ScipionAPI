@@ -272,6 +272,14 @@ def startDiskUsageMeasurer():
     start(lambda: getMapper().db, projectsRoot)
 
 
+def startStreamingWatcher():
+    """Look at the streams the assistant watches for users (idle while nothing is watched)."""
+    from app.backend.api.services.streaming_watch import startStreamingWatcher as start
+    from app.backend.database import getMapper
+
+    start(lambda: getMapper().db)
+
+
 def startFailureExplainer():
     """Explain failed protocols in their notice with the AI assistant (idle unless an administrator turns it on)."""
     from app.backend.api.services.failure_explainer import startFailureExplainer as start
@@ -295,6 +303,7 @@ async def lifespan(_app):
     startNotificationSender()
     startDiskUsageMeasurer()
     startFailureExplainer()
+    startStreamingWatcher()
     startLogRotation()
     yield
 

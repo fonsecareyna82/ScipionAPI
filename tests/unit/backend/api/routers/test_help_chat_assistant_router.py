@@ -712,3 +712,64 @@ def test_RelaunchManyWithDependingProtocolsNeedsAChoice(applying, monkeypatch):
     assert client.post("/help-chat/actions/apply", json=body).status_code == 409
     assert client.post("/help-chat/actions/apply", json=dict(body, scope="all")).status_code == 200
     assert {kwargs["scope"] for _, kwargs in _Service.calls} == {"all"}
+
+
+def test_NewProjectIsMadeWithItsImportSaved(applying, monkeypatch, tmp_path):
+    monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS", raising=False)
+    (tmp_path / "a.tiff").write_text("x")
+    made = {}
+    monkeypatch.setattr(_Service, "createProject", lambda self, mapper, data, user: made.setdefault(
+        "project", {"id": 55, "name": data.name}), raising=False)
+    monkeypatch.setattr(_Service, "importWorkflowProtocolsService", lambda self, **kwargs: made.setdefault(
+        "workflow", kwargs["payload"].workflow) and {"created": [{"sourceId": "1", "newId": "2"}], "errors": []},
+        raising=False)
+    client = _client(applying, ["assistant.use", "projects.create"])
+    body = {"action": "newproject", "projectId": 0, "protocolId": "", "name": "Krios 27",
+            "fields": {"folder": str(tmp_path), "data": "movies", "pattern": "*.tiff", "samplingRate": 0.8}}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "projectId": 55,
+                                                                         "newProtocolId": "2"}
+    assert made["project"]["name"] == "Krios 27"
+    assert made["workflow"][0]["filesPattern"] == "*.tiff" and made["workflow"][0]["samplingRate"] == 0.8
+    # Without the permission to create projects
+    refused = _client(applying, ["assistant.use"]).post("/help-chat/actions/apply", json=body)
+    assert refused.status_code == 409
+
+
+def test_AFailedImportTakesTheNewProjectAway(applying, monkeypatch, tmp_path):
+    monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS", raising=False)
+    (tmp_path / "a.tiff").write_text("x")
+    deleted = []
+    monkeypatch.setattr(_Service, "createProject", lambda self, mapper, data, user: {"id": 56}, raising=False)
+    monkeypatch.setattr(_Service, "importWorkflowProtocolsService",
+                        lambda self, **kwargs: {"created": [], "errors": ["no such class"]}, raising=False)
+    monkeypatch.setattr(_Service, "deleteProject", lambda self, mapper, user, projectId: deleted.append(projectId),
+                        raising=False)
+    client = _client(applying, ["assistant.use", "projects.create"])
+    body = {"action": "newproject", "projectId": 0, "protocolId": "", "name": "p",
+            "fields": {"folder": str(tmp_path), "data": "movies"}}
+    response = client.post("/help-chat/actions/apply", json=body)
+    assert response.status_code == 422 and "no such class" in response.json()["detail"]
+    assert deleted == [56]
+
+
+def test_WatchBeginsAndEnds(applying, monkeypatch):
+    watches = []
+    monkeypatch.setattr(_Usage, "activeWatch", lambda self, userId, projectId: next(
+        (item for item in watches if not item.get("ended")), None), raising=False)
+    monkeypatch.setattr(_Usage, "addWatch", lambda self, userId, projectId, hours, reference: watches.append(
+        {"id": 1, "hours": hours, "until": "later"}) or watches[-1], raising=False)
+    monkeypatch.setattr(_Usage, "saveWatch", lambda self, watchId, reference, state: None, raising=False)
+    monkeypatch.setattr(_Usage, "endWatch", lambda self, watchId, reason: watches[0].update(ended=reason),
+                        raising=False)
+    monkeypatch.setattr(applying.streaming_watch, "projectName", lambda db, projectId: "Krios 27")
+    monitor = importlib.import_module("app.backend.api.services.streaming_monitor")
+    monkeypatch.setattr(monitor, "watchSnapshot", lambda mapper, projectId: {
+        "streaming": True, "quality": {"items": 3}, "flow": {"acquisition": "active"}, "stalled": []})
+    monkeypatch.setattr(applying.HelpChatPostgresqlMapper, "projectProtocols", lambda self, projectId: [])
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "watch", "projectId": 7, "protocolId": "", "hours": 6}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "until": "later"}
+    assert watches[0]["hours"] == 6
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 409
+    assert client.post("/help-chat/actions/apply", json=dict(body, action="unwatch")).json() == {"ok": True}
+    assert watches[0]["ended"] == "user"

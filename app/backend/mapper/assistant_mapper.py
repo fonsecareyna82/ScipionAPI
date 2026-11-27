@@ -96,6 +96,14 @@ SESSIONS_TO_SUMMARIZE_SQL = """
 
 # Only one API process explains at a time
 EXPLAINER_LOCK = 735190412
+WATCHER_LOCK = 735190413
+
+WATCH_COLUMNS = ('id, "userId", "projectId", "createdAt", until, "endedAt", "endedReason", reference, state')
+ADD_WATCH_SQL = """
+    INSERT INTO assistant_watches ("userId", "projectId", until, reference)
+    VALUES (%s, %s, NOW() + make_interval(hours => %s), %s::JSONB)
+    RETURNING id, until
+"""
 
 # The protocols of the projects given whose project or protocol says every word, with when they last ran
 SEARCH_PROTOCOLS_SQL = """
@@ -258,6 +266,37 @@ class AssistantPostgresqlMapper:
 
     def explainerUnlock(self) -> None:
         self.db.execute("SELECT pg_advisory_unlock(%s)", (EXPLAINER_LOCK,))
+
+    def tryWatcherLock(self) -> bool:
+        row = self.db.fetchOne("SELECT pg_try_advisory_lock(%s) AS locked", (WATCHER_LOCK,)) or {}
+        return bool(row.get("locked"))
+
+    def watcherUnlock(self) -> None:
+        self.db.execute("SELECT pg_advisory_unlock(%s)", (WATCHER_LOCK,))
+
+    # The streams watched for a user ---------------------------------------------------------------------------
+    def addWatch(self, userId: int, projectId: int, hours: int, reference: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        row = self.db.executeReturningOne(ADD_WATCH_SQL, (int(userId), int(projectId), int(hours),
+                                                          json.dumps(reference) if reference else None))
+        return dict(row)
+
+    def activeWatch(self, userId: int, projectId: int) -> Optional[Dict[str, Any]]:
+        row = self.db.fetchOne('SELECT %s FROM assistant_watches WHERE "userId" = %%s AND "projectId" = %%s '
+                               'AND "endedAt" IS NULL' % WATCH_COLUMNS, (int(userId), int(projectId)))
+        return dict(row) if row else None
+
+    def activeWatches(self) -> List[Dict[str, Any]]:
+        return [dict(row) for row in self.db.fetchAll(
+            'SELECT %s, NOW() > until AS expired FROM assistant_watches WHERE "endedAt" IS NULL ORDER BY id'
+            % WATCH_COLUMNS) or []]
+
+    def saveWatch(self, watchId: int, reference: Optional[Dict[str, Any]], state: Dict[str, Any]) -> None:
+        self.db.execute('UPDATE assistant_watches SET reference = %s::JSONB, state = %s::JSONB WHERE id = %s',
+                        (json.dumps(reference) if reference else None, json.dumps(state), int(watchId)))
+
+    def endWatch(self, watchId: int, reason: str) -> None:
+        self.db.execute('UPDATE assistant_watches SET "endedAt" = NOW(), "endedReason" = %s '
+                        'WHERE id = %s AND "endedAt" IS NULL', (str(reason), int(watchId)))
 
     # Searching every project the user can see ------------------------------------------------------------------
     @staticmethod

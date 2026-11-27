@@ -10,7 +10,8 @@ from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import checkProjectAccess, hasPermission, requirePermission
 from app.backend.api.services import help_index
-from app.backend.api.services import assistant_actions, search_projects, tutorial_progress
+from app.backend.api.services import (assistant_actions, assistant_new_project, search_projects, streaming_watch,
+                                      tutorial_progress)
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
 from app.backend.api.services.assistant_browse import WebReader
@@ -94,6 +95,8 @@ class ActionPayload(BaseModel):
     tag: Optional[str] = Field(None, max_length=200)
     # A rename: the changes the card listed ({field: name|comment, to})
     renames: Optional[List[Dict[str, Any]]] = Field(None, max_items=2)
+    # How long to watch a stream, in hours
+    hours: Optional[int] = Field(None, ge=1, le=72)
 
 
 class ReportPayload(BaseModel):
@@ -364,6 +367,24 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                                           _depending(service, mapper, currentUser, projectId, protocols, action),
                                           reason)
 
+    def proposeNewProject(args: Dict[str, Any]):
+        if not hasPermission(currentUser, "projects.create"):
+            raise PermissionError("The user may not create projects")
+        data = assistant_new_project.plan(args.get("name"), args.get("folder"), args.get("data"),
+                                          args.get("pattern"), args, args.get("streaming") is True,
+                                          args.get("gainFile"), hasPermission(currentUser, "files.browseServer"))
+        return assistant_new_project.card(data, str(args.get("reason") or ""))
+
+    def proposeWatch(projectId: int, hours: Any, reason: str, stop: bool = False):
+        project = allowed(projectId)
+        name = streaming_watch.projectName(mapper.db, projectId) if project else ""
+        active = AssistantPostgresqlMapper(mapper.db).activeWatch(currentUser["id"], projectId)
+        if stop:
+            return streaming_watch.unwatchCard(projectId, name, active, reason)
+        from app.backend.api.services.streaming_monitor import watchSnapshot
+
+        return streaming_watch.watchCard(projectId, name, watchSnapshot(mapper, projectId), hours, active, reason)
+
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)
         outputs = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, protocolId)
@@ -464,7 +485,8 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                           proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
                           proposeContinue=proposeContinue, proposeSubset=proposeSubset,
                           proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, proposeRename=proposeRename,
-                          proposeSchedule=proposeSchedule, proposeMany=proposeMany, **reading)
+                          proposeSchedule=proposeSchedule, proposeMany=proposeMany,
+                          proposeNewProject=proposeNewProject, proposeWatch=proposeWatch, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -604,9 +626,13 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     if payload.action in ("delete", "deletefrom") and not stored.get("allowDelete"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose deletes")
     service = ProjectService()
+    if payload.action == "newproject":
+        return _applyNewProject(payload, service, mapper, currentUser)
     project = service.getProjectDbRow(mapper, payload.projectId, currentUser)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if payload.action in ("watch", "unwatch"):
+        return _applyWatch(payload, mapper, currentUser)
     checkProjectAccess(project, "work")
     if payload.action in ("template", "continue"):
         return _applyChain(payload, service, mapper, currentUser)
@@ -884,6 +910,83 @@ def _applyMany(payload: ActionPayload, service, mapper, currentUser) -> Dict[str
                             detail="; ".join(("#%s: %s" % (item["protocolId"], item["error"])) if item["protocolId"]
                                              else item["error"] for item in failed) or "Nothing was done")
     return {"ok": True, "done": done, "failed": failed}
+
+
+def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Make the project and add its import, saved for the user to review; checked again as things are now. An
+    import that cannot be added takes the new project away again."""
+    from app.backend.api.schemas.project_schema import ProjectCreate
+    from app.backend.api.schemas.protocols_schema import WorkflowImportRequest
+
+    fields = payload.fields or {}
+    try:
+        if not hasPermission(currentUser, "projects.create"):
+            raise PermissionError("You may not create projects")
+        data = assistant_new_project.plan(payload.name, fields.get("folder"), fields.get("data"),
+                                          fields.get("pattern"), fields, fields.get("streaming") is True,
+                                          fields.get("gainFile"), hasPermission(currentUser, "files.browseServer"))
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    project = service.createProject(mapper, ProjectCreate(name=data["name"],
+                                                          description="Made from the help chat"), currentUser)
+    projectId = int(project["id"])
+    errors: List[str] = []
+    protocolId = None
+    try:
+        if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId,
+                                                               currentUser=currentUser):
+            raise RuntimeError("The new project could not be opened")
+        imported = service.importWorkflowProtocolsService(
+            mapper=mapper, projectId=projectId, currentUser=currentUser,
+            payload=WorkflowImportRequest(workflow=[assistant_new_project.importProtocol(data)]))
+        errors = [str(error) for error in imported.get("errors") or []]
+        protocolId = next((str(item["newId"]) for item in imported.get("created") or []), None)
+        if protocolId is None and not errors:
+            errors = ["The import was not added"]
+    except HTTPException as error:
+        errors = _errorTexts(error.detail) or ["The import was not added"]
+    except Exception as error:
+        logger.warning("Could not add the import to the new project %s", projectId, exc_info=True)
+        errors = [str(error)]
+    if errors:
+        try:
+            service.deleteProject(mapper, currentUser, projectId)
+        except Exception:
+            logger.warning("Could not take away the new project %s", projectId, exc_info=True)
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", projectId, data["name"],
+                {"action": "newproject", "folder": data["folder"], "pattern": data["files"]["pattern"],
+                 "files": data["files"]["count"], "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="The project was not made: %s" % "; ".join(errors))
+    return {"ok": True, "projectId": projectId, "newProtocolId": protocolId}
+
+
+def _applyWatch(payload: ActionPayload, mapper, currentUser) -> Dict[str, Any]:
+    """Begin or end watching a project for the user; begun with the stream as it is now."""
+    from app.backend.api.services.streaming_monitor import watchSnapshot
+
+    watches = AssistantPostgresqlMapper(mapper.db)
+    name = streaming_watch.projectName(mapper.db, payload.projectId)
+    active = watches.activeWatch(currentUser["id"], payload.projectId)
+    try:
+        if payload.action == "unwatch":
+            streaming_watch.unwatchCard(payload.projectId, name, active)
+            watches.endWatch(active["id"], "user")
+            answer: Dict[str, Any] = {"ok": True}
+        else:
+            snapshot = watchSnapshot(mapper, payload.projectId)
+            card = streaming_watch.watchCard(payload.projectId, name, snapshot, payload.hours, active)
+            protocols = HelpChatPostgresqlMapper(mapper.db).projectProtocols(payload.projectId)
+            start = streaming_watch.startingState(snapshot, protocols)
+            row = watches.addWatch(currentUser["id"], payload.projectId, card["hours"], start["reference"])
+            watches.saveWatch(row["id"], start["reference"], start["state"])
+            answer = {"ok": True, "until": str(row.get("until") or "")}
+    except ProposalError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, name,
+                {"action": payload.action, "hours": payload.hours})
+    return answer
 
 
 def _applySchedule(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:

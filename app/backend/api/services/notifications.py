@@ -61,6 +61,12 @@ KINDS: Dict[str, Dict[str, Any]] = {
         "description": "A protocol you launched finished after running more than %d minutes." % 30,
         "default": "off", "mandatory": False,
     },
+    "assistant.watch": {
+        "group": "Projects", "label": "A stream the assistant watches for me",
+        "description": "While the assistant watches a project of yours processing in streaming: something got "
+                       "worse or stopped, and when the session ends.",
+        "default": "web", "mandatory": False,
+    },
     "storage.quota": {
         "group": "Projects", "label": "My disk quota",
         "description": "Your disk quota (or your group's) reaches 80 %, or is full: nothing new can run then.",

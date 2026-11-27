@@ -1207,3 +1207,59 @@ def _startedAfter(run: Dict[str, Any], since: datetime) -> bool:
 def alertsSince(mapper, projectId: int, since: datetime, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """The alert runs of a project that started after ``since``."""
     return [run for run in projectAlertRuns(mapper, projectId, now) if _startedAfter(run, since)]
+
+
+# The newest micrographs a watch compares (see streaming_watch)
+WATCH_WINDOW = 60
+
+
+def _median(values: List[float]) -> Optional[float]:
+    values = sorted(value for value in values if value is not None)
+    if not values:
+        return None
+    middle = len(values) // 2
+    return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2.0
+
+
+def watchSnapshot(mapper, projectId: int, now: Optional[datetime] = None,
+                  window: int = WATCH_WINDOW) -> Dict[str, Any]:
+    """How the followed stream of a project is now, for a watch: the medians of its newest micrographs (CTF
+    resolution, astigmatism, drift, particles picked), the share past the thresholds, the items of each stage
+    and whether it flows."""
+    now = now or datetime.now(timezone.utc)
+    allOutputs = _outputs(mapper, projectId)
+    inputs = _inputsOf(mapper, projectId, allOutputs)
+    acquisitions = _acquisitions(allOutputs, inputs)
+    lastItems = _lastItems(mapper, acquisitions, now)
+    root = stream_branches.followedAcquisition(acquisitions, lastItems, None)
+    outputs = stream_branches.branchOutputs(allOutputs, inputs, root, acquisitions)
+    chain = _chain(outputs, inputs, None)
+    acquisition = root or _acquisitionOutput(outputs, inputs, chain)
+    thresholds = thresholdsWith(storedThresholds(mapper, projectId))
+    rates = _rates(mapper, sorted({chain[stage]["setId"] for stage in STAGES if stage in chain and stage != "classes2d"}
+                                  | ({acquisition["setId"]} if acquisition is not None else set())), now)
+    micCounts = {stage: countByMicrograph(mapper, chain[stage]["setId"])
+                 for stage in ("coordinates", "particles") if stage in chain}
+    stages = _stages(chain, rates, micCounts, _classes(mapper, chain))
+    flow = _flow(mapper, projectId, acquisition, stages, rates, thresholds, now)
+    quality: Dict[str, Any] = {"items": 0}
+    base = chain.get("ctf") or chain.get("micrographs")
+    if base is not None:
+        rows = list(reversed(_store(mapper).listLatestItems(base["setId"], window)))
+        picked = micCounts["coordinates"]["counts"] if "coordinates" in micCounts else None
+        points = [point for point in _points(mapper, chain, base, rows, thresholds, picked)
+                  if not point.get("failed")]
+        quality = {"items": len(points), "lastId": max((point["id"] for point in points), default=None),
+                   "outside": (sum(1 for point in points if point.get("alerts")) / len(points)) if points else None}
+        for key in ("resolution", "astigmatism", "totalDrift", "particles"):
+            value = _median([abs(point[key]) if key == "astigmatism" else point[key]
+                             for point in points if point.get(key) is not None])
+            if value is not None:
+                quality[key] = value
+    return {"time": now.isoformat(), "streaming": any(chain[stage]["streaming"] for stage in STAGES if stage in chain),
+            "stages": {stage["stage"]: stage.get("items") for stage in stages}, "quality": quality,
+            "flow": {key: (flow or {}).get(key) for key in ("acquisition", "idleMinutes", "items", "unit", "label",
+                                                            "complete")},
+            "stalled": [{key: item.get(key) for key in ("stage", "protocolId", "label", "behind", "minutes")}
+                        for item in (flow or {}).get("stalled") or []],
+            "thresholds": {key: thresholds.get(key) for key in ("maxResolution", "maxTotalDrift", "minParticles")}}
