@@ -31,7 +31,9 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "the protocol's output volume (pixel size of the first input that has one); any other .mrc there "
             "becomes its output set of volumes (several maps, in the order of their names); result.txt is shown in "
             "its summary; .png or .jpg plots there are shown in the summary as images (in the order of their "
-            "names). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: savefig) can be imported; there is no network and it can write only in "
+            "names); keep_N.txt, the ids (one per line, the CSV's id column) of the items of input N (from 1, a "
+            "set) to keep, becomes the output outputSubsetN: a set of the same kind with those items as they are "
+            "(classes with their own items). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: savefig) can be imported; there is no network and it can write only in "
             "its own folder.")
 
 

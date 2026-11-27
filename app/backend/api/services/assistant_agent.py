@@ -253,8 +253,9 @@ CUSTOM_TOOL = _function(
      "reason": _REASON},
     ["projectId", "inputs", "title", "operation", "script", "reason"])
 CUSTOM_RULE = ("- When the user asks for an operation no installed protocol does on outputs of a project, "
-               "you may write it as a short Python script with propose_custom_operation. Keep it simple and "
-               "correct, say in the operation what it does and what it assumes, and never claim results before it "
+               "you may write it as a short Python script with propose_custom_operation; a selection by "
+               "conditions more complex than propose_subset allows is a script writing keep_N.txt. Keep it simple "
+               "and correct, say in the operation what it does and what it assumes, and never claim results before it "
                "runs.")
 
 DELETE_SUBWORKFLOW_TOOL = _function(
