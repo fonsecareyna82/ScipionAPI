@@ -102,6 +102,10 @@ def parameterChanges(storedParams: Dict[str, Any], help_: Optional[Dict[str, Any
     return checked
 
 
+# The protocol's name and comment: changed with a rename, never with a relaunch
+NAME_PARAMS = {"runName", "_objComment", "comment"}
+
+
 def relaunchModes(status: str, changed: bool) -> Tuple[str, List[str]]:
     """(the mode proposed, the modes the user may pick)."""
     status = (status or "").lower()
@@ -116,6 +120,9 @@ def relaunchModes(status: str, changed: bool) -> Tuple[str, List[str]]:
 
 def relaunchCard(projectId: int, protocol: Dict[str, Any], help_: Optional[Dict[str, Any]], changes: Dict[str, Any],
                  preflight: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
+    if any(name in NAME_PARAMS for name in changes or {}):
+        raise ProposalError("A relaunch does not rename: use propose_rename for the name or the comment; it "
+                            "changes them without launching anything")
     checked = parameterChanges(protocol.get("params") or {}, help_, changes or {})
     if changes and not checked:
         raise ProposalError("Those are already the protocol's values; nothing would change")

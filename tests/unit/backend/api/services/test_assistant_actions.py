@@ -93,6 +93,14 @@ def test_RelaunchWithNothingToChangeIsRefused():
         relaunchCard(7, protocol(), HELP, {"numberOfClasses": 50}, {}, "")
 
 
+
+def test_ARelaunchNeverRenames():
+    # A new name must not launch the protocol: that is a rename's work
+    with pytest.raises(ProposalError) as error:
+        relaunchCard(7, protocol(), HELP, {"runName": "CS - 3D H"}, {}, "")
+    assert "propose_rename" in str(error.value)
+
+
 def test_StopOnlyWhatRuns():
     assert stopCard(7, protocol("running"))["action"] == "stop"
     with pytest.raises(ProposalError):

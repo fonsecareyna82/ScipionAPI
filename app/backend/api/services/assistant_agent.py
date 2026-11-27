@@ -84,7 +84,8 @@ TOOL_DEFINITIONS = [
 
 PROPOSAL_TOOLS = [
     _function("propose_relaunch", "Propose relaunching a protocol, with changed parameters or as it is. The code "
-                                  "picks restart or continue and asks the user about the protocols depending on it.",
+                                  "picks restart or continue and asks the user about the protocols depending on it. "
+                                  "Never to rename it or change its comment: that is propose_rename.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL,
                "changes": {"type": "array", "description": "The parameters to change, by their name as "
                                                            "protocol_details gives it; empty to relaunch as it is",
@@ -153,14 +154,16 @@ SUBWORKFLOW_TOOLS = [
               {"projectId": _PROJECT, "protocolId": _PROTOCOL, "reason": _REASON},
               ["projectId", "protocolId", "reason"]),
     _function("propose_tag", "Propose adding a tag, by its name, to one or more protocols; a tag the project does "
-                             "not have yet is created.",
+                             "not have yet is created. Only when the user speaks of a tag or label: 'call it X' or "
+                             "'name it X' is a new name (propose_rename), 'note that…' is a comment.",
               {"projectId": _PROJECT,
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
                "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
               ["projectId", "protocolIds", "tag", "reason"]),
     _function("propose_rename", "Propose a new name for a protocol and/or a comment (a note shown with it in the "
                                 "graph): a new comment, or a note added after the one it has. The card shows "
-                                "before and after.",
+                                "before and after. For 'call/rename #N X' and 'note in #N that…'. It never "
+                                "launches anything.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL,
                "name": {"type": "string", "description": "The new name; leave out to keep it"},
                "comment": {"type": "string", "description": "The comment, or the note to add; leave out to keep it"},
