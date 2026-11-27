@@ -68,6 +68,15 @@ def checkImports(code: str) -> None:
                                 ", ".join(refused), ", ".join(LIBRARIES), "them" if len(refused) > 1 else "it"))
 
 
+def checkNewLines(code: str) -> None:
+    """ProposalError when a text of the script has a backslash and an n written where a new line was meant (the
+    script escaped twice), which would write them as they are."""
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "\\n" in node.value:
+            raise ProposalError("Line %s of the script writes a backslash and an n, not a new line: write \\n "
+                                "once in the text (not \\\\n). Write it again." % node.lineno)
+
+
 def _input(item: Dict[str, Any], protocolOf: Callable[[str], Optional[Dict[str, Any]]],
            outputsOf: Callable[[str], List[Dict[str, Any]]]) -> Dict[str, Any]:
     protocolId = str(item.get("protocolId") or "").strip().lstrip("#")
@@ -110,6 +119,7 @@ def plan(inputs: Any, script: Any, operation: Any, title: Any, canRun: bool,
     except SyntaxError as error:
         raise ProposalError("The script has a syntax error in line %s: %s" % (error.lineno, error.msg))
     checkImports(code)
+    checkNewLines(code)
     words = " ".join(str(operation or "").split())
     if not words:
         raise ProposalError("Say in plain words what the operation does")

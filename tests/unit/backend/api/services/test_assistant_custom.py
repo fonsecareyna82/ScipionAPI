@@ -68,3 +68,15 @@ def test_OnlyTheLibrariesThereAndPythonsOwnModulesMayBeImported():
         _plan(ctf, script="import numpy\nimport pandas as pd\n")
     with pytest.raises(ProposalError, match="imports nosuchmodule, torch"):
         _plan(ctf, script="from torch import nn\nimport nosuchmodule\n")
+
+
+def test_ANewLineWrittenAsABackslashAndAnNIsSentBack():
+    ctf = [{"protocolId": "46"}]
+    good = "open('output/keep_1.txt', 'w').write('\\n'.join(['16', '17']) + '\\n')\n"
+    assert _plan(ctf, script=good)["script"] == good
+    twice = "ids = [16, 17]\nopen('output/keep_1.txt', 'w').write('\\\\n'.join(map(str, ids)))\n"
+    with pytest.raises(ProposalError, match="Line 2 of the script writes a backslash and an n"):
+        _plan(ctf, script=twice)
+    inFString = "x = 3\nprint(f'mean {x}\\\\n')\n"
+    with pytest.raises(ProposalError, match="Line 2"):
+        _plan(ctf, script=inFString)
