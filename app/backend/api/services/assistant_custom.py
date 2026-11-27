@@ -3,6 +3,7 @@ something no installed protocol does. It becomes one protocol of the project (Pr
 kept as its parameter, so it can be checked and run again; it runs in a sandbox where the server lets one start.
 Only users with the protocols.customCode permission can be offered it or apply it."""
 import ast
+import re
 import importlib.util
 import sysconfig
 from typing import Any, Callable, Dict, List, Optional
@@ -18,6 +19,11 @@ MAX_TITLE = 80
 MAX_INPUTS = 10
 # What a script may import besides Python's own modules
 LIBRARIES = ("numpy", "scipy", "mrcfile", "matplotlib")
+# A text of the script that names a column (_defocusU, _ctfModel._defocusU)
+COLUMN_NAME = re.compile(r"^_[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+# Columns of the metadata table that the script's CSV does not have, and the ones it adds
+NOT_IN_CSV = ("enabled", "stack")
+ADDED_3D = ("x_px", "y_px", "z_px")
 
 CONTRACT = ("The script runs in a folder of its own, with the variable inputs (also in inputs.json there): a list "
             "in the order given, one entry per input with \"protocolId\", \"output\" and \"type\" (its class, "
@@ -33,8 +39,11 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "its summary; .png or .jpg plots there are shown in the summary as images (in the order of their "
             "names); keep_N.txt, the ids (one per line, the CSV's id column) of the items of input N (from 1, a "
             "set) to keep, becomes the output outputSubsetN: a set of the same kind with those items as they are "
-            "(classes with their own items). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: savefig) can be imported; there is no network and it can write only in "
-            "its own folder.")
+            "(classes with their own items). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: "
+            "savefig) can be imported; there is no network and it can write only in its own folder. Read a set's "
+            "items with rows(N) (N from 0, like inputs): one dict per item by column name, numbers already as "
+            "numbers; never by position nor by splitting lines. Use only the columns its input has (an error "
+            "lists them).")
 
 
 def _isStandard(name: str) -> bool:
@@ -77,6 +86,31 @@ def checkNewLines(code: str) -> None:
                                 "once in the text (not \\\\n). Write it again." % node.lineno)
 
 
+def checkColumns(code: str, inputs: List[Dict[str, Any]]) -> None:
+    """ProposalError when the script names a column no input has (only when every input is a set whose columns
+    are known: anything else has values the check cannot know)."""
+    if not inputs or any(not item.get("columns") for item in inputs):
+        return
+    known = {column for item in inputs for column in item["columns"]}
+    named = {node.value for node in ast.walk(ast.parse(code))
+             if isinstance(node, ast.Constant) and isinstance(node.value, str) and COLUMN_NAME.match(node.value)}
+    unknown = sorted(named - known)
+    if unknown:
+        raise ProposalError("The script reads %s, which no input has. %s. Write it again with those names." % (
+            ", ".join(unknown), "; ".join("Input %d (%s) has: %s" % (number, item["type"], ", ".join(item["columns"]))
+                                          for number, item in enumerate(inputs))))
+
+
+def _columns(columns: Optional[List[str]]) -> Optional[List[str]]:
+    """The CSV's columns from the metadata table's ones."""
+    if not columns:
+        return None
+    names = [name for name in columns if name not in NOT_IN_CSV]
+    if "_x" in names and "_z" in names:
+        names += list(ADDED_3D)
+    return names
+
+
 def _input(item: Dict[str, Any], protocolOf: Callable[[str], Optional[Dict[str, Any]]],
            outputsOf: Callable[[str], List[Dict[str, Any]]]) -> Dict[str, Any]:
     protocolId = str(item.get("protocolId") or "").strip().lstrip("#")
@@ -105,7 +139,8 @@ def _input(item: Dict[str, Any], protocolOf: Callable[[str], Optional[Dict[str, 
 
 def plan(inputs: Any, script: Any, operation: Any, title: Any, canRun: bool,
          protocolOf: Callable[[str], Optional[Dict[str, Any]]],
-         outputsOf: Callable[[str], List[Dict[str, Any]]]) -> Dict[str, Any]:
+         outputsOf: Callable[[str], List[Dict[str, Any]]],
+         columnsOf: Optional[Callable[[str, str], Optional[List[str]]]] = None) -> Dict[str, Any]:
     """The operation checked as the project is now, or ProposalError saying what is wrong."""
     if not canRun:
         raise ProposalError("Custom operations need the %s permission; an administrator gives it" % PERMISSION)
@@ -131,6 +166,10 @@ def plan(inputs: Any, script: Any, operation: Any, title: Any, canRun: bool,
     refs = ["%s.%s" % (item["protocolId"], item["output"]) for item in checked]
     if len(set(refs)) != len(refs):
         raise ProposalError("The same output is given twice")
+    for item in checked:
+        if item["size"] is not None and columnsOf is not None:
+            item["columns"] = _columns(columnsOf(item["protocolId"], item["output"]))
+    checkColumns(code, checked)
     name = " ".join(str(title or "").split())[:MAX_TITLE] or "custom operation"
     return {"title": name, "operation": words[:MAX_OPERATION], "script": code, "inputs": checked}
 

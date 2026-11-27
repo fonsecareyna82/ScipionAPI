@@ -80,3 +80,29 @@ def test_ANewLineWrittenAsABackslashAndAnNIsSentBack():
     inFString = "x = 3\nprint(f'mean {x}\\\\n')\n"
     with pytest.raises(ProposalError, match="Line 2"):
         _plan(ctf, script=inFString)
+
+
+CTF_COLUMNS = ["id", "enabled", "_defocusU", "_defocusV", "_astigmatism", "_resolution", "_micObj._filename"]
+
+
+def test_TheColumnsOfEachSetAreGivenAndTheScriptMayOnlyNameThose():
+    columnsOf = lambda pid, output: CTF_COLUMNS if output == "outputCTF" else None  # noqa: E731
+    good = ("keep = [row['id'] for row in rows(0) if row['_defocusU'] < 15000 and row['_astigmatism'] < 44]\n"
+            "open('output/keep_1.txt', 'w').write('\\n'.join(map(str, keep)))\n")
+    data = assistant_custom.plan([{"protocolId": "46"}], good, "Keeps some", "Op", True, ROWS.get,
+                                 lambda pid: OUTPUTS.get(pid, []), columnsOf)
+    assert data["inputs"][0]["columns"] == ["id", "_defocusU", "_defocusV", "_astigmatism", "_resolution",
+                                            "_micObj._filename"]
+    wrong = "keep = [row['id'] for row in rows(0) if row['_defocus_u'] < 15000]\n"
+    with pytest.raises(ProposalError, match="reads _defocus_u, which no input has. Input 0 \\(SetOfCTF\\) has: id, "
+                                            "_defocusU"):
+        assistant_custom.plan([{"protocolId": "46"}], wrong, "x", "Op", True, ROWS.get,
+                              lambda pid: OUTPUTS.get(pid, []), columnsOf)
+    # With an input whose values are not known (a volume), nothing is checked
+    mixed = assistant_custom.plan([{"protocolId": "46"}, {"protocolId": "45", "output": "outputVolume"}], wrong,
+                                  "x", "Op", True, ROWS.get, lambda pid: OUTPUTS.get(pid, []), columnsOf)
+    assert mixed["inputs"][1].get("columns") is None
+
+
+def test_3DCoordinatesGetTheirCornerColumns():
+    assert assistant_custom._columns(["id", "_x", "_y", "_z", "_tomoId"])[-3:] == ["x_px", "y_px", "z_px"]

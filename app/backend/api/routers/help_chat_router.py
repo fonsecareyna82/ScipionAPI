@@ -983,11 +983,25 @@ def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Di
 
 def _customPlan(mapper, currentUser, projectId: int, inputs: Any, script: Any, operation: Any,
                 title: Any) -> Dict[str, Any]:
+    from app.backend.api.services.project_service import ProjectService
+
     protocols = AssistantPostgresqlMapper(mapper.db)
     outputs = HelpChatPostgresqlMapper(mapper.db)
+
+    def columnsOf(protocolId: str, outputName: str) -> Optional[List[str]]:
+        # A set's columns, as its metadata table names them (the script's CSV uses the same names)
+        try:
+            schema = ProjectService().getMetadataTableSchemaService(
+                projectId=projectId, protocolId=int(protocolId), outputName=outputName, tableName="objects",
+                mapper=mapper, protocolIdIsScipionId=True) or {}
+        except Exception:
+            logger.warning("Could not read the columns of %s.%s", protocolId, outputName, exc_info=True)
+            return None
+        return [str(column.get("name")) for column in schema.get("columns") or [] if column.get("name")]
+
     return assistant_custom.plan(inputs, script, operation, title, hasPermission(currentUser, custom_code.PERMISSION),
                                  lambda protocolId: protocols.protocol(projectId, protocolId),
-                                 lambda protocolId: outputs.protocolOutputs(projectId, protocolId))
+                                 lambda protocolId: outputs.protocolOutputs(projectId, protocolId), columnsOf)
 
 
 def _applyCustom(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
