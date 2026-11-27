@@ -57,3 +57,14 @@ def test_TheScriptAndThePermissionAreChecked():
         _plan(ctf, operation=" ")
     with pytest.raises(ProposalError, match="too long"):
         _plan(ctf, script="x = 1\n" * 5000)
+
+
+def test_OnlyTheLibrariesThereAndPythonsOwnModulesMayBeImported():
+    ctf = [{"protocolId": "46"}]
+    allowed = ("import csv, json, os.path\nfrom collections import Counter\nimport numpy as np\n"
+               "from scipy import ndimage\nimport mrcfile\nimport matplotlib.pyplot as plt\n")
+    assert _plan(ctf, script=allowed)["script"] == allowed
+    with pytest.raises(ProposalError, match="imports pandas, which it cannot use"):
+        _plan(ctf, script="import numpy\nimport pandas as pd\n")
+    with pytest.raises(ProposalError, match="imports nosuchmodule, torch"):
+        _plan(ctf, script="from torch import nn\nimport nosuchmodule\n")

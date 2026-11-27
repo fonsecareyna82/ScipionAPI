@@ -2,6 +2,9 @@
 something no installed protocol does. It becomes one protocol of the project (ProtCustomOperation) with the script
 kept as its parameter, so it can be checked and run again; it runs in a sandbox where the server lets one start.
 Only users with the protocols.customCode permission can be offered it or apply it."""
+import ast
+import importlib.util
+import sysconfig
 from typing import Any, Callable, Dict, List, Optional
 
 from app.backend.api.services.assistant_actions import ProposalError
@@ -13,6 +16,8 @@ MAX_SCRIPT = 20000
 MAX_OPERATION = 500
 MAX_TITLE = 80
 MAX_INPUTS = 10
+# What a script may import besides Python's own modules
+LIBRARIES = ("numpy", "scipy", "mrcfile", "matplotlib")
 
 CONTRACT = ("The script runs in a folder of its own, with the variable inputs (also in inputs.json there): a list "
             "in the order given, one entry per input with \"protocolId\", \"output\" and \"type\" (its class, "
@@ -28,6 +33,37 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "its summary; .png or .jpg plots there are shown in the summary as images (in the order of their "
             "names). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: savefig) can be imported; there is no network and it can write only in "
             "its own folder.")
+
+
+def _isStandard(name: str) -> bool:
+    """Whether name is one of Python's own modules (not one installed on top)."""
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        return False
+    if spec is None:
+        return False
+    if spec.origin in ("built-in", "frozen"):
+        return True
+    places = [spec.origin] if spec.origin else list(spec.submodule_search_locations or [])
+    standard = sysconfig.get_paths()["stdlib"]
+    return bool(places) and all(str(place).startswith(standard) and "site-packages" not in str(place)
+                                for place in places)
+
+
+def checkImports(code: str) -> None:
+    """ProposalError naming the modules the script imports that it cannot use."""
+    names = set()
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names.add(node.module.split(".")[0])
+    refused = sorted(name for name in names if name not in LIBRARIES and not _isStandard(name))
+    if refused:
+        raise ProposalError("The script imports %s, which it cannot use here: only %s and Python's own modules "
+                            "(read the CSV files with csv or numpy). Write it again without %s." % (
+                                ", ".join(refused), ", ".join(LIBRARIES), "them" if len(refused) > 1 else "it"))
 
 
 def _input(item: Dict[str, Any], protocolOf: Callable[[str], Optional[Dict[str, Any]]],
@@ -71,6 +107,7 @@ def plan(inputs: Any, script: Any, operation: Any, title: Any, canRun: bool,
         compile(code, "operation.py", "exec")
     except SyntaxError as error:
         raise ProposalError("The script has a syntax error in line %s: %s" % (error.lineno, error.msg))
+    checkImports(code)
     words = " ".join(str(operation or "").split())
     if not words:
         raise ProposalError("Say in plain words what the operation does")
