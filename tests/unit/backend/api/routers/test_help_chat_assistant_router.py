@@ -44,10 +44,10 @@ class _Usage:
         kept = _Usage.conversationsKept.get(conversationId)
         return kept if kept and kept["userId"] == userId else None
 
-    def addConversation(self, userId, projectId, title):
+    def addConversation(self, userId, projectId, title, mode=""):
         conversationId = len(_Usage.conversationsKept) + 1
         _Usage.conversationsKept[conversationId] = {"id": conversationId, "userId": userId, "projectId": projectId,
-                                                    "title": title}
+                                                    "title": title, "mode": mode}
         return conversationId
 
     def addMessage(self, conversationId, role, text, answer=None):
@@ -62,6 +62,12 @@ class _Usage:
         now = datetime.datetime(2026, 11, 27, tzinfo=datetime.timezone.utc)
         return [dict(item, createdAt=now, updatedAt=now, projectPath=None, messages=2)
                 for item in _Usage.conversationsKept.values() if item["userId"] == userId]
+
+    def projectOutputs(self, projectId):
+        return [{"protocolId": "2", "className": "ProtImportMovies", "status": "finished", "label": "import",
+                 "outputClass": "SetOfMovies", "size": "30"},
+                {"protocolId": "3", "className": "ProtMotionCorr", "status": "running", "label": "align",
+                 "outputClass": None, "size": None}]
 
     def deleteConversation(self, userId, conversationId):
         if not self.conversation(userId, conversationId):
@@ -395,7 +401,7 @@ def test_AConversationIsKeptAndTheModelReadsItFromThere(router, monkeypatch):
     _turnOn(router, limit=0)
     seen = []
 
-    def answer(self, question, context, history=None):
+    def answer(self, question, context, history=None, tutor=None):
         seen.append(history)
         return {"text": "Answer to " + question, "steps": [], "cards": [{"kind": "report"}], "usage": {
             "inputTokens": 1, "outputTokens": 1}, "assistant": True}
@@ -426,3 +432,48 @@ def test_AnotherUsersConversationIsNotFound(router):
     assert client.post("/help-chat/ask", json={"question": "hi", "conversationId": 9}).status_code == 404
     assert client.delete("/help-chat/conversations/9").status_code == 404
     assert client.get("/help-chat/conversations").json() == {"conversations": []}
+
+
+def test_TheTutorKeepsItsModeAndShowsWhereTheProjectIs(applying, monkeypatch):
+    seen = []
+
+    def answer(self, question, context, history=None, tutor=None):
+        seen.append(tutor)
+        return {"text": "Let us align", "steps": [], "cards": [], "usage": {"inputTokens": 1, "outputTokens": 1},
+                "assistant": True}
+
+    monkeypatch.setattr(applying.AssistantAgent, "answer", answer)
+    client = _client(applying, ["assistant.use"])
+    first = client.post("/help-chat/ask", json={"question": "Guide me", "projectId": 7, "mode": "tutor"}).json()
+    assert first["mode"] == "tutor"
+    card = first["cards"][0]
+    assert card["kind"] == "tutorial" and card["road"] == "spa" and card["current"] == "micrographs"
+    assert [stage["state"] for stage in card["stages"][:3]] == ["done", "running", "pending"]
+    assert "micrographs [movie alignment]: running" in seen[0]
+    # The next question goes on in tutor mode without saying it again
+    second = client.post("/help-chat/ask", json={"question": "And now?", "projectId": 7,
+                                                  "conversationId": first["conversationId"]}).json()
+    assert second["mode"] == "tutor" and seen[1]
+    assert client.get("/help-chat/conversations").json()["conversations"][0]["mode"] == "tutor"
+    # An ordinary conversation is not the tutor
+    plain = client.post("/help-chat/ask", json={"question": "hi", "projectId": 7}).json()
+    assert "mode" not in plain and seen[2] is None
+
+
+def test_TheTutorWithoutAProjectAsksToOpenOne(applying, monkeypatch):
+    seen = []
+
+    def answer(self, question, context, history=None, tutor=None):
+        seen.append(tutor)
+        return {"text": "Open your project", "steps": [], "cards": [], "usage": {"inputTokens": 1,
+                                                                                 "outputTokens": 1}}
+
+    monkeypatch.setattr(applying.AssistantAgent, "answer", answer)
+    answer_ = _client(applying, ["assistant.use"]).post("/help-chat/ask", json={"question": "Guide me",
+                                                                                "mode": "tutor"}).json()
+    assert seen == [""] and answer_["cards"] == []
+
+
+def test_TheTutorNeedsTheAssistant(router):
+    client = _client(router, ["assistant.use"])
+    assert client.post("/help-chat/ask", json={"question": "Guide me", "mode": "tutor"}).status_code == 400

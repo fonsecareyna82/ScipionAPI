@@ -158,6 +158,28 @@ UPDATE_CHAIN_SQL = """
 """
 
 
+# Every protocol of a project with what it made (one row per output; none when it made nothing yet), for the tutor
+PROJECT_OUTPUTS_SQL = """
+    SELECT p.id AS "dbId", p."protocolId", p."protocolClassName" AS "className",
+           LOWER(COALESCE(p.status, '')) AS status,
+           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName") AS label,
+           s."setClassName" AS "outputClass",
+           COALESCE(s.properties->>'itemsCount', s.properties->>'_size') AS size
+      FROM protocols p
+      LEFT JOIN scipion_sets s ON s."protocolDbId" = p.id AND s."projectId" = p."projectId"
+           AND COALESCE(s.properties ->> 'runtimeReserved', 'false') <> 'true'
+     WHERE p."projectId" = %s
+    UNION ALL
+    SELECT p.id, p."protocolId", p."protocolClassName", LOWER(COALESCE(p.status, '')),
+           COALESCE(NULLIF(p.params->>'runName', ''), p."protocolClassName"), o."className", NULL
+      FROM protocols p
+      JOIN scipion_objects o ON o."protocolDbId" = p.id AND o."projectId" = p."projectId"
+           AND o."parentObjectId" IS NULL
+           AND NOT EXISTS (SELECT 1 FROM scipion_sets s WHERE s."objectId" = o.id)
+     WHERE p."projectId" = %s
+     ORDER BY 1
+"""
+
 class AssistantPostgresqlMapper:
     def __init__(self, db):
         self.db = db
@@ -268,15 +290,20 @@ class AssistantPostgresqlMapper:
         row = self.db.fetchOne(LAST_RUN_SQL, (int(projectId), str(protocolId)))
         return dict(row) if row else None
 
+    def projectOutputs(self, projectId: int) -> List[Dict[str, Any]]:
+        return [dict(row) for row in self.db.fetchAll(PROJECT_OUTPUTS_SQL, (int(projectId), int(projectId))) or []]
+
     # Conversations of the help chat ------------------------------------------------------------------------
     def conversation(self, userId: int, conversationId: int) -> Optional[Dict[str, Any]]:
-        row = self.db.fetchOne('SELECT id, "projectId", title, "createdAt", "updatedAt" FROM assistant_conversations '
-                               'WHERE id = %s AND "userId" = %s', (int(conversationId), int(userId)))
+        row = self.db.fetchOne('SELECT id, "projectId", title, mode, "createdAt", "updatedAt" '
+                               'FROM assistant_conversations WHERE id = %s AND "userId" = %s',
+                               (int(conversationId), int(userId)))
         return dict(row) if row else None
 
-    def addConversation(self, userId: int, projectId: Optional[int], title: str) -> int:
-        row = self.db.executeReturningOne('INSERT INTO assistant_conversations ("userId", "projectId", title) '
-                                          'VALUES (%s, %s, %s) RETURNING id', (int(userId), projectId, title))
+    def addConversation(self, userId: int, projectId: Optional[int], title: str, mode: str = "") -> int:
+        row = self.db.executeReturningOne('INSERT INTO assistant_conversations ("userId", "projectId", title, mode) '
+                                          'VALUES (%s, %s, %s, %s) RETURNING id',
+                                          (int(userId), projectId, title, mode or ""))
         return int(row["id"])
 
     def addMessage(self, conversationId: int, role: str, text: str, answer: Optional[Dict[str, Any]] = None) -> None:
@@ -290,7 +317,7 @@ class AssistantPostgresqlMapper:
 
     def conversations(self, userId: int, limit: int) -> List[Dict[str, Any]]:
         rows = self.db.fetchAll("""
-            SELECT c.id, c."projectId", c.title, c."createdAt", c."updatedAt", p.name AS "projectPath",
+            SELECT c.id, c."projectId", c.title, c.mode, c."createdAt", c."updatedAt", p.name AS "projectPath",
                    (SELECT COUNT(*) FROM assistant_messages m WHERE m."conversationId" = c.id) AS messages
               FROM assistant_conversations c
               LEFT JOIN projects p ON p.id = c."projectId"

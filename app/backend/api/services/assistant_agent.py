@@ -239,6 +239,27 @@ TEMPLATE_PROPOSAL_TOOLS = [
               ["projectId", "chainId", "reason"]),
 ]
 
+TUTOR_RULE = """
+You are now the TUTOR: you guide a user who is new to processing, one step at a time, as a patient teacher.
+- Explain in plain words; explain a technical word the first time you use it. Keep each answer short: one step.
+- ScipionWeb worked out where the project is on the usual road (below), from what its protocols made. Trust it, and \
+read the protocols' details or logs when you need to check their results.
+- Before going on, check the stage just done: did it finish, and do its results look reasonable (how many items, \
+the CTF resolutions, how many particles...)? If something looks wrong, say it and help fix it first.
+- A stage running: say what it is doing and that it can be followed in the project. Waiting: it needs the user's own \
+work in its window. Failed: explain why (explain_failure) and how to fix it. Prepared: it was added but not launched.
+- When the current stage is done and fine, say what the next stage does and why it is needed, search the help with \
+the words in its brackets to choose a usual protocol for it, then {next}. Explain its two to four key parameters and \
+what to look at when it finishes.
+- Never go more than one stage ahead. A skipped stage was not needed (e.g. micrographs imported without movies).
+- When the user asks something else, answer it, then bring them back to where they are on the road."""
+TUTOR_NEXT = ("propose it with propose_next_step from the protocol to go on from (the user sees a card and decides)")
+TUTOR_NEXT_READ_ONLY = ("tell the user which protocol to add in the project and which output of which protocol to "
+                        "give it as input")
+TUTOR_NO_PROJECT = ("The user is not in a project: ask them to open their project (or create one in Projects and "
+                    "open it); the tutor follows the project that is open.")
+
+
 READ_PAGE_TOOL = _function(
     "read_page", "Read one of the web's pages as data, as the user sees it. Use it for what the other tools do not "
                  "give. Fill the {braces} with real ids and names (list them first). The pages:\n" + catalogue(),
@@ -504,14 +525,20 @@ class AssistantAgent:
         self.provider = provider
         self.tools = tools
 
-    def answer(self, question: str, context: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """{text, steps, cards, usage, assistant}. Raises AssistantProviderError when the model cannot answer."""
+    def answer(self, question: str, context: str, history: Optional[List[Dict[str, Any]]] = None,
+               tutor: Optional[str] = None) -> Dict[str, Any]:
+        """{text, steps, cards, usage, assistant}. Raises AssistantProviderError when the model cannot answer.
+        tutor: where the project is on its road (tutorial_progress.describe), to guide a new user step by step."""
         rule = PROPOSE_RULE + "\n" + (DELETE_RULE if self.tools.canDelete else NO_DELETE_RULE) \
             if self.tools.canPropose else READ_ONLY_RULE
         if self.tools.canPropose and self.tools.canProposeTemplates:
             rule += "\n" + TEMPLATE_RULE
         if self.tools.isAdmin:
             rule += "\n" + ADMIN_RULE
+        if tutor is not None:
+            rule += "\n" + TUTOR_RULE.replace("{next}", TUTOR_NEXT if self.tools.canPropose else TUTOR_NEXT_READ_ONLY)
+            # Names in it are the user's own: data, with the context, not with the rules
+            context += "\n\nWhere the project is on its road:\n" + (tutor or TUTOR_NO_PROJECT)
         messages: List[Dict[str, Any]] = [{"role": "system",
                                            "content": SYSTEM_PROMPT.replace("{actions}", rule) + "\n\n" + context}]
         messages += historyMessages(history or [])
