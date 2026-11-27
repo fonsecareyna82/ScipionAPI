@@ -198,6 +198,17 @@ def _subworkflow(service, mapper, currentUser, projectId: int, protocol: Dict[st
     return items
 
 
+def _depending(service, mapper, currentUser, projectId: int, protocols: List[Dict[str, Any]],
+               action: str) -> Dict[str, List[str]]:
+    """Each protocol's depending protocols (only needed to relaunch, and only for the ones not running)."""
+    if action != "relaunchmany":
+        return {}
+    return {str(protocol["protocolId"]): [item["protocolId"] for item in
+                                          _subworkflow(service, mapper, currentUser, projectId, protocol)[1:]]
+            for protocol in protocols
+            if (protocol.get("status") or "").lower() not in assistant_actions.ACTIVE_STATUSES}
+
+
 def _tagsOf(service, mapper, currentUser, projectId: int, protocolIds: List[str]) -> Dict[str, List[str]]:
     return {protocolId: list((service.listProtocolTags(mapper=mapper, projectId=projectId, protocolId=int(protocolId),
                                                       currentUser=currentUser, protocolIdIsScipionId=True)
@@ -347,6 +358,12 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         return assistant_actions.tagCard(projectId, protocols, title, _projectTag(mapper, projectId, title),
                                          tagged, reason, remove)
 
+    def proposeMany(projectId: int, action: str, protocolIds: List[str], reason: str):
+        protocols = [workable(projectId, protocolId) for protocolId in dict.fromkeys(protocolIds)]
+        return assistant_actions.manyCard(projectId, action, protocols,
+                                          _depending(service, mapper, currentUser, projectId, protocols, action),
+                                          reason)
+
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)
         outputs = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, protocolId)
@@ -439,7 +456,7 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                           proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
                           proposeContinue=proposeContinue, proposeSubset=proposeSubset,
                           proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, proposeRename=proposeRename,
-                          proposeSchedule=proposeSchedule, **reading)
+                          proposeSchedule=proposeSchedule, proposeMany=proposeMany, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -595,6 +612,8 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         return _applyRename(payload, service, mapper, currentUser)
     if payload.action == "schedule":
         return _applySchedule(payload, service, mapper, currentUser)
+    if payload.action in ("stopmany", "relaunchmany"):
+        return _applyMany(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -806,6 +825,57 @@ def _applyRename(payload: ActionPayload, service, mapper, currentUser) -> Dict[s
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
     return {"ok": True, "name": name}
+
+
+def _applyMany(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Stop or relaunch the protocols the card listed, each as its own button would. One that fails does not
+    stop the others: the answer says which went and which did not."""
+    helper = AssistantPostgresqlMapper(mapper.db)
+    listed = [str(item) for item in payload.protocolIds or []]
+    try:
+        protocols = [helper.protocol(payload.projectId, protocolId) for protocolId in listed]
+        if not listed or None in protocols:
+            raise ProposalError("A protocol of the card is not in the project any more")
+        plan = assistant_actions.manyChecks(
+            payload.action, protocols, _depending(service, mapper, currentUser, payload.projectId, protocols,
+                                                  payload.action),
+            listed, payload.mode == "restart", payload.scope)
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    done, failed = [], []
+    if payload.action == "stopmany":
+        if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
+                                                               currentUser=currentUser):
+            raise HTTPException(status_code=404, detail="Project not found")
+        try:
+            result = service.stopProtocol(mapper, payload.projectId, plan["ids"], protocolIdIsScipionId=True) or {}
+            errors = [str(error) for error in result.get("errors") or []]
+        except HTTPException as error:
+            errors = _errorTexts(error.detail) or ["The stop was refused"]
+        if errors:
+            failed = [{"protocolId": "", "error": "; ".join(errors)}]
+        else:
+            done = list(plan["ids"])
+    else:
+        classes = {str(item["protocolId"]): item.get("className") for item in protocols}
+        for protocolId in plan["ids"]:
+            params = helper.pointerParams(payload.projectId, protocolId)
+            result = _executeWorkflow(service, mapper, currentUser, payload.projectId, protocolId,
+                                      classes[protocolId], params, plan["modes"][protocolId], plan["scope"])
+            errors = [str(error) for error in result.get("errors") or []]
+            if errors:
+                failed.append({"protocolId": protocolId, "error": "; ".join(errors)})
+            else:
+                done.append(protocolId)
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                ",".join(plan["ids"])[:200], {"action": payload.action, "scope": plan.get("scope"),
+                                              "modes": plan.get("modes"), "done": done,
+                                              "failed": [item["protocolId"] for item in failed]})
+    if not done:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="; ".join(("#%s: %s" % (item["protocolId"], item["error"])) if item["protocolId"]
+                                             else item["error"] for item in failed) or "Nothing was done")
+    return {"ok": True, "done": done, "failed": failed}
 
 
 def _applySchedule(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:

@@ -43,6 +43,7 @@ MAX_TAG_CHARS = 60
 MAX_NAME_CHARS = 200
 MAX_COMMENT_CHARS = 4000
 MAX_WAIT_FOR = 10
+MAX_MANY = 20
 SCHEDULABLE_STATUSES = ("new", "saved", "", "failed", "aborted", "interrupted")
 
 
@@ -412,3 +413,67 @@ def prerequisitesWith(current: Any, waitFor: List[str]) -> str:
         if str(item) not in ids:
             ids.append(str(item))
     return ",".join(ids)
+
+
+def manyItems(action: str, protocols: List[Dict[str, Any]],
+              depending: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+    """Several protocols stopped or relaunched at once, each as it would be alone. depending: each protocol's
+    depending protocols. skip: why one is left out (stopped already, or running)."""
+    if action not in ("stopmany", "relaunchmany"):
+        raise ProposalError("Unknown action: %s" % action)
+    if not protocols:
+        raise ProposalError("Say which protocols")
+    if len(protocols) > MAX_MANY:
+        raise ProposalError("At most %d protocols at once" % MAX_MANY)
+    ids = [str(item["protocolId"]) for item in protocols]
+    items = []
+    for protocol in protocols:
+        protocolId = str(protocol["protocolId"])
+        status = (protocol.get("status") or "").lower()
+        item = {"protocolId": protocolId, "label": protocol.get("label") or "", "status": status, "skip": None}
+        if action == "stopmany":
+            if status not in ACTIVE_STATUSES:
+                item["skip"] = "not running"
+        elif status in ACTIVE_STATUSES:
+            item["skip"] = "running: stop it first"
+        else:
+            inside = [other for other in ids if other != protocolId and other in (depending.get(protocolId) or [])]
+            if inside:
+                raise ProposalError("#%s depends on #%s: relaunch #%s with its whole workflow instead" % (
+                    inside[0], protocolId, protocolId))
+            item["mode"], item["modes"] = relaunchModes(status, False)
+            item["children"] = list(depending.get(protocolId) or [])
+        items.append(item)
+    if not any(item["skip"] is None for item in items):
+        raise ProposalError("None of them is running: there is nothing to stop" if action == "stopmany" else
+                            "They are all running: stop them first")
+    return items
+
+
+def manyCard(projectId: int, action: str, protocols: List[Dict[str, Any]], depending: Dict[str, List[str]],
+             reason: str = "") -> Dict[str, Any]:
+    items = manyItems(action, protocols, depending)
+    doing = [item for item in items if item["skip"] is None]
+    return {"kind": "action", "action": action, "projectId": int(projectId), "protocolId": doing[0]["protocolId"],
+            "label": doing[0]["label"], "items": items,
+            # Relaunched: whether some go on where they stopped, and whether some have protocols after them
+            "canContinue": any(item.get("mode") == "continue" for item in doing),
+            "needsScope": any(item.get("children") for item in doing),
+            "reason": str(reason or "")[:500]}
+
+
+def manyChecks(action: str, protocols: List[Dict[str, Any]], depending: Dict[str, List[str]],
+               listed: List[str], restartAll: bool, scope: Optional[str]) -> Dict[str, Any]:
+    """Check again, as things are now, the protocols the card listed: {ids, modes, scope}."""
+    items = manyItems(action, protocols, depending)
+    doing = [item for item in items if item["skip"] is None]
+    if sorted(item["protocolId"] for item in doing) != sorted(str(item) for item in listed or []):
+        raise ProposalError("The protocols changed since the card (some started or stopped): ask again")
+    if action == "stopmany":
+        return {"ids": [item["protocolId"] for item in doing]}
+    if scope not in ("single", "all"):
+        if any(item.get("children") for item in doing):
+            raise ProposalError("Choose whether to relaunch only these protocols or each with its whole workflow")
+        scope = "single"
+    return {"ids": [item["protocolId"] for item in doing], "scope": scope,
+            "modes": {item["protocolId"]: "restart" if restartAll else item["mode"] for item in doing}}

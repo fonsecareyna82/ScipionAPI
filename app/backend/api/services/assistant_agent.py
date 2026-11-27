@@ -183,6 +183,15 @@ SUBWORKFLOW_TOOLS = [
                            "description": "The ids of the protocols it waits for"},
                "reason": _REASON},
               ["projectId", "protocolId", "waitFor", "reason"]),
+    _function("propose_many", "Propose stopping or relaunching several protocols at once (one card). Each is "
+                              "treated as alone: a relaunch goes on where a failed one stopped (the user may "
+                              "restart them all) and asks about the protocols depending on them; ones that cannot "
+                              "(stopped already, or running) are shown as left out. For one protocol use "
+                              "propose_stop or propose_relaunch.",
+              {"projectId": _PROJECT, "what": {"type": "string", "enum": ["stop", "relaunch"]},
+               "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
+               "reason": _REASON},
+              ["projectId", "what", "protocolIds", "reason"]),
     _function("propose_untag", "Propose taking a tag, by its name, off one or more protocols. The tag stays in the "
                                "project for other protocols. Never guess the tag from the conversation: leave it "
                                "out when the user did not name it, and the protocols' only tag is taken off (or "
@@ -208,7 +217,7 @@ DELETE_TOOL = _function(
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
 PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
-                "reset, a new name or comment, a schedule (start after other protocols), adding or taking off a "
+                "reset, a new name or comment, several protocols stopped or relaunched at once, a schedule (start after other protocols), adding or taking off a "
                 "tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
@@ -360,6 +369,7 @@ STEP_LABELS = {
     "propose_untag": "Proposed taking a tag off",
     "propose_rename": "Proposed renaming protocol {protocolId}",
     "propose_schedule": "Proposed scheduling protocol {protocolId}",
+    "propose_many": "Proposed acting on several protocols",
     "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
 }
 
@@ -408,7 +418,8 @@ class AssistantTools:
                  proposeSubworkflow: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeTag: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeRename: Optional[Callable[..., Dict[str, Any]]] = None,
-                 proposeSchedule: Optional[Callable[..., Dict[str, Any]]] = None):
+                 proposeSchedule: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeMany: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -471,7 +482,7 @@ class AssistantTools:
                     str(args.get("reason") or ""), _yes(args.get("launch"))))
         # A protocol with everything depending on it, and tags
         self.canProposeMore = self.canPropose and None not in (proposeSubworkflow, proposeTag, proposeRename,
-                                                               proposeSchedule)
+                                                               proposeSchedule, proposeMany)
         if self.canProposeMore:
             self._calls.update({
                 "propose_copy_subworkflow": lambda args: self._proposed(proposeSubworkflow(
@@ -490,6 +501,9 @@ class AssistantTools:
                 "propose_schedule": lambda args: self._proposed(proposeSchedule(
                     int(args["projectId"]), str(args["protocolId"]),
                     [str(item) for item in args.get("waitFor") or []], str(args.get("reason") or ""))),
+                "propose_many": lambda args: self._proposed(proposeMany(
+                    int(args["projectId"]), "stopmany" if args.get("what") == "stop" else "relaunchmany",
+                    [str(item) for item in args.get("protocolIds") or []], str(args.get("reason") or ""))),
                 "propose_untag": lambda args: self._proposed(proposeTag(
                     int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
                     str(args.get("tag") or ""), str(args.get("reason") or ""), True)),
@@ -565,6 +579,10 @@ class AssistantTools:
                                               "tag", "newTag", "waitFor") if key in card}
         if "protocols" in card:
             summary["protocols"] = [item["protocolId"] for item in card["protocols"]]
+        if "items" in card:
+            summary["protocols"] = [dict({"id": item["protocolId"]}, **({"leftOut": item["skip"]} if item["skip"]
+                                                                       else {"mode": item.get("mode")}))
+                                    for item in card["items"]]
         if "steps" in card:
             summary["stops"] = [step["id"] for step in card["steps"] if step.get("stop")]
         return {"proposed": True, "shownToTheUser": summary,

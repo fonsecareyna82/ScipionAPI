@@ -664,3 +664,51 @@ def test_ScheduleLaunchesBySchedule(applying, monkeypatch):
     assert kind == "launch" and kwargs["executeMode"] == "schedule" and kwargs["protocolIdIsScipionId"] is True
     assert kwargs["params"]["_prerequisites"] == "12,30"
     assert kwargs["params"]["inputParticles"] == "22.outputParticles"
+
+
+def _manyRows(monkeypatch, statuses):
+    rows = {protocolId: {"protocolId": protocolId, "label": "p" + protocolId, "className": "Prot2D",
+                         "status": status, "params": {}} for protocolId, status in statuses.items()}
+    monkeypatch.setattr(_Usage, "protocol", lambda self, projectId, protocolId: rows.get(str(protocolId)))
+    return rows
+
+
+def test_StopManyStopsTheOnesTheCardListed(applying, monkeypatch):
+    _manyRows(monkeypatch, {"30": "running", "31": "scheduled"})
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "stopmany", "projectId": 7, "protocolId": "30", "protocolIds": ["30", "31"]}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "done": ["30", "31"],
+                                                                         "failed": []}
+    assert _Service.calls == [("stop", ["30", "31"])]
+
+
+def test_StopManyRefusesWhenThingsChanged(applying, monkeypatch):
+    _manyRows(monkeypatch, {"30": "running", "31": "finished"})
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "stopmany", "projectId": 7, "protocolId": "30", "protocolIds": ["30", "31"]}
+    response = client.post("/help-chat/actions/apply", json=body)
+    assert response.status_code == 409 and "changed" in response.json()["detail"]
+    assert _Service.calls == []
+
+
+def test_RelaunchManyEachWithItsOwnMode(applying, monkeypatch):
+    _manyRows(monkeypatch, {"30": "failed", "31": "finished"})
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "relaunchmany", "projectId": 7, "protocolId": "30", "protocolIds": ["30", "31"]}
+    assert client.post("/help-chat/actions/apply", json=body).json()["done"] == ["30", "31"]
+    sent = [(kwargs["protocolId"], kwargs["mode"], kwargs["scope"]) for _, kwargs in _Service.calls]
+    assert sent == [(9030, "continue", "single"), (9031, "restart", "single")]
+    # Restarting them all from scratch
+    _Service.calls = []
+    client.post("/help-chat/actions/apply", json=dict(body, mode="restart"))
+    assert [kwargs["mode"] for _, kwargs in _Service.calls] == ["restart", "restart"]
+
+
+def test_RelaunchManyWithDependingProtocolsNeedsAChoice(applying, monkeypatch):
+    _manyRows(monkeypatch, {"30": "failed", "31": "finished"})
+    _Service.affected = [{"protocolId": "40", "runName": "after"}]
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "relaunchmany", "projectId": 7, "protocolId": "30", "protocolIds": ["30", "31"]}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 409
+    assert client.post("/help-chat/actions/apply", json=dict(body, scope="all")).status_code == 200
+    assert {kwargs["scope"] for _, kwargs in _Service.calls} == {"all"}

@@ -330,14 +330,17 @@ def test_TheModelGetsTheNewToolsOnlyWhenAllowed():
                    proposeSubworkflow=lambda *a: seen.append(a) or {"action": a[0]},
                    proposeTag=lambda *a: seen.append(a) or {"action": "tag"},
                    proposeRename=lambda *a: seen.append(a) or {"action": "rename"},
-                   proposeSchedule=lambda *a: seen.append(a) or {"action": "schedule"})
+                   proposeSchedule=lambda *a: seen.append(a) or {"action": "schedule"},
+                   proposeMany=lambda *a: seen.append(a) or {"action": a[1]})
     names = lambda tools: {tool["function"]["name"] for tool in tools.definitions()}  # noqa: E731
     tools = AssistantTools(*read, **propose)
     assert {"propose_copy_subworkflow", "propose_reset", "propose_tag"} <= names(tools)
     assert "propose_delete_subworkflow" not in names(tools)
     tools.call("propose_copy_subworkflow", '{"projectId": 7, "protocolId": "5", "launch": "true", "reason": "r"}')
     tools.call("propose_tag", '{"projectId": 7, "protocolIds": ["5", 6], "tag": "x", "reason": "r"}')
-    assert seen == [("copyworkflow", 7, "5", "r", True), (7, ["5", "6"], "x", "r")]
+    tools.call("propose_many", '{"projectId": 7, "what": "stop", "protocolIds": ["5", 6], "reason": "r"}')
+    assert seen == [("copyworkflow", 7, "5", "r", True), (7, ["5", "6"], "x", "r"),
+                    (7, "stopmany", ["5", "6"], "r")]
     withDelete = AssistantTools(*read, proposeDelete=lambda *a: {}, **propose)
     assert "propose_delete_subworkflow" in names(withDelete)
     assert "propose_tag" not in names(AssistantTools(*read))
@@ -400,3 +403,33 @@ def test_UntagWithoutANameTakesTheOnlyTagTheyHave():
     assert "CTF buena, hielo grueso" in str(error.value)
     with pytest.raises(ProposalError):
         actions.tagToRemove({"137": []}, tags)
+
+
+def _rows(**statuses):
+    return [{"protocolId": key.lstrip("p"), "label": key, "status": value} for key, value in statuses.items()]
+
+
+def test_StopManyLeavesOutWhatIsNotRunning():
+    card = actions.manyCard(7, "stopmany", _rows(p30="running", p31="finished"), {}, "")
+    assert [(item["protocolId"], item["skip"]) for item in card["items"]] == [("30", None), ("31", "not running")]
+    with pytest.raises(ProposalError):
+        actions.manyCard(7, "stopmany", _rows(p31="finished"), {}, "")
+
+
+def test_RelaunchManyModesAndChoices():
+    card = actions.manyCard(7, "relaunchmany", _rows(p30="aborted", p31="finished", p32="running"),
+                            {"30": ["40"], "31": []}, "")
+    assert [item.get("mode") for item in card["items"]] == ["continue", "restart", None]
+    assert card["items"][2]["skip"].startswith("running")
+    assert card["canContinue"] is True and card["needsScope"] is True
+
+
+def test_RelaunchManyRefusesOneDependingOnAnother():
+    with pytest.raises(ProposalError) as error:
+        actions.manyCard(7, "relaunchmany", _rows(p30="failed", p40="failed"), {"30": ["40"], "40": []}, "")
+    assert "whole workflow" in str(error.value)
+
+
+def test_AtMostTwentyAtOnce():
+    with pytest.raises(ProposalError):
+        actions.manyCard(7, "stopmany", [{"protocolId": str(i), "status": "running"} for i in range(21)], {}, "")
