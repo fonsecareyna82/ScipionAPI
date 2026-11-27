@@ -10,7 +10,16 @@ Relaunch follows the protocol form's rules:
   "the whole workflow" (they run again); nothing is chosen for them.
 Only parameters the user sees in the form can change, never an input (a pointer to another protocol's output).
 
-Duplicate makes a copy that is not launched, with the changes asked (the user launches it).
+Duplicate makes a copy with the changes asked, launched only when the user ticks it on the card.
+
+On a protocol and everything depending on it (its subworkflow), the card lists every protocol it touches and the
+apply refuses when that list changed since (nothing the user did not see is touched):
+- copy the subworkflow (the copies linked among themselves, as the graph's copy does), optionally launched;
+- reset it: its results are cleared, nothing may be running;
+- delete it (with the delete switch only): nothing may be running, the card lists every result lost and the user
+  confirms by writing how many protocols go.
+
+A tag is added by its name to one or more protocols; a tag the project does not have yet is created.
 
 Delete (only when the administrator allows it besides proposing) is the one that cannot be undone, so: protocols
 only (never projects), never a running one, never one whose depending protocols run or have results (as the web's
@@ -22,6 +31,9 @@ ACTIVE_STATUSES = ("running", "launched", "scheduled")
 CONTINUABLE_STATUSES = ("failed", "aborted", "interrupted")
 NEVER_RUN_STATUSES = ("new", "saved", "")
 MAX_CHANGES = 12
+MAX_SUBWORKFLOW = 60
+MAX_TAGGED = 50
+MAX_TAG_CHARS = 60
 
 
 class ProposalError(ValueError):
@@ -129,12 +141,109 @@ def nextStepCard(projectId: int, source: Dict[str, Any], help_: Optional[Dict[st
 
 
 def duplicateCard(projectId: int, protocol: Dict[str, Any], help_: Optional[Dict[str, Any]],
-                  changes: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
+                  changes: Dict[str, Any], reason: str = "", launch: bool = False) -> Dict[str, Any]:
     checked = parameterChanges(protocol.get("params") or {}, help_, changes or {})
     return {"kind": "action", "action": "duplicate", "projectId": int(projectId),
             "protocolId": str(protocol["protocolId"]), "label": protocol.get("label") or "",
             "className": protocol.get("className") or "", "status": protocol.get("status") or "",
-            "changes": checked, "reason": str(reason or "")[:500]}
+            "changes": checked, "launch": bool(launch), "reason": str(reason or "")[:500]}
+
+
+def _listed(items: List[Dict[str, Any]], withOutputs: bool = False) -> List[Dict[str, Any]]:
+    listed = []
+    for item in items:
+        entry = {"protocolId": str(item["protocolId"]), "label": item.get("label") or "",
+                 "status": item.get("status") or ""}
+        if withOutputs:
+            entry["outputs"] = [{"name": output.get("outputName") or "", "type": output.get("setClassName") or "",
+                                 "size": output.get("size")} for output in item.get("outputs") or []]
+        listed.append(entry)
+    return listed
+
+
+def _checkedSize(items: List[Dict[str, Any]]) -> None:
+    if not items:
+        raise ProposalError("The protocol is not in the project any more")
+    if len(items) > MAX_SUBWORKFLOW:
+        raise ProposalError("That is %d protocols; from the chat at most %d at once (use the project's graph)"
+                            % (len(items), MAX_SUBWORKFLOW))
+
+
+def _nothingRunning(items: List[Dict[str, Any]], doing: str) -> None:
+    running = [item for item in items if item.get("active") or (item.get("status") or "").lower() in ACTIVE_STATUSES]
+    if running:
+        raise ProposalError("%s while protocols in it run (%s): stop them first" % (
+            doing, ", ".join("#%s" % item["protocolId"] for item in running)))
+
+
+def subworkflowCard(action: str, projectId: int, items: List[Dict[str, Any]], reason: str = "",
+                    launch: bool = False) -> Dict[str, Any]:
+    """A card for a protocol and everything depending on it (items: the root first, each with its outputs for a
+    reset or a delete)."""
+    _checkedSize(items)
+    root = items[0]
+    card = {"kind": "action", "action": action, "projectId": int(projectId), "protocolId": str(root["protocolId"]),
+            "label": root.get("label") or "", "className": root.get("className") or "",
+            "status": root.get("status") or "", "reason": str(reason or "")[:500]}
+    if action == "copyworkflow":
+        card.update(protocols=_listed(items), launch=bool(launch))
+    elif action == "reset":
+        _nothingRunning(items, "It cannot be reset")
+        if not any(item.get("outputs") for item in items) and all(
+                (item.get("status") or "").lower() in NEVER_RUN_STATUSES for item in items):
+            raise ProposalError("Nothing there has run yet: there is nothing to reset")
+        card.update(protocols=_listed(items, True))
+    elif action == "deletefrom":
+        _nothingRunning(items, "It cannot be deleted")
+        card.update(protocols=_listed(items, True))
+    else:
+        raise ProposalError("Unknown action: %s" % action)
+    return card
+
+
+def sameProtocols(expected: Optional[List[str]], items: List[Dict[str, Any]]) -> None:
+    """The protocols the user saw on the card are still the ones it would touch."""
+    now = sorted(str(item["protocolId"]) for item in items)
+    if sorted(str(item) for item in expected or []) != now:
+        raise ProposalError("The protocols depending on it changed since the card was made; ask again")
+
+
+def deleteFromChecks(items: List[Dict[str, Any]], expected: Optional[List[str]], confirm: Optional[str]) -> None:
+    _checkedSize(items)
+    sameProtocols(expected, items)
+    _nothingRunning(items, "It cannot be deleted")
+    if str(confirm or "").strip() != str(len(items)):
+        raise ProposalError("Write how many protocols are deleted (%d) to confirm" % len(items))
+
+
+def tagTitle(title: Any) -> str:
+    text = " ".join(str(title or "").split())
+    if not text:
+        raise ProposalError("Say the tag's name")
+    if len(text) > MAX_TAG_CHARS:
+        raise ProposalError("A tag's name has at most %d characters" % MAX_TAG_CHARS)
+    return text
+
+
+def tagCard(projectId: int, protocols: List[Dict[str, Any]], title: str, existing: Optional[Dict[str, Any]],
+            tagged: Dict[str, List[str]], reason: str = "") -> Dict[str, Any]:
+    """protocols: the ones to tag; existing: the project's tag with that name, if any; tagged: each protocol's
+    tag ids now."""
+    if not protocols:
+        raise ProposalError("Say which protocols to tag")
+    if len(protocols) > MAX_TAGGED:
+        raise ProposalError("At most %d protocols at once" % MAX_TAGGED)
+    title = tagTitle(title)
+    already = [str(item["protocolId"]) for item in protocols
+               if existing and existing["id"] in tagged.get(str(item["protocolId"]), [])]
+    if len(already) == len(protocols):
+        raise ProposalError("Those protocols already have the tag %s" % title)
+    return {"kind": "action", "action": "tag", "projectId": int(projectId),
+            "protocolId": str(protocols[0]["protocolId"]), "label": protocols[0].get("label") or "",
+            "tag": existing["title"] if existing else title, "newTag": existing is None,
+            "color": (existing or {}).get("color"),
+            "protocols": [dict(entry, already=entry["protocolId"] in already) for entry in _listed(protocols)],
+            "reason": str(reason or "")[:500]}
 
 
 def blockingChildren(children: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

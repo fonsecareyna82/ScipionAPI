@@ -88,6 +88,10 @@ class ActionPayload(BaseModel):
     conditions: Optional[List[Dict[str, Any]]] = Field(None, max_items=6)
     makes: Optional[str] = Field(None, max_length=100)
     name: Optional[str] = Field(None, max_length=200)
+    # The protocols the card listed (a subworkflow, the protocols to tag): the apply refuses if they changed
+    protocolIds: Optional[List[str]] = Field(None, max_items=200)
+    # The tag's name to add
+    tag: Optional[str] = Field(None, max_length=200)
 
 
 class ReportPayload(BaseModel):
@@ -173,6 +177,38 @@ def _children(service, mapper, currentUser, projectId: int, protocol: Dict[str, 
     return children
 
 
+def _subworkflow(service, mapper, currentUser, projectId: int, protocol: Dict[str, Any],
+                 withOutputs: bool = False) -> List[Dict[str, Any]]:
+    """The protocol and every protocol depending on it, the protocol first; with their outputs if asked."""
+    preflight = _preflight(service, mapper, currentUser, projectId, str(protocol["protocolId"]), "restart")
+    rootId = str(protocol["protocolId"])
+    items = [{"protocolId": rootId, "label": protocol.get("label") or "", "className": protocol.get("className") or "",
+              "status": protocol.get("status") or "",
+              "active": (protocol.get("status") or "").lower() in assistant_actions.ACTIVE_STATUSES}]
+    for item in preflight.get("affectedProtocols") or []:
+        if str(item.get("protocolId")) != rootId:
+            items.append({"protocolId": str(item.get("protocolId")), "label": item.get("runName") or "",
+                          "status": item.get("status") or "", "active": bool(item.get("active"))})
+    if withOutputs and len(items) <= assistant_actions.MAX_SUBWORKFLOW:
+        outputs = HelpChatPostgresqlMapper(mapper.db)
+        for item in items:
+            item["outputs"] = outputs.protocolOutputs(projectId, item["protocolId"])
+    return items
+
+
+def _tagsOf(service, mapper, currentUser, projectId: int, protocolIds: List[str]) -> Dict[str, List[str]]:
+    return {protocolId: list((service.listProtocolTags(mapper=mapper, projectId=projectId, protocolId=int(protocolId),
+                                                      currentUser=currentUser, protocolIdIsScipionId=True)
+                              or {}).get("tagIds") or []) for protocolId in protocolIds}
+
+
+def _projectTag(mapper, projectId: int, title: str) -> Optional[Dict[str, Any]]:
+    """The project's tag with that name, in any case."""
+    wanted = title.strip().lower()
+    return next((dict(tag) for tag in mapper.listProtocolTags(projectId=projectId) or []
+                 if str(tag.get("title") or "").strip().lower() == wanted), None)
+
+
 def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool = False,
                   authorization: str = "") -> AssistantTools:
     from app.backend.api.services.project_service import ProjectService
@@ -245,10 +281,22 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         source = workable(projectId, protocolId)
         return assistant_actions.nextStepCard(projectId, source, help_index.protocolHelp(className), reason)
 
-    def proposeDuplicate(projectId: int, protocolId: str, changes: Dict[str, Any], reason: str):
+    def proposeDuplicate(projectId: int, protocolId: str, changes: Dict[str, Any], reason: str, launch: bool = False):
         protocol = workable(projectId, protocolId)
         return assistant_actions.duplicateCard(projectId, protocol, help_index.protocolHelp(protocol.get("className")),
-                                               changes, reason)
+                                               changes, reason, launch)
+
+    def proposeSubworkflow(action: str, projectId: int, protocolId: str, reason: str, launch: bool = False):
+        protocol = workable(projectId, protocolId)
+        items = _subworkflow(service, mapper, currentUser, projectId, protocol, action != "copyworkflow")
+        return assistant_actions.subworkflowCard(action, projectId, items, reason, launch)
+
+    def proposeTag(projectId: int, protocolIds: List[str], tag: str, reason: str):
+        protocols = [workable(projectId, protocolId) for protocolId in dict.fromkeys(protocolIds)]
+        title = assistant_actions.tagTitle(tag)
+        return assistant_actions.tagCard(projectId, protocols, title, _projectTag(mapper, projectId, title),
+                                         _tagsOf(service, mapper, currentUser, projectId,
+                                                 [str(item["protocolId"]) for item in protocols]), reason)
 
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)
@@ -340,7 +388,8 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
     return AssistantTools(listProjects, listProtocols, protocolDetails, protocolLog, explainFailure, searchHelp,
                           proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
                           proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
-                          proposeContinue=proposeContinue, proposeSubset=proposeSubset, **reading)
+                          proposeContinue=proposeContinue, proposeSubset=proposeSubset,
+                          proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -477,7 +526,7 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     stored = settings.stored() if settings is not None else {}
     if settings is None or stored.get("mode") != "propose":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose actions")
-    if payload.action == "delete" and not stored.get("allowDelete"):
+    if payload.action in ("delete", "deletefrom") and not stored.get("allowDelete"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="The assistant may not propose deletes")
     service = ProjectService()
     project = service.getProjectDbRow(mapper, payload.projectId, currentUser)
@@ -488,6 +537,10 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         return _applyChain(payload, service, mapper, currentUser)
     if payload.action == "subset":
         return _applySubset(payload, service, mapper, currentUser)
+    if payload.action in ("copyworkflow", "reset", "deletefrom"):
+        return _applySubworkflow(payload, service, mapper, currentUser)
+    if payload.action == "tag":
+        return _applyTag(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -532,6 +585,11 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
                                                      protocol["className"], params, setToSave=True,
                                                      protocolIdIsScipionId=True)
                 result = dict(result, errors=list(result.get("errors") or []) + list(saveErrors or []))
+            if payload.launch and not result.get("errors"):
+                launched = _launchCopy(service, mapper, currentUser, payload.projectId, answer["newProtocolId"],
+                                       protocol["className"], plan["params"], "single")
+                result = dict(result, errors=list(launched.get("errors") or []))
+                answer["started"] = not launched.get("errors")
     else:
         # With its inputs, as the protocol form relaunches one
         params = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(payload.projectId, payload.protocolId),
@@ -549,6 +607,96 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
     return answer
+
+
+def _launchCopy(service, mapper, currentUser, projectId: int, protocolId: str, className: str,
+                params: Dict[str, Any], scope: str) -> Dict[str, Any]:
+    """Launch a copy just made, with its inputs, as the protocol form launches a new protocol."""
+    full = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(projectId, protocolId), **(params or {}))
+    return service.executeProtocolWorkflow(mapper=mapper, projectId=projectId, protocolId=int(protocolId),
+                                           protocolClassName=className, params=full, mode="restart", scope=scope,
+                                           currentUserId=currentUser["id"]) or {}
+
+
+def _applySubworkflow(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Copy, reset or delete a protocol and everything depending on it, as the card listed them."""
+    protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
+    try:
+        if protocol is None:
+            raise ProposalError("The protocol is not in the project any more")
+        items = _subworkflow(service, mapper, currentUser, payload.projectId, protocol,
+                             payload.action != "copyworkflow")
+        if payload.action == "deletefrom":
+            assistant_actions.deleteFromChecks(items, payload.protocolIds, payload.confirm)
+        else:
+            assistant_actions.subworkflowCard(payload.action, payload.projectId, items)
+            assistant_actions.sameProtocols(payload.protocolIds, items)
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
+                                                           currentUser=currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    ids = [item["protocolId"] for item in items]
+    answer: Dict[str, Any] = {"ok": True, "protocols": len(ids)}
+    if payload.action == "reset":
+        result = service.resetProtocolFrom(mapper, payload.projectId, int(payload.protocolId)) or {}
+    elif payload.action == "deletefrom":
+        result = service.deleteProtocol(mapper, payload.projectId, ids, protocolIdIsScipionId=True) or {}
+    else:
+        from app.backend.models.protocol_model import DuplicateItem
+
+        result = service.duplicateProtocol(mapper, payload.projectId, [DuplicateItem(id=item) for item in ids],
+                                           protocolIdIsScipionId=True) or {}
+        copies = {str(item.get("sourceId")): str(item.get("newId")) for item in result.get("duplicated") or []}
+        if copies.get(str(protocol["protocolId"])):
+            answer["newProtocolId"] = copies[str(protocol["protocolId"])]
+        if payload.launch and answer.get("newProtocolId") and not result.get("errors"):
+            # The copy of the first protocol with everything after it
+            launched = _launchCopy(service, mapper, currentUser, payload.projectId, answer["newProtocolId"],
+                                   protocol["className"], {}, "all")
+            result = dict(result, errors=list(launched.get("errors") or []))
+            answer["started"] = not launched.get("errors")
+    errors = [str(error) for error in result.get("errors") or []]
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                str(payload.protocolId), {"action": payload.action, "protocols": ids,
+                                          "newProtocolId": answer.get("newProtocolId"),
+                                          "launch": bool(payload.launch), "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return answer
+
+
+def _applyTag(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Add the tag (made if the project has none with that name) to the protocols the card listed."""
+    from app.backend.api.schemas.tags_schema import ProtocolTagCreateIn
+
+    helper = AssistantPostgresqlMapper(mapper.db)
+    try:
+        title = assistant_actions.tagTitle(payload.tag)
+        ids = list(dict.fromkeys(str(item) for item in payload.protocolIds or []))
+        if not ids or len(ids) > assistant_actions.MAX_TAGGED:
+            raise ProposalError("Say which protocols to tag (at most %d)" % assistant_actions.MAX_TAGGED)
+        missing = [protocolId for protocolId in ids if not helper.protocol(payload.projectId, protocolId)]
+        if missing:
+            raise ProposalError("Not in the project any more: %s" % ", ".join("#%s" % item for item in missing))
+    except ProposalError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    tag = _projectTag(mapper, payload.projectId, title)
+    created = tag is None
+    if created:
+        tag = service.createProjectTag(mapper=mapper, projectId=payload.projectId, currentUser=currentUser,
+                                       payload=ProtocolTagCreateIn(title=title))
+    current = _tagsOf(service, mapper, currentUser, payload.projectId, ids)
+    tagged = []
+    for protocolId in ids:
+        if tag["id"] not in current[protocolId]:
+            service.setProtocolTags(mapper=mapper, projectId=payload.projectId, protocolId=int(protocolId),
+                                    tagIds=current[protocolId] + [tag["id"]], currentUser=currentUser,
+                                    protocolIdIsScipionId=True)
+            tagged.append(protocolId)
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, ids[0],
+                {"action": "tag", "tag": tag.get("title"), "created": created, "protocols": tagged})
+    return {"ok": True, "tag": tag.get("title"), "newTag": created, "tagged": tagged}
 
 
 def _subsetPlan(service, mapper, projectId: int, protocolId: str, outputName: str, table: str, conditions,

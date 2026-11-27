@@ -214,7 +214,28 @@ class _Service:
 
     def duplicateProtocol(self, mapper, projectId, items, protocolIdIsScipionId=False):
         _Service.calls.append(("duplicate", [item.id for item in items]))
-        return {"status": 0, "errors": [], "duplicated": [{"sourceId": items[0].id, "newId": "200"}]}
+        return {"status": 0, "errors": [], "duplicated": [{"sourceId": item.id, "newId": str(200 + index)}
+                                                          for index, item in enumerate(items)]}
+
+    def resetProtocolFrom(self, mapper, projectId, protocolId, includeRoot=True):
+        _Service.calls.append(("reset", protocolId))
+        return {"status": 0, "errors": []}
+
+    tags = {}
+    projectTags = []
+
+    def listProtocolTags(self, mapper, projectId, protocolId, currentUser, protocolIdIsScipionId=False):
+        return {"protocolId": str(protocolId), "tagIds": list(_Service.tags.get(str(protocolId), []))}
+
+    def setProtocolTags(self, mapper, projectId, protocolId, tagIds, currentUser, protocolIdIsScipionId=False):
+        _Service.calls.append(("tags", str(protocolId), list(tagIds)))
+        _Service.tags[str(protocolId)] = list(tagIds)
+
+    def createProjectTag(self, mapper, projectId, currentUser, payload):
+        tag = {"id": "t-new", "title": payload.title, "color": None}
+        _Service.calls.append(("newTag", payload.title))
+        _Service.projectTags.append(tag)
+        return tag
 
     def getMetadataTableSchemaService(self, **kwargs):
         return {"columns": [{"name": "id"}, {"name": "_resolution"}], "actions": ["CTFModel"]}
@@ -241,7 +262,10 @@ HELP = {"className": "Prot2D", "label": "2D", "params": [{"name": "numberOfClass
 def applying(router, monkeypatch):
     services = importlib.import_module("app.backend.api.services.project_service")
     _Service.calls, _Service.access, _Service.affected = [], "work", []
+    _Service.tags, _Service.projectTags = {}, [{"id": "t1", "title": "Good", "color": "#0a0"}]
     monkeypatch.setattr(services, "ProjectService", _Service)
+    monkeypatch.setattr(router, "_projectTag", lambda mapper, projectId, title: next(
+        (tag for tag in _Service.projectTags if tag["title"].lower() == title.lower()), None))
     monkeypatch.setattr(router.help_index, "protocolHelp", lambda className: HELP)
     _Usage.protocolRow = {"protocolId": "37", "label": "2D", "className": "Prot2D", "status": "finished",
                           "params": {"numberOfClasses": 50}}
@@ -477,3 +501,77 @@ def test_TheTutorWithoutAProjectAsksToOpenOne(applying, monkeypatch):
 def test_TheTutorNeedsTheAssistant(router):
     client = _client(router, ["assistant.use"])
     assert client.post("/help-chat/ask", json={"question": "Guide me", "mode": "tutor"}).status_code == 400
+
+
+def _withChildren(monkeypatch, module, outputs=None):
+    _Service.affected = [{"protocolId": "37", "level": 0}, {"protocolId": "105", "runName": "subset",
+                                                            "status": "finished"},
+                         {"protocolId": "106", "runName": "initial", "status": "finished"}]
+    monkeypatch.setattr(module.HelpChatPostgresqlMapper, "protocolOutputs",
+                        lambda self, p, q: (outputs or {}).get(q, []))
+
+
+def test_DuplicateAndLaunchTheCopy(applying):
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37",
+                                                             "launch": True})
+    assert response.json() == {"ok": True, "newProtocolId": "200", "started": True}
+    launched = _Service.calls[-1]
+    assert launched[0] == "workflow" and launched[1]["protocolId"] == 200 and launched[1]["scope"] == "single"
+    assert launched[1]["params"] == {"inputParticles": "22.outputParticles"}
+
+
+def test_CopyTheSubworkflowAsListedAndLaunchItsFirstCopy(applying, monkeypatch):
+    _withChildren(monkeypatch, applying)
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "copyworkflow", "projectId": 7, "protocolId": "37", "protocolIds": ["37", "105"]}
+    # A protocol was added after it since the card: nothing is copied
+    changed = client.post("/help-chat/actions/apply", json=body)
+    assert changed.status_code == 409 and "changed" in changed.json()["detail"]
+    assert _Service.calls == []
+    response = client.post("/help-chat/actions/apply", json=dict(body, protocolIds=["37", "105", "106"], launch=True))
+    assert response.json() == {"ok": True, "protocols": 3, "newProtocolId": "200", "started": True}
+    assert _Service.calls[0] == ("duplicate", ["37", "105", "106"])
+    assert _Service.calls[1][1]["protocolId"] == 200 and _Service.calls[1][1]["scope"] == "all"
+
+
+def test_ResetOnlyWhenNothingRuns(applying, monkeypatch):
+    _withChildren(monkeypatch, applying, {"105": [{"outputName": "outputParticles"}]})
+    _Service.affected[2]["status"] = "running"
+    _Service.affected[2]["active"] = True
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "reset", "projectId": 7, "protocolId": "37", "protocolIds": ["37", "105", "106"]}
+    refused = client.post("/help-chat/actions/apply", json=body)
+    assert refused.status_code == 409 and "#106" in refused.json()["detail"]
+    _Service.affected[2].update(status="finished", active=False)
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "protocols": 3}
+    assert _Service.calls == [("reset", 37)]
+
+
+def test_DeleteFromNeedsTheSwitchTheSameListAndHowMany(applying, monkeypatch):
+    _withChildren(monkeypatch, applying, {"105": [{"outputName": "outputParticles"}]})
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "deletefrom", "projectId": 7, "protocolId": "37", "protocolIds": ["37", "105", "106"],
+            "confirm": "3"}
+    assert client.post("/help-chat/actions/apply", json=body).status_code == 403
+    applying.AssistantSettings(None).save({"allowDelete": True}, 1)
+    assert client.post("/help-chat/actions/apply", json=dict(body, confirm="37")).status_code == 409
+    assert client.post("/help-chat/actions/apply", json=dict(body, protocolIds=["37", "105"],
+                                                             confirm="2")).status_code == 409
+    assert _Service.calls == []
+    # Children with results do not stop it (the card listed them), unlike deleting one protocol
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "protocols": 3}
+    assert _Service.calls == [("delete", ["37", "105", "106"])]
+
+
+def test_TagMadeWhenNewAndAddedToTheOthersTags(applying):
+    _Service.tags = {"37": ["t1"]}
+    _Usage.protocolRow = dict(_Usage.protocolRow)
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "tag", "projectId": 7, "protocolId": "37",
+                                                             "protocolIds": ["37"], "tag": "  to  check "})
+    assert response.json() == {"ok": True, "tag": "to check", "newTag": True, "tagged": ["37"]}
+    assert _Service.calls == [("newTag", "to check"), ("tags", "37", ["t1", "t-new"])]
+    again = client.post("/help-chat/actions/apply", json={"action": "tag", "projectId": 7, "protocolId": "37",
+                                                          "protocolIds": ["37"], "tag": "GOOD"}).json()
+    assert again["newTag"] is False and _Service.tags["37"] == ["t1", "t-new"] and again["tagged"] == []

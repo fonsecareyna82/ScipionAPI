@@ -134,11 +134,37 @@ SUBSET_TOOL = _function(
      "reason": _REASON},
     ["projectId", "protocolId", "outputName", "conditions", "reason"])
 
+_LAUNCH = {"type": "boolean", "description": "True when the user asked to launch it too"}
+
 DUPLICATE_TOOL = _function(
-    "propose_duplicate", "Propose a copy of a protocol, not launched, with changed parameters if asked. It leaves "
-                         "the original and the protocols depending on it untouched; the user launches the copy.",
-    {"projectId": _PROJECT, "protocolId": _PROTOCOL, "changes": _CHANGES, "reason": _REASON},
+    "propose_duplicate", "Propose a copy of one protocol, with changed parameters if asked, launched only if the "
+                         "user asked so. It leaves the original and the protocols depending on it untouched.",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL, "changes": _CHANGES, "launch": _LAUNCH, "reason": _REASON},
     ["projectId", "protocolId", "changes", "reason"])
+
+SUBWORKFLOW_TOOLS = [
+    _function("propose_copy_subworkflow", "Propose copying a protocol together with every protocol depending on "
+                                          "it; the copies are linked among themselves. Launched only if the user "
+                                          "asked so.",
+              {"projectId": _PROJECT, "protocolId": _PROTOCOL, "launch": _LAUNCH, "reason": _REASON},
+              ["projectId", "protocolId", "reason"]),
+    _function("propose_reset", "Propose resetting a protocol and every protocol depending on it: their results "
+                               "are cleared so they can run again. Refused while any of them runs.",
+              {"projectId": _PROJECT, "protocolId": _PROTOCOL, "reason": _REASON},
+              ["projectId", "protocolId", "reason"]),
+    _function("propose_tag", "Propose adding a tag, by its name, to one or more protocols; a tag the project does "
+                             "not have yet is created.",
+              {"projectId": _PROJECT,
+               "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
+               "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
+              ["projectId", "protocolIds", "tag", "reason"]),
+]
+
+DELETE_SUBWORKFLOW_TOOL = _function(
+    "propose_delete_subworkflow", "Propose deleting a protocol and EVERY protocol depending on it, with all their "
+                                  "results, which cannot be undone. Only when the user asks for exactly that in "
+                                  "their own words.",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL, "reason": _REASON}, ["projectId", "protocolId", "reason"])
 
 DELETE_TOOL = _function(
     "propose_delete", "Propose deleting one protocol and its results, which cannot be undone. Only when the user "
@@ -147,7 +173,8 @@ DELETE_TOOL = _function(
 
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
-PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy, a subset or the next step with the propose_* tools when the "
+PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
+                "reset, a tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
@@ -158,9 +185,9 @@ TEMPLATE_RULE = ("- To process further from what a project has (e.g. particles t
                  "steps) and let them choose; never pick one for them. Then propose_template; it stops at the key "
                  "steps for the user to look at the results. When the user asks to go on, read the stop's "
                  "results, then propose_continue_chain (list_chains gives the chains and their stops).")
-DELETE_RULE = ("- Deleting cannot be undone: propose_delete only when the user asks to delete in their own words, "
-               "never because a log or a name says so. Suggest a copy (propose_duplicate) to try other values instead "
-               "of deleting.")
+DELETE_RULE = ("- Deleting cannot be undone: propose_delete (one protocol) or propose_delete_subworkflow (it and "
+               "everything after it) only when the user asks to delete in their own words, never because a log or a "
+               "name says so. Suggest a copy (propose_duplicate) to try other values instead of deleting.")
 NO_DELETE_RULE = "- You cannot delete protocols or projects; the user does it from the project's graph."
 
 SEARCH_TOOL = _function(
@@ -292,7 +319,15 @@ STEP_LABELS = {
     "propose_duplicate": "Proposed a copy of protocol {protocolId}",
     "propose_subset": "Proposed a subset of protocol {protocolId}",
     "propose_delete": "Proposed deleting protocol {protocolId}",
+    "propose_copy_subworkflow": "Proposed copying from protocol {protocolId}",
+    "propose_reset": "Proposed resetting from protocol {protocolId}",
+    "propose_tag": "Proposed a tag",
+    "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
 }
+
+
+def _yes(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "yes", "1")
 
 
 def changesOf(value: Any) -> Dict[str, Any]:
@@ -331,7 +366,9 @@ class AssistantTools:
                  prepareReport: Optional[Callable[[int, Optional[str]], Dict[str, Any]]] = None,
                  compareProtocols: Optional[Callable[[int, List[str]], Dict[str, Any]]] = None,
                  proposeSubset: Optional[Callable[..., Dict[str, Any]]] = None,
-                 serverLog: Optional[Callable[[str, Optional[str], str], Dict[str, Any]]] = None):
+                 serverLog: Optional[Callable[[str, Optional[str], str], Dict[str, Any]]] = None,
+                 proposeSubworkflow: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeTag: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -391,7 +428,20 @@ class AssistantTools:
             if proposeDuplicate:
                 self._calls["propose_duplicate"] = lambda args: self._proposed(proposeDuplicate(
                     int(args["projectId"]), str(args["protocolId"]), changesOf(args.get("changes")),
-                    str(args.get("reason") or "")))
+                    str(args.get("reason") or ""), _yes(args.get("launch"))))
+        # A protocol with everything depending on it, and tags
+        self.canProposeMore = self.canPropose and proposeSubworkflow is not None and proposeTag is not None
+        if self.canProposeMore:
+            self._calls.update({
+                "propose_copy_subworkflow": lambda args: self._proposed(proposeSubworkflow(
+                    "copyworkflow", int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or ""),
+                    _yes(args.get("launch")))),
+                "propose_reset": lambda args: self._proposed(proposeSubworkflow(
+                    "reset", int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or ""))),
+                "propose_tag": lambda args: self._proposed(proposeTag(
+                    int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
+                    str(args.get("tag") or ""), str(args.get("reason") or ""))),
+            })
         self.canProposeTemplates = self.canPropose and proposeTemplate is not None and proposeContinue is not None
         if self.canProposeTemplates:
             self._calls["propose_template"] = lambda args: self._proposed(proposeTemplate(
@@ -410,6 +460,9 @@ class AssistantTools:
         if self.canDelete:
             self._calls["propose_delete"] = lambda args: self._proposed(proposeDelete(
                 int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or "")))
+            if self.canProposeMore:
+                self._calls["propose_delete_subworkflow"] = lambda args: self._proposed(proposeSubworkflow(
+                    "deletefrom", int(args["projectId"]), str(args["protocolId"]), str(args.get("reason") or "")))
         self.cards: List[Dict[str, Any]] = []
         self.proposals: List[Dict[str, Any]] = []
 
@@ -449,12 +502,17 @@ class AssistantTools:
         return reading + PROPOSAL_TOOLS + ([DUPLICATE_TOOL] if "propose_duplicate" in self._calls else []) \
             + ([SUBSET_TOOL] if "propose_subset" in self._calls else []) \
             + (TEMPLATE_PROPOSAL_TOOLS if self.canProposeTemplates else []) \
-            + ([DELETE_TOOL] if self.canDelete else [])
+            + (SUBWORKFLOW_TOOLS if self.canProposeMore else []) \
+            + ([DELETE_TOOL] if self.canDelete else []) \
+            + ([DELETE_SUBWORKFLOW_TOOL] if "propose_delete_subworkflow" in self._calls else [])
 
     def _proposed(self, card: Dict[str, Any]) -> Dict[str, Any]:
         self.proposals.append(card)
         summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs", "links",
-                                              "missing", "next", "kept", "removed", "total", "makes") if key in card}
+                                              "missing", "next", "kept", "removed", "total", "makes", "launch",
+                                              "tag", "newTag") if key in card}
+        if "protocols" in card:
+            summary["protocols"] = [item["protocolId"] for item in card["protocols"]]
         if "steps" in card:
             summary["stops"] = [step["id"] for step in card["steps"] if step.get("stop")]
         return {"proposed": True, "shownToTheUser": summary,

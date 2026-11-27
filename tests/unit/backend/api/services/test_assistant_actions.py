@@ -253,3 +253,81 @@ def test_DeleteToolOnlyWhenTurnedOn():
         system = model.sent[0]["messages"][0]["content"]
         assert ("only when the user asks to delete in their own words" in system) is canDelete
         assert ("You cannot delete protocols or projects" in system) is not canDelete
+
+
+from app.backend.api.services import assistant_actions as actions  # noqa: E402
+
+
+def _items(*statuses, outputs=None):
+    return [{"protocolId": str(10 + index), "label": "p%d" % index, "status": status,
+             "active": status == "running", "outputs": (outputs or {}).get(index, [])}
+            for index, status in enumerate(statuses)]
+
+
+def test_SubworkflowCardsListEveryProtocol():
+    copy = actions.subworkflowCard("copyworkflow", 7, _items("finished", "running"), "try", launch=True)
+    assert copy["launch"] is True and [item["protocolId"] for item in copy["protocols"]] == ["10", "11"]
+    assert "outputs" not in copy["protocols"][0]
+    gone = actions.subworkflowCard("deletefrom", 7, _items("finished", "failed", outputs={
+        0: [{"outputName": "outputCTF", "setClassName": "SetOfCTF", "size": 28}]}))
+    assert gone["protocols"][0]["outputs"] == [{"name": "outputCTF", "type": "SetOfCTF", "size": 28}]
+
+
+@pytest.mark.parametrize("action", ["reset", "deletefrom"])
+def test_NothingMayRunToResetOrDelete(action):
+    with pytest.raises(actions.ProposalError, match="#11"):
+        actions.subworkflowCard(action, 7, _items("finished", "running"))
+
+
+def test_ResetNeedsSomethingThatRan():
+    with pytest.raises(actions.ProposalError, match="nothing to reset"):
+        actions.subworkflowCard("reset", 7, _items("saved", "new"))
+    assert actions.subworkflowCard("reset", 7, _items("finished", "saved"))["action"] == "reset"
+
+
+def test_TooBigASubworkflowIsRefused():
+    with pytest.raises(actions.ProposalError, match="at most"):
+        actions.subworkflowCard("copyworkflow", 7, _items(*["finished"] * (actions.MAX_SUBWORKFLOW + 1)))
+
+
+def test_DeleteFromIsConfirmedWithHowManyAndTheSameList():
+    items = _items("finished", "finished")
+    actions.deleteFromChecks(items, ["11", "10"], " 2 ")
+    with pytest.raises(actions.ProposalError, match="Write how many"):
+        actions.deleteFromChecks(items, ["10", "11"], "10")
+    with pytest.raises(actions.ProposalError, match="changed"):
+        actions.deleteFromChecks(items, ["10"], "2")
+
+
+def test_TagCard():
+    protocols = [{"protocolId": "5", "label": "ctf"}, {"protocolId": "6", "label": "picking"}]
+    card = actions.tagCard(7, protocols, " to   check ", None, {}, "asked")
+    assert card["tag"] == "to check" and card["newTag"] is True
+    existing = {"id": "t1", "title": "Good", "color": "#0a0"}
+    card = actions.tagCard(7, protocols, "good", existing, {"5": ["t1"]})
+    assert card["tag"] == "Good" and card["newTag"] is False
+    assert [item["already"] for item in card["protocols"]] == [True, False]
+    with pytest.raises(actions.ProposalError, match="already have"):
+        actions.tagCard(7, protocols[:1], "good", existing, {"5": ["t1"]})
+    with pytest.raises(actions.ProposalError):
+        actions.tagCard(7, protocols, "x" * 61, None, {})
+
+
+def test_TheModelGetsTheNewToolsOnlyWhenAllowed():
+    from app.backend.api.services.assistant_agent import AssistantTools
+
+    read = [lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []]
+    seen = []
+    propose = dict(proposeRelaunch=lambda *a: {}, proposeStop=lambda *a: {}, proposeNextStep=lambda *a: {},
+                   proposeSubworkflow=lambda *a: seen.append(a) or {"action": a[0]},
+                   proposeTag=lambda *a: seen.append(a) or {"action": "tag"})
+    names = lambda tools: {tool["function"]["name"] for tool in tools.definitions()}  # noqa: E731
+    tools = AssistantTools(*read, **propose)
+    assert {"propose_copy_subworkflow", "propose_reset", "propose_tag"} <= names(tools)
+    assert "propose_delete_subworkflow" not in names(tools)
+    tools.call("propose_copy_subworkflow", '{"projectId": 7, "protocolId": "5", "launch": "true", "reason": "r"}')
+    tools.call("propose_tag", '{"projectId": 7, "protocolIds": ["5", 6], "tag": "x", "reason": "r"}')
+    assert seen == [("copyworkflow", 7, "5", "r", True), (7, ["5", "6"], "x", "r")]
+    withDelete = AssistantTools(*read, proposeDelete=lambda *a: {}, **propose)
+    assert "propose_delete_subworkflow" in names(withDelete)
+    assert "propose_tag" not in names(AssistantTools(*read))
