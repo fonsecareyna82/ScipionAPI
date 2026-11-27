@@ -106,3 +106,15 @@ def test_TheColumnsOfEachSetAreGivenAndTheScriptMayOnlyNameThose():
 
 def test_3DCoordinatesGetTheirCornerColumns():
     assert assistant_custom._columns(["id", "_x", "_y", "_z", "_tomoId"])[-3:] == ["x_px", "y_px", "z_px"]
+
+
+def test_OnlyTheCandidatesThisServerHasAreOffered(monkeypatch):
+    ctf = [{"protocolId": "46"}]
+    script = "from skimage import measure\nfrom sklearn.cluster import KMeans\nimport tifffile\nimport emtable\n"
+    monkeypatch.setattr(assistant_custom, "LIBRARIES", tuple(assistant_custom.CANDIDATES))
+    assert _plan(ctf, script=script)["script"] == script
+    # A server without scikit-learn: it is refused, as anything else not there
+    monkeypatch.setattr(assistant_custom, "LIBRARIES", ("numpy", "scipy", "mrcfile", "matplotlib", "skimage"))
+    with pytest.raises(ProposalError, match="imports emtable, sklearn, tifffile"):
+        _plan(ctf, script=script)
+    assert assistant_custom._installed("numpy") and not assistant_custom._installed("nosuchlibrary")

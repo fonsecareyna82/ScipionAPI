@@ -17,8 +17,29 @@ MAX_SCRIPT = 20000
 MAX_OPERATION = 500
 MAX_TITLE = 80
 MAX_INPUTS = 10
-# What a script may import besides Python's own modules
-LIBRARIES = ("numpy", "scipy", "mrcfile", "matplotlib")
+# What a script may import besides Python's own modules, when the server has it (nothing is installed for it):
+# import name -> what it is for
+CANDIDATES = {
+    "numpy": "arrays",
+    "scipy": "maths and filters (scipy.ndimage)",
+    "mrcfile": "reading and writing .mrc maps",
+    "matplotlib": "plots, drawn to files only (savefig)",
+    "skimage": "image processing: thresholds, labelling and measuring parts, masks (scikit-image)",
+    "sklearn": "clustering, PCA, outliers (scikit-learn)",
+    "tifffile": "reading .tif movies and gain references",
+    "emtable": "reading and writing STAR files (emtable.Table)",
+}
+
+
+def _installed(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# The ones this server has, checked once when the API starts
+LIBRARIES = tuple(name for name in CANDIDATES if _installed(name))
 # A text of the script that names a column (_defocusU, _ctfModel._defocusU)
 COLUMN_NAME = re.compile(r"^_[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 # Columns of the metadata table that the script's CSV does not have, and the ones it adds
@@ -39,8 +60,8 @@ CONTRACT = ("The script runs in a folder of its own, with the variable inputs (a
             "its summary; .png or .jpg plots there are shown in the summary as images (in the order of their "
             "names); keep_N.txt, the ids (one per line, the CSV's id column) of the items of input N (from 1, a "
             "set) to keep, becomes the output outputSubsetN: a set of the same kind with those items as they are "
-            "(classes with their own items). Only numpy, scipy, mrcfile and matplotlib (it draws to files only: "
-            "savefig) can be imported; there is no network and it can write only in its own folder. Read a set's "
+            "(classes with their own items). Besides Python's own modules it can import only: " + "; ".join(
+                "%s: %s" % (name, CANDIDATES[name]) for name in LIBRARIES) + "; there is no network and it can write only in its own folder. Read a set's "
             "items with rows(N) (N from 0, like inputs): one dict per item by column name, numbers already as "
             "numbers; never by position nor by splitting lines. Use only the columns its input has (an error "
             "lists them).")
