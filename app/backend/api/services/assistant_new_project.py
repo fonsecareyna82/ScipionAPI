@@ -1,47 +1,95 @@
-"""A new project with its data imported, proposed by the assistant ("make a project with the movies of this
-folder") and made when the user applies the card.
+"""A new project proposed by the assistant, made when the user applies the card: empty ("make a project called
+X"), or with the import of the data the user speaks of ("… and we import particles from /data/x").
 
-The folder must be one the user may browse (fs_browser: the data folders, or anywhere with files.browseServer);
-the files are found with the pattern given, or with the first usual one that finds any (movies straight in the
-folder, EPU's grid squares, one folder down). The import is added to the project saved, not launched: the user
-reviews it in its form (with its acquisition values, those given filled in) and launches it.
+What is imported picks one of the installed import protocols (movies, micrographs, particles, volumes,
+tilt-series, tomograms…), never guessed: with nothing said about data the project is made empty. A folder is used
+only when the user gave it, and only one the user may browse (fs_browser: the data folders, or anywhere with
+files.browseServer); its files are found with the pattern given or the usual ones of that data (EPU's grid
+squares for movies). Only the values the user said are filled, and only those the import's form has. The import
+is added saved, not launched: its form opens for the user to review and launch it.
 """
 import glob
 import itertools
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.backend.api.services.assistant_actions import ProposalError
 
-IMPORT_CLASSES = {"movies": "ProtImportMovies", "micrographs": "ProtImportMicrographs"}
-KIND_TITLES = {"movies": "Import movies", "micrographs": "Import micrographs"}
-EXTENSIONS = {"movies": ("tif", "tiff", "eer", "mrc", "mrcs"), "micrographs": ("mrc", "tif", "tiff")}
-# Where the files usually are under the folder given
-LAYOUTS = ("*.{ext}", "Images-Disc*/GridSquare_*/Data/*_Fractions.{ext}", "Images-Disc*/GridSquare_*/Data/*.{ext}",
-           "*/*.{ext}")
+# What the user may call each kind of data, by import protocol
+ALIASES = {
+    "ProtImportMovies": ("movies", "movie", "frames"),
+    "ProtImportMicrographs": ("micrographs", "micrograph", "mics"),
+    "ProtImportParticles": ("particles", "particle", "particle stack", "particle stacks"),
+    "ProtImportVolumes": ("volumes", "volume", "map", "maps", "3d map", "3d maps", "reference", "references"),
+    "ProtImportAverages": ("averages", "2d averages", "class averages", "2d classes", "templates"),
+    "ProtImportCTF": ("ctf", "ctfs", "ctf estimations"),
+    "ProtImportCoordinates": ("coordinates", "coords", "picks", "2d coordinates"),
+    "ProtImportMask": ("mask", "masks"),
+    "ProtImportPdb": ("atomic structure", "atomic model", "pdb", "model", "mmcif", "cif"),
+    "ProtImportSequence": ("sequence", "sequences"),
+    "ProtImportTsMovies": ("tilt-series movies", "tilt series movies", "ts movies", "tomo movies",
+                           "tilt movies"),
+    "ProtImportTs": ("tilt-series", "tilt series", "tiltseries", "ts"),
+    "ProtImportTomograms": ("tomograms", "tomogram", "tomos"),
+    "ProtImportSubTomograms": ("subtomograms", "subtomogram", "subtomos"),
+    "ProtImportCoordinates3D": ("3d coordinates", "coordinates 3d", "tomo coordinates"),
+    "ProtImportTomomasks": ("tomomasks", "segmentations", "tomo masks"),
+    "ProtImportTsCTF": ("tomo ctf", "tilt-series ctf", "ts ctf"),
+}
+# The files each kind usually has; EPU's grid squares for movies and micrographs
+EXTENSIONS = {
+    "ProtImportMovies": ("tif", "tiff", "eer", "mrc", "mrcs"),
+    "ProtImportMicrographs": ("mrc", "tif", "tiff"),
+    "ProtImportParticles": ("star", "mrcs", "xmd", "sqlite", "hdf", "stk"),
+    "ProtImportVolumes": ("mrc", "map", "vol"),
+    "ProtImportAverages": ("mrcs", "mrc", "stk"),
+    "ProtImportTsMovies": ("mdoc", "tif", "tiff", "eer"),
+    "ProtImportTs": ("mdoc", "st", "mrc", "ali"),
+    "ProtImportTomograms": ("mrc", "rec"),
+    "ProtImportSubTomograms": ("mrc",),
+    "ProtImportCoordinates": ("star", "box", "pos", "json"),
+}
+EPU = ("Images-Disc*/GridSquare_*/Data/*_Fractions.{ext}", "Images-Disc*/GridSquare_*/Data/*.{ext}")
 MAX_COUNTED = 100000
 EXAMPLES = 3
 MAX_NAME = 120
-# The acquisition values: (name, label, lowest, highest, kinds)
-ACQUISITION = (
-    ("samplingRate", "Pixel size (Å)", 0.05, 20.0, ("movies", "micrographs")),
-    ("voltage", "Voltage (kV)", 60.0, 400.0, ("movies", "micrographs")),
-    ("sphericalAberration", "Spherical aberration (mm)", 0.0, 10.0, ("movies", "micrographs")),
-    ("amplitudeContrast", "Amplitude contrast", 0.0, 1.0, ("movies", "micrographs")),
-    ("dosePerFrame", "Dose per frame (e/Å²)", 0.0, 50.0, ("movies",)),
+# The values the user may give: (name, label, lowest, highest)
+VALUES = (
+    ("samplingRate", "Pixel size (Å)", 0.05, 50.0),
+    ("voltage", "Voltage (kV)", 60.0, 400.0),
+    ("sphericalAberration", "Spherical aberration (mm)", 0.0, 10.0),
+    ("amplitudeContrast", "Amplitude contrast", 0.0, 1.0),
+    ("dosePerFrame", "Dose per frame (e/Å²)", 0.0, 50.0),
 )
 NEEDED = ("samplingRate", "voltage")
 
 
-def kindOf(value: Any) -> str:
-    kind = str(value or "movies").strip().lower()
-    if kind in ("movie", "movies", "frames"):
-        return "movies"
-    if kind in ("micrograph", "micrographs", "mics"):
-        return "micrographs"
-    raise ProposalError("From the chat a project can import movies or micrographs; for tilt-series or other data "
-                        "make the project and use the import form")
+def _words(text: Any) -> str:
+    text = re.sub(r"[_\s]+", " ", str(text or "").strip().lower())
+    return re.sub(r"^(import(ing)?\s+)?((the|a|an|some)\s+)?", "", text).strip()
+
+
+def resolveImport(data: Any, protocols: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The installed import protocol for the data the user spoke of; None when they spoke of none."""
+    wanted = _words(data)
+    if not wanted:
+        return None
+    installed = {protocol["className"]: protocol for protocol in protocols
+                 if str(protocol.get("className", "")).startswith("ProtImport")}
+    if str(data).strip() in installed:
+        return installed[str(data).strip()]
+    for className, names in ALIASES.items():
+        if wanted in names and className in installed:
+            return installed[className]
+    byLabel = [protocol for protocol in installed.values() if _words(protocol.get("label")) == wanted]
+    if not byLabel:
+        byLabel = [protocol for protocol in installed.values() if wanted in _words(protocol.get("label"))]
+    if len(byLabel) == 1:
+        return byLabel[0]
+    options = ", ".join(sorted(_words(protocol.get("label")) for protocol in (byLabel or installed.values())))
+    raise ProposalError("Which data? The imports there are: %s" % options)
 
 
 def projectName(value: Any) -> str:
@@ -90,27 +138,29 @@ def checkedPattern(value: Any) -> str:
     return pattern
 
 
-def findFiles(folder: Path, kind: str, pattern: str = "") -> Dict[str, Any]:
+def findFiles(folder: Path, className: str, pattern: str = "") -> Dict[str, Any]:
     """{pattern, count, examples, capped}: with the pattern given, or the first usual one that finds files."""
     if not folder.is_dir():
         raise ProposalError("There is no folder %s (or the server cannot read it)" % folder)
-    candidates = [pattern] if pattern else [layout.format(ext=ext) for layout in LAYOUTS for ext in EXTENSIONS[kind]]
+    extensions = EXTENSIONS.get(className, ())
+    layouts = ("*.{ext}",) + (EPU if className in ("ProtImportMovies", "ProtImportMicrographs") else ()) + ("*/*.{ext}",)
+    candidates = [pattern] if pattern else [layout.format(ext=ext) for layout in layouts for ext in extensions]
     for candidate in candidates:
         count, examples, capped = _matches(folder, candidate)
         if count:
             return {"pattern": candidate, "count": count, "examples": examples, "capped": capped}
     if pattern:
         raise ProposalError("No file of %s matches %s" % (folder, pattern))
-    raise ProposalError("No %s found in %s (looked for %s files there, in EPU's grid squares and one folder down): "
-                        "say the pattern" % (kind, folder, ", ".join(EXTENSIONS[kind])))
+    raise ProposalError("I found none of the usual files in %s%s: say the pattern of the files" % (
+        folder, " (%s)" % ", ".join(extensions) if extensions else ""))
 
 
-def acquisitionValues(kind: str, given: Dict[str, Any]) -> Tuple[Dict[str, float], List[str]]:
-    """(the acquisition values given, checked; the labels of the needed ones missing)."""
+def givenValues(form: set, given: Dict[str, Any]) -> Dict[str, float]:
+    """The values the user gave that the import's form has, checked."""
     values: Dict[str, float] = {}
-    for name, label, lowest, highest, kinds in ACQUISITION:
+    for name, label, lowest, highest in VALUES:
         raw = (given or {}).get(name)
-        if raw in (None, "") or kind not in kinds:
+        if raw in (None, "") or name not in form:
             continue
         try:
             number = float(raw)
@@ -119,51 +169,67 @@ def acquisitionValues(kind: str, given: Dict[str, Any]) -> Tuple[Dict[str, float
         if not lowest <= number <= highest:
             raise ProposalError("%s %s is out of %s–%s" % (label, raw, lowest, highest))
         values[name] = number
-    missing = [label for name, label, _, _, _ in ACQUISITION if name in NEEDED and name not in values]
-    return values, missing
+    return values
 
 
-def gainOf(value: Any, canBrowseServer: bool) -> Optional[str]:
-    if not str(value or "").strip():
-        return None
-    path = reachable(str(value), canBrowseServer)
-    if not path.is_file():
-        raise ProposalError("There is no gain file %s" % path)
-    return str(path)
-
-
-def plan(name: Any, folder: Any, kind: Any, pattern: Any, given: Dict[str, Any], streaming: Any,
-         gain: Any, canBrowseServer: bool) -> Dict[str, Any]:
+def plan(name: Any, folder: Any, data: Any, pattern: Any, given: Dict[str, Any], streaming: Any,
+         gain: Any, canBrowseServer: bool, protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Everything checked: what the card shows and what the apply makes."""
-    kind = kindOf(kind)
     name = projectName(name)
-    where = reachable(str(folder or ""), canBrowseServer)
-    files = findFiles(where, kind, checkedPattern(pattern))
-    values, missing = acquisitionValues(kind, given)
-    gainFile = gainOf(gain, canBrowseServer) if kind == "movies" else None
-    return {"name": name, "folder": str(where), "kind": kind, "importClass": IMPORT_CLASSES[kind],
-            "importTitle": KIND_TITLES[kind], "files": files, "values": values, "missing": missing,
-            "gainFile": gainFile, "streaming": bool(streaming)}
+    chosen = resolveImport(data, protocols)
+    if chosen is None:
+        if str(folder or "").strip():
+            raise ProposalError("Say what data the folder has, to pick its import")
+        return {"name": name, "importClass": None}
+    form = {param["name"] for param in chosen.get("params") or []}
+    files = None
+    where = None
+    if str(folder or "").strip():
+        if "filesPath" not in form:
+            raise ProposalError("The %s form does not take a folder: its form asks for the files" % chosen["label"])
+        where = reachable(str(folder), canBrowseServer)
+        files = findFiles(where, chosen["className"], checkedPattern(pattern))
+    gainFile = None
+    if str(gain or "").strip() and "gainFile" in form:
+        path = reachable(str(gain), canBrowseServer)
+        if not path.is_file():
+            raise ProposalError("There is no gain file %s" % path)
+        gainFile = str(path)
+    values = givenValues(form, given)
+    labels = {key: label for key, label, _, _ in VALUES}
+    missing = [labels[key] for key in NEEDED if key in form and key not in values] if files else []
+    return {"name": name, "importClass": chosen["className"], "importTitle": chosen.get("label") or "",
+            "form": sorted(form & {"filesPath", "filesPattern", "dataStreaming", "importFrom", "samplingRateMode"}),
+            "folder": str(where) if where else None, "files": files, "values": values, "missing": missing,
+            "gainFile": gainFile, "streaming": bool(streaming) and "dataStreaming" in form}
 
 
 def card(data: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
-    labels = {name: label for name, label, _, _, _ in ACQUISITION}
+    labels = {key: label for key, label, _, _ in VALUES}
+    files = data.get("files") or {}
     return {"kind": "action", "action": "newproject", "projectId": 0, "protocolId": "", "label": data["name"],
-            "name": data["name"], "folder": data["folder"], "dataKind": data["kind"],
-            "importTitle": data["importTitle"], "pattern": data["files"]["pattern"], "count": data["files"]["count"],
-            "capped": data["files"]["capped"], "examples": data["files"]["examples"],
-            "values": [{"name": key, "label": labels[key], "value": value} for key, value in data["values"].items()],
-            "missing": data["missing"], "gainFile": data["gainFile"], "streaming": data["streaming"],
-            "reason": str(reason or "")[:500]}
+            "name": data["name"], "importClass": data["importClass"], "importTitle": data.get("importTitle"),
+            "folder": data.get("folder"), "pattern": files.get("pattern"), "count": files.get("count"),
+            "capped": bool(files.get("capped")), "examples": files.get("examples") or [],
+            "values": [{"name": key, "label": labels[key], "value": value}
+                       for key, value in (data.get("values") or {}).items()],
+            "missing": data.get("missing") or [], "gainFile": data.get("gainFile"),
+            "streaming": bool(data.get("streaming")), "reason": str(reason or "")[:500]}
 
 
 def importProtocol(data: Dict[str, Any]) -> Dict[str, Any]:
-    """The import as a one-protocol workflow (as an exported workflow writes it)."""
+    """The import as a one-protocol workflow (as an exported workflow writes it): only what was given."""
     protocol = {"object.className": data["importClass"], "object.id": "1",
-                "object.label": data["importTitle"].lower(), "importFrom": 0, "samplingRateMode": 0,
-                "filesPath": data["folder"], "filesPattern": data["files"]["pattern"],
-                "dataStreaming": bool(data["streaming"])}
-    protocol.update(data["values"])
+                "object.label": str(data.get("importTitle") or data["importClass"])}
+    form = set(data.get("form") or [])
+    if data.get("files"):
+        protocol.update({"filesPath": data["folder"], "filesPattern": data["files"]["pattern"]})
+        if data["importClass"] in ("ProtImportMovies", "ProtImportMicrographs"):
+            # From files, with the pixel size of the image (not from the magnification)
+            protocol.update({key: 0 for key in ("importFrom", "samplingRateMode") if key in form})
+    if "dataStreaming" in form:
+        protocol["dataStreaming"] = bool(data.get("streaming"))
+    protocol.update(data.get("values") or {})
     if data.get("gainFile"):
         protocol["gainFile"] = data["gainFile"]
     return protocol

@@ -714,8 +714,22 @@ def test_RelaunchManyWithDependingProtocolsNeedsAChoice(applying, monkeypatch):
     assert {kwargs["scope"] for _, kwargs in _Service.calls} == {"all"}
 
 
+MOVIES = [{"className": "ProtImportMovies", "label": "import movies",
+           "params": [{"name": name} for name in ("filesPath", "filesPattern", "samplingRate", "dataStreaming")]}]
+
+
+def test_OnlyANameMakesAnEmptyProject(applying, monkeypatch):
+    monkeypatch.setattr(_Service, "createProject", lambda self, mapper, data, user: {"id": 57}, raising=False)
+    monkeypatch.setattr(_Service, "importWorkflowProtocolsService", lambda self, **kwargs: 1 / 0, raising=False)
+    client = _client(applying, ["assistant.use", "projects.create"])
+    body = {"action": "newproject", "projectId": 0, "protocolId": "", "name": "Test-Krios 27", "fields": {}}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "projectId": 57,
+                                                                         "newProtocolId": None}
+
+
 def test_NewProjectIsMadeWithItsImportSaved(applying, monkeypatch, tmp_path):
     monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS", raising=False)
+    monkeypatch.setattr(applying.help_index, "protocolsHelp", lambda: MOVIES)
     (tmp_path / "a.tiff").write_text("x")
     made = {}
     monkeypatch.setattr(_Service, "createProject", lambda self, mapper, data, user: made.setdefault(
@@ -737,6 +751,7 @@ def test_NewProjectIsMadeWithItsImportSaved(applying, monkeypatch, tmp_path):
 
 def test_AFailedImportTakesTheNewProjectAway(applying, monkeypatch, tmp_path):
     monkeypatch.delenv("SCIPIONWEB_DATA_ROOTS", raising=False)
+    monkeypatch.setattr(applying.help_index, "protocolsHelp", lambda: MOVIES)
     (tmp_path / "a.tiff").write_text("x")
     deleted = []
     monkeypatch.setattr(_Service, "createProject", lambda self, mapper, data, user: {"id": 56}, raising=False)

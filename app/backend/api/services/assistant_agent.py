@@ -192,25 +192,25 @@ SUBWORKFLOW_TOOLS = [
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
                "reason": _REASON},
               ["projectId", "what", "protocolIds", "reason"]),
-    _function("propose_new_project", "Propose a new project that imports the movies (or micrographs) of a folder "
-                                     "of the server. The code finds the files (or uses the pattern given) and "
-                                     "checks the folder is one the user may use. The import is added without "
-                                     "launching it: the user reviews its form. Give only acquisition values the "
-                                     "user said; the form asks for the rest.",
+    _function("propose_new_project", "Propose a new project. Only a name said: an empty project. With the data the "
+                                     "user said they import (movies, micrographs, particles, volumes, tilt-series "
+                                     "movies, tomograms…): the project with that import, added without launching "
+                                     "it, for the user to review in its form. Never assume data, a folder or "
+                                     "values the user did not say: leave them out and the form asks for them.",
               {"name": {"type": "string", "description": "The project's name"},
-               "folder": {"type": "string", "description": "The folder's whole path, from /"},
-               "data": {"type": "string", "enum": ["movies", "micrographs"]},
-               "pattern": {"type": "string", "description": "The files under the folder, e.g. *.tiff; leave out "
-                                                            "to find them"},
+               "data": {"type": "string", "description": "What the user said they import, in English words "
+                                                         "(e.g. particles); leave out if they said nothing"},
+               "folder": {"type": "string", "description": "Only a folder the user gave, its whole path"},
+               "pattern": {"type": "string", "description": "The files under the folder, e.g. *.tiff, if said"},
                "samplingRate": {"type": "number", "description": "Pixel size in Å"},
                "voltage": {"type": "number", "description": "kV"},
                "sphericalAberration": {"type": "number", "description": "mm"},
                "amplitudeContrast": {"type": "number"},
-               "dosePerFrame": {"type": "number", "description": "e/Å² per frame (movies)"},
-               "gainFile": {"type": "string", "description": "The gain reference's whole path (movies)"},
-               "streaming": {"type": "boolean", "description": "True while the microscope still writes files"},
+               "dosePerFrame": {"type": "number", "description": "e/Å² per frame"},
+               "gainFile": {"type": "string", "description": "The gain reference's whole path"},
+               "streaming": {"type": "boolean", "description": "True when the user said files are still coming"},
                "reason": _REASON},
-              ["name", "folder", "reason"]),
+              ["name", "reason"]),
     _function("propose_watch", "Propose watching a project that processes in streaming: every few minutes the "
                                "code compares the newest micrographs with how they were when the watch began, and "
                                "leaves the user a notice in the bell when something gets worse, stops or fails. "
@@ -246,8 +246,8 @@ READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delet
                   "done, tell the user where in ScipionWeb to do it.")
 PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
                 "reset, a new name or comment, several protocols stopped or relaunched at once, a new project "
-                "importing a folder's movies, watching a stream, a schedule (start after other protocols), adding "
-                "or taking off a tag, a subset or the next step with the propose_* tools when the "
+                "(empty, or with the import of the data said), watching a stream, a schedule (start after other "
+                "protocols), adding or taking off a tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "

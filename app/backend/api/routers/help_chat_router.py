@@ -372,7 +372,8 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
             raise PermissionError("The user may not create projects")
         data = assistant_new_project.plan(args.get("name"), args.get("folder"), args.get("data"),
                                           args.get("pattern"), args, args.get("streaming") is True,
-                                          args.get("gainFile"), hasPermission(currentUser, "files.browseServer"))
+                                          args.get("gainFile"), hasPermission(currentUser, "files.browseServer"),
+                                          help_index.protocolsHelp())
         return assistant_new_project.card(data, str(args.get("reason") or ""))
 
     def proposeWatch(projectId: int, hours: Any, reason: str, stop: bool = False):
@@ -913,8 +914,8 @@ def _applyMany(payload: ActionPayload, service, mapper, currentUser) -> Dict[str
 
 
 def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
-    """Make the project and add its import, saved for the user to review; checked again as things are now. An
-    import that cannot be added takes the new project away again."""
+    """Make the project, empty or with its import saved for the user to review; checked again as things are now.
+    An import that cannot be added takes the new project away again."""
     from app.backend.api.schemas.project_schema import ProjectCreate
     from app.backend.api.schemas.protocols_schema import WorkflowImportRequest
 
@@ -924,7 +925,8 @@ def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Di
             raise PermissionError("You may not create projects")
         data = assistant_new_project.plan(payload.name, fields.get("folder"), fields.get("data"),
                                           fields.get("pattern"), fields, fields.get("streaming") is True,
-                                          fields.get("gainFile"), hasPermission(currentUser, "files.browseServer"))
+                                          fields.get("gainFile"), hasPermission(currentUser, "files.browseServer"),
+                                          help_index.protocolsHelp())
     except (ProposalError, PermissionError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     project = service.createProject(mapper, ProjectCreate(name=data["name"],
@@ -932,6 +934,10 @@ def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Di
     projectId = int(project["id"])
     errors: List[str] = []
     protocolId = None
+    if data["importClass"] is None:
+        recordAudit(mapper, currentUser, "assistant.actionApplied", "project", projectId, data["name"],
+                    {"action": "newproject"})
+        return {"ok": True, "projectId": projectId, "newProtocolId": None}
     try:
         if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId,
                                                                currentUser=currentUser):
@@ -954,8 +960,9 @@ def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Di
         except Exception:
             logger.warning("Could not take away the new project %s", projectId, exc_info=True)
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", projectId, data["name"],
-                {"action": "newproject", "folder": data["folder"], "pattern": data["files"]["pattern"],
-                 "files": data["files"]["count"], "errors": errors[:3]})
+                {"action": "newproject", "import": data["importClass"], "folder": data["folder"],
+                 "pattern": (data["files"] or {}).get("pattern"), "files": (data["files"] or {}).get("count"),
+                 "errors": errors[:3]})
     if errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail="The project was not made: %s" % "; ".join(errors))
