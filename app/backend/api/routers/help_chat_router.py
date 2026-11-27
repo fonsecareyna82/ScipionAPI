@@ -415,7 +415,15 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
 
         return readLog(which, node, search)
 
+    def showProtocol(projectId: int, protocolId: str):
+        allowed(projectId)
+        row = AssistantPostgresqlMapper(mapper.db).protocol(projectId, protocolId)
+        if not row:
+            raise ProposalError("There is no protocol %s in that project" % protocolId)
+        return {"projectId": int(projectId), "protocolId": str(row["protocolId"]), "label": row.get("label") or ""}
+
     reading = {"readPage": readPage, "listTemplates": listTemplates, "listChains": listChains,
+               "showProtocol": showProtocol,
                "searchProjects": searchProjects, "prepareReport": prepareReport,
                "compareProtocols": compareProtocols,
                # The server's logs only for who runs the installation

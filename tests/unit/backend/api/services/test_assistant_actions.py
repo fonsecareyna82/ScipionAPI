@@ -433,3 +433,22 @@ def test_RelaunchManyRefusesOneDependingOnAnother():
 def test_AtMostTwentyAtOnce():
     with pytest.raises(ProposalError):
         actions.manyCard(7, "stopmany", [{"protocolId": str(i), "status": "running"} for i in range(21)], {}, "")
+
+
+def test_ShowInGraphLeavesOneFocusCard():
+    from app.backend.api.services.assistant_agent import AssistantTools
+
+    read = [lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []]
+
+    def show(projectId, protocolId):
+        if protocolId == "99":
+            raise ProposalError("There is no protocol 99 in that project")
+        return {"projectId": projectId, "protocolId": protocolId, "label": "ctf"}
+
+    tools = AssistantTools(*read, showProtocol=show)
+    assert "show_in_graph" in {tool["function"]["name"] for tool in tools.definitions()}
+    tools.call("show_in_graph", '{"projectId": 7, "protocolId": "30"}')
+    tools.call("show_in_graph", '{"projectId": 7, "protocolId": "31"}')
+    result, _ = tools.call("show_in_graph", '{"projectId": 7, "protocolId": "99"}')
+    assert "no protocol 99" in result
+    assert tools.cards == [{"kind": "focus", "projectId": 7, "protocolId": "31", "label": "ctf"}]

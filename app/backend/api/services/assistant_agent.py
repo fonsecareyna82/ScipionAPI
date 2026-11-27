@@ -267,6 +267,11 @@ COMPARE_TOOL = _function(
                                             "description": "Two to four protocol ids of the project"}},
     ["projectId", "protocolIds"])
 
+SHOW_TOOL = _function(
+    "show_in_graph", "Show a protocol to the user: the project's graph centres on it and selects it. Call it when "
+                     "the user asks to find, show or locate a protocol, with the one you found (only one).",
+    {"projectId": _PROJECT, "protocolId": _PROTOCOL}, ["projectId", "protocolId"])
+
 REPORT_TOOL = _function(
     "prepare_report", "Prepare the processing report of a project, for the user to download: a PDF with every "
                       "protocol in order, its program and version, inputs, all its parameters, outputs and runs, "
@@ -353,6 +358,7 @@ STEP_LABELS = {
     "search_projects": "Searched your projects for \"{words}\"",
     "prepare_report": "Prepared the report of project {projectId}",
     "compare_protocols": "Compared protocols of project {projectId}",
+    "show_in_graph": "Showed protocol {protocolId} in the graph",
     "server_log": "Read the server's {which} log",
     "list_chains": "Looked at the chains of project {projectId}",
     "propose_template": "Proposed a template for project {projectId}",
@@ -419,7 +425,8 @@ class AssistantTools:
                  proposeTag: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeRename: Optional[Callable[..., Dict[str, Any]]] = None,
                  proposeSchedule: Optional[Callable[..., Dict[str, Any]]] = None,
-                 proposeMany: Optional[Callable[..., Dict[str, Any]]] = None):
+                 proposeMany: Optional[Callable[..., Dict[str, Any]]] = None,
+                 showProtocol: Optional[Callable[[int, str], Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -446,6 +453,11 @@ class AssistantTools:
         if self.canCompare:
             self._calls["compare_protocols"] = lambda args: self._compared(compareProtocols(
                 int(args["projectId"]), [str(pid) for pid in args.get("protocolIds") or []]))
+        # A protocol shown in the project's graph
+        self.canShow = showProtocol is not None
+        if self.canShow:
+            self._calls["show_in_graph"] = lambda args: self._shown(showProtocol(int(args["projectId"]),
+                                                                                str(args["protocolId"])))
         # The server's logs, for the administrators only
         self.isAdmin = serverLog is not None
         if self.isAdmin:
@@ -537,6 +549,12 @@ class AssistantTools:
         self.cards = [item for item in self.cards if item.get("kind") != "comparison"] + [card]
         return dict(comparison, note="The user sees this as a table under your answer: explain, do not repeat it.")
 
+    def _shown(self, protocol: Dict[str, Any]) -> Dict[str, Any]:
+        card = dict(protocol, kind="focus")
+        self.cards = [item for item in self.cards if item.get("kind") != "focus"] + [card]
+        return {"shown": True, "note": "The graph centres on it when the user is in that project; a button under "
+                                       "your answer takes them there."}
+
     def _reported(self, card: Dict[str, Any]) -> Dict[str, Any]:
         if not any(item.get("kind") == "report" for item in self.cards):
             self.cards.append(card)
@@ -562,6 +580,7 @@ class AssistantTools:
         reading = TOOL_DEFINITIONS + ([READ_PAGE_TOOL] if self.canReadPages else []) \
             + ([SEARCH_TOOL] if self.canSearch else []) + ([REPORT_TOOL] if self.canReport else []) \
             + ([COMPARE_TOOL] if self.canCompare else []) + ([SERVER_LOG_TOOL] if self.isAdmin else []) \
+            + ([SHOW_TOOL] if self.canShow else []) \
             + (TEMPLATE_READ_TOOLS if self.canReadTemplates else [])
         if not self.canPropose:
             return reading
