@@ -86,6 +86,7 @@ TOOL_DEFINITIONS = [
 PROPOSAL_TOOLS = [
     _function("propose_relaunch", "Propose relaunching a protocol, with changed parameters or as it is. The code "
                                   "picks restart or continue and asks the user about the protocols depending on it. "
+                                  "Also for 'restart', 'reinicia' or 'run it again'. "
                                   "Never to rename it or change its comment: that is propose_rename.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL,
                "changes": {"type": "array", "description": "The parameters to change, by their name as "
@@ -151,7 +152,9 @@ SUBWORKFLOW_TOOLS = [
               {"projectId": _PROJECT, "protocolId": _PROTOCOL, "launch": _LAUNCH, "reason": _REASON},
               ["projectId", "protocolId", "reason"]),
     _function("propose_reset", "Propose resetting a protocol and every protocol depending on it: their results "
-                               "are cleared so they can run again. Refused while any of them runs.",
+                               "are cleared and they stay stopped, nothing runs. Refused while any of them runs. "
+                               "Only when the user says reset or asks to clear the results: 'restart', 'reinicia', "
+                               "'run it again' or 'relaunch' is propose_relaunch.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL, "reason": _REASON},
               ["projectId", "protocolId", "reason"]),
     _function("propose_tag", "Propose adding a tag, by its name, to one or more protocols; a tag the project does "
