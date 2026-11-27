@@ -217,6 +217,19 @@ class _Service:
         return {"status": 0, "errors": [], "duplicated": [{"sourceId": item.id, "newId": str(200 + index)}
                                                           for index, item in enumerate(items)]}
 
+    comment = "old note"
+
+    def _getScipionProtocolByScipionId(self, protocolId):
+        return type("Protocol", (), {"getObjComment": lambda self: _Service.comment})()
+
+    def renameProtocol(self, mapper, projectId, protocolId, newName, newComment, protocolIdIsScipionId=False):
+        _Service.calls.append(("rename", protocolId, newName, newComment))
+        return {"status": 0, "errors": []}
+
+    def launchProtocol(self, **kwargs):
+        _Service.calls.append(("launch", kwargs))
+        return {"status": 0, "errors": []}
+
     def resetProtocolFrom(self, mapper, projectId, protocolId, includeRoot=True):
         _Service.calls.append(("reset", protocolId))
         return {"status": 0, "errors": []}
@@ -619,3 +632,35 @@ def test_TagTakenOffOnlyWhereItIsAndTheTagStays(applying):
     assert client.post("/help-chat/actions/apply", json=body).json()["untagged"] == []
     unknown = client.post("/help-chat/actions/apply", json=dict(body, tag="nope"))
     assert unknown.status_code == 409 and "no tag called nope" in unknown.json()["detail"]
+
+
+
+def test_RenameKeepsWhatTheCardDidNotChange(applying):
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "rename", "projectId": 7, "protocolId": "37",
+            "renames": [{"field": "comment", "to": "old note\nthick ice"}]}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "name": "2D"}
+    assert _Service.calls == [("rename", "37", "2D", "old note\nthick ice")]
+
+
+def test_ScheduleAddsToTheWaitListAndLaunchesBySchedule(applying):
+    _Usage.protocolRow = dict(_Usage.protocolRow, status="saved", params={"_prerequisites": "12"})
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "schedule", "projectId": 7, "protocolId": "37", "protocolIds": ["37"]}
+    # It cannot wait for itself
+    refused = client.post("/help-chat/actions/apply", json=body)
+    assert refused.status_code == 409 and "itself" in refused.json()["detail"]
+
+
+def test_ScheduleLaunchesBySchedule(applying, monkeypatch):
+    rows = {"37": dict(_Usage.protocolRow, status="saved", params={"_prerequisites": "12"}),
+            "30": {"protocolId": "30", "label": "ctf", "className": "Ctf", "status": "running"}}
+    monkeypatch.setattr(_Usage, "protocol", lambda self, projectId, protocolId: rows.get(str(protocolId)))
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "schedule", "projectId": 7,
+                                                             "protocolId": "37", "protocolIds": ["30"]})
+    assert response.json() == {"ok": True, "waitFor": ["30"]}
+    kind, kwargs = _Service.calls[-1]
+    assert kind == "launch" and kwargs["executeMode"] == "schedule" and kwargs["protocolIdIsScipionId"] is True
+    assert kwargs["params"]["_prerequisites"] == "12,30"
+    assert kwargs["params"]["inputParticles"] == "22.outputParticles"

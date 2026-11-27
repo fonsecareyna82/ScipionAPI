@@ -320,7 +320,9 @@ def test_TheModelGetsTheNewToolsOnlyWhenAllowed():
     seen = []
     propose = dict(proposeRelaunch=lambda *a: {}, proposeStop=lambda *a: {}, proposeNextStep=lambda *a: {},
                    proposeSubworkflow=lambda *a: seen.append(a) or {"action": a[0]},
-                   proposeTag=lambda *a: seen.append(a) or {"action": "tag"})
+                   proposeTag=lambda *a: seen.append(a) or {"action": "tag"},
+                   proposeRename=lambda *a: seen.append(a) or {"action": "rename"},
+                   proposeSchedule=lambda *a: seen.append(a) or {"action": "schedule"})
     names = lambda tools: {tool["function"]["name"] for tool in tools.definitions()}  # noqa: E731
     tools = AssistantTools(*read, **propose)
     assert {"propose_copy_subworkflow", "propose_reset", "propose_tag"} <= names(tools)
@@ -342,3 +344,41 @@ def test_UntagCard():
         actions.tagCard(7, protocols, "other", None, {}, remove=True)
     with pytest.raises(actions.ProposalError, match="None of those"):
         actions.tagCard(7, protocols, "good", existing, {}, remove=True)
+
+
+
+def test_RenameCardListsOnlyWhatChanges():
+    protocol = {"protocolId": "5", "label": "ctffind", "className": "P", "status": "finished"}
+    card = actions.renameCard(7, protocol, "old note", "  CTF   good ", None)
+    assert card["changes"] == [{"field": "name", "from": "ctffind", "to": "CTF good"}]
+    card = actions.renameCard(7, protocol, "old note", None, "thick ice", addToComment=True)
+    assert card["changes"] == [{"field": "comment", "from": "old note", "to": "old note\nthick ice"}]
+    with pytest.raises(actions.ProposalError, match="Nothing would change"):
+        actions.renameCard(7, protocol, "old note", "ctffind", "old note")
+    with pytest.raises(actions.ProposalError, match="empty"):
+        actions.renameCard(7, protocol, "", "  ", None)
+    assert actions.renamed(protocol, "old", card["changes"]) == ("ctffind", "old note\nthick ice")
+
+
+def _row(protocolId, status, label="p"):
+    return {"protocolId": protocolId, "label": label, "status": status, "className": "P"}
+
+
+def test_ScheduleWaitsOnlyForWhatCanFinish():
+    card = actions.scheduleCard(7, _row("40", "saved"), [_row("37", "running"), _row("38", "finished")], ["41"])
+    assert [(item["protocolId"], item["done"]) for item in card["waitFor"]] == [("37", False), ("38", True)]
+    with pytest.raises(actions.ProposalError, match="would wait forever"):
+        actions.scheduleCard(7, _row("40", "saved"), [_row("41", "new")], ["41"])
+    with pytest.raises(actions.ProposalError, match="relaunch it first"):
+        actions.scheduleCard(7, _row("40", "saved"), [_row("37", "failed")], [])
+    with pytest.raises(actions.ProposalError, match="already finished"):
+        actions.scheduleCard(7, _row("40", "finished"), [_row("37", "running")], [])
+    with pytest.raises(actions.ProposalError, match="running already"):
+        actions.scheduleCard(7, _row("40", "running"), [_row("37", "running")], [])
+    with pytest.raises(actions.ProposalError, match="itself"):
+        actions.scheduleCard(7, _row("40", "new"), [_row("40", "new")], [])
+
+
+def test_TheWaitListKeepsWhatItHad():
+    assert actions.prerequisitesWith("12, 13", ["13", "37"]) == "12,13,37"
+    assert actions.prerequisitesWith(None, ["37"]) == "37"

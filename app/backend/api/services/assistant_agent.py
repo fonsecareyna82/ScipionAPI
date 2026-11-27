@@ -158,6 +158,24 @@ SUBWORKFLOW_TOOLS = [
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
                "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
               ["projectId", "protocolIds", "tag", "reason"]),
+    _function("propose_rename", "Propose a new name for a protocol and/or a comment (a note shown with it in the "
+                                "graph): a new comment, or a note added after the one it has. The card shows "
+                                "before and after.",
+              {"projectId": _PROJECT, "protocolId": _PROTOCOL,
+               "name": {"type": "string", "description": "The new name; leave out to keep it"},
+               "comment": {"type": "string", "description": "The comment, or the note to add; leave out to keep it"},
+               "addToComment": {"type": "boolean", "description": "True to add the note after the current comment "
+                                                                  "instead of replacing it"},
+               "reason": _REASON},
+              ["projectId", "protocolId", "reason"]),
+    _function("propose_schedule", "Propose scheduling a protocol (not launched yet, or failed): it waits and starts "
+                                  "by itself when the protocols given finish, besides its own inputs. For 'launch "
+                                  "it when #X finishes'.",
+              {"projectId": _PROJECT, "protocolId": _PROTOCOL,
+               "waitFor": {"type": "array", "items": {"type": "string"},
+                           "description": "The ids of the protocols it waits for"},
+               "reason": _REASON},
+              ["projectId", "protocolId", "waitFor", "reason"]),
     _function("propose_untag", "Propose taking a tag, by its name, off one or more protocols. The tag stays in the "
                                "project for other protocols.",
               {"projectId": _PROJECT,
@@ -180,7 +198,8 @@ DELETE_TOOL = _function(
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
 PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
-                "reset, adding or taking off a tag, a subset or the next step with the propose_* tools when the "
+                "reset, a new name or comment, a schedule (start after other protocols), adding or taking off a "
+                "tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
@@ -329,6 +348,8 @@ STEP_LABELS = {
     "propose_reset": "Proposed resetting from protocol {protocolId}",
     "propose_tag": "Proposed a tag",
     "propose_untag": "Proposed taking a tag off",
+    "propose_rename": "Proposed renaming protocol {protocolId}",
+    "propose_schedule": "Proposed scheduling protocol {protocolId}",
     "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
 }
 
@@ -375,7 +396,9 @@ class AssistantTools:
                  proposeSubset: Optional[Callable[..., Dict[str, Any]]] = None,
                  serverLog: Optional[Callable[[str, Optional[str], str], Dict[str, Any]]] = None,
                  proposeSubworkflow: Optional[Callable[..., Dict[str, Any]]] = None,
-                 proposeTag: Optional[Callable[..., Dict[str, Any]]] = None):
+                 proposeTag: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeRename: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeSchedule: Optional[Callable[..., Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -437,7 +460,8 @@ class AssistantTools:
                     int(args["projectId"]), str(args["protocolId"]), changesOf(args.get("changes")),
                     str(args.get("reason") or ""), _yes(args.get("launch"))))
         # A protocol with everything depending on it, and tags
-        self.canProposeMore = self.canPropose and proposeSubworkflow is not None and proposeTag is not None
+        self.canProposeMore = self.canPropose and None not in (proposeSubworkflow, proposeTag, proposeRename,
+                                                               proposeSchedule)
         if self.canProposeMore:
             self._calls.update({
                 "propose_copy_subworkflow": lambda args: self._proposed(proposeSubworkflow(
@@ -448,6 +472,14 @@ class AssistantTools:
                 "propose_tag": lambda args: self._proposed(proposeTag(
                     int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
                     str(args.get("tag") or ""), str(args.get("reason") or ""))),
+                "propose_rename": lambda args: self._proposed(proposeRename(
+                    int(args["projectId"]), str(args["protocolId"]),
+                    None if args.get("name") is None else str(args["name"]),
+                    None if args.get("comment") is None else str(args["comment"]), str(args.get("reason") or ""),
+                    _yes(args.get("addToComment")))),
+                "propose_schedule": lambda args: self._proposed(proposeSchedule(
+                    int(args["projectId"]), str(args["protocolId"]),
+                    [str(item) for item in args.get("waitFor") or []], str(args.get("reason") or ""))),
                 "propose_untag": lambda args: self._proposed(proposeTag(
                     int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
                     str(args.get("tag") or ""), str(args.get("reason") or ""), True)),
@@ -520,7 +552,7 @@ class AssistantTools:
         self.proposals.append(card)
         summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs", "links",
                                               "missing", "next", "kept", "removed", "total", "makes", "launch",
-                                              "tag", "newTag") if key in card}
+                                              "tag", "newTag", "waitFor") if key in card}
         if "protocols" in card:
             summary["protocols"] = [item["protocolId"] for item in card["protocols"]]
         if "steps" in card:

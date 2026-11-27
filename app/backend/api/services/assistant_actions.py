@@ -19,6 +19,11 @@ apply refuses when that list changed since (nothing the user did not see is touc
 - delete it (with the delete switch only): nothing may be running, the card lists every result lost and the user
   confirms by writing how many protocols go.
 
+A protocol is renamed or its comment changed (the graph's own rename).
+
+Schedule: a protocol waits and starts by itself when the protocols chosen finish (besides its own inputs); never
+one already running or finished (copy it instead), never waiting for a protocol that failed or that depends on it.
+
 A tag is added by its name to one or more protocols (a tag the project does not have yet is created), or taken
 off them (the tag stays in the project).
 
@@ -35,6 +40,10 @@ MAX_CHANGES = 12
 MAX_SUBWORKFLOW = 60
 MAX_TAGGED = 50
 MAX_TAG_CHARS = 60
+MAX_NAME_CHARS = 200
+MAX_COMMENT_CHARS = 4000
+MAX_WAIT_FOR = 10
+SCHEDULABLE_STATUSES = ("new", "saved", "", "failed", "aborted", "interrupted")
 
 
 class ProposalError(ValueError):
@@ -305,3 +314,83 @@ def applyChecks(protocol: Optional[Dict[str, Any]], help_: Optional[Dict[str, An
             raise ProposalError("Choose whether to relaunch only this protocol or its whole workflow")
         scope = "single"
     return {"params": {item["name"]: item["to"] for item in checked}, "mode": mode, "scope": scope}
+
+
+def renameCard(projectId: int, protocol: Dict[str, Any], currentComment: str, name: Optional[str],
+               comment: Optional[str], reason: str = "", addToComment: bool = False) -> Dict[str, Any]:
+    """name / comment: the new ones (None keeps them); addToComment: the comment goes after the current one."""
+    changes = []
+    if comment is not None and addToComment and (currentComment or "").strip():
+        comment = (currentComment or "").rstrip() + "\n" + str(comment).strip()
+    if name is not None:
+        name = " ".join(str(name).split())
+        if not name:
+            raise ProposalError("A protocol's name cannot be empty")
+        if len(name) > MAX_NAME_CHARS:
+            raise ProposalError("A name has at most %d characters" % MAX_NAME_CHARS)
+        if name != (protocol.get("label") or ""):
+            changes.append({"field": "name", "from": protocol.get("label") or "", "to": name})
+    if comment is not None:
+        comment = str(comment).strip()
+        if len(comment) > MAX_COMMENT_CHARS:
+            raise ProposalError("A comment has at most %d characters" % MAX_COMMENT_CHARS)
+        if comment != (currentComment or "").strip():
+            changes.append({"field": "comment", "from": currentComment or "", "to": comment})
+    if not changes:
+        raise ProposalError("Nothing would change: say the new name or the new comment")
+    return {"kind": "action", "action": "rename", "projectId": int(projectId),
+            "protocolId": str(protocol["protocolId"]), "label": protocol.get("label") or "",
+            "className": protocol.get("className") or "", "status": protocol.get("status") or "",
+            "changes": changes, "reason": str(reason or "")[:500]}
+
+
+def renamed(protocol: Dict[str, Any], currentComment: str, changes: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """(name, comment) to store: the card's changes on top of what the protocol has now."""
+    values = {"name": protocol.get("label") or "", "comment": currentComment or ""}
+    for change in changes or []:
+        if change.get("field") in values:
+            values[change["field"]] = str(change.get("to") or "")
+    if not values["name"].strip():
+        raise ProposalError("A protocol's name cannot be empty")
+    return values["name"], values["comment"]
+
+
+def scheduleCard(projectId: int, protocol: Dict[str, Any], waitFor: List[Dict[str, Any]],
+                 dependingIds: List[str], reason: str = "") -> Dict[str, Any]:
+    """protocol: the one to start later; waitFor: the protocols it waits for (each with its status);
+    dependingIds: the protocols depending on it (it cannot wait for them: it would wait forever)."""
+    status = (protocol.get("status") or "").lower()
+    rootId = str(protocol["protocolId"])
+    if status in ACTIVE_STATUSES:
+        raise ProposalError("Protocol #%s is %s already" % (rootId, status))
+    if status not in SCHEDULABLE_STATUSES:
+        raise ProposalError("Protocol #%s already finished; to run it again after another one, copy it "
+                            "(propose_duplicate) and schedule the copy" % rootId)
+    if not waitFor:
+        raise ProposalError("Say which protocols it waits for")
+    if len(waitFor) > MAX_WAIT_FOR:
+        raise ProposalError("At most %d protocols to wait for" % MAX_WAIT_FOR)
+    listed = []
+    for item in waitFor:
+        itemId = str(item["protocolId"])
+        itemStatus = (item.get("status") or "").lower()
+        if itemId == rootId:
+            raise ProposalError("A protocol cannot wait for itself")
+        if itemId in {str(other) for other in dependingIds}:
+            raise ProposalError("#%s depends on #%s: #%s would wait forever" % (itemId, rootId, rootId))
+        if itemStatus in ("failed", "aborted", "interrupted"):
+            raise ProposalError("#%s %s: it would never finish; relaunch it first" % (itemId, itemStatus))
+        listed.append({"protocolId": itemId, "label": item.get("label") or "", "status": itemStatus,
+                       "done": itemStatus == "finished"})
+    return {"kind": "action", "action": "schedule", "projectId": int(projectId), "protocolId": rootId,
+            "label": protocol.get("label") or "", "className": protocol.get("className") or "", "status": status,
+            "waitFor": listed, "reason": str(reason or "")[:500]}
+
+
+def prerequisitesWith(current: Any, waitFor: List[str]) -> str:
+    """The protocol's wait list (comma separated) with the new ones."""
+    ids = [token for token in str(current or "").replace(";", ",").replace(" ", ",").split(",") if token.strip()]
+    for item in waitFor:
+        if str(item) not in ids:
+            ids.append(str(item))
+    return ",".join(ids)

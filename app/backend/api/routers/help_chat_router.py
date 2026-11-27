@@ -92,6 +92,8 @@ class ActionPayload(BaseModel):
     protocolIds: Optional[List[str]] = Field(None, max_items=200)
     # The tag's name to add
     tag: Optional[str] = Field(None, max_length=200)
+    # A rename: the changes the card listed ({field: name|comment, to})
+    renames: Optional[List[Dict[str, Any]]] = Field(None, max_items=2)
 
 
 class ReportPayload(BaseModel):
@@ -202,6 +204,27 @@ def _tagsOf(service, mapper, currentUser, projectId: int, protocolIds: List[str]
                               or {}).get("tagIds") or []) for protocolId in protocolIds}
 
 
+def _currentComment(service, mapper, currentUser, projectId: int, protocolId: str) -> str:
+    """The protocol's comment as the graph shows it."""
+    if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId,
+                                                           currentUser=currentUser):
+        raise PermissionError("The user cannot see that project")
+    protocol = service._getScipionProtocolByScipionId(protocolId)
+    getter = getattr(protocol, "getObjComment", None)
+    return str((getter() if callable(getter) else getattr(protocol, "_objComment", "")) or "")
+
+
+def _waitFor(mapper, projectId: int, protocolIds: List[str]) -> List[Dict[str, Any]]:
+    helper = AssistantPostgresqlMapper(mapper.db)
+    found = []
+    for protocolId in dict.fromkeys(str(item) for item in protocolIds or []):
+        row = helper.protocol(projectId, protocolId)
+        if not row:
+            raise ProposalError("There is no protocol %s in that project" % protocolId)
+        found.append(row)
+    return found
+
+
 def _projectTag(mapper, projectId: int, title: str) -> Optional[Dict[str, Any]]:
     """The project's tag with that name, in any case."""
     wanted = title.strip().lower()
@@ -290,6 +313,19 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         protocol = workable(projectId, protocolId)
         items = _subworkflow(service, mapper, currentUser, projectId, protocol, action != "copyworkflow")
         return assistant_actions.subworkflowCard(action, projectId, items, reason, launch)
+
+    def proposeRename(projectId: int, protocolId: str, name: Optional[str], comment: Optional[str], reason: str,
+                      addToComment: bool = False):
+        protocol = workable(projectId, protocolId)
+        return assistant_actions.renameCard(projectId, protocol,
+                                            _currentComment(service, mapper, currentUser, projectId, protocolId),
+                                            name, comment, reason, addToComment)
+
+    def proposeSchedule(projectId: int, protocolId: str, waitFor: List[str], reason: str):
+        protocol = workable(projectId, protocolId)
+        depending = [item["protocolId"] for item in _subworkflow(service, mapper, currentUser, projectId, protocol)[1:]]
+        return assistant_actions.scheduleCard(projectId, protocol, _waitFor(mapper, projectId, waitFor), depending,
+                                              reason)
 
     def proposeTag(projectId: int, protocolIds: List[str], tag: str, reason: str, remove: bool = False):
         protocols = [workable(projectId, protocolId) for protocolId in dict.fromkeys(protocolIds)]
@@ -389,7 +425,8 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                           proposeRelaunch, proposeStop, proposeNextStep, proposeDuplicate,
                           proposeDelete if canDelete else None, proposeTemplate=proposeTemplate,
                           proposeContinue=proposeContinue, proposeSubset=proposeSubset,
-                          proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, **reading)
+                          proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, proposeRename=proposeRename,
+                          proposeSchedule=proposeSchedule, **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -541,6 +578,10 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         return _applySubworkflow(payload, service, mapper, currentUser)
     if payload.action in ("tag", "untag"):
         return _applyTag(payload, service, mapper, currentUser)
+    if payload.action == "rename":
+        return _applyRename(payload, service, mapper, currentUser)
+    if payload.action == "schedule":
+        return _applySchedule(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -728,6 +769,61 @@ def _applyTag(payload: ActionPayload, service, mapper, currentUser) -> Dict[str,
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, ids[0],
                 {"action": "tag", "tag": tag.get("title"), "created": created, "protocols": tagged})
     return {"ok": True, "tag": tag.get("title"), "newTag": created, "tagged": tagged}
+
+
+def _applyRename(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Rename the protocol or change its comment, as the graph's own rename does."""
+    protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
+    try:
+        if protocol is None:
+            raise ProposalError("The protocol is not in the project any more")
+        name, comment = assistant_actions.renamed(
+            protocol, _currentComment(service, mapper, currentUser, payload.projectId, payload.protocolId),
+            payload.renames or [])
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    try:
+        result = service.renameProtocol(mapper, payload.projectId, payload.protocolId, name, comment,
+                                        protocolIdIsScipionId=True) or {}
+    except HTTPException as error:
+        result = {"errors": _errorTexts(error.detail)}
+    errors = [str(error) for error in result.get("errors") or []]
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                str(payload.protocolId), {"action": "rename", "name": name, "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return {"ok": True, "name": name}
+
+
+def _applySchedule(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Schedule the protocol: it starts by itself when the protocols it waits for (and its inputs) finish."""
+    protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
+    try:
+        if protocol is None:
+            raise ProposalError("The protocol is not in the project any more")
+        waitFor = _waitFor(mapper, payload.projectId, payload.protocolIds or [])
+        depending = [item["protocolId"] for item in
+                     _subworkflow(service, mapper, currentUser, payload.projectId, protocol)[1:]]
+        card = assistant_actions.scheduleCard(payload.projectId, protocol, waitFor, depending)
+    except (ProposalError, PermissionError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    ids = [item["protocolId"] for item in card["waitFor"]]
+    params = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(payload.projectId, payload.protocolId),
+                  _prerequisites=assistant_actions.prerequisitesWith(
+                      (protocol.get("params") or {}).get("_prerequisites"), ids))
+    try:
+        result = service.launchProtocol(mapper=mapper, projectId=payload.projectId, protocolId=payload.protocolId,
+                                        protocolClassName=protocol["className"], params=params,
+                                        executeMode="schedule", currentUserId=currentUser["id"],
+                                        protocolIdIsScipionId=True) or {}
+    except HTTPException as error:
+        result = {"errors": _errorTexts(error.detail)}
+    errors = [str(error) for error in result.get("errors") or []]
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
+                str(payload.protocolId), {"action": "schedule", "waitFor": ids, "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return {"ok": True, "waitFor": ids}
 
 
 def _removeTag(payload: ActionPayload, service, mapper, currentUser, tag: Optional[Dict[str, Any]], title: str,
