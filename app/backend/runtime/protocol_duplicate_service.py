@@ -95,6 +95,7 @@ class RuntimeProtocolDuplicateService:
             syncPostgresqlRuntimeProtocolCallback: Callable,
             storeProtocolCallback: Callable,
             buildProtocolMutationResultCallback: Callable,
+            resolveRuntimeInputObjectCallback: Optional[Callable] = None,
     ):
         duplicateState = self.createDuplicateState()
 
@@ -250,6 +251,7 @@ class RuntimeProtocolDuplicateService:
                     projectId=projectId,
                     protocol=newProtocol,
                     getScipionProtocolByRuntimeIdCallback=getScipionProtocolByRuntimeIdCallback,
+                    resolveRuntimeInputObjectCallback=resolveRuntimeInputObjectCallback,
                 )
 
                 if pointerRestore.get("errors"):
@@ -436,10 +438,14 @@ class RuntimeProtocolDuplicateService:
     def validateProtocolPointerTargetsForPersistence(
             self,
             protocol,
+            resolveOutputCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """
         Verify that every non-empty Pointer target is a Scipion object.
         This validation must run before the duplicated protocol is persisted.
+
+        resolveOutputCallback(parentProtocol, outputName): the parent's output read from the database, for a
+        parent protocol loaded without its outputs (a pointer to one item of its set is checked on it).
         """
         errors = []
         visited = set()
@@ -550,14 +556,31 @@ class RuntimeProtocolDuplicateService:
                                 # Native Pointer.get() must resolve the entire
                                 # path, including attributes after a Set item.
                                 pointedObject = attribute.get()
-                                if pointedObject is None:
+                                currentObject = pointerValue
+                                walkParts = extensionParts
+                                if (
+                                        pointedObject is None
+                                        and callable(resolveOutputCallback)
+                                        and not extensionParts[0].isdigit()
+                                ):
+                                    # The parent was loaded without its outputs: read the output itself
+                                    currentObject = resolveOutputCallback(
+                                        pointerValue,
+                                        extensionParts[0],
+                                    )
+                                    walkParts = extensionParts[1:]
+                                    if currentObject is None:
+                                        raise ValueError(
+                                            "Pointer output %s was not found"
+                                            % extensionParts[0]
+                                        )
+                                elif pointedObject is None:
                                     raise ValueError(
                                         "Pointer extension %s resolved to None"
                                         % extended
                                     )
 
-                                currentObject = pointerValue
-                                for part in extensionParts:
+                                for part in walkParts:
                                     if (
                                             part.isdigit()
                                             and callable(getattr(currentObject, "__getitem__", None))
@@ -1005,11 +1028,15 @@ class RuntimeProtocolDuplicateService:
             protocol,
             getScipionProtocolByRuntimeIdCallback: Callable,
             parentProtocolsById: Optional[Dict[str, Any]] = None,
+            resolveRuntimeInputObjectCallback: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """
         Restore PointerParam/MultiPointerParam attributes from
         protocol_input_refs before storing a protocol through Scipion's
         runtime mapper.
+
+        resolveRuntimeInputObjectCallback(runtimeObjectId): a parent's output read from the database, to check a
+        pointer to one item of a set when the parent protocol was loaded without its outputs.
         """
         protocolId = self._getScipionObjectId(
             protocol
@@ -1253,10 +1280,32 @@ class RuntimeProtocolDuplicateService:
                     "error": str(error),
                 })
 
+        def resolveParentOutput(parentProtocol, outputName):
+            if not callable(resolveRuntimeInputObjectCallback):
+                return None
+            parentScipionProtocolId = self._getScipionObjectId(parentProtocol)
+            parentDbId = (
+                protocolIdentityResolver.resolvePostgresqlProtocolDbIdFromScipionProtocolId(parentScipionProtocolId)
+                if parentScipionProtocolId is not None else None
+            )
+            if parentDbId is None:
+                return None
+            outputInfo = protocolGraphRepository.getPostgresqlRuntimeOutputInfo(
+                mapper=mapper,
+                projectId=projectId,
+                parentProtocolDbId=parentDbId,
+                outputName=outputName,
+            ) or {}
+            runtimeObjectId = outputInfo.get("runtimeObjectId")
+            if not outputInfo.get("exists") or runtimeObjectId in (None, ""):
+                return None
+            return resolveRuntimeInputObjectCallback(int(runtimeObjectId))
+
         validation = (
             self
             .validateProtocolPointerTargetsForPersistence(
-                protocol
+                protocol,
+                resolveParentOutput,
             )
         )
 

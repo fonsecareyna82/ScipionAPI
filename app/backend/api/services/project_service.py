@@ -6173,6 +6173,7 @@ class ProjectService:
             protocol=protocol,
             parentProtocolsById=parentProtocolsById,
             getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+            resolveRuntimeInputObjectCallback=self._resolvePostgresqlRuntimeInputObject,
         )
 
     def syncPostgresqlRuntimeProtocolInputsAndDependencies(
@@ -7308,6 +7309,7 @@ class ProjectService:
             syncPostgresqlRuntimeProtocolCallback=self.syncPostgresqlRuntimeProtocol,
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
+            resolveRuntimeInputObjectCallback=self._resolvePostgresqlRuntimeInputObject,
         ) or {}
 
         if not result.get("errors"):
@@ -7803,6 +7805,7 @@ class ProjectService:
                     protocol=protocol,
                     parentProtocolsById=parentProtocolsById,
                     getScipionProtocolByRuntimeIdCallback=self._getScipionProtocolByRuntimeId,
+                    resolveRuntimeInputObjectCallback=self._resolvePostgresqlRuntimeInputObject,
                 )
 
                 protocolReport["restore"] = restoreReport

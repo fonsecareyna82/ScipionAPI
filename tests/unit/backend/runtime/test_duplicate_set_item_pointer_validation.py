@@ -136,3 +136,38 @@ class TestDuplicateSetItemPointerValidation_RED66:
         report = _validate(protocol)
         _assert_rejected(report, "inputVolumes")
         assert any("99" in str(error) for error in report["errors"])
+
+
+class TestParentLoadedWithoutItsOutputs:
+    """A parent protocol loaded for a copy may come without its outputs: the output is read from the database."""
+
+    def _validateReading(self, protocol, outputs):
+        asked = []
+
+        def resolve(parent, outputName):
+            asked.append((parent.getObjId(), outputName))
+            return outputs.get(outputName)
+
+        report = RuntimeProtocolDuplicateService().validateProtocolPointerTargetsForPersistence(protocol, resolve)
+        return report, asked
+
+    def test_TheItemIsCheckedOnTheOutputReadFromTheDatabase(self):
+        output_set = _SparseSet({1: _Member(1), 2: _Member(2)})
+        protocol = _protocol(multi=[Pointer(_parent(), extended="outputVolumes.1"),
+                                    Pointer(_parent(), extended="outputVolumes.2")])
+        report, asked = self._validateReading(protocol, {"outputVolumes": output_set})
+        assert report == {"valid": True, "errors": []}
+        assert asked == [(2202, "outputVolumes"), (2202, "outputVolumes")]
+        assert output_set.lookups == [1, 2]
+
+    def test_AMissingItemIsStillRefused(self):
+        protocol = _protocol(single=Pointer(_parent(), extended="outputVolumes.34"))
+        report, _ = self._validateReading(protocol, {"outputVolumes": _SparseSet({90: _Member(90)})})
+        _assert_rejected(report, "inputVolume")
+        assert any("34" in str(error) for error in report["errors"])
+
+    def test_AnOutputTheDatabaseDoesNotHaveIsRefused(self):
+        protocol = _protocol(single=Pointer(_parent(), extended="outputVolumes.34"))
+        report, _ = self._validateReading(protocol, {})
+        _assert_rejected(report, "inputVolume")
+        assert any("outputVolumes" in str(error) for error in report["errors"])
