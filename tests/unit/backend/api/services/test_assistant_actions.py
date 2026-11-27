@@ -390,3 +390,13 @@ def test_ScheduleWaitsOnlyForWhatCanFinish():
 def test_TheWaitListKeepsWhatItHad():
     assert actions.prerequisitesWith("12, 13", ["13", "37"]) == "12,13,37"
     assert actions.prerequisitesWith(None, ["37"]) == "37"
+
+
+def test_UntagWithoutANameTakesTheOnlyTagTheyHave():
+    tags = [{"id": "t1", "title": "CTF buena"}, {"id": "t2", "title": "hielo grueso"}]
+    assert actions.tagToRemove({"137": ["t1"]}, tags) == "CTF buena"
+    with pytest.raises(ProposalError) as error:
+        actions.tagToRemove({"137": ["t1", "t2"]}, tags)
+    assert "CTF buena, hielo grueso" in str(error.value)
+    with pytest.raises(ProposalError):
+        actions.tagToRemove({"137": []}, tags)

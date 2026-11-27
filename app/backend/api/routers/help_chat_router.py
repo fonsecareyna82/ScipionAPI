@@ -204,6 +204,16 @@ def _tagsOf(service, mapper, currentUser, projectId: int, protocolIds: List[str]
                               or {}).get("tagIds") or []) for protocolId in protocolIds}
 
 
+def _tagNames(service, mapper, currentUser, projectId: int, protocolId: str) -> List[str]:
+    """The names of the protocol's tags, as the graph shows them."""
+    try:
+        ids = _tagsOf(service, mapper, currentUser, projectId, [str(protocolId)])[str(protocolId)]
+        names = {str(tag.get("id")): tag.get("title") for tag in mapper.listProtocolTags(projectId=projectId) or []}
+    except Exception:
+        return []
+    return [names[tagId] for tagId in ids if names.get(tagId)]
+
+
 def _currentComment(service, mapper, currentUser, projectId: int, protocolId: str) -> str:
     """The protocol's comment as the graph shows it."""
     if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=projectId,
@@ -273,6 +283,7 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                          for key, value in params.items() if value not in (None, "", [], {})} \
             if isinstance(params, dict) else {}
         row["outputs"] = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, protocolId)
+        row["tags"] = _tagNames(service, mapper, currentUser, projectId, protocolId)
         return row
 
     def protocolLog(projectId: int, protocolId: str, channel: str) -> str:
@@ -329,10 +340,12 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
 
     def proposeTag(projectId: int, protocolIds: List[str], tag: str, reason: str, remove: bool = False):
         protocols = [workable(projectId, protocolId) for protocolId in dict.fromkeys(protocolIds)]
+        tagged = _tagsOf(service, mapper, currentUser, projectId, [str(item["protocolId"]) for item in protocols])
+        if remove and not tag.strip():
+            tag = assistant_actions.tagToRemove(tagged, mapper.listProtocolTags(projectId=projectId) or [])
         title = assistant_actions.tagTitle(tag)
         return assistant_actions.tagCard(projectId, protocols, title, _projectTag(mapper, projectId, title),
-                                         _tagsOf(service, mapper, currentUser, projectId,
-                                                 [str(item["protocolId"]) for item in protocols]), reason, remove)
+                                         tagged, reason, remove)
 
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)

@@ -66,7 +66,8 @@ TOOL_DEFINITIONS = [
     _function("list_projects", "The projects the user can see: id and name.", {}, []),
     _function("list_protocols", "The protocols of a project: id, name, class and status.", {"projectId": _PROJECT},
               ["projectId"]),
-    _function("protocol_details", "One protocol: its class, status, parameters and what it produced (with sizes).",
+    _function("protocol_details", "One protocol: its class, status, parameters, what it produced (with sizes) and "
+                                  "its tags.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL}, ["projectId", "protocolId"]),
     _function("protocol_log", "The end of a protocol's log.",
               {"projectId": _PROJECT, "protocolId": _PROTOCOL,
@@ -180,11 +181,14 @@ SUBWORKFLOW_TOOLS = [
                "reason": _REASON},
               ["projectId", "protocolId", "waitFor", "reason"]),
     _function("propose_untag", "Propose taking a tag, by its name, off one or more protocols. The tag stays in the "
-                               "project for other protocols.",
+                               "project for other protocols. Never guess the tag from the conversation: leave it "
+                               "out when the user did not name it, and the protocols' only tag is taken off (or "
+                               "you are told which they have).",
               {"projectId": _PROJECT,
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
-               "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
-              ["projectId", "protocolIds", "tag", "reason"]),
+               "tag": {"type": "string", "description": "The tag's name, as the user said it; leave out if they "
+                                                        "did not say it"}, "reason": _REASON},
+              ["projectId", "protocolIds", "reason"]),
 ]
 
 DELETE_SUBWORKFLOW_TOOL = _function(

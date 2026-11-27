@@ -242,6 +242,17 @@ def tagTitle(title: Any) -> str:
     return text
 
 
+def tagToRemove(tagged: Dict[str, List[str]], projectTags: List[Dict[str, Any]]) -> str:
+    """The tag to take off when the user did not name it: the only one those protocols have."""
+    names = {str(tag.get("id")): str(tag.get("title") or "") for tag in projectTags or []}
+    found = list(dict.fromkeys(names[tagId] for ids in tagged.values() for tagId in ids if tagId in names))
+    if not found:
+        raise ProposalError("Those protocols have no tags")
+    if len(found) > 1:
+        raise ProposalError("They have the tags %s: ask the user which one to take off" % ", ".join(found))
+    return found[0]
+
+
 def tagCard(projectId: int, protocols: List[Dict[str, Any]], title: str, existing: Optional[Dict[str, Any]],
             tagged: Dict[str, List[str]], reason: str = "", remove: bool = False) -> Dict[str, Any]:
     """protocols: the ones to tag (or untag, with remove); existing: the project's tag with that name, if any;
