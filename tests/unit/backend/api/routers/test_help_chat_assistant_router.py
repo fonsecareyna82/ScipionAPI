@@ -788,3 +788,52 @@ def test_WatchBeginsAndEnds(applying, monkeypatch):
     assert client.post("/help-chat/actions/apply", json=body).status_code == 409
     assert client.post("/help-chat/actions/apply", json=dict(body, action="unwatch")).json() == {"ok": True}
     assert watches[0]["ended"] == "user"
+
+
+SCRIPT = "import json\nprint(json.load(open('inputs.json')))\n"
+
+
+def _customRows(monkeypatch, module, added):
+    rows = {"45": {"protocolId": "45", "label": "refine", "className": "ProtRefine", "status": "finished"}}
+    monkeypatch.setattr(_Usage, "protocol", lambda self, projectId, protocolId: rows.get(str(protocolId)))
+    monkeypatch.setattr(_Usage, "topProtocolId", lambda self, projectId: 60, raising=False)
+    monkeypatch.setattr(module.HelpChatPostgresqlMapper, "protocolOutputs", lambda self, p, q: [
+        {"outputName": "outputVolume", "setClassName": "Volume"},
+        {"outputName": "outputParticles", "setClassName": "SetOfParticles"}] if str(q) == "45" else [])
+
+    def importWorkflow(self, mapper, projectId, currentUser, payload):
+        added.append((payload.mode, payload.workflow))
+        return {"created": [{"sourceId": payload.workflow[0]["object.id"], "newId": "61"}], "errors": []}
+
+    monkeypatch.setattr(_Service, "importWorkflowProtocolsService", importWorkflow, raising=False)
+
+
+def test_CustomOperationIsAddedWithItsInputsAndLaunched(applying, monkeypatch):
+    added = []
+    _customRows(monkeypatch, applying, added)
+    client = _client(applying, ["assistant.use", "protocols.customCode"])
+    body = {"action": "custom", "projectId": 7, "protocolId": "", "name": "Negated map",
+            "fields": {"inputs": [{"role": "volume", "protocolId": "45"}], "script": SCRIPT,
+                       "operation": "Negates the map"}}
+    response = client.post("/help-chat/actions/apply", json=body)
+    assert response.json() == {"ok": True, "newProtocolId": "61", "started": True}, response.text
+    mode, workflow = added[0]
+    assert mode == "append" and workflow[0]["object.id"] == "100060"
+    assert workflow[0]["inputVolume"] == "45.outputVolume" and workflow[0]["script"] == SCRIPT
+    launched = _Service.calls[-1]
+    assert launched[0] == "workflow" and launched[1]["protocolId"] == 9061
+    assert launched[1]["protocolClassName"] == "ProtCustomOperation" and launched[1]["mode"] == "restart"
+
+
+def test_CustomOperationNeedsItsPermissionAndAScriptThatCompiles(applying, monkeypatch):
+    added = []
+    _customRows(monkeypatch, applying, added)
+    body = {"action": "custom", "projectId": 7, "protocolId": "", "name": "x",
+            "fields": {"inputs": [{"role": "volume", "protocolId": "45"}], "script": SCRIPT, "operation": "x"}}
+    refused = _client(applying, ["assistant.use"]).post("/help-chat/actions/apply", json=body)
+    assert refused.status_code == 409 and "protocols.customCode" in refused.json()["detail"]
+    client = _client(applying, ["assistant.use", "protocols.customCode"])
+    broken = dict(body, fields=dict(body["fields"], script="if True print(1)"))
+    response = client.post("/help-chat/actions/apply", json=broken)
+    assert response.status_code == 409 and "syntax error in line 1" in response.json()["detail"]
+    assert added == [] and _Service.calls == []

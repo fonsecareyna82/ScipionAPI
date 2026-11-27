@@ -454,3 +454,21 @@ def test_ShowInGraphLeavesOneFocusCard():
     result, _ = tools.call("show_in_graph", '{"projectId": 7, "protocolId": "99"}')
     assert "no protocol 99" in result
     assert tools.cards == [{"kind": "focus", "projectId": 7, "protocolId": "31", "label": "ctf"}]
+
+
+def test_TheCustomOperationToolOnlyForWhoMayRunIt():
+    from app.backend.api.services.assistant_agent import AssistantTools
+
+    read = [lambda: [], lambda p: [], lambda p, q: None, lambda p, q, c: "", lambda p, q: {}, lambda q: []]
+    propose = dict(proposeRelaunch=lambda *a: {}, proposeStop=lambda *a: {}, proposeNextStep=lambda *a: {})
+    names = lambda tools: {tool["function"]["name"] for tool in tools.definitions()}  # noqa: E731
+    assert "propose_custom_operation" not in names(AssistantTools(*read, **propose))
+    seen = []
+    tools = AssistantTools(*read, proposeCustom=lambda args: seen.append(args) or {
+        "action": "custom", "title": "Negate", "inputs": [{"role": "volume"}]}, **propose)
+    assert "propose_custom_operation" in names(tools) and tools.canProposeCustom
+    result, _ = tools.call("propose_custom_operation", '{"projectId": 7, "inputs": [], "title": "Negate", '
+                                                       '"operation": "o", "script": "s", "reason": "r"}')
+    assert '"title": "Negate"' in result and seen[0]["script"] == "s"
+    # Not without proposing at all
+    assert "propose_custom_operation" not in names(AssistantTools(*read, proposeCustom=lambda args: {}))

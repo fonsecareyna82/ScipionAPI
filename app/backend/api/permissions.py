@@ -27,6 +27,9 @@ PERMISSIONS: Dict[str, str] = {
     "files.browseServer": "Browse the whole file system of the server",
     "files.download": "Download files of the projects one can see",
     "files.upload": "Upload files from one's computer into the projects one works on",
+    # Protocols
+    "protocols.customCode": "Run custom operations: Python scripts on the server, written by the user or the "
+                            "assistant",
     # Facility
     "facility.monitor": "See the facility monitor with every active stream",
     # A project's own monitor thresholds need work access to the project, not this

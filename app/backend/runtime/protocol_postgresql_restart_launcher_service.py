@@ -526,6 +526,10 @@ class RuntimePostgresqlRestartLauncherService:
         from app.backend.api.services import fs_browser
 
         fs_browser.checkLaunchPaths(mapper, currentUserId, [protocol for protocol, _ in items], currentProject)
+        # A custom operation (a Python script) needs its own permission
+        from app.backend.api.services import custom_code
+
+        custom_code.checkLaunch(mapper, currentUserId, [protocol for protocol, _ in items])
         # Nor where the disk quota of the project's owner (or of their groups) is full
         from app.backend.api.services import storage_quotas
 

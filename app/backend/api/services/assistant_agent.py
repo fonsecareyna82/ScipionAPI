@@ -10,6 +10,7 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.backend.api.services import assistant_custom
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_provider import AssistantProvider, AssistantProviderError
 
@@ -231,6 +232,31 @@ SUBWORKFLOW_TOOLS = [
               ["projectId", "protocolIds", "reason"]),
 ]
 
+CUSTOM_TOOL = _function(
+    "propose_custom_operation", "Propose a custom operation: a short Python script you write, run on a volume, a "
+                                "mask and/or particles of the project, for something no installed protocol does "
+                                "(search_help first; use a protocol when there is one). It becomes a protocol of "
+                                "the project, with the script kept in it, launched when the user applies the "
+                                "card. " + assistant_custom.CONTRACT,
+    {"projectId": _PROJECT,
+     "inputs": {"type": "array", "description": "What the script reads: at most one of each role",
+                "items": {"type": "object", "properties": {
+                    "role": {"type": "string", "enum": ["volume", "mask", "particles"]},
+                    "protocolId": {"type": "string", "description": "The protocol whose output it is"},
+                    "output": {"type": "string", "description": "The output's name; leave out when it has only "
+                                                                "one of that kind"}},
+                    "required": ["role", "protocolId"]}},
+     "title": {"type": "string", "description": "A short name for the new protocol"},
+     "operation": {"type": "string", "description": "What it does, in plain words for the user (one or two "
+                                                    "sentences), in the user's language"},
+     "script": {"type": "string", "description": "The whole Python script"},
+     "reason": _REASON},
+    ["projectId", "inputs", "title", "operation", "script", "reason"])
+CUSTOM_RULE = ("- When the user asks for an operation no installed protocol does (on a volume, a mask or particles), "
+               "you may write it as a short Python script with propose_custom_operation. Keep it simple and "
+               "correct, say in the operation what it does and what it assumes, and never claim results before it "
+               "runs.")
+
 DELETE_SUBWORKFLOW_TOOL = _function(
     "propose_delete_subworkflow", "Propose deleting a protocol and EVERY protocol depending on it, with all their "
                                   "results, which cannot be undone. Only when the user asks for exactly that in "
@@ -409,6 +435,7 @@ STEP_LABELS = {
     "propose_watch": "Proposed watching project {projectId}",
     "propose_unwatch": "Proposed to stop watching project {projectId}",
     "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
+    "propose_custom_operation": "Proposed a custom operation",
 }
 
 
@@ -460,7 +487,8 @@ class AssistantTools:
                  proposeMany: Optional[Callable[..., Dict[str, Any]]] = None,
                  showProtocol: Optional[Callable[[int, str], Dict[str, Any]]] = None,
                  proposeNewProject: Optional[Callable[..., Dict[str, Any]]] = None,
-                 proposeWatch: Optional[Callable[..., Dict[str, Any]]] = None):
+                 proposeWatch: Optional[Callable[..., Dict[str, Any]]] = None,
+                 proposeCustom: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None):
         self._calls = {
             "list_projects": lambda args: {"projects": listProjects()},
             "list_protocols": lambda args: {"protocols": listProtocols(int(args["projectId"]))},
@@ -568,6 +596,10 @@ class AssistantTools:
             self._calls["propose_continue_chain"] = lambda args: self._proposed(proposeContinue(
                 int(args["projectId"]), int(args["chainId"]), str(args.get("stopProtocolId") or "") or None,
                 str(args.get("reason") or "")))
+        # A Python script of the assistant's, only for the users who may run one
+        self.canProposeCustom = self.canPropose and proposeCustom is not None
+        if self.canProposeCustom:
+            self._calls["propose_custom_operation"] = lambda args: self._proposed(proposeCustom(args))
         if self.canPropose and proposeSubset is not None:
             self._calls["propose_subset"] = lambda args: self._proposed(proposeSubset(
                 int(args["projectId"]), str(args["protocolId"]), str(args["outputName"]),
@@ -629,14 +661,15 @@ class AssistantTools:
             + (TEMPLATE_PROPOSAL_TOOLS if self.canProposeTemplates else []) \
             + (SUBWORKFLOW_TOOLS if self.canProposeMore else []) \
             + ([DELETE_TOOL] if self.canDelete else []) \
-            + ([DELETE_SUBWORKFLOW_TOOL] if "propose_delete_subworkflow" in self._calls else [])
+            + ([DELETE_SUBWORKFLOW_TOOL] if "propose_delete_subworkflow" in self._calls else []) \
+            + ([CUSTOM_TOOL] if self.canProposeCustom else [])
 
     def _proposed(self, card: Dict[str, Any]) -> Dict[str, Any]:
         self.proposals.append(card)
         summary = {key: card[key] for key in ("action", "mode", "modes", "changes", "children", "outputs", "links",
                                               "missing", "next", "kept", "removed", "total", "makes", "launch",
                                               "tag", "newTag", "waitFor", "count", "pattern", "missing", "hours",
-                                              "watched") if key in card}
+                                              "watched", "title", "inputs") if key in card}
         if "protocols" in card:
             summary["protocols"] = [item["protocolId"] for item in card["protocols"]]
         if "items" in card:
@@ -721,6 +754,8 @@ class AssistantAgent:
             if self.tools.canPropose else READ_ONLY_RULE
         if self.tools.canPropose and self.tools.canProposeTemplates:
             rule += "\n" + TEMPLATE_RULE
+        if self.tools.canProposeCustom:
+            rule += "\n" + CUSTOM_RULE
         if self.tools.isAdmin:
             rule += "\n" + ADMIN_RULE
         if tutor is not None:

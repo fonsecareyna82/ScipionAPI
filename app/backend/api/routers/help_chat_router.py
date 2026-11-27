@@ -10,8 +10,8 @@ from app.backend.api.audit import recordAudit
 from app.backend.api.dependencies import getCurrentUser
 from app.backend.api.permissions import checkProjectAccess, hasPermission, requirePermission
 from app.backend.api.services import help_index
-from app.backend.api.services import (assistant_actions, assistant_new_project, search_projects, streaming_watch,
-                                      tutorial_progress)
+from app.backend.api.services import (assistant_actions, assistant_custom, assistant_new_project, custom_code,
+                                      search_projects, streaming_watch, tutorial_progress)
 from app.backend.api.services.assistant_actions import ProposalError
 from app.backend.api.services.assistant_agent import AssistantAgent, AssistantTools, LOG_BYTES, contextLine
 from app.backend.api.services.assistant_browse import WebReader
@@ -386,6 +386,14 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
 
         return streaming_watch.watchCard(projectId, name, watchSnapshot(mapper, projectId), hours, active, reason)
 
+    def proposeCustom(args: Dict[str, Any]):
+        projectId = int(args["projectId"])
+        if not _canWork(allowed(projectId)):
+            raise PermissionError("The user can only look at that project, not run things in it")
+        data = _customPlan(mapper, currentUser, projectId, args.get("inputs"), args.get("script"),
+                           args.get("operation"), args.get("title"))
+        return assistant_custom.card(projectId, data, str(args.get("reason") or ""))
+
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)
         outputs = HelpChatPostgresqlMapper(mapper.db).protocolOutputs(projectId, protocolId)
@@ -487,7 +495,9 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
                           proposeContinue=proposeContinue, proposeSubset=proposeSubset,
                           proposeSubworkflow=proposeSubworkflow, proposeTag=proposeTag, proposeRename=proposeRename,
                           proposeSchedule=proposeSchedule, proposeMany=proposeMany,
-                          proposeNewProject=proposeNewProject, proposeWatch=proposeWatch, **reading)
+                          proposeNewProject=proposeNewProject, proposeWatch=proposeWatch,
+                          proposeCustom=proposeCustom if hasPermission(currentUser, custom_code.PERMISSION) else None,
+                          **reading)
 
 
 def _askAssistant(payload: HelpQuestion, settings: AssistantSettings, mapper, currentUser,
@@ -649,6 +659,8 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         return _applySchedule(payload, service, mapper, currentUser)
     if payload.action in ("stopmany", "relaunchmany"):
         return _applyMany(payload, service, mapper, currentUser)
+    if payload.action == "custom":
+        return _applyCustom(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
         help_ = help_index.protocolHelp((protocol or {}).get("className"))
@@ -967,6 +979,61 @@ def _applyNewProject(payload: ActionPayload, service, mapper, currentUser) -> Di
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail="The project was not made: %s" % "; ".join(errors))
     return {"ok": True, "projectId": projectId, "newProtocolId": protocolId}
+
+
+def _customPlan(mapper, currentUser, projectId: int, inputs: Any, script: Any, operation: Any,
+                title: Any) -> Dict[str, Any]:
+    protocols = AssistantPostgresqlMapper(mapper.db)
+    outputs = HelpChatPostgresqlMapper(mapper.db)
+    return assistant_custom.plan(inputs, script, operation, title, hasPermission(currentUser, custom_code.PERMISSION),
+                                 lambda protocolId: protocols.protocol(projectId, protocolId),
+                                 lambda protocolId: outputs.protocolOutputs(projectId, protocolId))
+
+
+def _applyCustom(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
+    """Add the custom operation the card showed (checked again as the project is now) and launch it."""
+    from types import SimpleNamespace
+
+    from app.backend.api.services.assistant_chains import ID_MARGIN
+
+    fields = payload.fields or {}
+    try:
+        data = _customPlan(mapper, currentUser, payload.projectId, fields.get("inputs"), fields.get("script"),
+                           fields.get("operation"), payload.name)
+    except ProposalError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if not service.loadPostgresqlRuntimeProjectForMutation(mapper=mapper, projectId=payload.projectId,
+                                                           currentUser=currentUser):
+        raise HTTPException(status_code=404, detail="Project not found")
+    helper = AssistantPostgresqlMapper(mapper.db)
+    sourceId = helper.topProtocolId(payload.projectId) + ID_MARGIN
+    protocolId = None
+    try:
+        imported = service.importWorkflowProtocolsService(
+            mapper, payload.projectId, currentUser,
+            SimpleNamespace(mode="append", workflow=[assistant_custom.workflowProtocol(data, sourceId)],
+                            sourceProjectId=str(payload.projectId))) or {}
+        errors = [str(error) for error in imported.get("errors") or []]
+        protocolId = next((str(item["newId"]) for item in imported.get("created") or []), None)
+        if protocolId is None and not errors:
+            errors = ["The protocol was not added"]
+    except HTTPException as error:
+        errors = _errorTexts(error.detail) or ["The protocol was not added"]
+    launched = False
+    if protocolId is not None and not errors:
+        result = _executeWorkflow(service, mapper, currentUser, payload.projectId, protocolId,
+                                  assistant_custom.CLASS_NAME, helper.pointerParams(payload.projectId, protocolId),
+                                  "restart", "single")
+        errors = ["Protocol #%s was added but not launched: %s" % (protocolId, "; ".join(
+            str(error) for error in result.get("errors")))] if result.get("errors") else []
+        launched = not errors
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, protocolId or "",
+                {"action": "custom", "title": data["title"], "operation": data["operation"],
+                 "inputs": ["%s.%s" % (item["protocolId"], item["output"]) for item in data["inputs"]],
+                 "script": data["script"], "newProtocolId": protocolId, "started": launched, "errors": errors[:3]})
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return {"ok": True, "newProtocolId": protocolId, "started": True}
 
 
 def _applyWatch(payload: ActionPayload, mapper, currentUser) -> Dict[str, Any]:
