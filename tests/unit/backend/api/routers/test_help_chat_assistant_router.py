@@ -594,3 +594,15 @@ def test_ARefusedLaunchIsToldInWords(applying, monkeypatch):
                                                              "launch": True})
     assert response.status_code == 422
     assert response.json()["detail"] == "Input particles: no particles; Choose a volume"
+
+
+def test_AFailedCopyIsToldInWords(applying, monkeypatch):
+    def fail(self, mapper, projectId, items, protocolIdIsScipionId=False):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Failed to restore duplicated protocol pointers")
+
+    monkeypatch.setattr(_Service, "duplicateProtocol", fail)
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "The copy could not be made: Failed to restore duplicated protocol pointers"

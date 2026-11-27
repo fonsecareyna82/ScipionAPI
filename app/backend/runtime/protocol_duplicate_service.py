@@ -55,6 +55,8 @@ class RuntimeProtocolDuplicateState:
         self.duplicatedItems: List[Dict[str, Any]] = []
         self.sourceToDuplicatedProtocolId: Dict[str, str] = {}
         self.sourceDbToDuplicatedDbId: Dict[int, int] = {}
+        # Every copy saved so far (Scipion ids), to delete them all when the duplicate fails half way
+        self.createdProtocolIds: List[str] = []
 
 
 class RuntimeProtocolDuplicateService:
@@ -85,6 +87,34 @@ class RuntimeProtocolDuplicateService:
     def duplicatePostgresqlRuntimeProtocols(
             self,
             *,
+            discardDuplicatedProtocolsCallback: Optional[Callable] = None,
+            **kwargs,
+    ):
+        """Duplicate the protocols, all or none: when it fails half way, the copies already made are deleted
+        (discardDuplicatedProtocolsCallback(protocolIds), the project's own delete) and the error is raised as
+        it was."""
+        duplicateState = self.createDuplicateState()
+        try:
+            return self._duplicatePostgresqlRuntimeProtocols(duplicateState=duplicateState, **kwargs)
+        except Exception:
+            created = list(dict.fromkeys(duplicateState.createdProtocolIds))
+            if created and callable(discardDuplicatedProtocolsCallback):
+                try:
+                    report = discardDuplicatedProtocolsCallback(created) or {}
+                    if report.get("errors"):
+                        logger.warning("The half-made copies %s were not all deleted: %s", created,
+                                       report.get("errors"))
+                    else:
+                        logger.info("Deleted the half-made copies %s of a duplicate that failed", created)
+                except Exception:
+                    logger.warning("Could not delete the half-made copies %s of a duplicate that failed", created,
+                                   exc_info=True)
+            raise
+
+    def _duplicatePostgresqlRuntimeProtocols(
+            self,
+            *,
+            duplicateState: RuntimeProtocolDuplicateState,
             mapper,
             projectId: int,
             protocols,
@@ -97,7 +127,6 @@ class RuntimeProtocolDuplicateService:
             buildProtocolMutationResultCallback: Callable,
             resolveRuntimeInputObjectCallback: Optional[Callable] = None,
     ):
-        duplicateState = self.createDuplicateState()
 
         # ------------------------------------------------------------------
         # Phase 1: resolve all source protocols and create all duplicated
@@ -163,6 +192,10 @@ class RuntimeProtocolDuplicateService:
                                                            params=params,
                                                            setToSave=False,
                                                            validateParams=False)
+
+            savedId = getScipionObjectIdCallback(newProtocol) if newProtocol is not None else None
+            if savedId is not None:
+                duplicateState.createdProtocolIds.append(str(savedId))
 
             if saveErrors:
                 raise HTTPException(

@@ -571,8 +571,7 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
     elif payload.action == "duplicate":
         from app.backend.models.protocol_model import DuplicateItem
 
-        result = service.duplicateProtocol(mapper, payload.projectId, [DuplicateItem(id=payload.protocolId)],
-                                           protocolIdIsScipionId=True) or {}
+        result = _duplicate(service, mapper, payload.projectId, [DuplicateItem(id=payload.protocolId)])
         copies = result.get("duplicated") or []
         if copies and not result.get("errors"):
             answer["newProtocolId"] = str(copies[0].get("newId"))
@@ -611,6 +610,14 @@ def _launchCopy(service, mapper, currentUser, projectId: int, protocolId: str, c
     """Launch a copy just made, with its inputs, as the protocol form launches a new protocol."""
     full = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(projectId, protocolId), **(params or {}))
     return _executeWorkflow(service, mapper, currentUser, projectId, protocolId, className, full, "restart", scope)
+
+
+def _duplicate(service, mapper, projectId: int, items) -> Dict[str, Any]:
+    """The project's own copy (all or none); its refusal as errors, not raised."""
+    try:
+        return service.duplicateProtocol(mapper, projectId, items, protocolIdIsScipionId=True) or {}
+    except HTTPException as error:
+        return {"errors": ["The copy could not be made: %s" % "; ".join(_errorTexts(error.detail) or ["unknown"])]}
 
 
 def _errorTexts(detail: Any) -> List[str]:
@@ -668,8 +675,7 @@ def _applySubworkflow(payload: ActionPayload, service, mapper, currentUser) -> D
     else:
         from app.backend.models.protocol_model import DuplicateItem
 
-        result = service.duplicateProtocol(mapper, payload.projectId, [DuplicateItem(id=item) for item in ids],
-                                           protocolIdIsScipionId=True) or {}
+        result = _duplicate(service, mapper, payload.projectId, [DuplicateItem(id=item) for item in ids])
         copies = {str(item.get("sourceId")): str(item.get("newId")) for item in result.get("duplicated") or []}
         if copies.get(str(protocol["protocolId"])):
             answer["newProtocolId"] = copies[str(protocol["protocolId"])]

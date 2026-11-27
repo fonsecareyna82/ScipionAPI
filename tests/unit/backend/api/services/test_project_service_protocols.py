@@ -2561,6 +2561,7 @@ def test_DuplicateProtocolUsesPostgresqlRuntimeService(
         "storeProtocolCallback",
         "buildProtocolMutationResultCallback",
         "resolveRuntimeInputObjectCallback",
+        "discardDuplicatedProtocolsCallback",
     }
 
 

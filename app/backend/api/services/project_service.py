@@ -7310,6 +7310,8 @@ class ProjectService:
             storeProtocolCallback=self.currentProject._storeProtocol,
             buildProtocolMutationResultCallback=self._buildProtocolMutationResult,
             resolveRuntimeInputObjectCallback=self._resolvePostgresqlRuntimeInputObject,
+            discardDuplicatedProtocolsCallback=lambda protocolIds: self.deleteProtocol(
+                mapper, projectId, protocolIds, protocolIdIsScipionId=True),
         ) or {}
 
         if not result.get("errors"):

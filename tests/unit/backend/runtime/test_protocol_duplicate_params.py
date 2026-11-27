@@ -590,3 +590,55 @@ def test_BuildDuplicatedProtocolParamsDoesNotCopyRuntimeAttributes():
     )
 
     assert "_scipionRuntimeAttributes" not in result
+
+
+def _failingHalfWay(created, error):
+    def steps(self, *, duplicateState, **kwargs):
+        duplicateState.createdProtocolIds.extend(created)
+        raise error
+    return steps
+
+
+def test_AFailedDuplicateDeletesTheCopiesItMade(monkeypatch):
+    from fastapi import HTTPException
+
+    discarded = []
+    monkeypatch.setattr(RuntimeProtocolDuplicateService, "_duplicatePostgresqlRuntimeProtocols",
+                        _failingHalfWay(["180", "181", "180"], HTTPException(status_code=500, detail="pointers")))
+    try:
+        RuntimeProtocolDuplicateService().duplicatePostgresqlRuntimeProtocols(
+            discardDuplicatedProtocolsCallback=lambda ids: discarded.append(ids) or {"errors": []}, mapper=None)
+        raised = None
+    except HTTPException as error:
+        raised = error
+    # The caller still gets the original error, and nothing half-made stays
+    assert raised is not None and raised.detail == "pointers"
+    assert discarded == [["180", "181"]]
+
+
+def test_TheOriginalErrorWinsWhenDeletingTheCopiesFails(monkeypatch):
+    def broken(ids):
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(RuntimeProtocolDuplicateService, "_duplicatePostgresqlRuntimeProtocols",
+                        _failingHalfWay(["180"], ValueError("sync failed")))
+    try:
+        RuntimeProtocolDuplicateService().duplicatePostgresqlRuntimeProtocols(
+            discardDuplicatedProtocolsCallback=broken)
+        raised = None
+    except ValueError as error:
+        raised = error
+    assert str(raised) == "sync failed"
+
+
+def test_NothingIsDeletedWhenTheDuplicateWorks(monkeypatch):
+    discarded = []
+
+    def works(self, *, duplicateState, **kwargs):
+        duplicateState.createdProtocolIds.append("180")
+        return {"duplicated": [{"sourceId": "137", "newId": "180"}]}
+
+    monkeypatch.setattr(RuntimeProtocolDuplicateService, "_duplicatePostgresqlRuntimeProtocols", works)
+    result = RuntimeProtocolDuplicateService().duplicatePostgresqlRuntimeProtocols(
+        discardDuplicatedProtocolsCallback=lambda ids: discarded.append(ids))
+    assert result["duplicated"][0]["newId"] == "180" and discarded == []
