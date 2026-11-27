@@ -606,3 +606,16 @@ def test_AFailedCopyIsToldInWords(applying, monkeypatch):
     response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37"})
     assert response.status_code == 422
     assert response.json()["detail"] == "The copy could not be made: Failed to restore duplicated protocol pointers"
+
+
+def test_TagTakenOffOnlyWhereItIsAndTheTagStays(applying):
+    _Service.tags = {"37": ["t1", "t9"], "38": ["t9"]}
+    client = _client(applying, ["assistant.use"])
+    body = {"action": "untag", "projectId": 7, "protocolId": "37", "protocolIds": ["37"], "tag": "good"}
+    assert client.post("/help-chat/actions/apply", json=body).json() == {"ok": True, "tag": "Good",
+                                                                          "untagged": ["37"]}
+    assert _Service.tags["37"] == ["t9"] and _Service.projectTags[0]["id"] == "t1"
+    # Nothing to take off, and an unknown tag
+    assert client.post("/help-chat/actions/apply", json=body).json()["untagged"] == []
+    unknown = client.post("/help-chat/actions/apply", json=dict(body, tag="nope"))
+    assert unknown.status_code == 409 and "no tag called nope" in unknown.json()["detail"]

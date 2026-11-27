@@ -19,7 +19,8 @@ apply refuses when that list changed since (nothing the user did not see is touc
 - delete it (with the delete switch only): nothing may be running, the card lists every result lost and the user
   confirms by writing how many protocols go.
 
-A tag is added by its name to one or more protocols; a tag the project does not have yet is created.
+A tag is added by its name to one or more protocols (a tag the project does not have yet is created), or taken
+off them (the tag stays in the project).
 
 Delete (only when the administrator allows it besides proposing) is the one that cannot be undone, so: protocols
 only (never projects), never a running one, never one whose depending protocols run or have results (as the web's
@@ -226,19 +227,24 @@ def tagTitle(title: Any) -> str:
 
 
 def tagCard(projectId: int, protocols: List[Dict[str, Any]], title: str, existing: Optional[Dict[str, Any]],
-            tagged: Dict[str, List[str]], reason: str = "") -> Dict[str, Any]:
-    """protocols: the ones to tag; existing: the project's tag with that name, if any; tagged: each protocol's
-    tag ids now."""
+            tagged: Dict[str, List[str]], reason: str = "", remove: bool = False) -> Dict[str, Any]:
+    """protocols: the ones to tag (or untag, with remove); existing: the project's tag with that name, if any;
+    tagged: each protocol's tag ids now. "already": the protocol has the tag now."""
     if not protocols:
-        raise ProposalError("Say which protocols to tag")
+        raise ProposalError("Say which protocols")
     if len(protocols) > MAX_TAGGED:
         raise ProposalError("At most %d protocols at once" % MAX_TAGGED)
     title = tagTitle(title)
     already = [str(item["protocolId"]) for item in protocols
                if existing and existing["id"] in tagged.get(str(item["protocolId"]), [])]
-    if len(already) == len(protocols):
+    if remove:
+        if existing is None:
+            raise ProposalError("The project has no tag called %s" % title)
+        if not already:
+            raise ProposalError("None of those protocols has the tag %s" % existing["title"])
+    elif len(already) == len(protocols):
         raise ProposalError("Those protocols already have the tag %s" % title)
-    return {"kind": "action", "action": "tag", "projectId": int(projectId),
+    return {"kind": "action", "action": "untag" if remove else "tag", "projectId": int(projectId),
             "protocolId": str(protocols[0]["protocolId"]), "label": protocols[0].get("label") or "",
             "tag": existing["title"] if existing else title, "newTag": existing is None,
             "color": (existing or {}).get("color"),

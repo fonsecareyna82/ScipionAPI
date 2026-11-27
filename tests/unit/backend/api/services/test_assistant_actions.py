@@ -331,3 +331,14 @@ def test_TheModelGetsTheNewToolsOnlyWhenAllowed():
     withDelete = AssistantTools(*read, proposeDelete=lambda *a: {}, **propose)
     assert "propose_delete_subworkflow" in names(withDelete)
     assert "propose_tag" not in names(AssistantTools(*read))
+
+
+def test_UntagCard():
+    protocols = [{"protocolId": "5", "label": "ctf"}, {"protocolId": "6", "label": "picking"}]
+    existing = {"id": "t1", "title": "Good", "color": "#0a0"}
+    card = actions.tagCard(7, protocols, "good", existing, {"5": ["t1"]}, remove=True)
+    assert card["action"] == "untag" and [item["already"] for item in card["protocols"]] == [True, False]
+    with pytest.raises(actions.ProposalError, match="no tag called"):
+        actions.tagCard(7, protocols, "other", None, {}, remove=True)
+    with pytest.raises(actions.ProposalError, match="None of those"):
+        actions.tagCard(7, protocols, "good", existing, {}, remove=True)

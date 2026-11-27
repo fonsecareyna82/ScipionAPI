@@ -158,6 +158,12 @@ SUBWORKFLOW_TOOLS = [
                "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
                "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
               ["projectId", "protocolIds", "tag", "reason"]),
+    _function("propose_untag", "Propose taking a tag, by its name, off one or more protocols. The tag stays in the "
+                               "project for other protocols.",
+              {"projectId": _PROJECT,
+               "protocolIds": {"type": "array", "items": {"type": "string"}, "description": "The protocols' ids"},
+               "tag": {"type": "string", "description": "The tag's name, as the user said it"}, "reason": _REASON},
+              ["projectId", "protocolIds", "tag", "reason"]),
 ]
 
 DELETE_SUBWORKFLOW_TOOL = _function(
@@ -174,7 +180,7 @@ DELETE_TOOL = _function(
 READ_ONLY_RULE = ("- You can only read. You cannot launch, stop, change or delete anything. When something must be "
                   "done, tell the user where in ScipionWeb to do it.")
 PROPOSE_RULE = ("- You can propose a relaunch, a stop, a copy (of a protocol or of it with everything after it), a "
-                "reset, a tag, a subset or the next step with the propose_* tools when the "
+                "reset, adding or taking off a tag, a subset or the next step with the propose_* tools when the "
                 "user asks for it or it clearly solves their problem. A proposal does nothing by itself: the user "
                 "sees a card and applies it or not. Never say that something was done, launched, copied, stopped or "
                 "deleted. One proposal per action; read protocol_details first to use the real parameter names. You "
@@ -322,6 +328,7 @@ STEP_LABELS = {
     "propose_copy_subworkflow": "Proposed copying from protocol {protocolId}",
     "propose_reset": "Proposed resetting from protocol {protocolId}",
     "propose_tag": "Proposed a tag",
+    "propose_untag": "Proposed taking a tag off",
     "propose_delete_subworkflow": "Proposed deleting from protocol {protocolId}",
 }
 
@@ -441,6 +448,9 @@ class AssistantTools:
                 "propose_tag": lambda args: self._proposed(proposeTag(
                     int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
                     str(args.get("tag") or ""), str(args.get("reason") or ""))),
+                "propose_untag": lambda args: self._proposed(proposeTag(
+                    int(args["projectId"]), [str(item) for item in args.get("protocolIds") or []],
+                    str(args.get("tag") or ""), str(args.get("reason") or ""), True)),
             })
         self.canProposeTemplates = self.canPropose and proposeTemplate is not None and proposeContinue is not None
         if self.canProposeTemplates:

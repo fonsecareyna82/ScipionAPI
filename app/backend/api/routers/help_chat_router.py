@@ -291,12 +291,12 @@ def _projectTools(mapper, currentUser, canPropose: bool = False, canDelete: bool
         items = _subworkflow(service, mapper, currentUser, projectId, protocol, action != "copyworkflow")
         return assistant_actions.subworkflowCard(action, projectId, items, reason, launch)
 
-    def proposeTag(projectId: int, protocolIds: List[str], tag: str, reason: str):
+    def proposeTag(projectId: int, protocolIds: List[str], tag: str, reason: str, remove: bool = False):
         protocols = [workable(projectId, protocolId) for protocolId in dict.fromkeys(protocolIds)]
         title = assistant_actions.tagTitle(tag)
         return assistant_actions.tagCard(projectId, protocols, title, _projectTag(mapper, projectId, title),
                                          _tagsOf(service, mapper, currentUser, projectId,
-                                                 [str(item["protocolId"]) for item in protocols]), reason)
+                                                 [str(item["protocolId"]) for item in protocols]), reason, remove)
 
     def proposeDelete(projectId: int, protocolId: str, reason: str):
         protocol = workable(projectId, protocolId)
@@ -539,7 +539,7 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         return _applySubset(payload, service, mapper, currentUser)
     if payload.action in ("copyworkflow", "reset", "deletefrom"):
         return _applySubworkflow(payload, service, mapper, currentUser)
-    if payload.action == "tag":
+    if payload.action in ("tag", "untag"):
         return _applyTag(payload, service, mapper, currentUser)
     protocol = AssistantPostgresqlMapper(mapper.db).protocol(payload.projectId, payload.protocolId)
     try:
@@ -711,6 +711,8 @@ def _applyTag(payload: ActionPayload, service, mapper, currentUser) -> Dict[str,
     except ProposalError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     tag = _projectTag(mapper, payload.projectId, title)
+    if payload.action == "untag":
+        return _removeTag(payload, service, mapper, currentUser, tag, title, ids)
     created = tag is None
     if created:
         tag = service.createProjectTag(mapper=mapper, projectId=payload.projectId, currentUser=currentUser,
@@ -726,6 +728,24 @@ def _applyTag(payload: ActionPayload, service, mapper, currentUser) -> Dict[str,
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, ids[0],
                 {"action": "tag", "tag": tag.get("title"), "created": created, "protocols": tagged})
     return {"ok": True, "tag": tag.get("title"), "newTag": created, "tagged": tagged}
+
+
+def _removeTag(payload: ActionPayload, service, mapper, currentUser, tag: Optional[Dict[str, Any]], title: str,
+               ids: List[str]) -> Dict[str, Any]:
+    """Take the tag off the protocols that have it; the tag stays in the project."""
+    if tag is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The project has no tag called %s" % title)
+    current = _tagsOf(service, mapper, currentUser, payload.projectId, ids)
+    untagged = []
+    for protocolId in ids:
+        if tag["id"] in current[protocolId]:
+            service.setProtocolTags(mapper=mapper, projectId=payload.projectId, protocolId=int(protocolId),
+                                    tagIds=[item for item in current[protocolId] if item != tag["id"]],
+                                    currentUser=currentUser, protocolIdIsScipionId=True)
+            untagged.append(protocolId)
+    recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId, ids[0],
+                {"action": "untag", "tag": tag.get("title"), "protocols": untagged})
+    return {"ok": True, "tag": tag.get("title"), "untagged": untagged}
 
 
 def _subsetPlan(service, mapper, projectId: int, protocolId: str, outputName: str, table: str, conditions,
