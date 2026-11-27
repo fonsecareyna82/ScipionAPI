@@ -264,6 +264,10 @@ def applying(router, monkeypatch):
     _Service.calls, _Service.access, _Service.affected = [], "work", []
     _Service.tags, _Service.projectTags = {}, [{"id": "t1", "title": "Good", "color": "#0a0"}]
     monkeypatch.setattr(services, "ProjectService", _Service)
+    # Internal ids differ from the numbers the user sees (the launch takes internal ones)
+    identity = importlib.import_module("app.backend.runtime.protocol_identity")
+    monkeypatch.setattr(identity.ProtocolIdentityResolver, "resolvePostgresqlProtocolDbIdFromScipionProtocolId",
+                        lambda self, protocolId: int(protocolId) + 9000)
     monkeypatch.setattr(router, "_projectTag", lambda mapper, projectId, title: next(
         (tag for tag in _Service.projectTags if tag["title"].lower() == title.lower()), None))
     monkeypatch.setattr(router.help_index, "protocolHelp", lambda className: HELP)
@@ -284,6 +288,8 @@ def test_ApplyRelaunchSendsOnlyTheChangedParams(applying):
     assert kind == "workflow"
     assert kwargs["params"] == {"inputParticles": "22.outputParticles", "numberOfClasses": 100}
     assert kwargs["mode"] == "restart" and kwargs["scope"] == "single"
+    # The internal id of #37, never 37 itself (another protocol may have that internal id)
+    assert kwargs["protocolId"] == 9037
 
 
 def test_ApplyWithChildrenNeedsTheUserToChoose(applying):
@@ -517,7 +523,7 @@ def test_DuplicateAndLaunchTheCopy(applying):
                                                              "launch": True})
     assert response.json() == {"ok": True, "newProtocolId": "200", "started": True}
     launched = _Service.calls[-1]
-    assert launched[0] == "workflow" and launched[1]["protocolId"] == 200 and launched[1]["scope"] == "single"
+    assert launched[0] == "workflow" and launched[1]["protocolId"] == 9200 and launched[1]["scope"] == "single"
     assert launched[1]["params"] == {"inputParticles": "22.outputParticles"}
 
 
@@ -532,7 +538,7 @@ def test_CopyTheSubworkflowAsListedAndLaunchItsFirstCopy(applying, monkeypatch):
     response = client.post("/help-chat/actions/apply", json=dict(body, protocolIds=["37", "105", "106"], launch=True))
     assert response.json() == {"ok": True, "protocols": 3, "newProtocolId": "200", "started": True}
     assert _Service.calls[0] == ("duplicate", ["37", "105", "106"])
-    assert _Service.calls[1][1]["protocolId"] == 200 and _Service.calls[1][1]["scope"] == "all"
+    assert _Service.calls[1][1]["protocolId"] == 9200 and _Service.calls[1][1]["scope"] == "all"
 
 
 def test_ResetOnlyWhenNothingRuns(applying, monkeypatch):
@@ -575,3 +581,16 @@ def test_TagMadeWhenNewAndAddedToTheOthersTags(applying):
     again = client.post("/help-chat/actions/apply", json={"action": "tag", "projectId": 7, "protocolId": "37",
                                                           "protocolIds": ["37"], "tag": "GOOD"}).json()
     assert again["newTag"] is False and _Service.tags["37"] == ["t1", "t-new"] and again["tagged"] == []
+
+
+def test_ARefusedLaunchIsToldInWords(applying, monkeypatch):
+    def refuse(self, **kwargs):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=["Input particles: no particles", "Choose a volume"])
+
+    monkeypatch.setattr(_Service, "executeProtocolWorkflow", refuse)
+    client = _client(applying, ["assistant.use"])
+    response = client.post("/help-chat/actions/apply", json={"action": "duplicate", "projectId": 7, "protocolId": "37",
+                                                             "launch": True})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Input particles: no particles; Choose a volume"

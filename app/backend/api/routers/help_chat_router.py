@@ -594,11 +594,8 @@ def applyAction(payload: ActionPayload, currentUser: dict = Depends(getCurrentUs
         # With its inputs, as the protocol form relaunches one
         params = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(payload.projectId, payload.protocolId),
                       **plan["params"])
-        result = service.executeProtocolWorkflow(mapper=mapper, projectId=payload.projectId,
-                                                 protocolId=int(payload.protocolId),
-                                                 protocolClassName=protocol["className"], params=params,
-                                                 mode=plan["mode"], scope=plan["scope"],
-                                                 currentUserId=currentUser["id"]) or {}
+        result = _executeWorkflow(service, mapper, currentUser, payload.projectId, payload.protocolId,
+                                  protocol["className"], params, plan["mode"], plan["scope"])
     errors = [str(error) for error in result.get("errors") or []]
     recordAudit(mapper, currentUser, "assistant.actionApplied", "project", payload.projectId,
                 str(payload.protocolId), {"action": payload.action, "mode": plan.get("mode"),
@@ -613,9 +610,35 @@ def _launchCopy(service, mapper, currentUser, projectId: int, protocolId: str, c
                 params: Dict[str, Any], scope: str) -> Dict[str, Any]:
     """Launch a copy just made, with its inputs, as the protocol form launches a new protocol."""
     full = dict(AssistantPostgresqlMapper(mapper.db).pointerParams(projectId, protocolId), **(params or {}))
-    return service.executeProtocolWorkflow(mapper=mapper, projectId=projectId, protocolId=int(protocolId),
-                                           protocolClassName=className, params=full, mode="restart", scope=scope,
-                                           currentUserId=currentUser["id"]) or {}
+    return _executeWorkflow(service, mapper, currentUser, projectId, protocolId, className, full, "restart", scope)
+
+
+def _errorTexts(detail: Any) -> List[str]:
+    """A service's error (a text, a list of texts, or {detail}) as texts the chat shows."""
+    if isinstance(detail, (list, tuple)):
+        return [text for item in detail for text in _errorTexts(item)]
+    if isinstance(detail, dict):
+        return _errorTexts(detail.get("detail") or detail.get("error") or detail.get("message") or str(detail))
+    return [str(detail)] if detail not in (None, "") else []
+
+
+def _executeWorkflow(service, mapper, currentUser, projectId: int, protocolId: str, className: str,
+                     params: Dict[str, Any], mode: str, scope: str) -> Dict[str, Any]:
+    """Launch or relaunch as the protocol form does: with the protocol's internal id (the launch takes an id as
+    internal first, so the number the user sees could name another protocol of the project). Its refusals come
+    back as errors, not raised."""
+    from app.backend.runtime.protocol_identity import ProtocolIdentityResolver
+
+    dbId = ProtocolIdentityResolver(mapper=mapper, projectId=projectId) \
+        .resolvePostgresqlProtocolDbIdFromScipionProtocolId(protocolId)
+    if dbId is None:
+        return {"errors": ["Protocol #%s is not in the project any more" % protocolId]}
+    try:
+        return service.executeProtocolWorkflow(mapper=mapper, projectId=projectId, protocolId=int(dbId),
+                                               protocolClassName=className, params=params, mode=mode, scope=scope,
+                                               currentUserId=currentUser["id"]) or {}
+    except HTTPException as error:
+        return {"errors": _errorTexts(error.detail) or ["The launch was refused"]}
 
 
 def _applySubworkflow(payload: ActionPayload, service, mapper, currentUser) -> Dict[str, Any]:
